@@ -1,0 +1,571 @@
+XGREP: Searching for "ERR_" in *.c (UC)
+
+File: D2P1:\xosaux\owxc\cc\asmmsg.c
+     47|    CErr2p( ERR_ASSEMBLER_ERROR, msgbuf );
+     54|    CErr2p( ERR_ASSEMBLER_ERROR, msg );
+
+File: D2P1:\xosaux\owxc\cc\asmstmt.c
+    123|                    CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+
+File: D2P1:\xosaux\owxc\cc\caux370.c
+     50|    if( token != T_CONSTANT ) CErr1( ERR_NOT_A_CONSTANT_EXPR );
+     88|                    CErr( ERR_EXPECTING_BUT_FOUND, "a aux file name"
+    105|                    CErr1( ERR_EXPECTING_ID );
+    108|                CErr( ERR_EXPECTING_BUT_FOUND, "include, offset or origin",
+    112|            CErr1( ERR_EXPECTING_ID );
+
+File: D2P1:\xosaux\owxc\cc\cdecl1.c
+     85|            CErr1( ERR_NO_EXTERNAL_DEFNS_FOUND );
+    103|        CErr2p( ERR_SYM_ALREADY_DEFINED, sym->name );   /* 03-aug-88 */
+    111|            CErr(ERR_INCOMPLETE_TYPE, sym_name);
+    284|                CErr2p( ERR_MISSING_DATA_TYPE, Buffer );
+    288|            CErr1( ERR_INVALID_STG_CLASS_FOR_PARM );
+    318|                        CErr2p( ERR_SYM_NOT_IN_PARM_LIST, sym.name );
+    320|                        CErr2p( ERR_PARM_ALREADY_DECLARED, sym.name );
+    335|                CErr1( ERR_MISSING_SEMICOLON );
+
+File: D2P1:\xosaux\owxc\cc\cdecl2.c
+     76|    CErr1(ERR_STMT_MUST_BE_INSIDE_FUNCTION);
+    118|    CErr1( ERR_INVALID_DECLARATOR );
+    127|        CErr2p( ERR_MODIFIERS_DISAGREE, new_sym->name );
+    148|            CErr2p( ERR_INCONSISTENT_TYPE, new_sym->name );
+    151|            CErr2p( ERR_INCONSISTENT_TYPE, new_sym->name );
+    176|        CWarn( WARN_NO_RET_TYPE_GIVEN, ERR_NO_RET_TYPE_GIVEN, sym->name );
+    185|            CErr1( ERR_INVALID_STG_CLASS_FOR_FUNC );
+    193|            CErr2p( ERR_SYM_ALREADY_DEFINED, sym->name );
+    201|            CErr2p( ERR_SYM_ALREADY_DEFINED_AS_VAR, sym->name );
+    233|                CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    241|                    CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    250|                        CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    260|                       ERR_FUNCTION_STG_CLASS_REDECLARED, sym->name );
+    313|        CWarn( WARN_NO_STG_OR_TYPE, ERR_NO_STG_OR_TYPE );
+    319|        CWarn( WARN_NO_DATA_TYPE_GIVEN, ERR_NO_DATA_TYPE_GIVEN, sym->name );
+    327|        CErr1( ERR_INVALID_DECLSPEC );
+    335|            CErr1( ERR_INV_STG_CLASS_FOR_GLOBAL );
+    356|                CErr1( ERR_INVALID_DECLARATOR );
+    359|                CErr1( ERR_INVALID_DECLSPEC );
+    391|                    CErr2p( ERR_TYPE_DOES_NOT_AGREE, sym->name );
+    394|                CErr2p( ERR_SYM_ALREADY_DEFINED, sym->name );
+    418|                 CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    424|                     CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    431|                    CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    437|                        CErr2p( ERR_MODIFIERS_DISAGREE, sym->name );
+    475|                    CErrSymName( ERR_STG_CLASS_DISAGREES, sym, sym_handle );
+    479|                CErrSymName( ERR_STG_CLASS_DISAGREES, sym, sym_handle );
+    482|                CErrSymName( ERR_STG_CLASS_DISAGREES, sym, sym_handle );
+    504|            CErr2p( ERR_VAR_CANT_BE_VOID, sym->name );
+    526|                CErr1( ERR_CANT_INITIALIZE_EXTERN_VAR );
+    550|                    CErr1( ERR_INVALID_DECLSPEC );
+    555|                            CErr1( ERR_INVALID_DECLSPEC );
+    573|                        CErr1( ERR_INVALID_DECLSPEC );
+    580|                    CErr1( ERR_INVALID_DECLSPEC );
+    605|       CErr1( ERR_INV_TYPE );
+    646|                 CErr1( ERR_INVALID_DECLSPEC );
+    677|                            CErr2p( ERR_EXPECTING_DECL_BUT_FOUND, ";" );
+    716|                        CErr2p( ERR_EXPECTING_DECL_BUT_FOUND, Tokens[CurToken] );
+    804|        CErr1( ERR_INVALID_STG_CLASS_FOR_LOOP_DECL );
+    811|        CErr1( ERR_NO_TYPE_IN_DECL );
+    945|            CWarn1( WARN_REPEATED_MODIFIER, ERR_REPEATED_MODIFIER );
+    967|                    CErr2p( ERR_UNDECLARED_SYM, Buffer );
+    979|                           CErr1( ERR_SYM_MUST_BE_TYPE_SEGMENT );
+    987|                        CErr1( ERR_SYM_MUST_BE_TYPE_SEGMENT );
+    999|                    CErr1( ERR_INVALID_BASED_DECLARATOR );
+   1006|                    CErr1( ERR_INVALID_BASED_DECLARATOR );
+   1019|                    CErr1( ERR_SEGMENT_NAME_REQUIRED );
+   1030|                    CErr1( ERR_INVALID_BASED_DECLARATOR );
+   1038|                        CErr2p( ERR_UNDECLARED_SYM, Buffer );
+   1051|                    CErr1( ERR_INVALID_BASED_DECLARATOR );
+   1055|                CErr1( ERR_INVALID_BASED_DECLARATOR );
+   1195|                    CErr2p( ERR_MISSING_DATA_TYPE, sym->name );
+   1221|                CErr2p( ERR_DECL_IN_LOOP_NOT_OBJECT, sym->name );
+   1266|                    CErr2p( ERR_MISSING_DATA_TYPE, field->name );
+   1295|            CErr1( ERR_CANT_HAVE_AN_ARRAY_OF_FUNCTIONS );
+   1307|                    CErr1( ERR_CONSTANT_TOO_BIG );
+   1309|                    CErr1( ERR_CONSTANT_TOO_BIG );
+   1316|                CErr1( ERR_INVALID_DIMENSION );
+   1323|                CErr1( ERR_DIMENSION_REQUIRED );
+   1357|                CErr1( ERR_ID_LIST_SHOULD_BE_EMPTY );
+   1360|            CWarn1( WARN_OBSOLETE_FUNC_DECL, ERR_OBSOLETE_FUNC_DECL );
+   1374|            CWarn1( WARN_OBSOLETE_FUNC_DECL, ERR_OBSOLETE_FUNC_DECL );
+   1383|            CErr1( ERR_FUNCTION_CANT_RETURN_AN_ARRAY );
+   1385|            CErr1( ERR_FUNCTION_CANT_RETURN_A_FUNCTION );
+   1418|                        CErr2p( ERR_SYM_ALREADY_DEFINED, name );
+   1483|            CErr1( ERR_INVALID_STG_CLASS_FOR_PARM_PROTO );
+   1489|                CErr1( ERR_TYPE_REQUIRED_IN_PARM_LIST );
+   1510|            CErr2p( ERR_VAR_CANT_BE_VOID, name );
+
+File: D2P1:\xosaux\owxc\cc\cdinit.c
+    154|            CErr1( ERR_INTERNAL_LIMIT_EXCEEDED );
+    297|            CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    573|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+    592|            CErr1( ERR_INVALID_INITIALIZER );
+    598|                CErr1( ERR_INVALID_INITIALIZER );
+    622|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+    728|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+    737|            CErr1( ERR_EXPECTING_ID );
+    742|            CErr( ERR_NAME_NOT_FOUND_IN_STRUCT, Buffer, typ->u.tag->name );
+    902|            CErr1( ERR_EMPTY_INITIALIZER_LIST );
+    916|                CErr1( ERR_NEED_BRACES );
+    935|            CErr1( ERR_NEED_BRACES );
+    949|            CErr1( ERR_NEED_BRACES );
+    988|            CErr1( ERR_TOO_MANY_INITS );
+   1036|        CErr1( ERR_TYPE_MISMATCH );
+   1042|            CWarn1( WARN_LIT_TOO_LONG, ERR_LIT_TOO_LONG );
+   1075|        CErr1( ERR_TYPE_MISMATCH );
+   1083|            CWarn1( WARN_LIT_TOO_LONG, ERR_LIT_TOO_LONG );
+   1136|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+   1432|                    CErr1( ERR_TOO_MANY_INITS );
+   1480|                    CErr1( ERR_TOO_MANY_INITS );
+   1508|            CErrSymName( ERR_VAR_ALREADY_INITIALIZED, sym, sym_handle );
+
+File: D2P1:\xosaux\owxc\cc\cenum.c
+    167|                CErr1(ERR_INCOMPLETE_ENUM_DECL);
+    173|                    CErr2p(ERR_DUPLICATE_TAG, tag->name);
+    211|            CErr1(ERR_EMPTY_ENUM_LIST);
+    308|                CErr( ERR_ENUM_CONSTANT_OUT_OF_RANGE, buff );
+
+File: D2P1:\xosaux\owxc\cc\cerror.c
+     62|    case ERR_INVALID_MEMORY_MODEL:
+     63|    case ERR_INVALID_OPTION:
+     64|    case ERR_INVALID_OPTIMIZATION:
+    187|        CMsgInfo( &info, ERR_TOO_MANY_ERRORS, args1 );
+
+File: D2P1:\xosaux\owxc\cc\cgetch.c
+     87|        CErr( ERR_IO_ERR, srcfcb->src_name, strerror( errno ) );
+    238|            CWarn1( WARN_SPLICE_IN_CPP_COMMENT, ERR_SPLICE_IN_CPP_COMMENT );
+
+File: D2P1:\xosaux\owxc\cc\cinfo.c
+    128|        CErr( ERR_VAR_TOO_LARGE );
+    714|            CWarn( WARN_SYMBOL_NAME_TOO_LONG, ERR_SYMBOL_NAME_TOO_LONG, sym->name );
+    736|        CErr2p( ERR_USER_ERROR_MSG, parm );
+    739|        CErr2p( ERR_FATAL_ERROR, parm );
+    745|        CErr2( ERR_BAD_PARM_REGISTER, (int)parm );
+    748|        CErr2p( ERR_BAD_RETURN_REGISTER, FEName( (CGSYM_HANDLE)parm ) );
+    772|        CErr2( ERR_BACK_END_ERROR, (int)parm );
+    775|        CErr2p( ERR_BAD_SAVE, FEName( (CGSYM_HANDLE)parm ) );
+    778|        CErr2p( ERR_BAD_LINKAGE, FEName( (CGSYM_HANDLE)parm ) );
+    781|        CErr2p( ERR_NO_SEG_REGS, FEName( (CGSYM_HANDLE)parm ) );
+    784|        CErr2p( ERR_BAD_PEG_REG, FEName( (CGSYM_HANDLE)parm ) );
+
+File: D2P1:\xosaux\owxc\cc\cmac1.c
+    485|                CErr( ERR_INCOMPLETE_MACRO, mentry->macro_name );
+    489|                BadTokenInfo == ERR_MISSING_QUOTE ) {
+    490|                CErr1( ERR_MISSING_QUOTE );
+    581|            CErr( ERR_TOO_FEW_MACRO_PARMS, mentry->macro_name );
+    585|                CWarn( WARN_PARM_COUNT_MISMATCH, ERR_TOO_MANY_MACRO_PARMS, mentry->macro_name  );
+    589|                CErr1( ERR_MUST_BE_VAR_PARM_FUNC );
+   1183|                    CErr1( ERR_INVALID_STRING_LITERAL );
+
+File: D2P1:\xosaux\owxc\cc\cmac2.c
+    145|            CErr1( ERR_BREAK_KEY_HIT );
+    209|        CErr2p( ERR_UNKNOWN_DIRECTIVE, Buffer );
+    263|                CErr1( ERR_INVALID_INCLUDE );
+    268|        CErr1( ERR_INVALID_INCLUDE );
+    290|        CErr1( ERR_CANT_DEFINE_DEFINED );
+    322|                    CErr2p( ERR_DUPLICATE_MACRO_PARM, Buffer );
+    334|                CErr1( ERR_INVALID_MACRO_DEFN );
+    391|            CErr1( ERR_MISPLACED_SHARP_SHARP );
+    459|                CErr1( ERR_MUST_BE_MACRO_PARM );
+    475|        CErr1( ERR_MUST_BE_MACRO_PARM );
+    484|        CErr1( ERR_MISPLACED_SHARP_SHARP );
+    591|        CErr1( ERR_MISPLACED_ELIF );
+    639|                CWarn1( WARN_JUNK_FOLLOWS_DIRECTIVE, ERR_JUNK_FOLLOWS_DIRECTIVE );
+    652|        CErr1( ERR_MISPLACED_ELSE );
+    674|        CErr1( ERR_MISPLACED_ENDIF );
+    681|             CWarn( WARN_LEVEL_1, ERR_WEIRD_ENDIF_ENCOUNTER,
+    704|        CErr2p( ERR_CANT_UNDEF_THESE_NAMES, name  );
+    717|            CErr2p( ERR_CANT_UNDEF_THESE_NAMES, name );
+    820|    CErr2p( ERR_USER_ERROR_MSG, Buffer );
+    839|        CErr1( ERR_MISSING_CENDIF );
+
+File: D2P1:\xosaux\owxc\cc\cmacadd.c
+     67|        CErr1( ERR_OUT_OF_MACRO_MEMORY );
+    141|            CErr2p( ERR_MACRO_DEFN_NOT_IDENTICAL, mentry->macro_name );
+
+File: D2P1:\xosaux\owxc\cc\cmath.c
+    790|                CWarn1( WARN_COMPARE_UNSIGNED_VS_ZERO, ERR_COMPARE_UNSIGNED_VS_ZERO );
+    794|                CWarn2( WARN_COMPARE_ALWAYS, ERR_COMPARE_ALWAYS, res );
+    811|                    ERR_POINTER_TYPE_MISMATCH );
+    823|            CErr1( ERR_INVALID_RELOP_FOR_STRUCT_OR_UNION );
+    828|            CErr1( ERR_TYPE_MISMATCH );
+    981|    CWarn1( WARN_LVALUE_CAST, ERR_LVALUE_CAST );
+   1003|                CWarn1( WARN_ADDR_OF_ARRAY, ERR_ADDR_OF_ARRAY );
+   1079|                CErr1( ERR_INCOMPLETE_EXPR_TYPE );
+   1083|                CWarn1( WARN_LVALUE_CAST, ERR_LVALUE_CAST );
+   1088|    CErr1( ERR_MUST_BE_LVALUE );
+   1161|                CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1185|        CErr1( ERR_EXPR_MUST_BE_SCALAR );
+   1192|            CErr1( ERR_CANT_USE_VOID );
+   1214|            CErr2p( ERR_RIGHT_OPERAND_IS_A_POINTER, Tokens[opr] );
+   1219|            CErr1( ERR_CANT_USE_VOID );
+   1271|            CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1276|        CErr1( ERR_EXPR_MUST_BE_ARITHMETIC );
+   1298|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+   1308|            CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1382|            CWarn1( WARN_LVALUE_CAST, ERR_LVALUE_CAST );
+   1384|            CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+   1440|            CErr1( ERR_CANNOT_MODIFY_CONST );
+   1470|        CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1511|            CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1575|                        ERR_POINTER_TYPE_MISMATCH );
+   1581|                CErr1( ERR_MUST_BE_SCALAR_TYPE );
+   1584|                CErr1( ERR_TYPE_MISMATCH );
+   1593|            CErr1( ERR_INVALID_CONVERSION );
+   1603|                                    ERR_POINTER_TRUNCATION );
+   1653|                        ERR_POINTER_TRUNCATION );
+   1766|                CErr1( ERR_EXPR_MUST_BE_ARITHMETIC );
+   1818|            CErr1( ERR_EXPR_MUST_BE_ARITHMETIC );
+   1844|                CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1885|            CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1953|                     ERR_NONPORTABLE_PTR_CONV );
+   1960|                     ERR_NONPORTABLE_PTR_CONV );
+
+File: D2P1:\xosaux\owxc\cc\cmemmgr.c
+    226|            CErr1( ERR_OUT_OF_MEMORY );
+    374|        CErr1( ERR_OUT_OF_MEMORY );
+
+File: D2P1:\xosaux\owxc\cc\cmodel.c
+     95|        CErr1( ERR_NO_MACRO_ID_COMMAND_LINE );
+    153|        CErr1( ERR_CANT_DEFINE_DEFINED );
+
+File: D2P1:\xosaux\owxc\cc\coptions.c
+    886|        OptScanPtr = BadCmdLine( ERR_INVALID_OPTION, OptScanPtr );
+   1860|        p = BadCmdLine( ERR_INVALID_OPTIMIZATION, p );
+   1862|        p = BadCmdLine( ERR_INVALID_OPTION, option_start );
+   2021|                    CErr1( ERR_CAN_ONLY_COMPILE_ONE_FILE );
+   2186|    EnableDisableMessage( 0, ERR_PARM_NOT_REFERENCED );
+   2188|    EnableDisableMessage( 0, ERR_LOSE_PRECISION );
+   2192|    EnableDisableMessage( 0, ERR_OBSOLETE_FUNC_DECL );
+   2195|    EnableDisableMessage( 0, ERR_NONPROTO_FUNC_CALLED );
+   2196|    EnableDisableMessage( 0, ERR_NONPROTO_FUNC_CALLED_INDIRECT );
+
+File: D2P1:\xosaux\owxc\cc\cpragaxp.c
+     58|    CWarn( WARN_ASSEMBLER_WARNING, ERR_ASSEMBLER_WARNING, msg );
+    122|            CErr2p( ERR_UNDECLARED_SYM, reloc->name );
+    174|                CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+    297|        CErr1( ERR_EXPECTING_ID );
+    449|    CErr2p( ERR_BAD_REGISTER_NAME, str );
+
+File: D2P1:\xosaux\owxc\cc\cpragma.c
+    237|                CErr1( ERR_NOT_A_CONSTANT_EXPR );
+    249|        CErr1( ERR_NOT_A_CONSTANT_EXPR );
+    462|                CErr2p( ERR_SYM_ALREADY_DEFINED, CurrEntry->name );
+    577|        CErr1( ERR_TOO_MANY_PARM_SETS );
+   1068|            CErr2p( ERR_UNDECLARED_SYM, Buffer );
+   1080|            CErr2p( ERR_UNDECLARED_SYM, Buffer );
+
+File: D2P1:\xosaux\owxc\cc\cpragmps.c
+     58|    CWarn( WARN_ASSEMBLER_WARNING, ERR_ASSEMBLER_WARNING, msg );
+    122|            CErr2p( ERR_UNDECLARED_SYM, reloc->name );
+    174|                CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+    427|    CErr2p( ERR_BAD_REGISTER_NAME, str );
+
+File: D2P1:\xosaux\owxc\cc\cpragppc.c
+     52|    CWarn( WARN_ASSEMBLER_WARNING, ERR_ASSEMBLER_WARNING, msg );
+    231|    CErr2p( ERR_BAD_REGISTER_NAME, str );
+    286|                CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+
+File: D2P1:\xosaux\owxc\cc\cpragx86.c
+    440|                        CErr2p( ERR_UNDECLARED_SYM, name );
+    482|                    CErr2p( ERR_UNREACHABLE_SYM, name );
+    561|                CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+    645|                    CErr1( ERR_EXPECTING_ID );
+    691|                CErr1( ERR_TOO_MANY_BYTES_IN_PRAGMA );
+    739|        CErr2p( ERR_BAD_REGISTER_NAME, str );
+
+File: D2P1:\xosaux\owxc\cc\cscan.c
+    378|            BadTokenInfo = ERR_INVALID_FLOATING_POINT_CONSTANT;
+    555|/*          CErr1( ERR_INVALID_HEX_CONSTANT );  */
+    558|        BadTokenInfo = ERR_CONSTANT_TOO_BIG;
+    560|            CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    710|            bad_token_type = ERR_INVALID_HEX_CONSTANT;
+    719|                BadTokenInfo = ERR_INVALID_HEX_CONSTANT;
+    721|                    CErr1( ERR_INVALID_HEX_CONSTANT );
+    728|            bad_token_type = ERR_INVALID_OCTAL_CONSTANT;
+    741|                BadTokenInfo = ERR_INVALID_OCTAL_CONSTANT;
+    744|                    CErr1( ERR_INVALID_OCTAL_CONSTANT );
+    749|        bad_token_type = ERR_INVALID_CONSTANT;
+    845|                CErr1( ERR_INVALID_CONSTANT );
+    849|            BadTokenInfo = ERR_CONSTANT_TOO_BIG;
+    851|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    938|            BadTokenInfo = ERR_CONSTANT_TOO_BIG;
+    940|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+   1197|                             ERR_NESTED_COMMENT, CommentLoc.line );
+   1227|        BadTokenInfo = ERR_INV_CHAR_CONSTANT;
+   1252|                            BadTokenInfo = ERR_CONSTANT_TOO_BIG;
+   1255|                                         ERR_CONSTANT_TOO_BIG );
+   1315|        BadTokenInfo = ERR_INV_CHAR_CONSTANT;
+   1319|            BadTokenInfo = ERR_INVALID_HEX_CONSTANT;
+   1358|                    CWarn1( WARN_MISSING_QUOTE, ERR_MISSING_QUOTE );
+   1361|                    CErr1( ERR_MISSING_QUOTE );
+   1400|        CWarn1( WARN_LEVEL_1, ERR_EXPANDED_TRIGRAPH );
+   1406|    BadTokenInfo = ERR_MISSING_QUOTE;
+
+File: D2P1:\xosaux\owxc\cc\cstmt.c
+     94|        CWarn1( WARN_USEFUL_SIDE_EFFECT, ERR_USEFUL_SIDE_EFFECT );
+     96|        CWarn1( WARN_MEANINGLESS, ERR_MEANINGLESS );
+    335|            CErr2p( ERR_LABEL_ALREADY_DEFINED, label->name );
+    346|            CErr1( ERR_STMT_REQUIRED_AFTER_LABEL );
+    397|        CErr1( ERR_INCONSISTENT_USE_OF_RETURN );
+    434|                ERR_MISSING_RETURN_VALUE, CurFunc->name );
+    468|    CWarn1( WARN_DEAD_CODE, ERR_DEAD_CODE );
+    547|        CErr1( ERR_MISPLACED_BREAK );
+    568|        CErr1( ERR_MISPLACED_LEAVE );
+    601|        CErr1( ERR_MISPLACED_CONTINUE );
+    616|            CErr1( ERR_ONLY_1_DEFAULT );
+    619|            CErr1( ERR_STMT_REQUIRED_AFTER_DEFAULT );
+    622|        CErr1( ERR_MISPLACED_DEFAULT );
+    651|        CErr1( ERR_EXPECTING_LABEL );
+    792|        CErr2p( ERR_DUPLICATE_CASE_VALUE, buffer );
+    836|                CErr1( ERR_CONSTANT_TOO_BIG );
+    838|                CErr1( ERR_CONSTANT_TOO_BIG );
+    844|            CErr1( ERR_STMT_REQUIRED_AFTER_CASE );
+    847|        CErr1( ERR_MISPLACED_CASE );
+    935|                CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1028|        CErr1( ERR_INVALID_TYPE_FOR_SWITCH );
+   1052|//          CWarn1( WARN_EMPTY_SWITCH, ERR_EMPTY_SWITCH );
+   1288|                    CWarn1( WARN_MEANINGLESS, ERR_MEANINGLESS );
+   1297|                CErr1( ERR_STMT_REQUIRED_AFTER_DO );
+   1371|                CErr1( ERR_MISPLACED_RIGHT_BRACE );
+   1393|                CErr1( ERR_UNEXPECTED_DECLARATION );
+   1395|                CErr1( ERR_MISSING_RIGHT_BRACE );
+   1398|            CErr1( ERR_MISSING_RIGHT_BRACE );
+   1437|                    ERR_MISSING_RETURN_VALUE, CurFunc->name );
+
+File: D2P1:\xosaux\owxc\cc\cstring.c
+    101|        CErr2p( ERR_CANT_OPEN_FILE, filename );
+    236|            CErr1( ERR_INVALID_HEX_CONSTANT );
+
+File: D2P1:\xosaux\owxc\cc\ctype.c
+     48|            CErr1( ERR_MAX_STRUCT_SIZE_IS_64K );\
+    297|        if( flags & bit )  CErr1( ERR_REPEATED_MODIFIER );       /* 24-mar-91 */
+    388|        CErr1( ERR_INV_TYPE );
+    453|                CErr1( ERR_REPEATED_MODIFIER );
+    458|                CErr1( ERR_REPEATED_MODIFIER );
+    464|                CErr1( ERR_REPEATED_MODIFIER );
+    469|                CErr1( ERR_REPEATED_MODIFIER );
+    478|                CErr1( ERR_REPEATED_MODIFIER );
+    498|                CErr1( ERR_INV_TYPE );
+    504|                CErr1( ERR_INV_TYPE );
+    510|                CErr1( ERR_INV_TYPE );
+    560|                            CErr1( ERR_INVALID_DECLARATOR );
+    573|                                CErr1( ERR_INVALID_DECLSPEC );
+    578|                            CErr1( ERR_INVALID_DECLSPEC );
+    584|                                CErr1( ERR_INVALID_DECLSPEC );
+    589|                        CErr1( ERR_INVALID_DECLSPEC );
+    594|                            CErr1( ERR_INVALID_DECLSPEC );
+    627|                CErr1( ERR_INV_TYPE );
+    637|                    CErr1( ERR_INVALID_DECLSPEC );
+    642|                    CErr1( ERR_INVALID_DECLSPEC );
+    654|                CErr1( ERR_TOO_MANY_STORAGE_CLASS_SPECIFIERS );
+    664|                CErr1( ERR_INV_TYPE );
+    675|        if( bmask != 0 )  CErr1( ERR_INV_TYPE );  // picked up an int
+    742|            CErr2p( ERR_DUPLICATE_TAG, tag->name );
+    766|            CErr1( ERR_INVALID_DECLARATOR );
+    770|        CErr1( ERR_STRUCT_OR_UNION_INSIDE_ITSELF );
+    776|            CErr( ERR_INCOMPLETE_TYPE, (SYM_NAMEPTR)(new_field->name) );
+    789|                CErr2p( ERR_DUPLICATE_FIELD_NAME, field->name );
+    801|            CErr( ERR_INCOMPLETE_TYPE, (SYM_NAMEPTR)(prev_field->name) );
+    892|                    ERR_SLACK_ADDED, (next_offset - old_offset) );
+    968|                    CErr1( ERR_INVALID_DECLSPEC );
+    974|            CErr1( ERR_INVALID_DECLSPEC );
+   1015|            CErr2p( ERR_MISSING_DATA_TYPE, Buffer );
+   1047|                    CErr1( ERR_WIDTH_0 );
+   1050|                    CErr1( ERR_FIELD_TOO_WIDE );
+   1053|                    CErr1( ERR_WIDTH_NEGATIVE );
+   1096|                    ERR_MISSING_LAST_SEMICOLON );
+   1155|                    CErr2p( ERR_DUPLICATE_TAG, tag->name );
+   1311|    CErr1( ERR_INVALID_TYPE_FOR_FIELD );
+   1324|        CErr2p( ERR_SYM_ALREADY_DEFINED, name );
+   1332|            CErr2p( ERR_SYM_ALREADY_DEFINED, name );
+
+File: D2P1:\xosaux\owxc\cc\cutil.c
+     81|        CErr( ERR_EXPECTING_BUT_FOUND_END_OF_FILE, a_token );
+     83|        CErr( ERR_EXPECTING_BUT_FOUND, a_token, NameOfToken() );
+     90|        CErr( ERR_EXPECTING_AFTER_BUT_FOUND_END_OF_FILE, a_token, after_token );
+     92|        CErr( ERR_EXPECTING_AFTER_BUT_FOUND, a_token, after_token, NameOfToken() );
+     99|    CErr( ERR_EXPECTING_END_OF_LINE_BUT_FOUND, NameOfToken() );
+    104|    CErr( ERR_EXPECTING_IDENTIFIER_BUT_FOUND, NameOfToken() );
+    109|    CErr( ERR_EXPECTING_CONSTANT_BUT_FOUND, NameOfToken() );
+    114|    CErr( ERR_EXPECTING_STRING_BUT_FOUND, NameOfToken() );
+    119|    CErr( ERR_EXPECTING_STRUCT_UNION_TAG_BUT_FOUND, NameOfToken() );
+
+File: D2P1:\xosaux\owxc\cc\wccdlldr.c
+     65|    retcode = IDEDRV_ERR_RUN_FATAL;
+     73|          case IDEDRV_ERR_RUN :
+     74|          case IDEDRV_ERR_RUN_EXEC :
+     75|          case IDEDRV_ERR_RUN_FATAL :
+
+File: D2P1:\xosaux\owxc\cc\ccheck.c
+    148|                    CErr2( ERR_PARM_TYPE_MISMATCH, parm_count );
+    157|                    CErr2( ERR_PARM_TYPE_MISMATCH, parm_count );
+    165|                CErr2( ERR_PARM_TYPE_MISMATCH, parm_count );
+    248|                    CErr1( ERR_PARM_COUNT_MISMATCH );
+    255|                    CErr2( ERR_PARM_TYPE_MISMATCH, parm_count );
+    337|                    CWarn1( WARN_PCTYPE_MISMATCH, ERR_PCTYPE_MISMATCH );
+    373|                    CWarn1( WARN_PCTYPE_MISMATCH, ERR_PCTYPE_MISMATCH );
+    543|            CWarn1( WARN_QUALIFIER_MISMATCH, ERR_QUALIFIER_MISMATCH );
+    548|        CWarn1( WARN_POINTER_TYPE_MISMATCH, ERR_POINTER_TYPE_MISMATCH );
+    551|        CWarn1( WARN_SIGN_MISMATCH, ERR_SIGN_MISMATCH );
+    555|                    ERR_INCONSISTENT_INDIRECTION_LEVEL );
+    558|        CWarn1( WARN_PCTYPE_MISMATCH, ERR_PCTYPE_MISMATCH );
+    614|                CErr2( ERR_PARM_TYPE_MISMATCH, parm_num );
+    619|                        ERR_PARM_QUALIFIER_MISMATCH, parm_num );
+    624|                        ERR_PARM_POINTER_TYPE_MISMATCH, parm_num );
+    628|                        ERR_PARM_SIGN_MISMATCH, parm_num );
+    632|                        ERR_PARM_INCONSISTENT_INDIRECTION_LEVEL, parm_num );
+    637|                        CErr2( ERR_PARM_TYPE_MISMATCH, parm_num );
+    640|                                ERR_NONPORTABLE_PTR_CONV );
+    645|                             ERR_PARM_POINTER_TYPE_MISMATCH, parm_num );
+    647|                        CErr2( ERR_PARM_TYPE_MISMATCH, parm_num );
+    668|            CWarn1( WARN_PARM_COUNT_MISMATCH, ERR_PARM_COUNT_WARNING );
+    672|        CErr1( ERR_PARM_COUNT_MISMATCH );           /* 18-feb-90 */
+    733|                            ERR_NONPROTO_FUNC_CALLED_INDIRECT );
+    736|                            ERR_NONPROTO_FUNC_CALLED, SymName( &sym, callsite->op.sym_handle ) );
+    760|                    CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    767|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    773|                    CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    785|                    CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    797|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    806|                CWarn1( WARN_CONSTANT_TOO_BIG, ERR_CONSTANT_TOO_BIG );
+    850|            CErr1( ERR_TYPE_MISMATCH );
+    852|            CErr2( ERR_PARM_TYPE_MISMATCH, parm_num );
+    856|        CWarn1( WARN_POINTER_TRUNCATION, ERR_POINTER_TRUNCATION );
+    860|            CWarn1( WARN_POINTER_TYPE_MISMATCH,ERR_POINTER_TYPE_MISMATCH );
+    866|                CWarn1( WARN_QUALIFIER_MISMATCH, ERR_QUALIFIER_MISMATCH );
+    869|                        ERR_PARM_QUALIFIER_MISMATCH, parm_num );
+    875|            CWarn1( WARN_POINTER_TYPE_MISMATCH, ERR_POINTER_TYPE_MISMATCH );
+    878|                    ERR_PARM_POINTER_TYPE_MISMATCH, parm_num );
+    883|            CWarn1( WARN_SIGN_MISMATCH, ERR_SIGN_MISMATCH );
+    886|                    ERR_PARM_SIGN_MISMATCH, parm_num );
+    892|                    ERR_INCONSISTENT_INDIRECTION_LEVEL );
+    895|                    ERR_PARM_INCONSISTENT_INDIRECTION_LEVEL, parm_num );
+    902|                         ERR_NONPORTABLE_PTR_CONV );
+    905|            CWarn1( WARN_PCTYPE_MISMATCH, ERR_PCTYPE_MISMATCH );
+    914|                CWarn1( WARN_LOSE_PRECISION, ERR_LOSE_PRECISION );
+    917|                CWarn1( WARN_LOSE_PRECISION, ERR_LOSE_PRECISION );
+    934|        CErr1( ERR_TYPE_MISMATCH );
+    938|        CWarn1( WARN_POINTER_TRUNCATION, ERR_POINTER_TRUNCATION );
+    942|            CWarn1( WARN_QUALIFIER_MISMATCH,ERR_QUALIFIER_MISMATCH );
+    946|        CWarn1( WARN_POINTER_TYPE_MISMATCH, ERR_POINTER_TYPE_MISMATCH );
+    949|        CWarn1( WARN_SIGN_MISMATCH, ERR_SIGN_MISMATCH );
+    953|                 ERR_INCONSISTENT_INDIRECTION_LEVEL );
+    956|        CWarn1( WARN_PCTYPE_MISMATCH, ERR_PCTYPE_MISMATCH );
+    974|        CErr2p( ERR_NOT_EXPECTING_RETURN_VALUE, CurFunc->name );
+    977|            CWarn1( WARN_RET_ADDR_OF_AUTO, ERR_RET_ADDR_OF_AUTO );
+   1003|        CErr2p( ERR_TYPE_DOES_NOT_AGREE, sym->name );
+   1006|        CErr1( ERR_PARM_COUNT_MISMATCH );
+   1011|        CErr2( ERR_PARM_TYPE_MISMATCH, rc - TC_PARM_TYPE_MISMATCH );
+
+File: D2P1:\xosaux\owxc\cc\cexpr.c
+     98|        CErr1( ERR_INCOMPLETE_EXPR_TYPE );
+    375|                CErr2p( ERR_CANT_USE_TYPEDEF_AS_VAR, SavedId );
+    404|                CErr2p( ERR_CANT_USE_TYPEDEF_AS_VAR, Buffer );
+    418|            CWarn( WARN_ASSUMED_IMPORT, ERR_ASSUMED_IMPORT, sym.name );
+    424|            CErr2p( ERR_UNDECLARED_SYM, sym.name );
+    518|            CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+    526|            CErr1( ERR_EXPR_HAS_VOID_TYPE );
+    551|                CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+    576|        CErr1( ERR_INCOMPLETE_EXPR_TYPE );
+    597|                                ERR_SYM_NOT_ASSIGNED,
+    679|        CErr1( ERR_CANT_TAKE_ADDR_OF_BIT_FIELD );
+    682|        CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+    688|            CWarn1( WARN_LVALUE_CAST, ERR_LVALUE_CAST );
+    690|            CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+    721|            CErr1( ERR_CANT_TAKE_ADDR_OF_REGISTER );
+    749|        CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+    907|        CErr1( ERR_EXPR_MUST_BE_POINTER_TO );
+    988|        CErr1( ERR_EXPECTING_ID );
+    997|        CErr1( ERR_MUST_BE_STRUCT_OR_UNION );
+   1004|        CErr( ERR_NAME_NOT_FOUND_IN_STRUCT, Buffer, typ->u.tag->name );
+   1040|        CErr1( ERR_EXPECTING_ID );
+   1048|        CErr1( ERR_MUST_BE_PTR_TO_STRUCT_OR_UNION );
+   1061|        CErr( ERR_NAME_NOT_FOUND_IN_STRUCT, Buffer, typ->u.tag->name );
+   1121|        CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1127|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+   1143|        CErr1( ERR_CONSTANT_TOO_BIG );
+   1145|        CErr1( ERR_CONSTANT_TOO_BIG );
+   1360|                        CErr1( ERR_PARM_COUNT_MISMATCH );
+   1378|            CErr1( ERR_UNEXPECTED_RIGHT_PAREN );
+   1419|                                ERR_USEFUL_SIDE_EFFECT );
+   1421|                        CWarn1( WARN_MEANINGLESS, ERR_MEANINGLESS );
+   1451|            CErr1( ERR_EXPR_TOO_COMPLICATED );
+   1503|                CErr1( ERR_NO_SIZEOF_DURING_PP );
+   1538|                    CErr1( ERR_OPND_OF_BUILTIN_ISFLOAT_MUST_BE_TYPE );
+   1557|                    CErr1( ERR_NO_CAST_DURING_PP );
+   1619|                CErr1( ERR_MISSING_OPERAND );
+   1670|//              CWarn( WARN_UNDECLARED_PP_SYM, ERR_UNDECLARED_PP_SYM, Buffer);
+   1725|//      CErr1( ERR_CANT_TAKE_ADDR_OF_RVALUE );
+   1731|        CErr1( ERR_EXPR_MUST_BE_INTEGRAL );
+   1736|        CWarn1( WARN_PLAIN_CHAR_SUBSCRIPT, ERR_PLAIN_CHAR_SUBSCRIPT );
+   1749|        CErr2p( ERR_FATAL_ERROR, "Bad array index tree" );
+   1810|            CErr1( ERR_EXPR_MUST_BE_ARRAY );
+   1881|                CWarn1( WARN_PARM_COUNT_MISMATCH, ERR_PARM_COUNT_WARNING );
+   1883|                CErr1( ERR_PARM_COUNT_MISMATCH );           /* 18-feb-90 */
+   1886|            CErr1( ERR_PARM_COUNT_MISMATCH );               /* 18-feb-90 */
+   2011|            CErr2p( ERR_SYM_NOT_IN_PARM_LIST,
+   2297|            CErr1( ERR_NOT_A_CONSTANT_EXPR );
+   2312|        CErr1( ERR_NOT_A_FUNCTION );
+   2380|                    CErr1( ERR_PARM_COUNT_MISMATCH );
+   2435|                        ERR_ASSIGNMENT_IN_BOOL_EXPR );
+   2441|            CErr1( ERR_EXPR_MUST_BE_SCALAR );
+   2503|                        ERR_ASSIGNMENT_IN_BOOL_EXPR );
+   2523|        CErr1( ERR_MISSING_QUESTION_OR_MISPLACED_COLON );
+   2557|            CErr1( ERR_TYPE_MISMATCH );
+   2619|        CErr1( ERR_EXPR_MUST_BE_SCALAR );
+   2639|        CErr1( ERR_EXPR_MUST_BE_SCALAR );
+   2653|        CErr1( ERR_CANT_TAKE_SIZEOF_FIELD );
+   2659|            CErr1( ERR_EXPR_HAS_VOID_TYPE );
+   2662|            CErr1( ERR_INCOMPLETE_EXPR_TYPE );
+
+File: D2P1:\xosaux\owxc\cc\cfold.c
+   1203|                CWarn1( WARN_SHIFT_AMOUNT_NEGATIVE, ERR_SHIFT_AMOUNT_NEGATIVE );
+   1205|                CWarn1( WARN_SHIFT_AMOUNT_TOO_BIG, ERR_SHIFT_AMOUNT_TOO_BIG );
+   1242|                CWarn1( WARN_DIV_BY_ZERO, ERR_DIV_BY_ZERO );
+
+File: D2P1:\xosaux\owxc\cc\ccmain.c
+    154|            CGetMsg( msgtxt, ERR_FATAL_ERROR );
+    338|            CErr1( ERR_FILENAME_REQUIRED );
+    459|    CGetMsg( msgtxt, ERR_CANT_OPEN_FILE );
+    551|    return( CreateFileName( ErrorFileName, ERR_EXT, FALSE ) );
+    817|        CErr2p( ERR_CANT_OPEN_FILE, filename );
+    841|        CErr( ERR_INCOMPLETE_COMMENT, CommentLoc.line );
+    849|        CWarn1( WARN_NO_EOL_BEFORE_EOF, ERR_NO_EOL_BEFORE_EOF );
+    891|    CErr1( ERR_OUT_OF_MEMORY );
+    925|        CErr2( ERR_INCDEPTH, MAX_INC_DEPTH );
+
+File: D2P1:\xosaux\owxc\cc\csym.c
+    262|        CErr1( ERR_INTERNAL_LIMIT_EXCEEDED );
+    533|                                ERR_PARM_NOT_REFERENCED, name );
+    536|                                ERR_SYM_NOT_REFERENCED, name );
+    544|                            ERR_SYM_NOT_ASSIGNED, name );
+    572|                    CErr(ERR_INCOMPLETE_TYPE, name);
+    588|                            ERR_SYM_NOT_REFERENCED, name );
+    600|                        CErr( ERR_FUNCTION_NOT_DEFINED, name );
+    617|                        ERR_ADDR_OF_STATIC_FUNC_TAKEN, name );
+    660|            CErr( ERR_DUPLICATE_ID, name, new->xname );
+    973|            CErr2p( ERR_UNDEFINED_LABEL, label->name );
+    976|                    ERR_UNREFERENCED_LABEL, label->name );
+
+File: D2P1:\xosaux\owxc\cf\cfdiv.c
+    149|        result->exp     = CF_ERR_EXP;           // Return error-type.
+
+File: D2P1:\xosaux\owxc\watcom\idedrv.c
+    424|                    retcode = IDEDRV_ERR_INFO_EXEC;
+    427|                retcode = IDEDRV_ERR_INIT_EXEC;
+    466|                                retcode = IDEDRV_ERR_INFO_EXEC;
+    469|                            retcode = IDEDRV_ERR_INFO;
+    472|                        retcode = IDEDRV_ERR_INIT_EXEC;
+    475|                    retcode = IDEDRV_ERR_INIT;
+    482|            retcode = IDEDRV_ERR_LOAD;
+    496|        retcode = IDEDRV_ERR_RUN_FATAL;
+    498|        retcode = IDEDRV_ERR_RUN_EXEC;
+    570|                if( retcode == IDEDRV_ERR_RUN_FATAL ) {
+    575|                retcode = IDEDRV_ERR_RUN;
+    586|                retcode = IDEDRV_ERR_RUN;
+    648|                if( retcode == IDEDRV_ERR_RUN_FATAL ) {
+    653|                retcode = IDEDRV_ERR_RUN;
+    664|                retcode = IDEDRV_ERR_RUN;
+    702|            retcode = IDEDRV_ERR_UNLOAD;
+    757|        if( retcode <= 0 || retcode >= IDEDRV_ERR_MAXIMUM ) {
+362 files were searched and 499 matches were found in 35 files

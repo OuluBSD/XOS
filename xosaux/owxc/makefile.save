@@ -1,0 +1,175 @@
+.M86.OBJ:
+	XMAC $(@DPN)
+
+.C.OBJ:
+	owxc /hc /d2 /i=inc\ /i=inc\wasm\ /zq /6s /w3 /we \
+		/fpi87 /fp3 /s /mf /za99 /ze /oarfkht /d__INLINE_FUNCTIONS__ \
+		/fo=ccobj\ /nm=$(@N) $(*DPN).c
+
+#	owxc /hc /d2 /i=inc\ /i=inc\wasm\ /i=xosinc:\owxc\ /zq /6s /w3 /we \
+#		/fpi87 /fp3 /s /mf /zc /zp4 /zpw /za99 /ze /oarfkht \
+#		/DNDEBUG /nm=$(@N) $(*DPN).c
+
+owxcx.run:	ccobj\ascii.obj ccobj\asmstmt.obj ccobj\ccheck.obj \
+		ccobj\ccmain.obj ccobj\cdata.obj ccobj\cdebug.obj \
+		ccobj\cdecl1.obj ccobj\cdecl2.obj ccobj\cdinit.obj \
+		ccobj\cdump.obj ccobj\cems.obj ccobj\cenum.obj \
+		ccobj\cerror.obj ccobj\cfeinfo.obj ccobj\cinfo.obj \
+		ccobj\cmac1.obj ccobj\cmac2.obj ccobj\cmemmgr.obj \
+		ccobj\cmodel.obj ccobj\cmsg.obj ccobj\cname.obj \
+		ccobj\coptions.obj ccobj\caux.obj ccobj\cpragma.obj \
+		ccobj\cpurge.obj ccobj\cscan.obj ccobj\csizeof.obj \
+		ccobj\cstats.obj ccobj\cstring.obj ccobj\csym.obj \
+		ccobj\ctimepc.obj ccobj\ctoken.obj ccobj\ctype.obj \
+		ccobj\cusage.obj ccobj\cutil.obj ccobj\ftoa.obj \
+		ccobj\strsave.obj ccobj\swchar.obj ccobj\watcom.obj \
+		ccobj\cgetch.obj ccobj\cmacadd.obj ccobj\asmalloc.obj \
+		ccobj\asmmsg.obj ccobj\jis2unic.obj ccobj\pchdr.obj \
+		ccobj\dwarf.obj ccobj\browsio.obj ccobj\intlload.obj \
+		ccobj\autodept.obj ccobj\cexpr.obj ccobj\cfold.obj \
+		ccobj\cmath.obj ccobj\cstmt.obj ccobj\cgen.obj \
+		ccobj\cgendata.obj ccobj\exprtree.obj ccobj\treewalk.obj \
+		ccobj\mngless.obj ccobj\asmins.obj ccobj\asmscan.obj \
+		ccobj\asmline.obj ccobj\asmsym.obj ccobj\tbyte.obj \
+		ccobj\asmlabel.obj ccobj\asmfixup.obj ccobj\asmmatch.obj \
+		ccobj\asmdata.obj ccobj\asmjump.obj ccobj\asmexpnd.obj \
+		ccobj\asmeval.obj ccobj\cpragx86.obj ccobj\prag386.obj \
+		ccobj\cintmain.obj ccobj\setdbchar.obj ccobj\strtod.obj \
+		ccobj\ldcvt.obj ccobj\inf_nan.obj ccobj\ldclass.obj \
+		ccobj\hugeval.obj ccobj\seterrno.obj libs\bufld386.obj \
+		libs\dw.obj libs\cg386.obj libs\cg386lnx.obj libs\cf.obj
+#	gecko \xossrc\xlink\xxlink newlib:xos\defsegs \
+	xlink newlib:xos\defsegs \
+		ccobj\ascii ccobj\asmstmt ccobj\ccheck \
+		ccobj\ccmain ccobj\cdata ccobj\cdebug \
+		ccobj\cdecl1 ccobj\cdecl2 ccobj\cdinit \
+		ccobj\cdump ccobj\cems ccobj\cenum \
+		ccobj\cerror ccobj\cfeinfo ccobj\cinfo \
+		ccobj\cmac1 ccobj\cmac2 ccobj\cmemmgr \
+		ccobj\cmodel ccobj\cmsg ccobj\cname \
+		ccobj\coptions ccobj\caux ccobj\cpragma \
+		ccobj\cpurge ccobj\cscan ccobj\csizeof \
+		ccobj\cstats ccobj\cstring ccobj\csym \
+		ccobj\ctimepc ccobj\ctoken ccobj\ctype \
+		ccobj\cusage ccobj\cutil ccobj\ftoa \
+		ccobj\strsave ccobj\swchar ccobj\watcom \
+		ccobj\cgetch ccobj\cmacadd ccobj\asmalloc \
+		ccobj\asmmsg ccobj\jis2unic ccobj\pchdr \
+		ccobj\dwarf ccobj\browsio ccobj\intlload \
+		ccobj\autodept ccobj\cexpr ccobj\cfold \
+		ccobj\cmath ccobj\cstmt ccobj\cgen \
+		ccobj\cgendata ccobj\exprtree ccobj\treewalk \
+		ccobj\mngless ccobj\asmins ccobj\asmscan \
+		ccobj\asmline ccobj\asmsym ccobj\tbyte \
+		ccobj\asmlabel ccobj\asmfixup ccobj\asmmatch \
+		ccobj\asmdata ccobj\asmjump ccobj\asmexpnd \
+		ccobj\asmeval ccobj\cpragx86 ccobj\prag386 \
+		ccobj\cintmain ccobj\setdbchar ccobj\strtod \
+		ccobj\ldcvt ccobj\inf_nan ccobj\ldclass \
+		ccobj\hugeval ccobj\seterrno libs\bufld386 \
+		libs\dw libs\cg386 libs\cg386lnx libs\cf \
+		libs\dw libs\cg386 libs\cg386lnx libs\cf \
+		libs\dw libs\cg386 libs\cg386lnx libs\cf \
+		newlib:\xos\libc01 \
+		/output=owxcx /map=owxcx /sym=owxcx
+	copy /over owxcx.run NEWCMD:owxc.run
+
+# reference DumpTree_, DumpCurrLoop_, DumpInsList_, DumpString_, DumpOpt_,
+#	DumpOpcodeName_, DumpRegTree_, DumpSc_, DumpADataDag_, DumpGen_,
+#	Dumpan_, DumpBlk_, DumpConflicts_
+
+ccobj\ascii.obj:	cc\ascii.c
+ccobj\asmstmt.obj:	cc\asmstmt.c
+ccobj\ccheck.obj:	cc\ccheck.c
+ccobj\ccmain.obj:	cc\ccmain.c
+ccobj\cdata.obj:	cc\cdata.c
+ccobj\cdebug.obj:	cc\cdebug.c
+ccobj\cdecl1.obj:	cc\cdecl1.c
+ccobj\cdecl2.obj:	cc\cdecl2.c
+ccobj\cdinit.obj:	cc\cdinit.c
+ccobj\cdump.obj:	cc\cdump.c
+ccobj\cems.obj:		cc\cems.c
+ccobj\cenum.obj:	cc\cenum.c
+ccobj\cerror.obj:	cc\cerror.c
+ccobj\cfeinfo.obj:	cc\cfeinfo.c
+ccobj\cinfo.obj:	cc\cinfo.c
+ccobj\cmac1.obj:	cc\cmac1.c
+ccobj\cmac2.obj:	cc\cmac2.c
+ccobj\cmemmgr.obj:	cc\cmemmgr.c
+ccobj\cmodel.obj:	cc\cmodel.c
+ccobj\cmsg.obj:		cc\cmsg.c
+ccobj\cname.obj:	cc\cname.c
+ccobj\coptions.obj:	cc\coptions.c
+ccobj\caux.obj:		cc\caux.c
+ccobj\cpragma.obj:	cc\cpragma.c
+ccobj\cpurge.obj:	cc\cpurge.c
+ccobj\cscan.obj:	cc\cscan.c
+ccobj\csizeof.obj:	cc\csizeof.c
+ccobj\cstats.obj:	cc\cstats.c
+ccobj\cstring.obj:	cc\cstring.c
+ccobj\csym.obj:		cc\csym.c
+ccobj\ctimepc.obj:	cc\ctimepc.c
+ccobj\ctoken.obj:	cc\ctoken.c
+ccobj\ctype.obj:	cc\ctype.c
+ccobj\cusage.obj:	cc\cusage.c
+ccobj\cutil.obj:	cc\cutil.c
+ccobj\ftoa.obj:		cc\ftoa.c
+ccobj\strsave.obj:	cc\strsave.c
+ccobj\swchar.obj:	watcom\swchar.c
+ccobj\watcom.obj:	cc\watcom.c
+ccobj\cgetch.obj:	cc\cgetch.c
+ccobj\cmacadd.obj:	cc\cmacadd.c
+ccobj\asmalloc.obj:	cc\asmalloc.c
+ccobj\asmmsg.obj:	cc\asmmsg.c
+ccobj\jis2unic.obj:	cc\jis2unic.c
+ccobj\pchdr.obj:	cc\pchdr.c
+ccobj\dwarf.obj:	cc\dwarf.c
+ccobj\browsio.obj:	cc\browsio.c
+ccobj\intlload.obj:	cc\intlload.c
+ccobj\autodept.obj:	watcom\autodept.c
+ccobj\cexpr.obj:	cc\cexpr.c
+ccobj\cfold.obj:	cc\cfold.c
+ccobj\cmath.obj:	cc\cmath.c
+ccobj\cstmt.obj:	cc\cstmt.c
+ccobj\cgen.obj:		cc\cgen.c
+ccobj\cgendata.obj:	cc\cgendata.c
+ccobj\exprtree.obj:	cc\exprtree.c
+ccobj\treewalk.obj:	cc\treewalk.c
+ccobj\mngless.obj:	watcom\mngless.c
+ccobj\asmins.obj:	cc\asmins.c
+ccobj\asmscan.obj:	cc\asmscan.c
+ccobj\asmline.obj:	cc\asmline.c
+ccobj\asmsym.obj:	cc\asmsym.c
+ccobj\tbyte.obj:	cc\tbyte.c
+ccobj\asmlabel.obj:	cc\asmlabel.c
+ccobj\asmfixup.obj:	cc\asmfixup.c
+ccobj\asmmatch.obj:	cc\asmmatch.c
+ccobj\asmdata.obj:	cc\asmdata.c
+ccobj\asmjump.obj:	cc\asmjump.c
+ccobj\asmexpnd.obj:	cc\asmexpnd.c
+ccobj\asmeval.obj:	cc\asmeval.c
+ccobj\cpragx86.obj:	cc\cpragx86.c
+ccobj\prag386.obj:	cc\prag386.c
+ccobj\cintmain.obj:	cc\cintmain.c
+ccobj\setdbchar.obj:	cc\setdbchar.c
+ccobj\strtod.obj:	mathlib\strtod.c
+ccobj\ldcvt.obj:	cc\ldcvt.c
+ccobj\inf_nan.obj:	cc\inf_nan.c
+ccobj\ldclass.obj:	cc\ldclass.c
+ccobj\hugeval.obj:	cc\hugeval.c
+ccobj\seterrno.obj:	cc\seterrno.c
+
+#dw.obj
+#cg386.obj
+#cg386lnx.obj
+#cf.obj
+
+
+test.run:	test.obj
+	xlink newlib:xos\defsegs test newlib:\xos\libc01 \
+		/output=test /map=test /sym=test
+
+test.obj:	test.c
+	gecko owxcx /hc /d2 /i=inc\ /i=inc\wasm\ /zq /6s /w3 /we /j \
+		/fpi87 /fp3 /s /mf /za99 /ze /d__INLINE_FUNCTIONS__ \
+		/DNDEBUG /nm=$(@N) $(*DPN).c

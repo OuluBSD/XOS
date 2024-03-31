@@ -1,0 +1,85 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: libjpeg - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\WINDOWS\TEMP\RSPF130.TMP" with contents
+[
+/nologo /MLd /W3 /Gm /GX /ZI /Od /D "WIN32" /D "_DEBUG" /D "_MBCS" /D "_LIB" /Fp"Debug/libjpeg.pch" /YX /Fo"Debug/" /Fd"Debug/" /FD /GZ /c 
+"D:\jpeg\libjpeg\jdapimin.c"
+]
+Creating command line "cl.exe @C:\WINDOWS\TEMP\RSPF130.TMP" 
+Creating temporary file "C:\WINDOWS\TEMP\RSPF131.TMP" with contents
+[
+/nologo /out:"Debug\libjpeg.lib" 
+.\Debug\cdjpeg.obj
+.\Debug\djpeg.obj
+.\Debug\jcapimin.obj
+.\Debug\jcapistd.obj
+.\Debug\jccoefct.obj
+.\Debug\jccolor.obj
+.\Debug\jcdctmgr.obj
+.\Debug\jchuff.obj
+.\Debug\jcinit.obj
+.\Debug\jcmainct.obj
+.\Debug\jcmarker.obj
+.\Debug\jcmaster.obj
+.\Debug\jcomapi.obj
+.\Debug\jcparam.obj
+.\Debug\jcphuff.obj
+.\Debug\jcprepct.obj
+.\Debug\jcsample.obj
+.\Debug\jctrans.obj
+.\Debug\jdapimin.obj
+.\Debug\jdapistd.obj
+.\Debug\jdatadst.obj
+.\Debug\jdatasrc.obj
+.\Debug\jdcoefct.obj
+.\Debug\jdcolor.obj
+.\Debug\jddctmgr.obj
+.\Debug\jdhuff.obj
+.\Debug\jdinput.obj
+.\Debug\jdmainct.obj
+.\Debug\jdmarker.obj
+.\Debug\jdmaster.obj
+.\Debug\jdmerge.obj
+.\Debug\jdphuff.obj
+.\Debug\jdpostct.obj
+.\Debug\jdsample.obj
+.\Debug\jdtrans.obj
+.\Debug\jerror.obj
+.\Debug\jfdctflt.obj
+.\Debug\jfdctfst.obj
+.\Debug\jfdctint.obj
+.\Debug\jidctflt.obj
+.\Debug\jidctfst.obj
+.\Debug\jidctint.obj
+.\Debug\jidctred.obj
+.\Debug\jmemnobs.obj
+.\Debug\jquant1.obj
+.\Debug\jquant2.obj
+.\Debug\jutils.obj
+.\Debug\rdcolmap.obj
+.\Debug\wrbmp.obj
+.\Debug\wrgif.obj
+.\Debug\wrppm.obj
+.\Debug\wrrle.obj
+.\Debug\wrtarga.obj
+.\Debug\jmemmgr.obj
+]
+Creating command line "link.exe -lib @C:\WINDOWS\TEMP\RSPF131.TMP"
+<h3>Output Window</h3>
+Compiling...
+jdapimin.c
+Creating library...
+
+
+
+<h3>Results</h3>
+libjpeg.lib - 0 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

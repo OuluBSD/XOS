@@ -1,0 +1,156 @@
+	.TITLE	bufld386
+	.SBTTL	OpenWatcom C compiler for XOS
+
+;*****************************************************************************
+;*
+;*                            Open Watcom Project
+;*
+;*    Portions Copyright (c) 1983-2002 Sybase, Inc. All Rights Reserved.
+;*
+;*  ========================================================================
+;*
+;*    This file contains Original Code and/or Modifications of Original
+;*    Code as defined in and that are subject to the Sybase Open Watcom
+;*    Public License version 1.0 (the 'License'). You may not use this file
+;*    except in compliance with the License. BY USING THIS FILE YOU AGREE TO
+;*    ALL TERMS AND CONDITIONS OF THE LICENSE. A copy of the License is
+;*    provided with the Original Code and Modifications, and is also
+;*    available at www.sybase.com/developer/opensource.
+;*
+;*    The Original Code and all software distributed under the License are
+;*    distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+;*    EXPRESS OR IMPLIED, AND SYBASE AND ALL CONTRIBUTORS HEREBY DISCLAIM
+;*    ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF
+;*    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR
+;*    NON-INFRINGEMENT. Please see the License for the specific language
+;*    governing rights and limitations under the License.
+;*
+;*  ========================================================================
+;*
+;* Description:  WHEN YOU FIGURE OUT WHAT THIS FILE DOES, PLEASE
+;*               DESCRIBE IT HERE!
+;*
+;*****************************************************************************
+
+
+; This module converts a string to long_double
+;       void __ZBuf2LD( char *buf, long_double *value );
+;
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;<><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
+;<>                                                                   <>
+;<>   __ZBuf2LD - convert buffer of significant digits into floating  <>
+;<>             void __ZBuf2LD( char *buf, long_double *value )       <>
+;<>                                                                   <>
+;<>   input:  EAX - address of buffer of significant digits           <>
+;<>           EDX - place to store value                              <>
+;<>   output: [EDX]        - floating-point number                    <>
+;<><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
+
+	.ENTRY	__ZBuf2LD
+__ZBuf2LD::
+	PUSHL	EBP		;Save registers we will use
+	PUSHL	ESI
+	PUSHL	EDI
+	PUSHL	ECX
+	PUSHL	EBX
+	PUSHL	EDX		;Save pointer to result
+	MOVL	ESI, EAX	;Get address of buffer
+	CLRL	EDX		;Set 96-bit integer to 0
+	CLRL	ECX
+	CLRL	EBP
+        CLRL	EAX		;And zero out EAX
+
+;Loop to convert digits into 64-bit int
+
+6$:	CMPB	[ESI], #0	;Quit if at end of buffer
+	JE	10$
+
+;[] multiply current value in EDX:ECX:EBP by 10
+
+	MOVL	EDI, EDX	;save current value
+	MOVL	EBX, ECX
+	MOVL	EAX, EBP
+	ADDL	EBP, EBP	;Multiply number by 4 by shifting left 2 places
+	ADCL	ECX, ECX
+	ADCL	EDX, EDX
+	ADDL	EBP, EBP
+	ADCL	ECX, ECX
+	ADCL	EDX, EDX
+
+	ADDL	EBP, EAX	;Add original value (this makes it times 5)
+	ADCL	ECX, EBX
+	ADCL	EDX, EDI
+
+	ADDL	EBP, EBP	;Shift left to make it times 10
+	ADCL	ECX, ECX
+	ADCL	EDX, EDX
+	MOVZBL	EAX, [ESI]	;Get next digit
+	ANDL	EAX, #0x0F
+	ADDL	EBP, EAX	;Add in the digit
+	ADCL	ECX, #0
+	ADCL	EDX, #0
+	INCL	ESI		;Point to next digit in buffer
+	JMP	6$
+
+10$:	MOVL	EAX, ECX	;Get low order long into EAX
+
+;[] Turn the integer in EDX:EAX:EBP into a real number
+
+	MOVL	EDI, #0x3FFF+63t+32t ;Set exponent
+	CALL	Norm		;Convert the 64 bit integer to a float
+        POPL	EBP		;Restore pointer to result
+        MOVL	4[EBP], EDX	;Store result
+	MOVL	0[EBP], EAX
+	MOVW	8[EBP], SI
+        POPL	EBX		;Restore registers
+	POPL	ECX
+	POPL	EDI
+        POPL	ESI
+	POPL	EBP
+	RET			;Return to caller
+.PAGE
+;Norm normalizes an unsigned real in EDX:EAX:EBP i.e grab top 64 bits
+;  expects the exponent to be in EDI.
+;     SI contains the new exponent
+
+Norm:	MOVL	ESI, EAX	;See if the integer is zero
+        ORL	ESI, EDX
+        ORL	ESI, EBP
+	JE	10$		;Nothing needed here if 0
+	TESTL	EDX, EDX	;See if high long is 0
+	JNE	4$		;Not 0
+	MOVL	EDX, EAX	;0 - shift by 32-bits
+	MOVL	EAX, EBP
+	CLRL	EBP
+	SUBL	EDI, #32t	;Adjust exponent by 32
+
+	TESTL	EDX, EDX	;Check the new high word
+	JNE	4$		;Not 0
+	MOVL	EDX, EAX	;0 - shift by another 32-bits
+	MOVL	EAX, EBP
+	CLRL	EBP
+	SUBL	EDI, #32t	;Adjust exponent by 32
+4$:	TESTL	EDX, EDX	;Quit if high bit is on
+	JS	6$
+	DECL	EDI		;Decrement exponent
+	ADDL	EBP, EBP	;Shift integer left by 1 bit
+	ADCL	EAX, EAX
+	ADCL	EDX, EDX
+	JMP	4$
+
+6$:	ADDL	EBP, EBP	;Get top bit of extra word
+	ADCL	EAX, #0		;Round up
+	ADCL	EDX, #0
+	JNC	8$
+	RCRL	EDX, #1		;If carry out the top shift fraction back 1
+	INCL	EDI		;Increment exponent
+8$:	MOVL	ESI, EDI	;Get exponent
+10$:	RET

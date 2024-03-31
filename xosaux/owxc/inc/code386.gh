@@ -1,0 +1,631 @@
+/* edi strcpy( edi, esi ) zaps eax,esi */
+#define C_strcpy_ret   HW_D( HW_EDI )
+#define C_strcpy_parms P_EDI_ESI
+#define C_strcpy_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq C_strcpy = { 0x1A, {
+    0x57,0x8A,0x06,0x88,0x07,0x3C,0x00,0x74,0x10,0x8A,
+    0x46,0x01,0x83,0xC6,0x02,0x88,0x47,0x01,0x83,0xC7,
+    0x02,0x3C,0x00,0x75,0xE8,0x5F
+} };
+
+/* edi strcpy( edi, esi ) zaps eax,esi */
+#define S_strcpy_ret   HW_D( HW_EDI )
+#define S_strcpy_parms P_EDI_ESI
+#define S_strcpy_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq S_strcpy = { 0x0A, {
+    0x57,0xAC,0x88,0x07,0x47,0x3C,0x00,0x75,0xF8,0x5F
+} };
+
+/* es:edi strcpy( es:edi, ds:esi ) zaps eax,esi */
+#define Z_strcpy_ret   HW_D_2( HW_ES, HW_EDI )
+#define Z_strcpy_parms P_ESEDI_DSESI
+#define Z_strcpy_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq Z_strcpy = { 0x08, {
+    0x57,0xAC,0xAA,0x3C,0x00,0x75,0xFA,0x5F
+} };
+
+/* es:edi strcpy( es:edi, ds:esi ) zaps eax,esi */
+#define BD_strcpy_ret   HW_D_2( HW_ES, HW_EDI )
+#define BD_strcpy_parms P_ESEDI_DSESI
+#define BD_strcpy_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq BD_strcpy = { 0x1C, {
+    0x57,0x8A,0x06,0x26,0x88,0x07,0x3C,0x00,0x74,0x11,
+    0x8A,0x46,0x01,0x83,0xC6,0x02,0x26,0x88,0x47,0x01,
+    0x83,0xC7,0x02,0x3C,0x00,0x75,0xE6,0x5F
+} };
+
+/* dx:eax strcpy( dx:eax, cx:ebx ) zaps esi,edi */
+#define DP_strcpy_ret   HW_D_2( HW_DX, HW_EAX )
+#define DP_strcpy_parms P_DXEAX_CXEBX
+#define DP_strcpy_saves HW_NotD_2( HW_ESI, HW_EDI )
+static byte_seq DP_strcpy = { 0x28, {
+    0x1E,0x06,0x50,0x8E,0xC2,0x8E,0xD9,0x8B,0xF3,0x8B,
+    0xF8,0x8A,0x06,0x26,0x88,0x07,0x3C,0x00,0x74,0x11,
+    0x8A,0x46,0x01,0x83,0xC6,0x02,0x26,0x88,0x47,0x01,
+    0x83,0xC7,0x02,0x3C,0x00,0x75,0xE6,0x58,0x07,0x1F
+} };
+
+/* edi strcat( edi, esi ) zaps eax,ecx,esi */
+#define C_strcat_ret   HW_D( HW_EDI )
+#define C_strcat_parms P_EDI_ESI
+#define C_strcat_saves HW_NotD_3( HW_EAX, HW_ECX, HW_ESI )
+static byte_seq C_strcat = { 0x26, {
+    0x06,0x1E,0x07,0x57,0x2B,0xC9,0x49,0xB0,0x00,0xF2,
+    0xAE,0x4F,0x8A,0x06,0x88,0x07,0x3C,0x00,0x74,0x10,
+    0x8A,0x46,0x01,0x83,0xC6,0x02,0x88,0x47,0x01,0x83,
+    0xC7,0x02,0x3C,0x00,0x75,0xE8,0x5F,0x07
+} };
+
+/* edi strcat( edi, esi ) zaps eax,ecx,esi */
+#define FC_strcat_ret   HW_D( HW_EDI )
+#define FC_strcat_parms P_EDI_ESI
+#define FC_strcat_saves HW_NotD_3( HW_EAX, HW_ECX, HW_ESI )
+static byte_seq FC_strcat = { 0x22, {
+    0x57,0x2B,0xC9,0x49,0xB0,0x00,0xF2,0xAE,0x4F,0x8A,
+    0x06,0x88,0x07,0x3C,0x00,0x74,0x10,0x8A,0x46,0x01,
+    0x83,0xC6,0x02,0x88,0x47,0x01,0x83,0xC7,0x02,0x3C,
+    0x00,0x75,0xE8,0x5F
+} };
+
+/* edi strcat( edi, esi ) zaps eax,esi */
+#define S_strcat_ret   HW_D( HW_EDI )
+#define S_strcat_parms P_EDI_ESI
+#define S_strcat_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq S_strcat = { 0x11, {
+    0x57,0x4F,0x47,0x80,0x3F,0x00,0x75,0xFA,0xAC,0x88,
+    0x07,0x47,0x3C,0x00,0x75,0xF8,0x5F
+} };
+
+/* es:edi strcat( es:edi, ds:esi ) zaps eax,esi */
+#define Z_strcat_ret   HW_D_2( HW_ES, HW_EDI )
+#define Z_strcat_parms P_ESEDI_DSESI
+#define Z_strcat_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq Z_strcat = { 0x12, {
+    0x57,0x51,0x2B,0xC9,0x49,0xB0,0x00,0xF2,0xAE,0x59,
+    0x4F,0xAC,0xAA,0x3C,0x00,0x75,0xFA,0x5F
+} };
+
+/* es:edi strcat( es:edi, ds:esi ) zaps ecx,eax,esi */
+#define BD_strcat_ret   HW_D_2( HW_ES, HW_EDI )
+#define BD_strcat_parms P_ESEDI_DSESI
+#define BD_strcat_saves HW_NotD_3( HW_ECX, HW_EAX, HW_ESI )
+static byte_seq BD_strcat = { 0x1C, {
+    0x57,0x2B,0xC9,0x49,0xB0,0x00,0xF2,0xAE,0x4F,0x8A,
+    0x06,0xAA,0x3C,0x00,0x74,0x0B,0x8A,0x46,0x01,0x83,
+    0xC6,0x02,0xAA,0x3C,0x00,0x75,0xEE,0x5F
+} };
+
+/* dx:eax strcat( dx:eax, cx:ebx ) zaps ecx,eax,esi */
+#define DP_strcat_ret   HW_D_2( HW_DX, HW_EAX )
+#define DP_strcat_parms P_DXEAX_CXEBX
+#define DP_strcat_saves HW_NotD_3( HW_ECX, HW_ESI, HW_EDI )
+static byte_seq DP_strcat = { 0x28, {
+    0x1E,0x06,0x50,0x8E,0xC2,0x8E,0xD9,0x8B,0xF3,0x8B,
+    0xF8,0x2B,0xC9,0x49,0xB0,0x00,0xF2,0xAE,0x4F,0x8A,
+    0x06,0xAA,0x3C,0x00,0x74,0x0B,0x8A,0x46,0x01,0x83,
+    0xC6,0x02,0xAA,0x3C,0x00,0x75,0xEE,0x58,0x07,0x1F
+} };
+
+/* esi strchr( esi, dl ) zaps eax,esi */
+#define C_strchr_ret   HW_D( HW_ESI )
+#define C_strchr_parms P_ESI_DL
+#define C_strchr_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq C_strchr = { 0x18, {
+    0x8A,0x06,0x3A,0xC2,0x74,0x12,0x3C,0x00,0x74,0x0C,
+    0x46,0x8A,0x06,0x3A,0xC2,0x74,0x07,0x46,0x3C,0x00,
+    0x75,0xEA,0x2B,0xF6
+} };
+
+/* esi strchr( esi, dl ) zaps eax,esi */
+#define S_strchr_ret   HW_D( HW_ESI )
+#define S_strchr_parms P_ESI_DL
+#define S_strchr_saves HW_NotD_2( HW_EAX, HW_ESI )
+static byte_seq S_strchr = { 0x0D, {
+    0x8A,0x06,0x3A,0xC2,0x74,0x07,0x46,0x3C,0x00,0x75,
+    0xF5,0x2B,0xF6
+} };
+
+/* dx:esi strchr( ds:esi, cl ) zaps dx,esi,eax */
+#define BD_strchr_ret   HW_D_2( HW_DX, HW_ESI )
+#define BD_strchr_parms P_DSESI_CL
+#define BD_strchr_saves HW_NotD_3( HW_DX, HW_ESI, HW_EAX )
+static byte_seq BD_strchr = { 0x11, {
+    0x8C,0xDA,0x8A,0x06,0x3A,0xC1,0x74,0x09,0x46,0x3C,
+    0x00,0x75,0xF5,0x2B,0xF6,0x2B,0xD2
+} };
+
+/* edx:eax  div( eax, ecx ) */
+#define C_div_ret   HW_D( HW_EAX )
+#define C_div_parms P_EAX_ECX
+#define C_div_saves HW_NotD_2( HW_EAX, HW_EDX )
+static byte_seq C_div = { 0x08, {
+    0x99,0xF7,0xF9,0x89,0x06,0x89,0x56,0x04
+} };
+
+/* edi memset( edi, al, ecx ) zaps es,ecx */
+#define S_memset_ret   HW_D( HW_EDI )
+#define S_memset_parms P_EDI_AL_ECX
+#define S_memset_saves HW_NotD( HW_ECX )
+static byte_seq S_memset = { 0x08, {
+    0x06,0x57,0x1E,0x07,0xF3,0xAA,0x5F,0x07
+} };
+
+/* edi memset( edi, al, ecx ) zaps es,ecx */
+#define FS_memset_ret    HW_D( HW_EDI )
+#define FS_memset_parms  P_EDI_AL_ECX
+#define FS_memset_saves  HW_NotD( HW_ECX )
+static byte_seq FS_memset = { 0x04, {
+    0x57,0xF3,0xAA,0x5F
+} };
+
+/* edi memset( edi, al, ecx ) zaps es,ah,ecx */
+#define C_memset_ret    HW_D( HW_EDI )
+#define C_memset_parms  P_EDI_AL_ECX
+#define C_memset_saves  HW_NotD_2( HW_AH, HW_ECX )
+static byte_seq C_memset = { 0x11, {
+    0x06,0x1E,0x07,0x57,0x8A,0xE0,0xD1,0xE9,0xF3,0x66,
+    0xAB,0x13,0xC9,0xF3,0xAA,0x5F,0x07
+} };
+
+/* edi memset( edi, al, ecx ) zaps es,ah,ecx */
+#define FC_memset_ret    HW_D( HW_EDI )
+#define FC_memset_parms  P_EDI_AL_ECX
+#define FC_memset_saves  HW_NotD_2( HW_AH, HW_ECX )
+static byte_seq FC_memset = { 0x0D, {
+    0x57,0x8A,0xE0,0xD1,0xE9,0xF3,0x66,0xAB,0x13,0xC9,
+    0xF3,0xAA,0x5F
+} };
+
+/* es:edi memset( es:edi, al, ecx ) zaps ecx */
+#define Z_memset_ret    HW_D_2( HW_ES, HW_EDI )
+#define Z_memset_parms  P_ESEDI_AL_ECX
+#define Z_memset_saves  HW_NotD( HW_ECX )
+static byte_seq Z_memset = { 0x04, {
+    0x57,0xF3,0xAA,0x5F
+} };
+
+/* es:edi memset( es:edi, al, ecx ) zaps ah,ecx */
+#define BD_memset_ret    HW_D_2( HW_ES, HW_EDI )
+#define BD_memset_parms  P_ESEDI_AL_ECX
+#define BD_memset_saves  HW_NotD_2( HW_AH, HW_ECX )
+static byte_seq BD_memset = { 0x0D, {
+    0x57,0x8A,0xE0,0xD1,0xE9,0xF3,0x66,0xAB,0x13,0xC9,
+    0xF3,0xAA,0x5F
+} };
+
+/* dx:edi memset( dx:edi, al, ecx ) zaps ah,ecx */
+#define DP_memset_ret    HW_D_2( HW_DX, HW_EDI )
+#define DP_memset_parms  P_DXEDI_AL_ECX
+#define DP_memset_saves  HW_NotD_2( HW_AH, HW_ECX )
+static byte_seq DP_memset = { 0x11, {
+    0x06,0x57,0x8E,0xC2,0x8A,0xE0,0xD1,0xE9,0xF3,0x66,
+    0xAB,0x13,0xC9,0xF3,0xAA,0x5F,0x07
+} };
+
+/* edi stosw( es:edi, ax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be even */
+#define C_stosw_ret    HW_D( HW_EDI )
+#define C_stosw_parms  P_DXEDI_AX_ECX
+#define C_stosw_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq C_stosw = { 0x07, {
+    0x06,0x8E,0xC2,0xF3,0x66,0xAB,0x07
+} };
+
+/* edi stosw( edi, ax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be even */
+#define F_stosw_ret    HW_D( HW_EDI )
+#define F_stosw_parms  P_EDI_AX_ECX
+#define F_stosw_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq F_stosw = { 0x03, {
+    0xF3,0x66,0xAB
+} };
+
+/* es:edi stosw( es:edi, ax, ecx ) zaps edi,ecx */
+#define BD_stosw_ret   HW_D( HW_EDI )
+#define BD_stosw_parms P_ESEDI_AX_ECX
+#define BD_stosw_saves HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq BD_stosw = { 0x03, {
+    0xF3,0x66,0xAB
+} };
+
+/* edi stosd( es:edi, eax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be multiple of 4 */
+#define C_stosd_ret    HW_D( HW_EDI )
+#define C_stosd_parms  P_DXEDI_EAX_ECX
+#define C_stosd_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq C_stosd = { 0x06, {
+    0x06,0x8E,0xC2,0xF3,0xAB,0x07
+} };
+
+/* edi stosd( edi, eax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be multiple of 4 */
+#define F_stosd_ret    HW_D( HW_EDI )
+#define F_stosd_parms  P_EDI_EAX_ECX
+#define F_stosd_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq F_stosd = { 0x02, {
+    0xF3,0xAB
+} };
+
+/* es:edi stosd( es:edi, eax, ecx ) zaps edi,ecx */
+#define BD_stosd_ret   HW_D( HW_EDI )
+#define BD_stosd_parms P_ESEDI_EAX_ECX
+#define BD_stosd_saves HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq BD_stosd = { 0x02, {
+    0xF3,0xAB
+} };
+
+/* edi stoswb( es:edi, ax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be odd */
+#define C_stoswb_ret    HW_D( HW_EDI )
+#define C_stoswb_parms  P_DXEDI_AX_ECX
+#define C_stoswb_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq C_stoswb = { 0x08, {
+    0x06,0x8E,0xC2,0xF3,0x66,0xAB,0xAA,0x07
+} };
+
+/* edi stoswb( edi, ax, ecx ) zaps edi,ecx */
+/* used when value of ECX is known to be odd */
+#define F_stoswb_ret    HW_D( HW_EDI )
+#define F_stoswb_parms  P_EDI_AX_ECX
+#define F_stoswb_saves  HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq F_stoswb = { 0x04, {
+    0xF3,0x66,0xAB,0xAA
+} };
+
+/* es:edi stoswb( es:edi, ax, ecx ) zaps edi,ecx */
+#define BD_stoswb_ret   HW_D( HW_EDI )
+#define BD_stoswb_parms P_ESEDI_AX_ECX
+#define BD_stoswb_saves HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq BD_stoswb = { 0x04, {
+    0xF3,0x66,0xAB,0xAA
+} };
+
+/* edi memcpy( edi, esi, ecx ) zaps es,esi,ecx */
+#define S_memcpy_ret    HW_D( HW_EDI )
+#define S_memcpy_parms  P_EDI_ESI_ECX
+#define S_memcpy_saves  HW_NotD_2( HW_ESI, HW_ECX )
+static byte_seq S_memcpy = { 0x08, {
+    0x06,0x57,0x1E,0x07,0xF3,0xA4,0x5F,0x07
+} };
+
+/* edi memcpy( edi, esi, ecx ) zaps es,esi,ecx */
+#define FS_memcpy_ret    HW_D( HW_EDI )
+#define FS_memcpy_parms  P_EDI_ESI_ECX
+#define FS_memcpy_saves  HW_NotD_2( HW_ESI, HW_ECX )
+static byte_seq FS_memcpy = { 0x04, {
+    0x57,0xF3,0xA4,0x5F
+} };
+
+/* edi memcpy( edi, esi, ecx ) zaps eax,es,esi,ecx */
+#define C_memcpy_ret    HW_D( HW_EDI )
+#define C_memcpy_parms  P_EDI_ESI_ECX
+#define C_memcpy_saves  HW_NotD_3( HW_EAX, HW_ESI, HW_ECX )
+static byte_seq C_memcpy = { 0x16, {
+    0x06,0x8C,0xD8,0x8E,0xC0,0x57,0x8B,0xC1,0xC1,0xE9,
+    0x02,0xF3,0xA5,0x8A,0xC8,0x80,0xE1,0x03,0xF3,0xA4,
+    0x5F,0x07
+} };
+
+/* edi memcpy( edi, esi, ecx ) zaps eax,es,esi,ecx */
+#define FC_memcpy_ret    HW_D( HW_EDI )
+#define FC_memcpy_parms  P_EDI_ESI_ECX
+#define FC_memcpy_saves  HW_NotD_3( HW_EAX, HW_ESI, HW_ECX )
+static byte_seq FC_memcpy = { 0x10, {
+    0x57,0x8B,0xC1,0xC1,0xE9,0x02,0xF3,0xA5,0x8A,0xC8,
+    0x80,0xE1,0x03,0xF3,0xA4,0x5F
+} };
+
+/* es:edi memcpy( es:edi, ds:esi, ecx ) zaps ecx,esi */
+#define Z_memcpy_ret    HW_D_2( HW_ES, HW_EDI )
+#define Z_memcpy_parms  P_ESEDI_DSESI_ECX
+#define Z_memcpy_saves  HW_NotD_2( HW_ESI, HW_ECX )
+static byte_seq Z_memcpy = { 0x04, {
+    0x57,0xF3,0xA4,0x5F
+} };
+
+/* es:edi memcpy( es:edi, ds:esi, ecx ) zaps ecx,esi */
+#define BD_memcpy_ret   HW_D_2( HW_ES, HW_EDI )
+#define BD_memcpy_parms P_ESEDI_DSESI_ECX
+#define BD_memcpy_saves  C_memcpy_saves
+static byte_seq BD_memcpy = { 0x10, {
+    0x57,0x8B,0xC1,0xC1,0xE9,0x02,0xF3,0xA5,0x8A,0xC8,
+    0x80,0xE1,0x03,0xF3,0xA4,0x5F
+} };
+
+/* dx:eax memcpy( dx:edi, cx:esi, eax ) zaps ecx,esi,edi,eax */
+#define DP_memcpy_ret   HW_D_2( HW_DX, HW_EAX )
+#define DP_memcpy_parms P_DXEDI_CXESI_EAX
+#define DP_memcpy_saves HW_NotD_4( HW_ESI, HW_ECX, HW_EDI, HW_EAX )
+static byte_seq DP_memcpy = { 0x19, {
+    0x1E,0x06,0x57,0x91,0x8E,0xD8,0x8E,0xC2,0x8B,0xC1,
+    0xC1,0xE9,0x02,0xF3,0xA5,0x8A,0xC8,0x80,0xE1,0x03,
+    0xF3,0xA4,0x58,0x07,0x1F
+} };
+
+/* eax memcmp( esi, edi, ecx ) zaps eax,es,esi,edi,ecx */
+#define C_memcmp_ret    HW_D( HW_EAX )
+#define C_memcmp_parms  P_ESI_EDI_ECX
+#define C_memcmp_saves  HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq C_memcmp = { 0x11, {
+    0x06,0x8C,0xD8,0x8E,0xC0,0x33,0xC0,0xF3,0xA6,0x74,
+    0x05,0x19,0xC0,0x83,0xD8,0xFF,0x07
+} };
+
+/* eax memcmp( esi, edi, ecx ) zaps eax,es,esi,edi,ecx */
+#define FC_memcmp_ret    HW_D( HW_EAX )
+#define FC_memcmp_parms  P_ESI_EDI_ECX
+#define FC_memcmp_saves  HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq FC_memcmp = { 0x0B, {
+    0x33,0xC0,0xF3,0xA6,0x74,0x05,0x19,0xC0,0x83,0xD8,
+    0xFF
+} };
+
+/* ecx memcmp( ds:esi, es:edi, ecx ) zaps esi,edi,ecx */
+#define BD_memcmp_ret   HW_D( HW_ECX )
+#define BD_memcmp_parms P_DSESI_ESEDI_ECX
+#define BD_memcmp_saves HW_NotD_3( HW_ESI, HW_EDI, HW_ECX )
+static byte_seq BD_memcmp = { 0x0B, {
+    0x0B,0xC9,0xF3,0xA6,0x74,0x05,0x19,0xC9,0x83,0xD9,
+    0xFF
+} };
+
+/* ecx memcmp( dx:esi, cx:edi, eax ) zaps esi,edi,ecx,eax */
+#define DP_memcmp_ret   HW_D( HW_ECX )
+#define DP_memcmp_parms P_DXESI_CXEDI_EAX
+#define DP_memcmp_saves HW_NotD_4( HW_ESI, HW_EDI, HW_ECX, HW_EAX )
+static byte_seq DP_memcmp = { 0x14, {
+    0x1E,0x06,0x91,0x8E,0xDA,0x8E,0xC0,0x0B,0xC9,0xF3,
+    0xA6,0x74,0x05,0x19,0xC9,0x83,0xD9,0xFF,0x07,0x1F
+} };
+
+/* edi memchr( edi, al, ecx ) zaps edx,es,edi,ecx */
+#define C_memchr_ret    HW_D( HW_EDI )
+#define C_memchr_parms  P_EDI_AL_ECX
+#define C_memchr_saves  HW_NotD_3( HW_EDX, HW_EDI, HW_ECX )
+static byte_seq C_memchr = { 0x11, {
+    0x06,0xE3,0x0B,0x8C,0xDA,0x8E,0xC2,0xF2,0xAE,0x75,
+    0x03,0x4F,0x66,0xA9,0x8B,0xF9,0x07
+} };
+
+/* edi memchr( edi, al, ecx ) zaps edx,es,edi,ecx */
+#define FC_memchr_ret    HW_D( HW_EDI )
+#define FC_memchr_parms  P_EDI_AL_ECX
+#define FC_memchr_saves  HW_NotD_3( HW_EDX, HW_EDI, HW_ECX )
+static byte_seq FC_memchr = { 0x0B, {
+    0xE3,0x07,0xF2,0xAE,0x75,0x03,0x4F,0x66,0xA9,0x8B,
+    0xF9
+} };
+
+/* cx:edi memchr( es:edi, al, ecx ) zaps edi,ecx */
+#define BD_memchr_ret   HW_D_2( HW_EDI, HW_CX )
+#define BD_memchr_parms P_ESEDI_AL_ECX
+#define BD_memchr_saves HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq BD_memchr = { 0x0D, {
+    0xE3,0x09,0xF2,0xAE,0x75,0x05,0x4F,0x8C,0xC1,0x66,
+    0xA9,0x8B,0xF9
+} };
+
+/* cx:edi memchr( dx:edi, al, ecx ) zaps edi,ecx */
+#define DP_memchr_ret   HW_D_2( HW_CX, HW_EDI )
+#define DP_memchr_parms P_DXEDI_AL_ECX
+#define DP_memchr_saves HW_NotD_2( HW_EDI, HW_ECX )
+static byte_seq DP_memchr = { 0x11, {
+    0x06,0xE3,0x0B,0x8E,0xC2,0xF2,0xAE,0x75,0x05,0x4F,
+    0x8C,0xC1,0x66,0xA9,0x8B,0xF9,0x07
+} };
+
+/* eax strcmp( esi, edi ) zaps eax,esi,edi */
+#define S_strcmp_ret    HW_D( HW_EAX )
+#define S_strcmp_parms  P_ESI_EDI
+#define S_strcmp_saves  HW_NotD_3( HW_EAX, HW_ESI, HW_EDI )
+static byte_seq S_strcmp = { 0x0F, {
+    0xAC,0x8A,0x27,0x2A,0xC4,0x75,0x05,0x47,0x3A,0xC4,
+    0x75,0xF4,0x18,0xE4,0x98
+} };
+
+/* eax strcmp( esi, edi ) zaps eax,es,esi,edi,ecx */
+#define C_strcmp_ret    HW_D( HW_EAX )
+#define C_strcmp_parms  P_ESI_EDI
+#define C_strcmp_saves  HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq C_strcmp = { 0x1F, {
+    0x06,0x8C,0xD8,0x8E,0xC0,0xA6,0x75,0x11,0x4F,0x4E,
+    0x2B,0xC9,0x49,0x33,0xC0,0xF2,0xAE,0xF7,0xD1,0x2B,
+    0xF9,0xF3,0xA6,0x74,0x05,0x19,0xC0,0x83,0xD8,0xFF,
+    0x07
+} };
+
+/* eax strcmp( esi, edi ) zaps eax,esi,edi,ecx */
+#define F_strcmp_ret    HW_D( HW_EAX )
+#define F_strcmp_parms  P_ESI_EDI
+#define F_strcmp_saves  HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq F_strcmp = { 0x19, {
+    0xA6,0x75,0x11,0x4F,0x4E,0x2B,0xC9,0x49,0x33,0xC0,
+    0xF2,0xAE,0xF7,0xD1,0x2B,0xF9,0xF3,0xA6,0x74,0x05,
+    0x19,0xC0,0x83,0xD8,0xFF
+} };
+
+/* eax strcmp( ds:esi, es:edi ) zaps eax,esi,edi */
+#define Z_strcmp_ret    HW_D( HW_EAX )
+#define Z_strcmp_parms  P_DSESI_ESEDI
+#define Z_strcmp_saves  HW_NotD_3( HW_EAX, HW_ESI, HW_EDI )
+static byte_seq Z_strcmp = { 0x10, {
+    0xAC,0x26,0x8A,0x27,0x2A,0xC4,0x75,0x05,0x47,0x3A,
+    0xC4,0x75,0xF3,0x18,0xE4,0x98
+} };
+
+/* ecx strcmp( ds:esi, es:edi ) zaps eax,esi,edi,ecx */
+#define BD_strcmp_ret   HW_D( HW_ECX )
+#define BD_strcmp_parms P_DSESI_ESEDI
+#define BD_strcmp_saves HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq BD_strcmp = { 0x19, {
+    0xA6,0x75,0x11,0x4F,0x4E,0x2B,0xC9,0x49,0x33,0xC0,
+    0xF2,0xAE,0xF7,0xD1,0x2B,0xF9,0xF3,0xA6,0x74,0x05,
+    0x19,0xC9,0x83,0xD9,0xFF
+} };
+
+/* ecx strcmp( si:eax, cx:edi ) zaps eax,esi,edi,ecx */
+#define DP_strcmp_ret   HW_D( HW_ECX )
+#define DP_strcmp_parms P_SIEAX_CXEDI
+#define DP_strcmp_saves HW_NotD_4( HW_EAX, HW_ESI, HW_EDI, HW_ECX )
+static byte_seq DP_strcmp = { 0x22, {
+    0x1E,0x06,0x96,0x8E,0xD8,0x8E,0xC1,0xA6,0x75,0x11,
+    0x4F,0x4E,0x33,0xC0,0x8B,0xC8,0x49,0xF2,0xAE,0xF7,
+    0xD1,0x2B,0xF9,0xF3,0xA6,0x74,0x05,0x19,0xC9,0x83,
+    0xD9,0xFF,0x07,0x1F
+} };
+
+/* ecx strlen( edi ) zaps eax,es,ecx,edi */
+#define C_strlen_ret    HW_D( HW_ECX )
+#define C_strlen_parms  P_EDI
+#define C_strlen_saves  HW_NotD_3( HW_EAX, HW_ECX, HW_EDI )
+static byte_seq C_strlen = { 0x10, {
+    0x06,0x8C,0xD8,0x8E,0xC0,0x2B,0xC9,0x49,0x33,0xC0,
+    0xF2,0xAE,0xF7,0xD1,0x49,0x07
+} };
+
+/* ecx strlen( edi ) zaps eax,es,ecx,edi */
+#define FC_strlen_ret    HW_D( HW_ECX )
+#define FC_strlen_parms  P_EDI
+#define FC_strlen_saves  HW_NotD_3( HW_EAX, HW_ECX, HW_EDI )
+static byte_seq FC_strlen = { 0x0A, {
+    0x2B,0xC9,0x49,0x33,0xC0,0xF2,0xAE,0xF7,0xD1,0x49
+} };
+
+/* ecx strlen( es:edi ) zaps eax,ecx,edi */
+#define BD_strlen_ret   HW_D( HW_ECX )
+#define BD_strlen_parms P_ESEDI
+#define BD_strlen_saves HW_NotD_3( HW_EAX, HW_ECX, HW_EDI )
+static byte_seq BD_strlen = { 0x0A, {
+    0x2B,0xC9,0x49,0x33,0xC0,0xF2,0xAE,0xF7,0xD1,0x49
+} };
+
+/* ecx strlen( cx:edi ) zaps eax,ecx,edi */
+#define DP_strlen_ret   HW_D( HW_ECX )
+#define DP_strlen_parms P_CXEDI
+#define DP_strlen_saves HW_NotD_3( HW_EAX, HW_ECX, HW_EDI )
+static byte_seq DP_strlen = { 0x0E, {
+    0x06,0x8E,0xC1,0x33,0xC0,0x8B,0xC8,0x49,0xF2,0xAE,
+    0xF7,0xD1,0x49,0x07
+} };
+
+#define C_abs_ret   HW_D( HW_EAX )
+#define C_abs_parms P_EAX
+#define C_abs_saves HW_NotD_2( HW_EAX, HW_EDX )
+static byte_seq C_abs = { 0x05, {
+    0x99,0x33,0xC2,0x2B,0xC2
+} };
+
+#define C_labs_ret   HW_D( HW_EAX )
+#define C_labs_parms P_EAX
+#define C_labs_saves HW_NotD_2( HW_EAX, HW_EDX )
+static byte_seq C_labs = { 0x05, {
+    0x99,0x33,0xC2,0x2B,0xC2
+} };
+
+#define C_inp_ret    HW_D( HW_EAX )
+#define C_inp_parms  P_EDX
+#define C_inp_saves  HW_NotD( HW_EAX )
+static byte_seq C_inp = { 0x03, {
+    0x2B,0xC0,0xEC
+} };
+
+#define C_inpw_ret   HW_D( HW_EAX )
+#define C_inpw_parms P_EDX
+#define C_inpw_saves HW_NotD( HW_EAX )
+static byte_seq C_inpw = { 0x04, {
+    0x2B,0xC0,0x66,0xED
+} };
+
+#define C_inpd_ret   HW_D( HW_EAX )
+#define C_inpd_parms P_EDX
+#define C_inpd_saves HW_NotD( HW_EAX )
+static byte_seq C_inpd = { 0x01, {
+    0xED
+} };
+
+#define C_outp_ret   HW_D( HW_EAX )
+#define C_outp_parms P_EDX_AL
+#define C_outp_saves HW_NotD( HW_EMPTY )
+static byte_seq C_outp = { 0x01, {
+    0xEE
+} };
+
+#define C_outpw_ret    HW_D( HW_EAX )
+#define C_outpw_parms  P_EDX_EAX
+#define C_outpw_saves  HW_NotD( HW_EMPTY )
+static byte_seq C_outpw = { 0x02, {
+    0x66,0xEF
+} };
+
+#define C_outpd_ret   HW_D( HW_EAX )
+#define C_outpd_parms P_EDX_EAX
+#define C_outpd_saves HW_NotD( HW_EMPTY )
+static byte_seq C_outpd = { 0x01, {
+    0xEF
+} };
+
+#define C_movedata_ret   HW_D( HW_EMPTY )
+#define C_movedata_parms P_EAX_ESI_EDX_EDI_ECX
+#define C_movedata_saves HW_NotD_4( HW_EAX, HW_ECX, HW_ESI, HW_EDI )
+static byte_seq C_movedata = { 0x16, {
+    0x1E,0x06,0x8E,0xD8,0x8E,0xC2,0x8B,0xC1,0xC1,0xE9,
+    0x02,0xF3,0xA5,0x8A,0xC8,0x80,0xE1,0x03,0xF3,0xA4,
+    0x07,0x1F
+} };
+
+#define C_enable_ret   HW_D( HW_EMPTY )
+#define C_enable_parms P_EAX
+#define C_enable_saves HW_NotD( HW_EMPTY )
+static byte_seq C_enable = { 0x02, {
+    0xFB,0xFC
+} };
+
+#define C_disable_ret    HW_D( HW_EMPTY )
+#define C_disable_parms  P_EAX
+#define C_disable_saves  HW_NotD( HW_EMPTY )
+static byte_seq C_disable = { 0x01, {
+    0xFA
+} };
+
+#define C_rotl_ret   HW_D( HW_EAX )
+#define C_rotl_parms P_EAX_CL
+#define C_rotl_saves HW_NotD( HW_EAX )
+static byte_seq C_rotl = { 0x02, {
+    0xD3,0xC0
+} };
+
+#define C_rotr_ret   HW_D( HW_EAX )
+#define C_rotr_parms P_EAX_CL
+#define C_rotr_saves HW_NotD( HW_EAX )
+static byte_seq C_rotr = { 0x02, {
+    0xD3,0xC8
+} };
+
+#define C_8087_fabs_ret    HW_D( HW_FLTS )
+#define C_8087_fabs_parms  P_8087
+#define C_8087_fabs_saves  HW_NotD( HW_EMPTY )
+static byte_seq _8087_fabs = { 0x02, {
+    0xD9,0xE1
+} };
+
+#define C_fabs_ret   HW_D_2( HW_EDX, HW_EAX )
+#define C_fabs_parms P_EDXEAX
+#define C_fabs_saves HW_NotD( HW_EDX )
+static byte_seq C_fabs = { 0x04, {
+    0xD1,0xE2,0xD1,0xEA
+} };
+
+#define C_min_ret   HW_D( HW_EAX )
+#define C_min_parms P_EAX_EDX
+#define C_min_saves HW_NotD_2( HW_ECX, HW_EAX )
+static byte_seq C_min = { 0x08, {
+    0x2B,0xC2,0x19,0xC9,0x23,0xC1,0x03,0xC2
+} };
+
+#define C_max_ret   HW_D( HW_EAX )
+#define C_max_parms P_EAX_EDX
+#define C_max_saves HW_NotD_2( HW_ECX, HW_EAX )
+static byte_seq C_max = { 0x09, {
+    0x2B,0xC2,0xF5,0x19,0xC9,0x23,0xC1,0x03,0xC2
+} };
+
