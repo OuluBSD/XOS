@@ -1,0 +1,1357 @@
+	.TITLE	sysdis
+
+; ++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xostime.par
+
+	.SEG	sysdis_code_s, CODE, 32BIT, SELECT=GS_UCODE
+	.MSECT	sysdis_code_m, sysdis_code_s, ADDR=0x4000
+	.PSECT	sysdis_code_p, sysdis_code_m
+	.SEG	sysdis_data_s, DATA, 32BIT, SELECT=GS_UDATA
+	.MSECT	sysdis_data_m, sysdis_data_s, ADDR=0x100000
+	.PSECT	sysdis_stack_p, sysdis_data_m
+	.PSECT	sysdis_data_p, sysdis_data_m
+
+procdata==0x200000
+thrddata==0x280000
+lpdata  ==0x300000
+
+VECT_ALARM=64t		;Vector for alarm signal
+
+DISMAX=!58t		;Maximum processes to display
+
+HD1_TTLT =!'42'		;Column at which to display total time
+HD1_SCHT =!'60'		;Column at which to display scheduler time
+HD1_INTRV=!'77'		;Column at which to display time interval
+HD2_FREE =!'09'		;Column at which to display total free memory
+HD2_TOTAL=!'17'		;Column at which to display total available memory
+HD2_DEVFT=!'42'		;Column at which to display total device fork time
+HD2_NCNT =!'62'		;Column at which to display null process count
+
+COL_PSEQ =!'02'		;Column at which to display process sequence number
+COL_PNUM =!'08'		;Column at which to display process number
+COL_PAR  =!'11'		;Column at which to display parent process number
+COL_SECT =!'12'		;Column at which to display "sect"
+COL_GRP  =!'14'		;Column at which to display group process number
+COL_NAME =!'17'		;Column at which to display process name
+COL_TRM  =!'30'		;Column at which to display terminal name
+COL_UMTDS=!'35'		;Column at which to display the number of user threads
+COL_IOTDS=!'37'		;Column at which to display the number of IO threads
+COL_QUE  =!'42'		;Column at which to display process state
+;;;COL_TYPE =!'40'		;Column at which to display process type
+COL_WSSZ =!'45'		;Column at which to display working set (WS) size
+
+
+;;;COL_RMSZ =!'47'		;Column at which to display real mode (RM) size
+COL_UMSZ =!'51'		;Column at which to display protected mode (PM) size
+COL_OMSZ =!'58'		;Column at which to display overhead memory (OM) size
+
+COL_PRUN =!'62'		;Column at which to display process run time
+COL_FRUN =!'72'		;Column at which to display fork run time
+COL_USE  =!'68'		;Column at which to display shared section use count
+
+;Define offsets in the local process data block
+
+$$$=!0
+BLK lp_line  , 4	;Display line to use for this process
+BLK lp_pid   , 4	;Process PID
+BLK lp_parpid, 4	;Parent process ID
+BLK lp_sespid, 4	;Group process ID
+BLK lp_name  , 24t	;Process name
+BLK lp_contrm, 2	;Controlling terminal
+BLK lp_state , 1	;Process state
+BLK lp_quenum, 1
+BLK lp_type  , 1	;Process type
+BLK lp_dirty , 1	;Non-zero if need to force update 
+BLK lp_umthds, 1
+BLK lp_iothds, 1
+BLK lp_wssz  , 4	;Working set size
+BLK lp_umsz  , 4	;User memory size
+BLK lp_omsz  , 4	;Overhead memory size
+BLK lp_ctime , 8	;Connect time for process
+BLK lp_ptime , 8	;User run time for process
+BLK lp_ftime , 8	;IO run time for process
+BLK lp_pspy  , 4	;Address of the process spy data
+BLK lp_tspy  , 4	;Address of the thread spy data for the base thread
+			;	(which is all we report on)
+lp_SIZE=!$$$
+.PAGE
+	.SBTTL	Start of program
+
+	.PSECT	sysdis_code_p
+	.START	start
+
+start::	PUSHL	#GS_UDATA
+	POPL	DS
+	MOVL	ESI, hum_argsaddr[EDI]
+	CMPL	ESI, #0x10000
+	JA	2$
+	ADDL	ESI, EDI		;Get offset of argument string
+2$:	MOVZBL	EAX, [ESI]		;Find end of first atom
+	INCL	ESI
+	TESTB	AL, AL
+	JE	6$			;If no value given
+	CMPB	AL, #' '
+	JE	4$
+	CMPB	AL, #HT
+	JNE	2$
+4$:	CALL	getcmdval		;Get number from argument
+	JNC	8$			;If got one
+	MOVL	EDI, #cmermsg		;Get error message
+	JMP	fail4
+
+6$:	MOVL	EAX, #1			;Default is 1 second
+8$:	MOVL	interval, EAX		;Save interval value
+	PUSHL	EDI			;Give up the argument msect
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#VECT_CNTC		;Set up our ^C vector
+	PUSHL	#7
+	PUSHL	#havectlc
+	CALL	svcSchSetVector##
+	CALL	svcSysGetPid##		;Get our PID
+	MOVL	ourpid, EAX
+	PUSHL	#DH_STDTRM		;Get current terminal data
+	PUSHL	#DM$RTNDATA
+	PUSHL	#trmdata
+	CALL	svcTrmDspMode##
+	TESTL	EAX, EAX		;Error?
+	JS	10$
+	MOVL	EAX, trmdata+dm_rows
+	TESTL	EAX, EAX
+	JG	12$
+10$:	MOVL	EAX, #25t
+12$:	SUBL	EAX, #5
+	CMPL	EAX, #DISMAX
+	JBE	14$
+	MOVL	EAX, #DISMAX
+14$:	MOVL	sheight, EAX
+.PAGE
+;Now set up memory to access the kernel data we need access to
+
+setmem:	PUSHL	#1			;Make the kernel's process data visible
+	PUSHL	#procdata
+	CALL	svcMemSpy##
+	TESTL	EAX, EAX
+	JS	lnkfail			;If error
+	SHRL	EAX, #pspy_SHIFT
+	MOVL	procmaph, EAX
+	MOVL	EAX, procdata+sspy_proclimit ;Get actual maximum number of processes
+	MOVL	maxproc, EAX
+	IMULL	EAX, #lp_SIZE		;Get amount of memory needed
+	PUSHL	#lpdata
+	PUSHL	#PG$READ|PG$WRITE
+	PUSHL	EAX
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	memfail
+	MOVL	ECX, procdata+sspy_proclimit
+	CMPL	ECX, sheight		;Too many to display?
+	JBE	2$			;No
+	MOVL	ECX, sheight		;Yes - just do as many as we can!
+2$:	MOVL	nproc, ECX		;Store it locally
+	SUBL	EAX, ECX		;Get maximum begin value
+	INCL	EAX
+	MOVL	maxbgn, EAX
+	MOVL	count, #0
+
+	MOVL	ESI, #procdata+sspy_sysname
+	MOVL	EDI, #label2
+	MOVL	ECX, #31t
+	CLD
+4$:	LODSB	[ESI]
+	MOVB	[EDI], AL
+	CMPB	AL, #0
+	JE	6$
+	INCL	EDI
+	LOOP	ECX, 4$
+6$:	MOVB	[EDI], #' '
+	SUBL	EDI, #label1+1		;Calculate position for label
+	SHRL	EDI, #1
+	MOVL	EAX, #40t
+	SUBL	EAX, EDI
+	CLRL	EDX
+	DIVL	lit10
+	ADDB	AL, #'0'
+	ADDB	DL, #'0'
+	MOVB	labelp+0, AL		;Store position in string we will use
+	MOVB	labelp+1, DL
+	PUSHL	#DH_STDOUT		;Clear the screen and output the top
+	PUSHL	#clrscn			;  part of the display
+	PUSHL	#0
+	CALL	svcIoOutString##
+	MOVL	ECX, nproc
+	MOVL	ESI, #lpdata
+	MOVL	EBX, #procdata+pspy_SIZE
+10$:	MOVL	lp_pspy[ESI], EBX	;Store offset of exec slot table entry
+	MOVL	EAX, count		;Get process number
+	INCL	count
+	MOVL	lp_pid[ESI], EAX
+	ADDL	EAX, #5			;Calculate line number for display
+	CLRL	EDX
+	DIVL	lit10
+	ADDB	AL, #'0'
+	MOVB	[ESI], AL
+	ADDB	DL, #'0'
+	MOVB	1[ESI], DL
+	CALL	clrslot			;Clear the slot
+	ADDL	ESI, #lp_SIZE		;Bump table pointer
+	ADDL	EBX, #pspy_SIZE
+	MOVL	EAX, count		;Need to do more here?
+	CMPL	EAX, nproc
+	JB	10$			;Yes - continue
+	PUSHL	#DH_STDOUT		;No - display the bottom border
+	PUSHL	#btmlin
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#VECT_ALARM		;Set the clock vector
+	PUSHL	#4
+	PUSHL	#mainloop
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	clkfail			;If error
+	MOVL	EAX, interval		;OK - get initial interval value
+	CALL	setintr			;Set the interval
+	JC	clkfail
+	PUSHL	#DH_STDTRM
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#trmsetparm
+	CALL	svcIoInBlockP##
+	TESTL	EAX, EAX
+	JS	trmfail
+
+;Here with initial set up complete
+
+	MOVB	inpos, #8
+force:	CLRL	EAX			;Fake up a signal to call mainloop the
+	PUSHL	EAX			;  first time (will enable signals
+	PUSHL	#0x0200			;  when it returns)
+	PUSHL	CS
+	PUSHL	#cmdloop
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	EAX
+	PUSHL	EAX
+	JMP	mainloop
+.PAGE
+;Control-C handler - get here on ^C signal
+
+havectlc:
+	PUSHL	#DH_STDTRM		;Clear the output buffer
+	PUSHL	#TF_CLROUT
+	CALL	svcTrmFunction##
+	CALL	svcSchCtlCDone##	;Clear the ^C state
+	JMP	cmdquit			;Go terminate
+.PAGE
+;Command loop
+
+cmdloop:MOVL	EDI, #clrcmd
+	MOVB	inpos, #8
+cmdlp2:	MOVL	inpntr, #inbufr
+	MOVB	incnt, #13t
+	PUSHL	#DH_STDTRM
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	svcIoOutString##
+trmloop:PUSHL	#DH_STDTRM
+	CALL	svcIoInSingle##
+	PUSHL	EAX
+	PUSHL	#4			;No interrupts here
+	CALL	svcSchSetLevel##
+	POPL	EAX
+	CMPB	AL, #BSP		;Backspace?
+	JE	4$			;Yes - go delete a character
+	CMPB	AL, #'X'-40h		;Cntl-X?
+	JE	20$			;Yes - junk the whole buffer
+	MOVL	EDI, inpntr
+	CMPB	AL, #' '
+	JL	12$
+	MOVB	[EDI], AL
+	INCL	inpntr
+	CALL	cmdecho
+	INCB	inpos
+	DECB	incnt
+	JE	12$
+2$:	PUSHL	#0			;Allow signals now
+	CALL	svcSchSetLevel##
+	JMP	trmloop
+
+;Here with backspace - delete character from buffer
+
+4$:	CMPB	incnt, #13t		;Anything there?
+	JAE	2$			;No - ignore this
+	INCB	incnt			;Yes - remove one character
+	DECL	inpntr
+	DECB	inpos
+	MOVB	AL, #' '		;Erase it from the screen
+	CALL	cmdecho
+	MOVB	AL, #0
+	CALL	cmdecho
+	JMP	2$			;Continue
+
+;Here with complete command - interrupts are disabled
+
+12$:	MOVL	EDI, inpntr		;Put a null at the end
+	MOVB	[EDI], #0	
+	MOVL	ESI, #inbufr		;Point to the input buffer
+14$:	CALL	getcmdchr		;Get command character
+	JE	20$			;If null command, just clear line
+	CMPB	AL, #'I'		;Interval command?
+	JE	cmdintv			;Yes
+	CMPB	AL, #'B'		;Begin command?
+	JE	cmdbegin		;Yes
+	CMPB	AL, #'K'		;Kill command?
+	JE	cmdkill.S		;Yes
+	CMPB	AL, #'Q'		;Quit command?
+	JE	cmdquit.S		;Yes
+	MOVL	EDI, #bdcmmsg		;No - complain
+	MOVB	inpos, #23t
+16$:	PUSHL	#0			;Allow signals now
+	CALL	svcSchSetLevel##
+	JMP	cmdlp2
+
+;Here for quit command
+
+cmdquit:PUSHL	#DH_STDTRM		;Give final message
+	PUSHL	#quitmsg
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#0			;And exit
+	CALL	svcSchExit##
+
+;Here for kill command
+
+cmdkill:CALL	getcmdnum
+	CMPB	AL, #'.'
+	JNE	22$
+	CMPL	EDX, #0FFFFh
+	JA	22$
+	MOVW	procid+2, DX
+	CALL	getcmdval
+	JC	22$
+	CMPL	EAX, maxproc
+	JAE	22$
+	MOVW	procid+0, AX
+	MOVL	EAX, procid		;Is he trying to kill this process?
+	CMPL	EAX, ourpid
+	JE	22$			;Yes - don't allow that
+	PUSHL	#TC_KILL<24t
+	MOVL	EAX, procid
+	BTSL	EAX, #31t
+	PUSHL	EAX
+	CALL	svcSchKill##
+	TESTL	EAX, EAX
+	JNS	20$
+	PUSHL	EAX
+	PUSHL	#02h
+	PUSHL	#killstr
+	CALL	svcSysErrMsg##
+	MOVW	killend, #', '
+	MOVL	EDI, #killmsg
+	MOVB	inpos, #19t
+	JMP	16$
+
+;Here for begin command
+
+cmdbegin:
+	CALL	getcmdval		;Get decimal value
+	JC	22$
+	CMPL	EAX, maxbgn
+	JBE	17$
+	MOVL	EAX, maxbgn
+17$:	MOVL	begin, EAX
+	MOVL	ECX, nproc
+	MOVL	ESI, #lpdata
+18$:	MOVB	lp_dirty[ESI], #1
+	ADDL	ESI, #lp_SIZE
+	LOOP	ECX, 18$
+	JMP	force
+
+;Here for interval command
+
+cmdintv:CALL	getcmdval		;Get decimal value
+	JC	22$			;If error
+	CALL	setintr			;Set new interval
+	JC	24$			;If error
+20$:	PUSHL	#0			;Allow interrupts now
+	CALL	svcSchSetLevel##
+	JMP	cmdloop
+
+22$:	MOVL	EDI, #bdnmmsg
+	MOVB	inpos, #21t
+	JMP	16$
+
+24$:	MOVL	EDI, #clkemsg
+	MOVB	inpos, #23t
+	JMP	16$
+.PAGE
+;Subroutine to set new time interval
+;	c{EAX} = Interval in seconds
+;	CALL	setintr
+;	C:set = Error
+;	C:clr = Normal
+
+setintr:TESTL	EAX, EAX
+	JNE	2$
+	INCL	EAX
+2$:	CMPL	EAX, #60t		;Too big?
+	JBE	4$
+	MOVL	EAX, #60t
+4$:	MOVL	interval, EAX
+	PUSHL	EAX
+	MOVL	EDI, #buffer
+
+	MOVL	[EDI], #0x3B325B1B	;qqqqqq
+	MOVL	4[EDI], #0x343B3033
+	MOVW	8[EDI], #0x6D36
+	ADDL	EDI, #10t
+
+	MOVB	BL, #2
+	MOVB	BH, #' '
+	CALL	putval
+	MOVW	DX, #HD1_INTRV
+	MOVL	ESI, #hl1vp
+	CALL	outbfr
+
+	PUSHL	alrmhndl		;Clear the current alarm
+	CALL	svcSchClrAlarm##
+
+	POPL	EAX
+	MOVL	ECX, #ST_SECOND
+	MULL	ECX
+	ORL	EDX, #0x80000000
+	PUSHL	#VECT_ALARM		;Request repeated alarm interrupt
+	PUSHL	#0
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	svcSchSetAlarm##
+	MOVL	alrmhndl, EAX
+	CLC
+	RET
+.PAGE
+;Subroutine to get decimal value from command buffer
+;	c{ESI} = Pointer to command buffer
+;	CALL	getcmdval
+;	C:set = Error
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getcmdval:
+	CALL	getcmdnum
+	CMPB	AL, #0
+	JNE	2$
+	MOVL	EAX, EDX
+	RET
+
+2$:	STC
+	RET
+
+;Subroutine to get decimal number from command buffer
+;	c{ESI} = Pointer to command buffer
+;	CALL	getcmdnum
+;	c(AL)  = Stopper character
+;	c{EDX} = Value
+
+getcmdnum:
+	CLRL	EDX			;Initialize value
+4$:	CALL	getcmdchr
+	JE	8$
+	CMPB	AL, #' '
+	JE	4$
+	CMPB	AL, #HT
+	JE	4$
+6$:	CMPB	AL, #'0'		;Digit?
+	JB	8$			;No
+	CMPB	AL, #'9'
+	JA	8$
+	ANDL	EAX, #0x0F		;Yes - get value
+	IMULL	EDX, #10t
+	ADDL	EDX, EAX
+	CALL	getcmdchr
+	JNE	6$
+8$:	RET
+
+;Subroutine to get next command character
+;	c{ESI} = Pointer to buffer
+;	CALL	getcmdchr
+;	Z:set = End of buffer
+;	Z:clr = Character available
+;	  c(AL) = Character
+
+getcmdchr:
+	LODSB	[ESI]			;Get command character
+	CMPB	AL, #'a'		;Lower case?
+	JB	18$			;No
+	SUBB	AL, #'a'-'A'		;Yes - change to upper case
+18$:	TESTB	AL, AL			;Set Z if end
+	RET
+.PAGE
+memfail:MOVL	EDI, #memfmsg
+	JMP	fail2
+
+;Here if error while linking to system memory
+
+lnkfail:MOVL	EDI, #lnkfmsg
+	JMP	fail2
+
+trmfail:MOVL	EDI, #trmfmsg
+	JMP	fail2
+
+;Here if error while setting up clock interrupt
+
+clkfail:MOVL	EDI, #clkfmsg
+fail2:	PUSHL	EAX			;Stack error code
+	PUSHL	#DH_STDERR
+	PUSHL	#fl1msg
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#DH_STDERR
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#DH_STDERR
+	PUSHL	#fl2msg
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#3			;Get error message (error code value
+	MOVL	EDI, #buffer		;  is on the stack)
+	PUSHL	EDI
+	CALL	svcSysErrMsg##
+fail4:	PUSHL	#DH_STDERR
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#DH_STDERR
+	PUSHL	#crlfmsg
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#1
+	CALL	svcSchExit##
+.PAGE
+	.SBTTL	Main display loop
+
+;This is the main display loop - get here as result of clock interrupt
+
+mainloop:
+	PUSHAL				;Save registers
+	PUSHL	DS			;Set up our segment registers
+	POPL	ES
+	MOVL	ESI, #hl2vp
+	MOVL	EAX, procdata+sspy_memavail ;Get available user pages in system
+	CMPL	curavail, EAX		;Has it changed?
+	JE	2$			;No
+	MOVL	curavail, EAX		;Yes - save new value
+	MOVW	DX, #HD2_FREE		;Display it
+	MOVB	BL, #6			;Get field width
+	CALL	outmem
+2$:	MOVL	EAX, procdata+sspy_memuser ;Get total user pages in system
+	CMPL	curuser, EAX		;Has it changed?
+	JE	4$			;No
+	MOVL	curuser, EAX		;Yes - save new value
+	MOVW	DX, #HD2_TOTAL		;Display it
+	MOVB	BL, #6			;Get field width
+	CALL	outmem
+4$:	MOVL	EAX, procdata+sspy_forktime+0 ;Get total IO time
+	MOVL	EDX, procdata+sspy_forktime+4
+	MOVL	ECX, EAX
+	MOVL	EBX, EDX
+	SUBL	ECX, curftime+0
+	SBBL	EBX, curftime+4
+	JNE	6$
+	CMPL	ECX, #1193t
+	JB	8$
+6$:	MOVL	curftime+0, EAX		;Yes - save new value
+	MOVL	curftime+4, EDX
+	MOVW	CX, #HD2_DEVFT
+	MOVB	BL, #8
+	MOVL	ESI, #hl2vp
+	CALL	outtime
+8$:	MOVL	EAX, procdata+sspy_idlecur
+	CMPL	EAX, idleval
+	JE	procloop
+	MOVL	idleval, EAX
+	CLRL	EDX
+	DIVL	interval
+	MOVB	BH, #' '		;Get fill character
+	MOVB	BL, #10t
+	MOVL	EDI, #buffer
+	CALL	putval			;Put value into buffer
+	MOVW	DX, #HD2_NCNT
+	CALL	outbfr			;Go output the string
+.PAGE
+;Now scan through the processes - The spy area will generally not be completely
+;  allocated for all possible processes. It will always include data for the
+;  process indicted in sspy_prochigh. The spy allocations are NOT expanded by
+;  the kernel when additional spy pages are allocated. We must check for this
+;  and remap the spy pages if we don't have enough. Once spy pages are allocated
+;  they are never deallocated.
+
+procloop:
+	MOVL	EAX, procdata+sspy_prochigh ;Do we have all of the process spy
+	INCL	EAX
+	CMPL	EAX, procmaph		    ;  area mapped?
+	JB	2$			;Yes
+	PUSHL	#procdata		;No - map it again
+	PUSHL	#0
+	PUSHL	#0
+	CALL	svcMemChange##
+	PUSHL	#1
+	PUSHL	#procdata
+	CALL	svcMemSpy##
+	TESTL	EAX, EAX
+	JS	lnkfail
+	SHRL	EAX, #pspy_SHIFT
+	MOVL	procmaph, EAX
+2$:	MOVL	EAX, procdata+sspy_thrdhigh ;Do we have all of the thread spy
+	CMPL	EAX, thrdmaph		    ;  area mapped?
+	JB	6$			;Yes
+	CMPL	thrdmaph, #0		;No
+	JE	4$
+	PUSHL	#thrddata		;Give it up if we have any mapped now
+	PUSHL	#0
+	PUSHL	#0
+	CALL	svcMemChange##
+4$:	PUSHL	#2			;Map it again
+	PUSHL	#thrddata
+	CALL	svcMemSpy##
+	TESTL	EAX, EAX
+	JS	lnkfail
+	SHRL	EAX, #tspy_SHIFT
+	MOVL	thrdmaph, EAX
+6$:	MOVL	EAX, prochigh		;Get highest process we have displayed
+	CMPL	EAX, procdata+sspy_prochigh ;Is there a higher one active now?
+	JAE	10$			;No
+	MOVL	EAX, procdata+sspy_prochigh ;Yes
+10$:	INCL	EAX			;Get the number processes to display
+	SUBL	EAX, begin
+	JLE	slotsdn			;If nothing to do this time!
+	CMPL	EAX, nproc		;Too many to fit on the screen?
+	JBE	14$			;No
+	MOVL	EAX, nproc		;Yes - just do as many as will fit
+14$:	MOVL	count, EAX
+	MOVL	ESI, begin		;Get beginning process
+	MOVL	procnum, ESI
+	IMULL	ESI, #lp_SIZE		;Get address for our data for it
+	ADDL	ESI, #lpdata
+	MOVL	prochigh, #1
+.PAGE
+loop2:	MOVL	EBX, lp_pspy[ESI]
+	CMPB	lp_dirty[ESI], #0	;Are we forcing an update?
+	JE	4$			;No
+	MOVB	lp_dirty[ESI], #0	;Yes - but just once
+	JMP	update
+
+;Here if not forcing an update
+
+4$:	MOVZBL	EAX, pspy_state[EBX]	;Has the process's state changed?
+	CMPB	AL, lp_state[ESI]
+	JE	6$			;No
+
+	CMPB	lp_state[ESI], #PSSTA_NONE ;Yes - was it idle before?
+	MOVB	lp_state[ESI], AL
+	JE	update			;Yes - just display it (the slot will
+					;  have been cleared when it went idle)
+	TESTL	EAX, EAX		;No - is it idle now?
+	JNE	update			;No - go update it
+	CALL	clrslot			;Yes - clear display and data for this
+					;  slot
+	JMP	nextslot
+
+;Here if the process state has not changed
+
+6$:	TESTL	EAX, EAX		;Is the slot idle?
+	JE	nextslot		;Yes - nothing needed here
+.PAGE
+;Here if to update the display for an active process slot
+
+update:	CMPB	pspy_type[EBX], #PDATYPE_PDA ;Is it a process
+	JE	updproc			;Yes
+					;No - must be a shared section
+
+.IF NE 0
+
+	MOVL	EAX, FS:sdaName##+16t	;Has the name changed?
+	MOVL	EBX, FS:sdaName##+20t
+	MOVL	ECX, FS:sdaName##+24t
+	MOVL	EDX, FS:sdaName##+28t
+	CMPL	lp_name+0t[ESI], EAX
+	JNE	6$.S			;Yes
+	CMPL	lp_name+4t[ESI], EBX
+	JNE	6$.S
+	CMPL	lp_name+8t[ESI], ECX
+	JNE	6$.S
+	CMPL	lp_name+12t[ESI], EDX
+	JE	chksstp.S		;No
+6$:	MOVL	lp_name+0t[ESI], EAX	;Store new name
+	MOVL	lp_name+4t[ESI], EBX
+	MOVL	lp_name+8t[ESI], ECX
+	MOVL	lp_name+12t[ESI], EDX
+	PUSHL	ESI
+	ADDL	ESI, #lp_name
+	MOVL	EDI, #buffer
+	MOVL	ECX, #16t
+8$:	LODSB	[ESI]
+	TESTB	AL, AL
+	JE	10$.S
+	STOSB	[EDI]
+	LOOP	ECX, 8$
+10$:	MOVB	AL, #' '
+	RSTOSB	[EDI]
+	MOVW	DX, #COL_NAME
+	POPL	ESI
+	CALL	outbfr
+
+chksstp:MOVZBL	EBX, FS:sdaType##	;Get section type
+	CMPB	lp_type[ESI], BL	;Has it changed?
+	JE	chksssz.S		;No
+	MOVB	lp_type[ESI], BL	;Yes - save new value
+	CMPB	BL, #3
+	JBE	12$.S
+	MOVB	BL, #0
+12$:	MOVZBL	EAX, sstype[EBX]	;Get letter
+	MOVL	EDI, #buffer
+	MOVL	[EDI], EAX		;And display it
+	MOVW	DX, #COL_TYPE
+	CALL	outstr
+
+chksssz:MOVL	EAX, FS:sdaTotalSize##	;Get size of section
+	CMPL	lp_wssz[ESI], EAX	;Has it changed?
+	JE	chkssos.S		;No
+	MOVL	lp_wssz[ESI], EAX	;Yes - save new value
+	MOVW	DX, #COL_WSSZ		;Display it
+	CALL	outmem5
+
+chkssos:MOVL	EAX, FS:sdaSdaSize##	;Get overhead pages used
+	CMPL	lp_omsz[ESI], EAX	;Has it changed?
+	JE	chkssnu.S		;No
+	MOVL	lp_omsz[ESI], EAX	;Yes - save new value
+	MOVW	DX, #COL_OMSZ		;Display it
+	MOVB	BL, #3
+	CALL	outmem
+
+chkssnu:MOVL	EAX, FS:sdaUseCnt##	;Get use count for section
+	CMPL	lp_ctime[ESI], EAX	;Has it changed?
+	JE	nextslot		;No
+	MOVL	lp_ctime[ESI], EAX	;Yes - save new value
+	MOVB	BL, #4
+	MOVB	BH, #' '		;Get fill character
+	MOVL	EDI, #buffer
+	CALL	putval			;Put value into buffer
+	MOVL	EDX, #COL_USE
+	CALL	outbfr			;Output the string
+
+.ENDC
+
+	JMP	nextslot
+.PAGE
+;Here if this slot contains an active process
+
+updproc:MOVL	EAX, procnum
+	CMPL	prochigh, EAX
+	JAE	2$
+	MOVL	prochigh, EAX
+2$:	MOVZWL	EAX, pspy_pid+2[EBX]	;Has the PID changed?
+	CMPW	lp_pid+2[ESI], AX
+	JE	chkpar			;No
+	PUSHL	EAX			;Yes
+	CALL	clrslot			;Clear out the data for this slot
+	POPL	EAX
+	MOVW	lp_pid+2[ESI], AX	;Store new value
+	MOVB	BL, #5			;Output 5 digits
+	MOVL	EDI, #buffer+10t
+	MOVB	BH, #' '		;Get fill character
+	CALL	putval
+	MOVL	EDX, #COL_PSEQ		;Get column position
+	CALL	outbfrca
+
+;;;;;	CALL	outseq5			;Display new value
+
+	MOVL	EBX, lp_pspy[ESI]
+
+chkpar:	MOVZWL	EAX, pspy_parpid[EBX]
+	CMPL	lp_parpid[ESI], EAX
+	JE	chkses			;No
+	MOVL	lp_parpid[ESI], EAX	;Yes - store new value
+	MOVL	EDX, #COL_PAR
+	CALL	outpnm2			;Display new value
+	MOVL	EBX, lp_pspy[ESI]
+
+chkses:	MOVZWL	EAX, pspy_sespid[EBX]	;Has the session PID changed?
+	CMPL	lp_sespid[ESI], EAX
+	JE	chkname			;No
+	MOVL	lp_sespid[ESI], EAX	;Yes - store new value
+	MOVL	EDX, #COL_GRP
+	CALL	outpnm2			;Display new value
+	MOVL	EBX, lp_pspy[ESI]
+
+chkname:MOVL	EAX, pspy_name+0[EBX]	;Has the name changed?
+	MOVL	EDX, pspy_name+4[EBX]
+	MOVL	ECX, pspy_name+8[EBX]
+	CMPL	lp_name+0[ESI], EAX
+	JNE	6$			;Yes
+	CMPL	lp_name+4[ESI], EDX
+	JNE	6$
+	CMPL	lp_name+8[ESI], ECX
+	JE	chktrm			;No
+6$:	MOVL	lp_name+0[ESI], EAX	;Store new name
+	MOVL	lp_name+4[ESI], EDX
+	MOVL	lp_name+8[ESI], ECX
+	PUSHL	ESI
+	ADDL	ESI, #lp_name
+	MOVL	EDI, #buffer
+	MOVL	ECX, #12t
+8$:	LODSB	[ESI]
+	TESTB	AL, AL
+	JE	10$
+	STOSB	[EDI]
+	LOOP	ECX, 8$
+10$:	MOVB	AL, #' '
+	RSTOSB	[EDI]
+	MOVW	DX, #COL_NAME
+	POPL	ESI
+	CALL	outbfr
+	MOVL	EBX, lp_pspy[ESI]
+
+chktrm:	MOVZWL	EAX, pspy_contrm[EBX]
+	CMPW	lp_contrm[ESI], AX
+	JE	chkumtd
+	MOVW	lp_contrm[ESI], AX
+
+;Display the terminal name - To conserve screen space, the name is displayed
+;  as Tnn (for TRMnn), as Pnn (for PCNnn), or as -nn (for detached terminal).
+;  The kernel stores the terminal name in the spy area as two bytes. The low
+;  order byte is the binary unit number and the high order byte is the letter
+;  we will display.
+
+	TESTL	EAX, EAX		;Does it have a console?
+	JNE	12$			;No
+	MOVL	[EDI], #'    '
+	MOVL	4[EDI], #'  '
+	ADDL	EDI, #6
+	JMP	24$
+
+;Here if have a console
+
+12$:	MOVL	EDI, #buffer+1
+	MOVB	-1[EDI], #'T'		;Assume a real terminal
+	CMPB	AH, #0xFF		;Right?
+	JNE	14$			;Yes
+	MOVB	-1[EDI], #'P'		;No - it's a PCN
+14$:	MOVZBL	EAX, AL			;Store primary unit number
+	CALL	twodigv
+	MOVZBL	EAX, lp_contrm+1[ESI]	;Get secondary unit number
+	CMPB	AL, #0xFF		;Terminal?
+	JE	20$			;No
+	MOVB	[EDI], #'S'		;Yes
+	INCL	EDI
+	CALL	twodigv			;Store secondary unit number
+	MOVL	[EDI], #'    '
+	INCL	EDI
+	CMPB	lp_contrm+1[ESI], #10t
+	JAE	22$
+	INCL	EDI
+	JMP	22$
+
+;Here if it's a PCN
+
+20$:	MOVL	[EDI], #'    '
+	ADDL	EDI, #3
+22$:	CMPB	lp_contrm+0[ESI], #10t
+	JAE	24$
+	INCL	EDI
+24$:	MOVW	DX, #COL_TRM
+	CALL	outbfr
+	MOVL	EBX, lp_pspy[ESI]
+
+;Here to check the number of user mode threads
+
+chkumtd:MOVZBL	EAX, pspy_umthds[EBX]
+	CMPB	lp_umthds[ESI], AL
+	JE	chkiotd
+	MOVB	lp_umthds[ESI], AL
+	MOVL	EDX, #COL_UMTDS
+	CALL	outpnm2			;Display new value
+	MOVL	EBX, lp_pspy[ESI]
+
+;Here to check the number of user mode threads
+
+chkiotd:MOVZBL	EAX, pspy_iothds[EBX]
+	CMPB	lp_iothds[ESI], AL
+	JE	chkque
+	MOVB	lp_iothds[ESI], AL
+	MOVL	EDX, #COL_IOTDS
+	CALL	outpnm2			;Display new value
+	MOVL	EBX, lp_pspy[ESI]
+
+;Here to check the queue
+
+chkque:	MOVZWL	EAX, pspy_tidtbl+0[EBX]
+	SHLL	EAX, #tspy_SHIFT
+	MOVZBL	EAX, thrddata+tspy_quenum[EAX] ;Get current queue for the base
+					       ;  thread
+	CMPB	AL, lp_quenum[ESI]	;Has it changed?
+	JE	chkws			;No
+	MOVB	lp_quenum[ESI], AL	;Yes - save new value
+	MOVL	EAX, procdata+sspy_quenames[EAX*4] ;Get the queue name
+	MOVL	EDI, #buffer
+	MOVL	[EDI], EAX
+	MOVW	DX, #COL_QUE
+	CALL	outstr
+	MOVL	EBX, lp_pspy[ESI]
+
+chkws:	MOVL	EAX, pspy_wspages[EBX]	;Get blocks allocated
+	CMPL	lp_wssz[ESI], EAX	;Has it changed?
+	JE	chkum			;No
+	MOVL	lp_wssz[ESI], EAX	;Yes - save new value
+	MOVW	DX, #COL_WSSZ		;Display it
+	MOVB	BL, #6
+	CALL	outmem
+	MOVL	EBX, lp_pspy[ESI]
+
+chkum:	MOVL	EAX, pspy_umpages[EBX]	;Get blocks allocated
+	CMPL	lp_umsz[ESI], EAX	;Has it changed?
+	JE	chkom			;No
+	MOVL	lp_umsz[ESI], EAX	;Yes - save new value
+	MOVW	DX, #COL_UMSZ		;Display it
+	MOVB	BL, #6
+	CALL	outmem
+	MOVL	EBX, lp_pspy[ESI]
+
+chkom:	MOVL	EAX, pspy_ompages[EBX]	;Get overhead pages used
+	CMPL	lp_omsz[ESI], EAX	;Has it changed?
+	JE	chkprun			;No
+	MOVL	lp_omsz[ESI], EAX	;Yes - save new value
+	MOVW	DX, #COL_OMSZ		;Display it
+	MOVB	BL, #3
+	CALL	outmem
+	MOVL	EBX, lp_pspy[ESI]
+
+chkprun:MOVL	EAX, pspy_usrtime+0[EBX] ;Get run time
+	MOVL	EDX, pspy_usrtime+4[EBX]
+	CMPL	EAX, pspy_usrtime+0[EBX] ;Check for race
+	JNE	chkprun
+	MOVL	ECX, EAX
+	MOVL	EBX, EDX
+	SUBL	ECX, lp_ptime+0[ESI]
+	SBBL	EBX, lp_ptime+4[ESI]
+	JNE	30$
+	CMPL	ECX, #1193t
+	JB	32$
+30$:	MOVL	lp_ptime+0[ESI], EAX	;Yes - save new value
+	MOVL	lp_ptime+4[ESI], EDX
+	MOVW	CX, #COL_PRUN
+	MOVB	BL, #6
+	CALL	outtime
+32$:	MOVL	EBX, lp_pspy[ESI]
+
+chkiorn:MOVL	EAX, pspy_iotime+0[EBX]	;Get IO time
+	MOVL	EDX, pspy_iotime+4[EBX]
+	CMPL	EAX, pspy_iotime+0[EBX]	;Check for race
+	JNE	chkiorn
+	MOVL	ECX, EAX
+	MOVL	EBX, EDX
+	SUBL	ECX, lp_ftime+0[ESI]
+	SBBL	EBX, lp_ftime+4[ESI]
+	JNE	36$
+	CMPL	ECX, #1193t
+	JB	nextslot
+36$:	MOVL	lp_ftime+0[ESI], EAX	;Yes - save new value
+	MOVL	lp_ftime+4[ESI], EDX
+	MOVW	CX, #COL_FRUN
+	MOVB	BL, #4
+	CALL	outtime
+
+nextslot:
+	ADDL	ESI, #lp_SIZE		;Bump pointer
+	INCL	procnum			;Bump process number
+	DECL	count			;More to do?
+	JNE	loop2			;Yes - continue
+slotsdn:MOVL	EAX, procdata+sspy_clkttl+0 ;No - display total time
+	MOVL	EDX, procdata+sspy_clkttl+4
+	CMPL	EAX, procdata+sspy_clkttl+0 ;Check for race
+	JNE	slotsdn
+	MOVW	CX, #HD1_TTLT
+	MOVB	BL, #8
+	MOVL	ESI, #hl1vp
+	CALL	outtime
+42$:	MOVL	EAX, procdata+sspy_schedtime+0 ;Display scheduler time
+	MOVL	EDX, procdata+sspy_schedtime+4
+	CMPL	EAX, procdata+sspy_schedtime+0 ;Check for race
+	JNE	42$
+	MOVW	CX, #HD1_SCHT
+	MOVB	BL, #8
+	CALL	outtime
+	MOVB	AL, #0			;Put cursor back in the command line
+	CALL	cmdecho
+	POPAL				;Restore registers
+	INT	knl_DISMISS##		;And dismiss clock interrupt
+.PAGE
+;Subroutine to echo command character
+;	c(AL) = Character to echo
+;	CALL	cmdecho
+
+cmdecho:MOVB	echostr+7, AL		;Store character in string
+	MOVZBL	EAX, inpos		;Get position
+	CLRL	EDX
+	DIVL	lit10
+	ADDB	AL, #'0'
+	MOVB	echostr+4, AL		;Store position in string
+	ADDB	DL, #'0'
+	MOVB	echostr+5, DL
+	PUSHL	#DH_STDTRM		;Output the string
+	PUSHL	#echostr
+	PUSHL	#0
+	CALL	svcIoOutString##
+4$:	RET
+.PAGE
+;Subroutine to store value in buffer as 1 or 2 decimal digits
+;	c{EAX} = Value
+;	c{EDI} = Address of buffer
+;	CALL	twodigv
+
+twodigv:CLRL	EDX			;Get the two digits
+	DIVL	lit10
+	TESTL	EAX, EAX
+	JE	4$
+	ADDB	AL, #'0'
+	MOVB	[EDI], AL
+	INCL	EDI
+4$:	LEAL	EAX, '0'[EDX]
+	MOVB	[EDI], AL
+	INCL	EDI
+	RET
+.PAGE
+;Subroutine to output value as amount of memory in 5 digit field
+
+outmem5:MOVB	BL, #5			;Get field width
+outmem:	PUSHL	EDX
+	IMULL	EAX, #4			;Change to K
+	MOVB	BH, #' '		;Get fill character
+	MOVL	EDI, #buffer+10t
+	CALL	putval			;Put value into buffer
+	POPL	EDX
+	JMP	outbfrca.S		;Go output the string
+
+;Subroutine to store 32 bit value as decimal number in fixed field into buffer
+;	c{EAX} = Value
+;	c(BL)  = Field width
+;	c(BH)  = Fill character
+;	CALL	putval
+
+putval:	MOVB	CL, #0
+2$:	CLRL	EDX
+	DIVL	lit10
+	PUSHL	EDX
+	INCB	CL
+	TESTL	EAX, EAX
+	JNE	2$
+	MOVB	CH, BL
+	SUBB	CH, CL
+	JLE	6$
+4$:	MOVB	[EDI], BH
+	INCL	EDI
+	DECB	CH
+	JNE	4$
+6$:	POPL	EAX
+	ADDB	AL, #'0'
+	STOSB	[EDI]
+	DECB	CL
+	JNE	6$
+	RET
+.PAGE
+;Subroutine to output PID as 2 left justified digits
+;	c{EAX} = Process number
+;	CALL	outpnum
+
+outpnum:CLRL	EDX
+	IDIVL	lit10
+	ADDB	DL, #'0'
+	MOVL	EDI, #buffer+10t+2
+	TESTL	EAX, EAX		;Have 2 digits?
+	JNE	2$			;Yes
+	MOVB	-2[EDI], DL		;No - single digit
+	MOVB	-1[EDI], #' '
+	JMP	4$
+
+;Here if have 2 digits
+
+2$:	ADDB	AL, #'0'
+	MOVB	-2[EDI], AL
+	MOVB	-1[EDI], DL
+4$:	MOVL	EDX, #COL_PNUM
+	JMP	outbfrca
+.PAGE
+;Subroutine to output PID as 2 decimal digits
+;	c{EAX} = PID
+;	c[DX]  = Horizontal position on line (2 ASCII characters)
+;	CALL	outpnm2
+
+outpnm2:PUSHL	EDX
+	MOVB	BL, #2			;Output 2 digits
+	MOVL	EDI, #buffer+10t
+	MOVB	BH, #' '		;Get fill character
+	CALL	putval
+	POPL	EDX
+					;Fall into outbfr on next page
+.PAGE
+outbfrca:
+	MOVL	buffer+0, #0x3B325B1B	;"<ESC>%2;30;46m"
+	MOVL	buffer+4, #0x343B3033
+	MOVW	buffer+8, #0x6D36
+
+;Subroutine to output string in buffer
+;	c[DX]  = Horizontal position on line (2 ASCII characters)
+;	c{EDI} = Address of end of string
+;	CALL	outbfr
+
+outbfr:	MOVL	[EDI], #0		;Put null at end of string
+	MOVL	EDI, #buffer		;Get offset of buffer
+					;Fall into outstr
+
+;Subroutine to output string
+;	c[DX]  = Horizontal position on line (2 ASCII characters)
+;	c{EDI} = Offset of string
+;	CALL	outstr
+
+outstr:	CMPB	[EDI], #0		;Null string?
+	JE	4$.S			;Yes - forget it!
+	MOVW	posstr+5, DX		;Store horizontal position
+	MOVL	EAX, [ESI]		;Get vertical position
+	MOVW	posstr+2, AX		;And store it
+	PUSHL	#DH_STDOUT
+	PUSHL	#posstr
+	PUSHL	#0
+	CALL	svcIoOutString##
+	PUSHL	#DH_STDOUT
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	svcIoOutString##
+4$:	RET
+.PAGE
+;Subroutine to output time value
+;	c{EDX,EAX} = Time value
+;	c(BL)      = Field width
+;	c[CX]      = Position
+;	CALL	outtime
+
+outtime:PUSHL	ECX
+	PUSHL	EBX
+	PUSHL	EDX			;Change ticks to seconds and fractions
+	PUSHL	EAX
+	MOVL	ECX, #0xF42A56CA
+	MULL	ECX
+	MOVL	EBX, EDX
+	CLRL	EDI
+	MOVL	EAX, 4[ESP]
+	MULL	ECX
+	ADDL	EBX, EAX
+	ADCL	EDI, EDX
+	MOVL	ECX, #0x0E0F98E2
+	POPL	EAX
+	MULL	ECX
+	ADDL	EBX, EAX
+	ADCL	EDI, EDX
+	POPL	EAX
+	MULL	ECX
+	ADDL	EAX, EDI
+	ADCL	EDX, #0
+	SHLDL	EDX, EAX, #16t
+	SHLDL	EAX, EBX, #16t
+	POPL	EBX			;Restore field width
+	PUSHL	EDX			;Save seconds
+	MULL	lit1000			;Change fractions to milliseconds
+	POPL	EAX			;Get seconds
+	PUSHL	EDX			;Save milliseconds
+	MOVL	EDI, #buffer
+
+	MOVL	[EDI], #0x3B325B1B	;qqqqqq
+	MOVL	4[EDI], #0x343B3033
+	MOVW	8[EDI], #0x6D36
+	ADDL	EDI, #10t
+
+	MOVB	BH, #' '
+	CALL	putval
+	MOVB	[EDI], #'.'
+	INCL	EDI
+	POPL	EAX
+	MOVB	BL, #3
+	MOVB	BH, #'0'
+	CALL	putval
+	POPL	EDX
+	JMP	outbfr
+
+.PAGE
+clrslot:CLRL	EAX
+	MOVL	lp_name+0[ESI], EAX
+	MOVW	lp_pid+2[ESI], AX
+	MOVL	lp_parpid[ESI], EAX
+	MOVL	lp_sespid[ESI], EAX
+	MOVW	lp_contrm[ESI], AX
+	MOVB	lp_state[ESI], AL
+	MOVB	lp_quenum[ESI], AL
+	DECL	EAX
+	MOVB	lp_type[ESI], AL
+	MOVB	lp_iothds[ESI], AL
+	MOVB	lp_umthds[ESI], AL
+	MOVL	lp_wssz[ESI], EAX
+	MOVL	lp_umsz[ESI], EAX
+	MOVL	lp_omsz[ESI], EAX
+	MOVL	lp_ctime[ESI], EAX
+	MOVL	lp_ptime+0[ESI], #0xFFFFF000
+	MOVL	lp_ptime+4[ESI], EAX
+	MOVL	lp_ftime+0[ESI], #0xFFFFF000
+	MOVL	lp_ftime+4[ESI], EAX
+	MOVW	DX, #'01'		;Output string to clear line
+	MOVL	EDI, #clrlin
+	CALL	outstr
+	MOVL	EAX, lp_pid[ESI]	;Put process number back on line
+	ADDL	EAX, begin
+	MOVL	EDX, #COL_PNUM
+	JMP	outpnum
+.PAGE
+	.SBTTL	Data
+
+	.PSECT	sysdis_data_p
+	.STACK	stack
+
+sheight: .LONG	0		;Screen height
+interval:.LONG  1		;Display interval
+begin:   .LONG  0
+count:	 .LONG	0
+nproc:	 .LONG	0		;Number of processes to display
+maxproc: .LONG  0
+maxbgn:  .LONG  0
+procnum: .LONG	0		;Number of process being updated
+prochigh:.LONG	0		;Highest process number updated
+ourpid:  .LONG  0
+procid:  .LONG  0
+alrmhndl:.LONG	0		;Alarm handle
+hours:	 .LONG	0
+minutes: .LONG	0
+idleval: .LONG  0
+curftime:.LONG	0, 0		;Current total device fork level time
+curavail:.LONG	-1
+curuser: .LONG	-1
+inpntr:	 .LONG	0
+procmaph:.LONG	0		;Highest process number we have mapped
+thrdmaph:.LONG	0		;Highest thread number we have mapped
+trmdata: .BLKB	dm_SIZE		;Data block for svcTrmDspMode system call
+
+	.MOD	4
+trmsetparm:				;Parameter list for setting terminal
+	.BYTE	PAR$SET|REP_HEXV, 4	;  parameters
+	.WORD	IOPAR_TRMCINPMODE
+	.LONG	0xFFFFFFFF
+
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_TRMSINPMODE
+	.LONG	TIM$IMAGE
+
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_TRMCOUTMODE
+	.LONG	0xFFFFFFFF
+
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_TRMSOUTMODE
+	.LONG	TOM$IMAGE
+
+	.BYTE	0
+
+buffer:	.BLKB	80t
+	.MOD	4
+	.BLKL	256t
+stack:
+
+lit10:	.LONG	10t
+lit24:	.LONG	24t
+lit60:	.LONG	60t
+lit1000:.LONG	1000t
+
+inpos:	.BYTE	0
+incnt:	.BYTE	0
+inbufr:	.BLKB	34t			;Command input buffer
+
+clrcmd:	.ASCII	{ESC}"[2f"{ESC}"[1;37;44m "{ESC}"[2;30;46m "
+	.ASCIZ	"Cmd:                             "{ESC}"[2;8f"
+bdcmmsg:.ASCII	{ESC}"[2f"{ESC}"[1;37;44m "{ESC}"[2;30;46m ? Bad command, "
+	.ASCIZ	"Cmd:              "{ESC}"[2;23f"
+bdnmmsg:.ASCII	{ESC}"[2f"{ESC}"[1;37;44m "{ESC}"[2;30;46m ? Bad value, "
+	.ASCIZ	"Cmd:                "{ESC}"[2;21f"
+clkemsg:.ASCII	{ESC}"[2f"{ESC}"[1;37;44m "{ESC}"[2;30;46m ? Clock error, "
+	.ASCIZ	"Cmd:              "{ESC}"[2;23f"
+killmsg:.ASCII	{ESC}"[2f"{ESC}"[1;37;44m "{ESC}"[2;30;46m ? "
+killstr:.ASCII	"{xxxxx}"
+killend:.ASCIZ	", Cmd:                   "{ESC}"[2;19f"
+
+echostr:.ASCIZ	{ESC}"[2;00f?"
+posstr:	.ASCIZ	{ESC}"[00;00f"
+clrscn:	.ASCII	{ESC}"[2;30;47m"{ESC}"[f"{ESC}"[2J"
+	.ASCII	{ESC}"[1;30;44m "{ESC}"[2;34;46m"
+	.REPT	78t
+	.BYTE	0xDF
+	.ENDR
+	.ASCII	{ESC}"[2;30;44m "
+	.ASCII	" "{ESC}"[2;30;46mCmd:                               Ttl:     "
+	.ASCII	"   0.000 Sch:        0.000  I:    "{ESC}"[2;30;44m "{CR,LF}
+	.ASCII	" "{ESC}"[2;30;46m Mem =      0k/     0k             Dev:     "
+	.ASCII	"   0.000 Null:                    "{ESC}"[1;33;44m "{CR,LF}
+	.ASCII	"     PID  Pr Sn Name         Term #THD   Que    WS    UM  OM "
+	.ASCII	" Proc time IO time "
+	.ASCII	{ESC}"[1;"
+labelp:	.ASCII	"xxf"{ESC}"[1;33;44m"
+label1:	.ASCII	" System Status Display for "
+label2:	.BLKB	36t
+
+clrlin:	.ASCII	{ESC}"[2;30;46m"{ESC}"[K"{ESC}"[1;37;44m "{ESC}"[2;30;46m     ."
+	.ASCIZ	{ESC}"[72C"{ESC}"[1;37;44m "
+
+btmlin:	.ASCII	{CR,LF,ESC}"[1;37;44m "
+
+	.ASCII	{ESC}"[2;34;46m"
+	.REPT	78t
+	.BYTE	0xDC
+	.ENDR
+	.ASCIZ	{ESC}"[1;37;44m"{ESC}"[K"
+
+
+sstext:	.ASCIZ	"sect"
+sstype:	.ASCII	"?WRC"
+trmfmsg:.ASCIZ	"Cannot initialize terminal"
+lnkfmsg:.ASCIZ	"Cannot link to system spy area"
+memfmsg:.ASCIZ	"Cannot allocate memory for local process data"
+clkfmsg:.ASCIZ	"Cannot set up clock interrupt"
+fl1msg:	.ASCIZ	{CR,LF}"? SYSDIS: "
+fl2msg:	.ASCIZ	{CR,LF}"          "
+fl3msg:	.ASCIZ	{CR,LF}
+cmermsg:.ASCII	{CR,LF}'? SYSDIS: Command error, correct usage is'
+	.ASCII	{CR,LF}'             SYSDIS {interval}'
+	.ASCIZ	{CR,LF}'          Where "interval" is an optional decimal value'
+quitmsg:.ASCII	{ESC}"[m"{ESC}"[2JSYSDIS terminated"
+crlfmsg:.ASCIZ	{CR,LF}
+
+	.MOD	4
+hl1vp:	.LONG	'02'
+hl2vp:	.LONG	'03'

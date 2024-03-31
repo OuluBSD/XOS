@@ -1,0 +1,3297 @@
+	.TITLE	system - System level SVC functions for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+
+	ONCE
+
+initsystem::
+	PUSHL	#sysccb			;Install the SYSTEM device class
+	CALL	sysIoNewClass#
+	PUSHL	#procccb		;Install the PROCESS device class
+	CALL	sysIoNewClass#
+	PUSHL	#sessionccb		;Install the SESSION device class
+	CALL	sysIoNewClass#
+	PUSHL	#accountccb		;Install the ACCOUNT device class
+	CALL	sysIoNewClass#
+	CLRL	EAX
+	RET
+
+	CODE
+.PAGE
+;Class characteristics tables for the SYSTEM device class
+
+	.ALMEX
+
+	.MOD	4
+sysdctbl:
+ CHARBGN  1, sysIoCharValues#
+ CHARENT  SYSNAME , STR  ,  , 32          , msgsysname , knlGetSysStr  , 0              , knlName#
+ CHARENT  XOSVER  , VERN ,  , 4           , msgxosver  , knlGetSysVal  , 0              , knlver#
+ CHARENT  DOSVER  , VERN ,  , 4           , msgdosver  , knlGetSysVal  , 0              , dosver#
+ CHARENT  SERNUM  , DECV ,  , 4           , msgserial  , knlGetSysVal  , 0              , serialnum#
+ CHARENT  CPUTYPE , TEXT ,  , 8           , msgcputype , getcputype    , 0              , 0
+ CHARENT  CPUVEN  , TEXT ,  , 8           , msgcpuven  , getcpuven     , 0              , 0
+ CHARENT  CPULABEL, STR  ,  , 16          , msgcpulabel, knlGetSysStr  , 0              , cpulabel#
+ CHARENT  CPUDESC , STR  ,  , 52          , msgcpudesc , knlGetSysStr  , 0              , cpudesc#
+ CHARENT  CPUBITS1, HEXV ,  , 4           , msgcpubits , knlGetSysVal  , 0              , cpubits1#
+ CHARENT  CPUBITS2, HEXV ,  , 4           , msgcpubits , knlGetSysVal  , 0              , cpubits2#
+ CHARENT  CPUBITS3, HEXV ,  , 4           , msgcpubits , knlGetSysVal  , 0              , cpubits3#
+ CHARENT  CPUBITS4, HEXV ,  , 4           , msgcpubits , knlGetSysVal  , 0              , cpubits4#
+ CHARENT  FPUTYPE , TEXT ,  , 8           , msgfputype , getfputype    , 0              , 0
+ CHARENT  LOADDATE, DT   ,  , 8           , msgloaddate, getloaddate   , 0              , 0
+ CHARENT  DFLTUSER, STR  ,  , 34          , msgdfltuser, knlGetDfltUser, knlSetDfltUser , knlSysGroup#
+ CHARENT  PROLIMIT, DECV ,  , 4           , msgprolimit, knlGetSysVal  , knlSetSysVLC   , knlProcLimit#
+ CHARENT  PROINUSE, DECV ,  , 4           , msgproinuse, knlGetSysVal  , 0              , knlProcInUse#
+ CHARENT  ALMLIMIT, DECV ,  , 4           , msgalmlimit, knlGetSysVal  , knlSetSysVal   , almlimit#
+ CHARENT  WSLIMIT , DECV ,  , 4           , msgwslimit , getmems       , setmems        , wslimit#
+ CHARENT  UMLIMIT , DECV ,  , 4           , msgumlimit , getmems       , setmems        , umlimit#
+ CHARENT  OMLIMIT , DECV ,  , 4           , msgomlimit , getmems       , setmems        , omlimit#
+ CHARENT  SELNUM  , DECV ,  , 4           , msgselnum  , knlGetSysVal  , 0              , gselnum#
+ CHARENT  SELINUSE, DECV ,  , 4           , msgselinuse, knlGetSysVal  , 0              , gselinuse#
+
+ CHARENT  XMBAVAIL, DECV ,  , 44          , msgxmbavail, knlDcGetLong# , 0              , xmbcnt#
+ CHARENT  XMBAMAX , DECV ,  , 44          , msgxmbamax , knlDcGetLong# , knlDcSetLongRpt, xmbchwm#
+ CHARENT  XMBINUSE, DECV ,  , 44          , msgxmbinuse, knlDcGetLong# , 0              , xmbinuse#
+ CHARENT  XMBMAX  , DECV ,  , 44          , msgxmbmax  , knlDcGetLong# , knlDcSetLongRpt, xmbiuhwm#
+ CHARENT  XMBRESRV, DECV ,  , 4           , msgxmbresrv, knlGetSysVal  , knlSetSysVal   , xmbreserve#
+
+ CHARENT  XNCAVAIL, DECV ,  , 24          , msgxncavail, knlDcGetLong# , 0              , ncxmbcnt#
+ CHARENT  XNCAMAX , DECV ,  , 24          , msgxncamax , knlDcGetLong# , knlDcSetLongRpt, ncxmbchwm#
+ CHARENT  XNCINUSE, DECV ,  , 44          , msgxncinuse, knlDcGetLong# , 0              , ncxmbinuse#
+ CHARENT  XNCMAX  , DECV ,  , 44          , msgxncmax  , knlDcGetLong# , knlDcSetLongRpt, ncxmbiuhwm#
+
+ CHARENT  DEVLIMIT, DECV ,  , 4           , msgdevlimit, knlGetSysVal  , setdevlimit    , dcbtblsize#
+ CHARENT  DEVINUSE, DECV ,  , 4           , msgdevinuse, knlGetSysVal  , knlSetSysVal   , dcbinuse#
+ CHARENT  DEVMAX  , DECV ,  , 4           , msgdevmax  , knlGetSysVal  , 0              , dcbmax#
+ CHARENT  COUNTRY , DECV ,  , 4           , msgcountry , knlGetSysVal  , knlSetSysVal   , country#
+ CHARENT  STATE   , HEXV ,  , 4           , msgsstate  , knlGetSysVal  , setsstate      , sysstate#
+ CHARENT  HIGHDMA , HEXV ,  , 4           , msghighdma , knlGetSysVal  , sethighdma     , hidmalmt#
+ CHARENT  TOTALMEM, DECV ,  , 4           , msgttlmem  , getmems       , 0              , knlMemTotal#
+ CHARENT  USERMEM , DECV ,  , 4           , msgusermem , getmems       , 0              , knlMemUser#
+ CHARENT  AVAILMEM, DECV ,  , 4           , msgavailmem, getmems       , 0              , knlMemAvail#
+ CHARENT  LOGIN   , TEXT ,  , 4           , msglogin   , knlGetSysYN   , knlSetSysYN    , SYSD%LOGIN
+ CHARENT  KBRESET , TEXT ,  , 4           , msgkbreset , knlGetSysYN   , knlSetSysYN    , SYSD%KBRESET
+ CHARENT  FASTBOOT, TEXT ,  , 4           , msgfastboot, knlGetSysYN   , knlSetSysYN    , SYSD%FASTBOOT
+ CHARENT  DEBUG   , TEXT ,  , 4           , msgdebug   , getdebug      , 0              , 0
+ CHARENT  SPEED   , DECV ,  , 4           , msgspeed   , knlGetSysVal  , 0              , knlDelFactor#
+ CHARENT  INTMUL  , TEXT ,  , 4           , msgintmul  , getprocbug    , 0              , intmulbug#
+ CHARENT  FPUDIV  , TEXT ,  , 4           , msgfpudiv  , getprocbug    , 0              , fpudivbug#
+ CHARENT  BOOTID  , HEXV ,  , 4           , msgbootid  , knlGetSysVal  , 0              , knlBootID#
+ CHARENT  OORDSZ  , DECV ,  , 4           , msgoordsz  , knlGetSysVal  ,                , oordsz#
+ CHARENT  REBOOT  , DECV , H, 4           , msgreboot  , knlRtnLZero#  , setreboot      , 0
+ CHARENT  CRSHDATA, DATAS, H, pg0_crshSIZE, msgcrash   , getcrash      , setcrash       , 0
+irqtableent::
+ CHARENT  IRQTABLE, DATAS, H, irqtblsize# , msgirqtable, getirqs#      , 0              , 0
+iortableent::
+ CHARENT  IOTABLE , DATAS, H, iortblsize# , msgiotable , getioregs#    , 0              , 0
+ CHAREND
+
+;Class characteristics tables for the PROCESS device class
+
+procdctbl:
+ CHARBGN  2, procvalues
+ CHARENT  NAME    , STR  ,  , 12 , msgprocname, getprocname, setprocname, 0
+ CHARENT  NUM     , DECV ,  , 4  , msgprocnum , getpda2byte, setprocnum , pdaPid#+0
+ CHARENT  SEQ     , DECV ,  , 4  , msgprocseq , getpda2byte, setprocseq , pdaPid#+2
+ CHARENT  CONTRM  , TEXT ,  , 16 , msgcontrm  , getcontrm  , setcontrm  , 0
+ CHARENT  USER    , STR  ,  , 36 , msgusername, getusername, setusername, ses_grpname
+ CHARENT  PARENT  , HEXV ,  , 4  , msgparent  , getparent  , 0          , 0
+ CHARENT  COUNTRY , DECV ,  , 4  , msgcountry , getpda2byte, setpda2byte, pdaCountry#
+ CHARENT  FILEPROT, STR  ,  , 100, msgfileprot, getfileprot, setfileprot, pdaFileProt#
+ CHARENT  DIRPROT , STR  ,  , 100, msgdirprot , getdirprot , setdirprot , pdaDirProt#
+ CHARENT  WSLIMIT , DECV ,  , 4  , msgwslimit , getpdamems , setpdamemsl, pdaWSLimit#
+ CHARENT  UMLIMIT , DECV ,  , 4  , msgumlimit , getpdamems , setpdamemsl, pdaUMLimit#
+ CHARENT  OMLIMIT , DECV ,  , 4  , msgomlimit , getpdamems , setpdamemsl, pdaOMLimit#
+ CHARENT  WSALLOW , DECV ,  , 4  , msgwsallow , getpdamems , setpdamemsr, pdaWSAllow#
+ CHARENT  UMALLOW , DECV ,  , 4  , msgumallow , getpdamems , setpdamemsr, pdaUMAllow#
+ CHARENT  OMALLOW , DECV ,  , 4  , msgomallow , getpdamems , setpdamemsr, pdaOMAllow#
+ CHARENT  WSINUSE , DECV ,  , 4  , msgwsinuse , getpspy4bq , 0          , pspy_wspages
+ CHARENT  UMINUSE , DECV ,  , 4  , msguminuse , getpspy4bq , 0          , pspy_umpages
+ CHARENT  OMINUSE , DECV ,  , 4  , msgominuse , getpspy4bq , 0          , pspy_ompages
+ CHARENT  PRIVCUR , STR  ,  , 200, msgprivcur , getprivcur , setprivcur , 0
+ CHARENT  PRIVAVL , STR  ,  , 200, msgprivavl , getprivavl , setprivavl , 0
+ CHARENT  PRIVCHK , STR  , H, 200, msgprivchk , getprivcur , setprivchk , 0
+ CHARENT  PRIVVLD , STR  , H, 200, msgprivvld , getprivavl , setprivvld , 0
+ CHARENT  SECTCUR , STR  ,  , 200, msgsectcur , getsectcur , setsectcur , 0
+ CHARENT  SECTAVL , STR  ,  , 200, msgsectavl , getsectavl , setsectavl , 0
+ CHARENT  SECTCHK , STR  , H, 200, msgsectchk , getsectcur , setsectchk , 0
+ CHAREND
+
+;Class characteristics tables for the ACCOUNT device class
+
+accountdctbl:
+ CHARBGN  3, procvalues
+ CHARENT  NUM     , DECV ,  , 4 , msgprocnum     , getpda2byte, setprocnum , pdaPid#+0
+ CHARENT  SEQ     , DECV ,  , 4 , msgprocseq     , getpda2byte, setprocseq , pdaPid#+2
+ CHARENT  SESSEQ  , DATAS, H, 16, msgsesseq      , getsesseq  , setsesseq  , ses_sesseq
+ CHARENT  ACCESS  , TEXT ,  , 4 , knlDcMsgAccess#, getses4byte, setses4byte, ses_access
+ CHARENT  ACTDEV  , STR  ,  , 16, msgactdev      , getsesstr  , setsesstr  , ses_actdev
+ CHARENT  ACTNODE , DECB ,  , 4 , msgactnode     , getses4byte, setses4byte, ses_actnode
+ CHARENT  ACTPORT , DECV ,  , 4 , msgactport     , getses4byte, setses4byte, ses_actport
+ CHARENT  PORTNAME, STR  ,  , 16, msgportname    , getsesstr  , setsesstr  , ses_portname
+ CHARENT  USERADDR, STR  ,  , 32, msguseraddr    , getsesstr  , setsesstr  , ses_useraddr
+ CHARENT  UPRGVRSN, VERN ,  , 4 , msguprgvrsn    , getses4byte, setses4byte, ses_uprgvrsn
+ CHARENT  BILLING , DATAS, H, 68, 0              , getbilling , setbilling , ses_billcls
+ CHAREND
+
+msgsysname: CHARINFO  {Name of system}
+msgxosver:  CHARINFO  {XOS version}
+msgdosver:  CHARINFO  {Default DOS emulator version}
+msgserial:  CHARINFO  {Kernel serial number}
+msgcputype: CHARINFO  {CPU type}
+msgcpuven:  CHARINFO  {CPU vendor}
+msgcpulabel:CHARINFO  {CPU label}
+msgcpudesc: CHARINFO  {CPU description}
+msgcpubits: CHARINFO  {CPU feature bits}
+msgfputype: CHARINFO  {FPU type}
+msgloadtime:CHARINFO  {Time system loaded}
+msgloaddate:CHARINFO  {Date system loaded}
+msgcountry: CHARINFO  {Country code}
+msgdfltuser:CHARINFO  {Default system user}
+msgprolimit:CHARINFO  {Limit of number of processes}
+msgproinuse:CHARINFO  {Nmbr of processes}
+msgalmlimit:CHARINFO  {Max nmbr of alarms per process}
+msgwslimit: CHARINFO  {Working set size limit (KB)}
+msgumlimit: CHARINFO  {User memory limit (KB)}
+msgomlimit: CHARINFO  {Overhead memory limit (KB)}
+msgwsallow: CHARINFO  {Working set size allowed (KB)}
+msgumallow: CHARINFO  {User memory allowed (KB)}
+msgomallow: CHARINFO  {Overhead memory allowed (KB)}
+msgselnum:  CHARINFO  {Nmbr of glbl selectors created}
+msgselinuse:CHARINFO  {Nmbr of glbl selectors in use}
+msgxmbavail:CHARINFO  {Nmbr of avail XMBs}
+msgxmbamax: CHARINFO  {Max nmbr of avail XMBs}
+msgxmbinuse:CHARINFO  {Nmbr of in use XMBs}
+msgxmbmax:  CHARINFO  {Max nmbr of in use XMBs}
+msgxmbresrv:CHARINFO  {Nmbr of reserve XMB pages}
+msgxncavail:CHARINFO  {Nmbr of avail uncached XMBs}
+msgxncamax: CHARINFO  {Max nmbr of avail uncached XMBs}
+msgxncinuse:CHARINFO  {Nmbr of in use uncached XMBs}
+msgxncmax:  CHARINFO  {Max nmbr of in use uncached XMBs}
+msgdevlimit:CHARINFO  {Max allowed number of devices}
+msgdevinuse:CHARINFO  {Nmbr of devices in use}
+msgdevmax:  CHARINFO  {Max in use devices}
+msgfileprot:CHARINFO  {Default file protection}
+msgdirprot: CHARINFO  {Default directory protection}
+msgominuse: CHARINFO  {Overhead memory in use (KB)}
+msguminuse: CHARINFO  {User mode memory in use (KB)}
+msgwsinuse: CHARINFO  {Working set memory in use (KB)}
+msgsstate:  CHARINFO  {System state}
+msghighdma: CHARINFO  {Highest physical address for DMA}
+msgttlmem:  CHARINFO  {Total memory in system (in KB)}
+msgusermem: CHARINFO  {User memory in system (in KB)}
+msgavailmem:CHARINFO  {Available memory (in KB)}
+msgnumhard: CHARINFO  {Nmbr of hard disk units}
+msgnumflpy: CHARINFO  {Nmbr of floppy disk units}
+msgnumser:  CHARINFO  {Nmbr of serial ports}
+msgnumpar:  CHARINFO  {Nmbr of parallel ports}
+msglogin:   CHARINFO  {User login required}
+msgkbreset: CHARINFO  {Can reset system from console}
+msgfastboot:CHARINFO  {Do fast reboot}
+msgdebug:   CHARINFO  {Exec debugger present}
+msgspeed:   CHARINFO  {Processor speed factor}
+msgintmul:  CHARINFO  {Integer multiply error test}
+msgfpudiv:  CHARINFO  {FPU divide error test}
+msgbootid:  CHARINFO  {Boot disk ID}
+msgoordsz:  CHARINFO  {Size of the once-only ram-disk}
+msgreboot:  CHARINFO  {Reboot system}
+msgcrash:   CHARINFO  {Saved crash data}
+msgirqtable:CHARINFO  {Hardware interrupt usage table}
+msgiotable: CHARINFO  {Hardware IO register usage table}
+
+msgprocname:CHARINFO  {Process name}
+msgprocnum: CHARINFO  {Process number}
+msgprocseq: CHARINFO  {Sequence number}
+msgcontrm:  CHARINFO  {Controlling terminal}
+msgusername:CHARINFO  {Logged in user name}
+msgparent:  CHARINFO  {Parent process PID}
+msgprivcur: CHARINFO  {Current process privileges}
+msgprivavl: CHARINFO  {Avail process privileges}
+msgprivchk: CHARINFO  {Check for current privileges}
+msgprivvld: CHARINFO  {Check for valid privileges}
+msgsectcur: CHARINFO  {Current user sections}
+msgsectavl: CHARINFO  {Avail user sections}
+msgsectchk: CHARINFO  {Check for current user sections}
+
+msgsesseq:  CHARINFO  {Session sequence number}
+msgactdev:  CHARINFO  {Accounting device}
+msgactnode: CHARINFO  {Accounting node}
+msgactport: CHARINFO  {Accounting port}
+msgportname:CHARINFO  {Access port name}
+msguseraddr:CHARINFO  {User address}
+msguprgvrsn:CHARINFO  {User program version}
+.PAGE
+;Initial get values routine for PROCESS, SESSION, and ACCOUNT classes
+;	c{tdaCcb} = Address of the CCB
+;	CALL	procdcval
+
+pvs_bdnm=!8
+pvs_ctbl=!4
+
+procvalues:
+	CLRL	EAX
+	CMPL	knlTda+tdaCcb#, #procccb ;Is this for the PROCESS class?
+	JE	4$			;Yes
+	MOVL	EAX, knlPda+pdaSesPda#	;No - use the session process
+4$:	MOVL	knlTda+tdaCharData#, EAX
+	PUSHL	pvs_bdnm[ESP]
+	PUSHL	pvs_ctbl+4[ESP]
+	CALL	sysIoCharValues#
+	RET	8
+.PAGE
+;Subroutine to get value of system characteristic which has a long string value
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	knlGetSysStr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+knlGetSysStr::
+	MOVL	ESI, EDX		;Get addresses in right registers
+	MOVL	EDI, EBX
+	CLD
+2$:	DECL	ECX
+	JLE	knlBadCharV#
+	LODSB	[ESI]
+	IFFAULT	knlRtnAdrEr#
+	STOSB	[EDI]
+	CMPB	AL, #0
+	JNE	2$
+	MOVL	ECX, EDI		;Calculate length stored
+	SUBL	ECX, EBX
+	DECL	ECX			;Minus the null
+	RET
+
+;Subroutine to set value of system characteristic which has a long string value
+;	c{EDX} = Data value (address of string, bit 31 set if stack frame
+;		      offset)
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Maximum length of string to store
+;	CALL	knlSetSysStr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetSysStr::
+	MOVL	ESI, EBX
+	MOVL	EDI, EDX		;Get addresses in right registers
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	CLD
+4$:	DECL	ECX			;Have more?
+	JNS	6$			;Yes
+	CLRL	EAX			;No - store final null
+	JMP	8$
+
+	IFFAULT	knlRtnAdrEr#
+6$:	LODSB	[ESI]
+8$:	STOSB	[EDI]
+	CMPB	AL, #0
+	JNE	4$
+nullfunc::
+	RET
+
+;Subroutine to get value of characteristics which has a data string value
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	knlGetSysData
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+knlGetSysData::
+	MOVZWL	EAX, dct_length[ESI]
+	CMPL	ECX, EAX
+	JBE	10$
+	MOVL	ECX, EAX
+10$:	MOVL	EDI, EBX
+	MOVL	ESI, EDX		;Get addresses in right registers
+	CLD
+	MOVL	EDX, ECX
+	MOVL	EAX, ECX
+	CLRL	ECX
+	SUBL	ECX, EDI
+	ANDL	ECX, #03h
+	SUBL	EAX, ECX
+	IFFAULT	knlRtnAdrEr#
+	RMOVSB	[EDI], [ESI]
+	MOVL	ECX, EAX
+	SHRL	ECX, #2
+	IFFAULT	knlRtnAdrEr#
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #03h
+	IFFAULT	knlRtnAdrEr#
+	RMOVSB	[EDI], [ESI]
+	MOVL	ECX, EDX
+	RET
+
+;Subroutine to get value of system characteristic which has a 4 byte value
+;	c{EBX} = Data value
+;	CALL	knlGetSysVal
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+knlGetSysVal::
+	MOVL	EAX, [EBX]		;Get value
+	CLRL	EDX
+	RET
+
+;Subroutine to set value of system characteristic which has a 4 byte value
+;  with limit check - limit value must be stored in the 4 bytes just before
+;  the value to be changed - new value must be less than or equal to the
+;  limit value
+;	c{EAX} = Value to store
+;	c{EBX} = Data value
+;	CALL	knlGetSysVLC
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetSysVLC::
+	CMPL	-4[EBX], EAX		;Valid value?
+	JA	12$.S			;No - fail
+					;Yes - fall into setsysv
+
+;Subroutine to set value of system characteristic which has a 4 byte value
+;	c{EAX} = Value to store
+;	c{EBX} = Data value
+;	CALL	knlSetSysVal
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetSysVal::
+	MOVL	[EBX], EAX		;Set value
+	CLC
+	RET
+
+;Here if value is out of range
+
+12$:	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+.PAGE
+;Subroutine to get value of system characteristic which has a value of "YES"
+;  or "NO" and is stored as a bit in knlSysDescp
+;	c{EBX} = Bit number
+;	CALL	knlGetSysYN
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value ("YES" or "NO")
+
+knlGetSysYN::
+	MOVL	EAX, #'NO'		;Assume value is NO
+	BTL	knlSysDescp#, EBX	;Right?
+	JNC	4$			;Yes
+	MOVL	EAX, #'YES'		;No - its YES
+4$:	CLRL	EDX
+	RET
+
+;Subroutine to set value of system characteristic which has a value of "YES"
+;  or "NO" and is stored as a bit in knlSysDescp
+;	c{EAX} = New value ("YES" or "NO")
+;	c{EBX} = Bit number
+;	CALL	knlSetSysYN
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetSysYN::
+	PUSHL	EBX
+	CALL	knlGetYesNo#
+	POPL	EBX
+	JC	4$
+	JE	6$			;If YES
+	BTZL	knlSysDescp#, EBX	;If NO
+	CLC
+	RET
+
+6$:	BTSL	knlSysDescp#, EBX
+retclc:	CLC
+	RET
+
+;Subroutine to get value of system characteristic which has a 4 byte value
+;  which is returned as number of KB and stored as number of bytes
+;	c{EBX} = Data value
+;	CALL	knlGetSysP
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+knlGetSysP::
+	MOVL	EAX, [EBX]		;Get value
+	SHRL	EAX, #10t		;Change to number of pages
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of memory size characteristic which has a 4 byte
+;  value - value returned is system value times 4
+;	c{EBX} = Data value
+;	cALL	getmems
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value
+
+getmems:MOVL	EAX, [EBX]
+	CMPL	EAX, #-1
+	JNE	8$.S
+	CLRL	EAX
+8$:	SHLL	EAX, #2
+	CLRL	EDX
+	RET
+
+;Subroutine to set value of memory size characteristic which has a 4 byte
+;  value - value set is 1/4 the specified value (rounded up)
+;	c{EBX} = Data value
+;	c{EAX} = Value to store
+;	CALL	setmems
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+setmems:ADDL	EAX, #3
+	SHRL	EAX, #2
+	JNE	10$.S
+	DECL	EAX
+10$:	MOVL	[EBX], EAX
+	CLC
+	RET
+.PAGE
+;Subroutine to set value of system characteristic which has a repeated long
+;  numeric value - the value specified is stored in each element of the array
+
+knlDcSetLongRpt::
+	SHRL	ECX, #2			;Change to number of longs
+	PUSHL	DS
+	POPL	ES
+	MOVL	EDI, EBX
+	CLD
+	RSTOSL	[EDI]			;Store value
+	CLC				;Make sure C is clear
+	RET
+
+;Subroutine to set value of generic ACCESS characteristic - This is a 4 byte
+;  text characteristic which must be upper case.
+;	c{EBX} = Offset of value
+
+knlSetAccess::
+	CMPB	[EBX], #0		;Do we have a value now?
+	JNE	knlBadCharV#		;Yes - fail!
+	MOVL	ECX, #4			;No - make sure name is all upper case
+2$:	CMPB	AL, #'a'
+	JB	4$.S
+	ADDB	AL, #'A'-'a'
+4$:	RORL	EAX, #8t
+	LOOP	ECX, 2$
+	MOVL	[EBX], EAX		;Store new value
+	CLC
+	RET
+.PAGE
+;Subroutine to get value of the CPUTYPE SYSTEM characteristic
+;	CALL	getcputype
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value
+
+getcputype:
+	MOVZBL	EAX, cputype#		;Get processor type
+	MOVL	EAX, cputbl[EAX*4]	;Get corresponding string
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of the CPUVEN SYSTEM characteristic
+;	CALL	getcpuven
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value
+
+getcpuven:
+	MOVZBL	EAX, cpuven#		;Get processor type
+	MOVL	EDX, ventbl+4[EAX*8]
+	MOVL	EAX, ventbl+0[EAX*8]	;Get corresponding string
+	RET
+
+;Subroutine to get value of the FPUTYPE SYSTEM characteristic
+;	CALL	getfputype
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value
+
+getfputype:
+	MOVZBL	EAX, fputype#		;Get processor type
+	MOVL	EAX, fputbl[EAX*4]	;Get corresponding string
+	CLRL	EDX
+	RET
+
+	.MOD	4
+cputbl:	.LONG	'UNKN'		;CPUTYPE_UNKN = 0
+	.LONG	'386'		;CPUTYPE_386  = 1
+	.LONG	'486'		;CPUTYPE_486  = 2
+	.LONG	'PEN'		;CPUTYPE_PEN  = 3
+	.LONG	'PEN2'		;CPUTYPE_PEN2 = 4
+	.LONG	'PEN3'		;CPUTYPE_PEN3 = 5
+	.LONG	'PEN4'		;CPUTYPE_PEN4 = 6
+
+ventbl:	.LONG	'Unkn', 'own'	;CPUVEN_UNKN     = 0
+	.LONG	'Inte', 'l'	;CPUVEN_INTEL    = 1
+	.LONG	'AMD' , ''	;CPUVEN_AMD      = 2
+	.LONG	'Cent', 'aur'	;CPUVEN_CENTAUR  = 3
+	.LONG	'Cryi', 'x'	;CPUVEN_CYRIX    = 4
+	.LONG	'Trns', 'meta'	;CPUVEN_TRNSMETA = 5
+	.LONG	'NSC' , ''	;CPUVEN_NSC      = 6
+	.LONG	'Nexg', 'en'	;CPUVEN_NEXGEN   = 7
+	.LONG	'Rise', ''	;CPUVEN_RISE     = 8
+	.LONG	'SiS ', ''	;CPUVEN_SIS      = 9
+	.LONG	'UMC ', ''	;CPUVEN_UMC      = 10
+	.LONG	'VIA ', ''	;CPUVEN_VIA      = 11
+	.LONG	0
+
+fputbl:	.LONG	'NONE'		;FPUTYPE_NONE = 0
+	.LONG	'INT'		;FPUTYPE_INT  = 1
+	.LONG	'INTM'		;FPUTYPE_INTM = 2
+	.LONG	'EXTI'		;FPUTYPE_EXTI = 3
+	.LONG	'EXTX'		;FPUTYPE_EXTX = 4
+.PAGE
+;Subroutine to get value of the USER PROCESS characteristic
+;	c{EDX} = Data value (offset of 32 byte block in PDA containing value)
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getusername
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getusername:
+	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesrdpntr
+	MOVL	EDX, EBX
+	POPL	EBX
+	JNC	2$
+	RET
+
+;Subroutine to get value of the DFLTUSER SYSTEM characteristic
+;	c{EDX} = Data value (offset of 32 byte block containing value)
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	knlGetDfltUser
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+knlGetDfltUser::
+2$:	PUSHL	EBX
+	PUSHL	EDX
+	CALL	getuser
+	POPL	EDX
+	JC	4$
+	CMPL	EBX, [ESP]		;Was the group null?
+	JE	4$			;Yes
+	DECL	ECX			;No
+	JS	10$
+	IFFAULT	20$
+	MOVB	[EBX], #'.'
+	INCL	EBX
+	ADDL	EDX, #16t
+	CALL	getuser
+4$:	POPL	EDX
+	JC	8$
+	DECL	ECX
+	JS	6$
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], #0
+6$:	MOVL	ECX, EBX
+	SUBL	ECX, EDX
+8$:	RET
+
+10$:	POPL	EAX
+12$:	JMP	knlBadCharS
+
+getuser:MOVB	AH, #16t
+14$:	MOVB	AL, [EDX]
+	INCL	EDX
+	CMPB	AL, #0
+	JE	16$
+	DECL	ECX
+	JS	12$
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL
+	INCL	EBX
+	DECB	AH
+	JNE	14$
+16$:	RET
+
+	FAULTHDR
+20$:	POPL	EBX
+	JMP	knlRtnAdrEr#
+.PAGE
+;Subroutine to set value of the USER PROCESS characteristic
+;	c{EDX} = Data value (offset of 32 byte block (in PDA) to receive
+;		      value)
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setusername
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+setusername:
+	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesmdpntr
+	MOVL	EDX, EBX
+	POPL	EBX
+	JNC	2$.S
+	RET
+
+;Subroutine to set value of the DFLTUSER SYSTEM characteristic
+;	c{EDX} = Data value (offset of 32 byte block to receive value)
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	knlSetDfltUser
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+knlSetDfltUser::
+2$:	TESTL	ECX, ECX
+	JNE	4$
+	MOVL	ECX, #100t
+4$:	PUSHL	EBX			;First scan the string to make sure
+	PUSHL	EDX			;  it contains only valid characters
+	PUSHL	ECX			;  and that each part is not too long
+	MOVB	AH, #0
+6$:	MOVL	EDX, #16t
+8$:	DECL	ECX
+	JS	20$
+	IFFAULT	40$
+	MOVB	AL, [EBX]
+	INCL	EBX
+	CMPB	AL, #0
+	JE	20$
+	CMPB	AL, #'.'
+	JE	18$
+	CMPB	AL, #'-'
+	JE	16$
+	CMPB	AL, #'_'
+	JE	16$
+	CMPB	AL, #'a'
+	JB	10$
+	CMPB	AL, #'z'
+	JA	10$
+	ADDB	AL, #'A'-'a'
+10$:	CMPB	AL, #'A'
+	JB	14$
+	CMPB	AL, #'Z'
+	JBE	16$
+12$:	POPL	ECX
+	POPL	EDX
+	POPL	EBX
+	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+
+;Here if not letter
+
+14$:	CMPB	AL, #'0'
+	JB	16$
+	CMPB	AL, #'9'
+	JA	12$
+16$:	DECL	EDX
+	JNS	8$
+	JMP	12$
+
+;Here if have period
+
+18$:	CMPB	AH, #0
+	JNE	12$
+	MOVB	AH, #1
+	JMP	6$
+
+;Here at end of string
+
+20$:	POPL	ECX
+	POPL	EDX
+	POPL	EBX
+	CMPB	AH, #0			;Was a group specified?
+	JNE	22$			;Yes
+	MOVL	[EDX], #'USER'		;No - make it USER
+	CLRL	EAX
+	MOVL	6t[EDX], EAX
+	MOVL	10t[EDX], EAX
+	MOVL	14t[EDX], EAX
+	JMP	24$
+
+;Here if a group was specified
+
+22$:	PUSHL	EDX
+	CALL	strname
+	POPL	EDX
+	JC	34$
+24$:	ADDL	EDX, #16t
+strname:MOVB	AH, #16t
+26$:	DECL	ECX
+	JS	30$
+	MOVB	AL, [EBX]
+	INCL	EBX
+	CMPB	AL, #0
+	JE	30$
+	CMPB	AL, #'.'
+	JE	30$
+	CMPB	AL, #'a'
+	JB	28$
+	ADDB	AL, #'A'-'a'
+28$:	MOVB	[EDX], AL
+	INCL	EDX
+	DECB	AH
+	JMP	26$
+
+;Here at end of name
+
+30$:	DECB	AH
+	JS	32$
+	MOVB	[EDX], #0
+	INCL	EDX
+	JMP	30$
+
+32$:	CLC
+34$:	RET
+
+	FAULTHDR
+40$:	POPL	ECX
+	POPL	EDX
+	POPL	EBX
+	JMP	knlRtnAdrEr#
+
+.PAGE
+getparent:
+	CALL	getproc
+	MOVZWL	EAX, pdaParPda#
+	ORL	EAX, EAX
+	JE	4$
+
+	CRASH	????
+
+;;;;;	MOVW	FS, knlProcTable[EAX*2]
+	MOVL	EAX, pdaPid#
+4$:	RET
+.PAGE
+;Subroutine to get value of the LOADDATE SYSTEM characteristic
+;	CALL	getloaddate
+;	C:clr Always
+;	c{EDX,EAX} = Value
+
+getloaddate:
+	CLI
+	MOVL	ECX, knlSysDateTime#+4	;Get current date and time
+	MOVL	EBX, knlSysDateTime#+0
+	MOVL	EAX, knlSysTtl#+0	;Get time since loaded
+	MOVL	EDX, knlSysTtl#+4
+	STI
+	SUBL	EAX, EBX
+	SBBL	EDX, ECX
+	JNC	4$
+	CLRL	EAX
+	CLRL	EDX
+4$:	RET
+.PAGE
+;Subroutine to get value of the DEBUG SYSTEM characteristic
+;	CALL	getdebug
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getdebug::
+;;;;	MOVL	EAX, #'NO'		;Assume debugger not loaded
+;;;;	MOVL	EDX, #geckodtop#  	;Right?
+;;;;	CMPL	EDX, #1000h
+;;;;	JBE	10$			;Yes
+
+	MOVL	EAX, #'YES'		;No - its loaded
+10$:	CLRL	EDX
+	RET
+.PAGE
+;Here for the INTMUL and FPUDIV characteristics - get information about
+;  processor bugs
+
+getprocbug:
+	MOVL	EAX, #'PASS'		;Assume its OK
+	CMPB	[EBX], #0		;Right?
+	JE	2$			;Yes
+	MOVL	EAX, #'FAIL'		;No - assume it failed
+	JNS	2$			;Right?
+	MOVL	EAX, #'N/A'		;No
+2$:	CLRL	EDX
+	RET
+
+
+;Here for the CRSHDATA characteristic - get saved crash data
+
+getcrash:
+	CMPL	ECX, #pg0_crshSIZE	;Is his array big enough?
+	JL	knlBadCharS.S		;No
+	MOVL	EDI, EBX		;Yes - get address in right register
+	MOVL	ESI, #crshsave
+	CLD
+	MOVL	ECX, #pg0_crshSIZE/4
+	IFFAULT	knlRtnAdrEr#
+	RMOVSL	[EDI], [ESI]		;Give him the data
+	MOVL	ECX, #pg0_crshSIZE	;Return amount
+	RET
+
+;Here if his array is too small
+
+knlBadCharS::
+	MOVL	EAX, #ER_CHARS		;Get error code
+	STC
+	RET
+
+;Here for the SSTATE characteristic - set system state value
+
+setsstate:
+	CMPL	knlPda+pdaPid#, #0x00010001 ;Is this process INIT?
+	JE	4$			;Yes - that's always OK
+	CMPL	sysstate#, #0		;No - still in the startup state?
+	JNE	knlPrivFail#		;N0 - can't do this
+	CMPL	knlPda+pdaPid#, #0x00020002 ;Yes - is this process ONCE?
+	JNE	knlPrivFail#		;No - can't change this one!
+4$:	MOVL	sysstate#, EAX		;Yes - store new value
+	RET
+
+;Here for the HIDMA characteristic - set DMA high memory address limit
+
+sethighdma:
+	MOVL	hidmalmt#, EAX		;Just store what he gave us
+	CLC
+	RET
+.PAGE
+;Here for the CRSHDATA characteristic - set saved crash data.  This is used
+;  only to change the data logged indicator.  Only the first byte of the
+;  data is looked at.  If it is 0, the saved crash data is marked as not
+;  logged.  If it is not 0, the saved crash data is marked as logged.
+
+setcrash:
+	MOVB	AL, #0			;Assume want to mark it as logged
+	IFFAULT	knlRtnAdrEr#
+	CMPB	[EBX], #0		;Right?
+	JE	4$			;Yes
+	MOVB	AL, #0xF0		;No
+4$:	MOVB	crshsave+3, AL		;Store indicator
+	RET
+
+;Here to set the REBOOT characteristic.  This reboots the system is the correct
+;  "magic" value is used.
+
+setreboot:
+	CMPL	EAX, #0x57575		;Right value for "soft" reboot?
+	JE	knlReboot#		;Yes - reboot!
+	CMPL	EAX, #0x5757A		;Right value for "hard" reboot?
+	JE	6$			;Yes
+	CLC				;No - ignore it
+	RET
+
+6$:	JMPIL	knlPhysReset#
+.PAGE
+	.SBTTL	PROCESS class, get NAME characteristic
+
+;Subroutine to get value of the PROCESS class NAME characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getprocname
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getprocname:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc			;Get address of PDA for process
+	POPL	ECX
+	POPL	EDI
+	MOVL	ESI, pdaSpy#[EBX]
+	CLRL	EDX
+	CLD
+2$:	DECL	ECX
+	JLE	knlBadCharV#
+	LODSB	[ESI]			;Get character
+	IFFAULT	knlRtnAdrEr#
+	STOSB	[EDI]			;Store it
+	CMPB	AL, #0			;End of name?
+	JE	4$			;Yes
+	INCL	EDX			;No - count the character
+	CMPB	DL, #32t		;More?
+	JB	2$			;Yes
+4$:	MOVL	ECX, EDX		;No - get length stored
+	RET				;Finished
+
+	.SBTTL	PROCESS class, get 2 byte item from PDA
+
+;Subroutine to get value of a 2 byte item from a PDA
+;	c{EBX}    = Offset in PDA of value to get
+;	CALL	getpda2byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value obtained
+
+getpda2byte:
+	PUSHL	EBX
+	CALL	getproc
+	POPL	EAX
+	MOVZWL	EAX, [EAX+EBX]
+	CLRL	EDX
+	RET
+
+	.SBTTL	PROCESS class, get 4 byte item from PDA
+
+;Subroutine to get value of a 4 byte item from a PDA
+;	c{EBX}    = Offset of value to get
+;	CALL	getpda4byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value obtained
+
+getpda4byte:
+	PUSHL	EBX
+	CALL	getproc
+	POPL	EAX
+	MOVL	EAX, [EAX+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of PDA characteristic which has a 4 byte value
+;  which is returned as number of KB and stored as number of bytes
+;	c{EBX} = Data value
+;	CALL	getpda4bytp
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getpda4bytp:
+	PUSHL	EBX
+	CALL	getproc
+	POPL	EAX
+10$:	MOVL	EAX, [EAX+EBX]
+	SHRL	EAX, #10t		;Change to KB
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of characteristic which has a 4 byte value in the
+;  process spy area which is returned as number of KB and stored as number
+;  of pages
+;	c{EBX} = Data value
+;	CALL	getpspy4bq
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getpspy4bq:
+	PUSHL	EBX
+	CALL	getproc
+	POPL	EAX
+	ADDL	EAX, pdaSpy#[EBX]
+	MOVL	EAX, [EAX]
+	SHLL	EAX, #2t		;Change to KB
+	CLRL	EDX
+	RET
+.PAGE
+;Subroutine to get value of process memory size characteristic which has a 4
+;  byte value - value returned is system value times 4
+;	c{EBX} = Data value
+;	CALL	getpdamems
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getpdamems:
+	PUSHL	EBX
+	CALL	getproc
+	POPL	EAX
+	MOVL	EAX, [EAX+EBX]
+	CMPL	EAX, #-1
+	JNE	4$
+	CLRL	EAX
+4$:	SHLL	EAX, #2
+	CLRL	EAX
+	RET
+
+;Subroutine to set value of process memory size characteristic which has a 4
+;  byte value (value set is 1/4 the specified value (rounded up)) - value is
+;  checked against the corresponding limit value
+;	c{EBX} = Data value
+;	c{EAX} = Value to store
+;	CALL	setpdameml
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+setpdamemsl:
+	LEAL	EDX, 4[EBX]		;Check new value against allowed value
+	JMP	6$			;Continue
+
+;Subroutine to set value of process memory size characteristic which has a 4
+;  byte value which can only be reduced (value set is 1/4 the specified value
+;  (rounded up))
+;	c{EBX} = Data value
+;	c{EAX} = Value to store
+;	CALL	setpdamemsr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+setpdamemsr:
+	MOVL	EDX, EBX		;Check new value against old value
+6$:	ADDL	EAX, #3			;Change to number of pages (round up)
+	SHRL	EAX, #2
+	JNE	8$			;If not 0
+	DECL	EAX			;0 - change to infinity
+8$:	CALL	getproc			;Get PDA selector
+	CMPL	[EDX], EAX		;Is the new value smaller?
+	JB	10$			;No - do nothing!
+	MOVL	[EBX], EAX		;Yes - update the value
+10$:	CLC
+	RET
+.PAGE
+	.SBTTL	PROCESS class, get CONTRM characteristic
+
+;Subroutine to get value of the PROCESS class CONTRM characteristic
+;	CALL	getcontrm
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value obtained
+
+getcontrm:
+	CALL	getproc
+	MOVL	EAX, pdaHndlTbl#+DH_STDTRM*8[EBX]
+	CMPL	EAX, #1000h
+	JB	10$
+	ADDL	EAX, #dcb_name
+	CLC
+	RET
+
+;Here if do not have a controlling terminal
+
+10$:	CLRL	EAX			;Just return a null name
+	RET
+.PAGE
+;Subroutine to get value of a 1 byte item from memory
+;	c{EBX} = Memory address
+;	CALL	knlMemGet1Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX,EDX} = Value obtained
+
+knlMemGet1Byte::
+	MOVZBL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of a 2 byte item from memory
+;	c{EBX} = Memory address
+;	CALL	knlMemGet2Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value obtained
+
+knlMemGet2Byte::
+	MOVZWL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get value of a 4 byte item from memory
+;	c{EBX} = Memory address
+;	CALL	knlMemGet4Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value obtained
+
+knlMemGet4Byte::
+	MOVL	EAX, [EBX]
+	CLRL	EDX
+	RET
+.PAGE
+	.SBTTL	PROCESS class, get FILEPROT characteristic
+
+;Subroutine to get value of the PROCESS class FILEPROT characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getfileprot
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+fptbl:	.BYTE	FP$EXEC  , 'X'
+	.BYTE	FP$READ  , 'R'
+	.BYTE	FP$WRITE , 'W'
+	.BYTE	FP$EXTEND, 'E'
+	.BYTE	FP$MODIFY, 'M'
+	.BYTE	0
+
+fldltrs:.ASCII	'_N'
+	.LONG	FP_NETWORK
+	.ASCII	' W'
+	.LONG	FP_WORLD
+	.ASCII	' G'
+	.LONG	FP_GROUP
+	.ASCII	' O'
+	.LONG	FP_OWNER
+	.BYTE	0
+
+getfileprot:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc
+	MOVL	EBX, pdaSesPda#[EBX]
+	MOVL	EAX, pdaFileProt#[EBX]
+	POPL	ECX
+	POPL	EBX
+	MOVL	ESI, #fptbl
+	JMP	knlEncodeFileProt
+
+;Subroutine to get value of the PROCESS class DIRPROT characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getdirprot
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+dptbl:	.BYTE	FP$ACCESS, 'A'
+	.BYTE	FP$SEARCH, 'S'
+	.BYTE	FP$CREATE, 'C'
+	.BYTE	FP$MODIFY, 'M'
+	.BYTE	0
+
+getdirprot:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc
+	MOVL	EBX, pdaSesPda#[EBX]
+	MOVL	EAX, pdaDirProt#[EBX]
+	POPL	ECX
+	POPL	EBX
+	MOVL	ESI, #dptbl
+
+;Subroutine to generate text string from file/directory protection value
+;	c{EAX} = Protection value
+;	c{EBX} = Address of buffer
+;	c{ECX} = Size of buffer
+;	c{ESI} = Offset of bit/letter table
+;	CALL	knlEncodeFileProt
+;	C:set = Error
+;	  c{EAX} = Error
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored
+
+knlEncodeFileProt::
+	MOVL	EDI, #fldltrs
+	TESTL	ECX, ECX
+	JNE	6$.S
+	MOVL	ECX, #1000t
+6$:	PUSHL	EBX
+8$:	PUSHL	EAX
+	CLRL	EDX
+	DIVL	2[EDI]
+	MOVL	EDX, EAX
+	PUSHL	ESI
+	MOVB	AL, [EDI]
+	CMPB	AL, #'_'
+	JE	10$.S
+	CALL	strpchr
+	JC	20$.S
+10$:	MOVB	AL, 1[EDI]
+	CALL	strpchr
+	JC	20$.S
+	MOVB	AL, #':'
+	CALL	strpchr
+	JC	20$.S
+	CMPB	DL, #0
+	JE	16$.S
+12$:	TESTB	[ESI], DL
+	JE	14$.S
+	MOVB	AL, 1[ESI]
+	CALL	strpchr
+	JC	20$.S
+14$:	ADDL	ESI, #2
+	CMPB	[ESI], #0
+	JNE	12$.S
+	JMP	18$.S
+
+;Here if no bits are set
+
+16$:	MOVB	AL, #'N'
+	CALL	strpchr
+	JC	20$.S
+18$:	POPL	ESI
+	POPL	EAX
+	ADDL	EDI, #6t
+	CMPB	[EDI], #0
+	JNE	8$.S
+	POPL	EDX
+	SUBL	EBX, EDX
+	MOVL	ECX, EBX
+	RET
+
+;Here if error
+
+20$:	POPL	ESI			;Fix up the stack
+	POPL	EDX
+	POPL	EDX
+	RET
+.PAGE
+;Subroutine to store characters to indicate access
+;	c(AL) = Initial character
+;	c(DL) = Protection value
+;	c{ESI} = Offset of value table
+;	CALL	stracc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+strpchr:DECL	ECX
+	JE	knlBadParmV#
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL
+	INCL	EBX
+	CLC
+	RET
+.PAGE
+	.SBTTL	PROCESS class, set FILEPROT characteristic
+
+;Subroutine to set value of the PROCESS class FILEPROT characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setfileprot
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+setfileprot:
+
+	CRASH	????
+
+	MOVL	EDX, #fptbl
+	MOVZBL	EDX, pdaSesPda#
+
+
+;;;;;	MOVW	FS, knlProcTable[EDX*2]
+	MOVL	EAX, pdaFileProt#
+	CALL	knlParseFileProt
+	JC	2$
+	MOVL	pdaFileProt#, EAX
+2$:	RET
+
+	.SBTTL	PROCESS class, set DIRPROT characteristic
+
+;Subroutine to set value of the PROCESS class DIRPROT characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setdirprot
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+setdirprot:
+
+	CRASH	????
+
+	MOVL	EDX, #dptbl
+	MOVZBL	EDX, pdaSesPda#
+
+;;;;;;	MOVW	FS, knlProcTable[EDX*2]
+	MOVL	EAX, pdaDirProt#
+	CALL	knlParseFileProt
+	JC	4$
+	MOVL	pdaDirProt#, EAX
+4$:	RET
+.PAGE
+;Subroutine to parse file/directory protection specficiation
+;	c{EAX} = Current protection value
+;	c{EBX} = Address of string to parse
+;	c{ECX} = Length of string
+;	c{EDX} = Offset of letter/bit table
+;	CALL	knlParseFileProt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = New protection value
+;  FS is preserved
+
+$$$=!0
+FRM sp_table, 4t
+FRM sp_value, 4t
+FRM sp_field, 1t
+FRM sp_func , 1t
+FRM         , 2t
+sp_SIZE=!$$$
+
+knlParseFileProt::
+	ENTER	sp_SIZE, 0
+	MOVL	sp_table[EBP], EDX
+	MOVL	sp_value[EBP], EAX
+2$:	CALL	getpchr			;Get character
+	JC	10$.S
+	JE	9$.S			;If end of string
+	JS	4$.S
+	CMPB	AL, #' '		;Ignore spaces
+	JE	2$.S
+	JMP	8$.S
+
+;Here with character followed by a colon
+
+4$:	ANDB	AL, #7Fh
+	MOVL	EDI, #fldltrs		;Search the field letter table
+6$:	CMPB	1[EDI], AL
+	JE	12$.S			;If found it
+	ADDL	EDI, #6t
+	CMPB	[EDI], #0		;More to check?
+	JNE	6$.S			;Yes - continue
+8$:	JMP	knlBadParmVLv#		;No - fail
+
+;Here when completely finished
+
+9$:	MOVL	EAX, sp_value[EBP]	;Get value
+	CLC
+10$:	LEAVE
+	RET
+
+;Here with match on field identifier
+
+12$:	MOVL	EAX, sp_value[EBP]	;Get value for field to change
+	CLRL	EDX
+	DIVL	2[EDI]
+	MOVB	sp_field[EBP], AL
+	MOVB	sp_func[EBP], #0	;Assume replacing the field
+14$:	CALL	getpchr			;Get next character
+	JC	10$.S
+	JE	36$.S
+	JS	22$.S
+	CMPB	AL, #' '
+	JE	36$.S
+	CMPB	AL, #'+'
+	JNE	16$.S
+	MOVB	sp_func[EBP], #1	;Indicate adding value
+	JMP	14$.S
+
+16$:	CMPB	AL, #'-'
+	JNE	18$.S
+	MOVB	sp_func[EBP], #-1	;Indicate removing value
+	JMP	14$.S
+
+;Here if character is not + or -
+
+18$:	CMPB	AL, #'N'
+	JE	24$.S
+	MOVL	EDX, sp_table[EBP]	;Search for the letter
+20$:	CMPB	1[EDX], AL
+	JE	26$.S
+	ADDL	EDX, #2
+	CMPB	[EDX], #0
+	JNE	20$.S
+22$:	SUBL	EBX, #2			;Didn't find it - back up and then
+	ADDL	ECX, #2			;  process end of field
+	JMP	36$.S
+
+;Here if want to clear the field
+
+24$:	MOVB	AL, #0
+	JMP	28$.S
+
+;Here with match on character
+
+26$:	MOVB	AL, [EDX]		;Get corresponding value
+28$:	CMPB	sp_func[EBP], #0
+	JG	30$.S			;If adding
+	JL	32$.S			;If removing
+	MOVB	sp_field[EBP], AL	;Replacing
+	JMP	34$.S
+
+;Here if adding to the current value
+
+30$:	ORB	sp_field[EBP], AL
+	JMP	34$.S
+
+;Here if removing from the current value
+
+32$:	NOTB	AL
+	ANDB	sp_field[EBP], AL
+34$:	MOVB	sp_func[EBP], #1
+	JMP	14$.S
+
+;Here when finished with a field
+
+36$:	MOVL	EDX, #7Fh		;Get mask for field
+	IMULL	EDX, 2[EDI]
+	NOTL	EDX
+	MOVZBL	EAX, sp_field[EBP]	;Position value
+	IMULL	EAX, 2[EDI]
+	ANDL	sp_value[EBP], EDX	;Merge in new field value
+	ORL	sp_value[EBP], EAX
+	JMP	2$			;Continue
+.PAGE
+;Subroutine to get next protection character
+;	c{ECX} = Number of character left to get
+;	c{EBX} = Address of user string
+;	CALL	getpchr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = End of string
+;	  Z:clr = Normal
+;	    S:set = Colon follows character
+;	    c(AL) = Character (ored with 80h if colon follows)
+
+	IFFAULT	knlRtnAdrEr#
+getpchr:TESTL	ECX, ECX
+	JE	8$
+	DECL	ECX
+	MOVB	AL, [EBX]
+	INCL	EBX
+	CMPB	AL, #0
+	JE	8$
+	CMPB	AL, #'a'
+	JB	4$
+	ADDB	AL, #'A'-'a'
+4$:	TESTL	ECX, ECX
+	JE	6$
+	IFFAULT	knlRtnAdrEr#
+	CMPB	[EBX], #':'		;Is the next character a colon?
+	JE	10$			;Yes
+6$:	TESTL	ESP, ESP
+8$:	RET
+
+;Here if have a colon following the character
+
+10$:	DECL	ECX			;Eat the colon
+	INCL	EBX
+	ORB	AL, #80h
+	RET
+.PAGE
+	.SBTTL	PROCESS class, get PRIV characteristic
+
+;Subroutine to get value of the PROCESS class PRIV characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getpriv
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getprivcur:
+	CALL	getproc			;Get selector for PDA
+	MOVL	ESI, #pdaActPriv#	;Point to active privilege bits
+	JMP	2$
+
+	.SBTTL	PROCESS class, get PRIVAVL characteristic
+
+;Subroutine to get value of the PROCESS class PRIVACL characteristic
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getprivavl
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+$$$=!0
+FRM gp_string, 4t
+gp_SIZE=!$$$
+
+getprivavl:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc			;Get address of the PDA
+	LEAL	ESI, pdaAvlPriv#[EBX]	;Point to privilege available bits
+	POPL	ECX
+	POPL	EBX
+2$:	ENTER	gp_SIZE, 0
+	MOVL	gp_string[EBP], EBX
+	MOVL	EDI, EBX
+	MOVL	EDX, ECX
+	MOVL	EBX, #privtbl
+4$:	MOVL	EAX, 8[EBX]		;Get bit number
+	TESTL	EAX, EAX		;Is this "NONE"?
+	JNS	6$			;No
+	MOVL	EAX, [ESI]		;Yes - are any bits set?
+	ORL	EAX, 4[ESI]
+	JNE	14$			;Yes - go on
+	JMP	7$			;No - give him "NONE"
+
+6$:	BTL	[ESI], EAX		;Is it set?
+	JNC	14$			;No - go on
+7$:	CMPL	gp_string[EBP], EDI	;Yes - is this the first one?
+	JE	8$			;Yes
+	MOVB	AL, #'+'		;No - put in a plus
+	DECL	EDX
+	JLE	22$
+	IFFAULT	knlRtnAdrErLv#
+	STOSB	[EDI]
+8$:	PUSHL	EBX
+	MOVL	ECX, #8
+10$:	MOVB	AL, [EBX]		;Copy privilege name to user's
+	INCL	EBX			;  buffer
+	CMPB	AL, #0
+	JE	12$
+	DECL	EDX
+	JLE	22$
+	IFFAULT	knlRtnAdrErLv#
+	STOSB	[EDI]
+	LOOP	ECX, 10$
+12$:	POPL	EBX
+14$:	ADDL	EBX, #12t		;Bump privilege table pointer
+	CMPL	[EBX], #0		;More in table?
+	JNE	4$			;Yes - continue
+	MOVL	ECX, EDI		;No - calculate length of string
+	SUBL	ECX, gp_string[EBP]
+	CLRL	EAX
+	IFFAULT	knlRtnAdrErLv#
+	STOSB	[EDI]			;Store final null
+	LEAVE
+20$:	RET				;Finished
+
+;Here if user's buffer is too small
+
+22$:	MOVL	EAX, #ER_CHARS		;Get error code
+	LEAVE
+	STC				;Indicate error
+	RET
+.PAGE
+;Subroutine to parse a privlege list
+;	c{EDX,EAX} = Current privlege bits
+;	c{EBX}     = Address of privlege list
+;	CALL	parsepriv
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Modified privlege bits
+;  FS is respected
+
+$$$=!0
+FRM pp_bits   , 8t	;Privilege bits
+FRM pp_atom   , 8t	;Atom buffer
+FRM pp_prefix , 1t	;Prefix character
+FRM pp_stopper, 1t	;Stopper character
+FRM           , 2t
+pp_SIZE=!$$$
+
+parsepriv::
+	ENTER	pp_SIZE, 0
+	MOVL	pp_bits+0[EBP], EAX
+	MOVL	pp_bits+4[EBP], EDX
+	MOVL	ESI, EBX
+	PUSHL	ES
+	POPL	GS
+	IFFAULT	knlRtnAdrErLv#
+	LODSB	[ESI]		;Get first character
+	CMPB	AL, #'-'	;Incremental specification?
+	JE	4$.S		;No
+	CMPB	AL, #'+'	;Maybe
+	JE	4$.S		;Yes
+	CLRL	EAX		;No - clear the bits
+	MOVL	pp_bits+0[EBP], EAX
+	MOVL	pp_bits+4[EBP], EAX
+	DECL	ESI
+4$:	MOVB	pp_prefix[EBP], AL ;Store prefix character for atom
+	CLRL	EAX		;Clear atom buffer
+	MOVL	pp_atom+0[EBP], EAX
+	MOVL	pp_atom+4[EBP], EAX
+	LEAL	EDI, pp_atom[EBP]
+	PUSHL	SS
+	POPL	ES
+	MOVL	ECX, #8
+	IFFAULT	knlRtnAdrErLv#
+6$:	LODSB	[ESI]		;Get character
+	CMPB	AL, #' '
+	JE	6$.S
+	CMPB	AL, #HT
+	JE	6$.S
+8$:	CMPB	AL, #0
+	JE	14$.S
+	CMPB	AL, #'+'
+	JE	14$.S
+	CMPB	AL, #'-'
+	JE	14$.S
+	CMPB	AL, #' '
+	JE	10$.S
+	CMPB	AL, #HT
+	JE	10$.S
+	DECL	ECX		;Room for more?
+	JS	24$.S		;No
+	CMPB	AL, #'a'	;Yes - lower case?
+	JB	9$.S		;No
+	CMPB	AL, #'z'	;Maybe
+	JA	9$.S		;No
+	SUBB	AL, #'a'-'A'	;Yes - change to upper case
+9$:	STOSB	[EDI]		;Store in atom
+	IFFAULT	knlRtnAdrErLv#
+	LODSB	[ESI]		;Get next character
+	JMP	8$.S		;Continue
+
+;Here at end of atom
+
+	IFFAULT	knlRtnAdrErLv#	;Eat the whitespace
+10$:	LODSB	[ESI]
+	CMPB	AL, #0
+	JE	14$.S
+	CMPB	AL, #' '
+	JE	10$.S
+	CMPB	AL, #HT
+	JE	10$.S
+14$:	MOVB	pp_stopper[EBP], AL	;Store stopper character
+	MOVL	EAX, pp_atom+0[EBP]	;Get the atom
+	MOVL	EDX, pp_atom+4[EBP]
+	MOVL	ECX, #NUMPRIV		;Set up to search table
+	MOVL	EBX, #privtbl
+20$:	CMPL	EAX, [EBX]		;This one?
+	JNE	22$.S			;No
+	CMPL	EDX, 4[EBX]		;Maybe
+	JE	26$.S			;Yes
+22$:	ADDL	EBX, #12t		;No - advance to next table entry
+	LOOP	ECX, 20$		;Continue if more to check
+24$:	MOVL	EAX, #ER_CHARV		;Not there - get error code
+	LEAVE
+	STC				;Indicate error
+	RET
+
+;Here with match on atom name
+
+26$:	MOVL	EAX, 8[EBX]		;Get bit number
+	TESTL	EAX, EAX		;Is it "NONE"?
+	JS	30$.S			;Yes - don't set or clear anything
+	CMPB	pp_prefix[EBP], #'-'	;No - want to remove privlege?
+	JE	28$.S			;Yes
+	BTSL	pp_bits[EBP], EAX	;No - set the bit for the privlege
+	JMP	30$.S
+
+28$:	BTZL	pp_bits[EBP], EAX	;Clear the bit for the privlege
+30$:	MOVB	AL, pp_stopper[EBP]	;Get stopper character
+	CMPB	AL, #0			;End of string?
+	JNE	4$			;No - continue
+	MOVL	EAX, pp_bits+0[EBP]	;Yes - get privlege bits
+	MOVL	EDX, pp_bits+4[EBP]
+	LEAVE
+	RET
+.PAGE
+	.SBTTL	Privilege name table
+
+	.MACRO	PP  name
+$$$=$
+	.ASCII	"name"
+	.BLKB	8-{$-$$$}
+	.LONG	PP%'name
+	.ENDM
+
+PP%NONE=!-1
+
+	DATA
+
+	.MOD	4
+privtbl:PP	SYSADMIN	;PP%SYSADMIN = 31 - System administrator
+				;		      privileges
+	PP	GRPADMIN	;PP%GRPADMIN = 30 - Group administrator
+				;		      privileges
+	PP	OPER		;PP%OPER     = 29 - Operator privileges
+	PP	ANYLOGIN	;PP%ANYLOGIN = 28 - Can do login at any time
+	PP	ALLPROC		;PP%ALLPROC  = 27 - May kill or interrupt any
+				;		      process
+	PP	SYSENV		;PP%SYSENV   = 26 - May change system level
+				;		      environment strings
+	PP	SESENV		;PP%SESENV   = 25 - May change session level
+				;		      environment strings
+	PP	SYSLOG		;PP%SYSLOG   = 24 - May change system level
+				;		      logical names
+	PP	DETACH		;PP%DETACH   = 22 - May detach process
+	PP	NEWSES		;PP%NEWSES   = 21 - May create new session
+	PP	PORTIO		;PP%PORTIO   = 17 - May directly access IO ports
+	PP	SHAREDEV	;PP%SHAREDEV = 16 - May share any device
+	PP	ALLIO		;PP%ALLIO    = 15 - May do restricted IO
+				;		      operations
+	PP	FBYPASS		;PP%FBYPASS  = 14 - Bypass all file access
+				;		      checking
+	PP	FREADALL	;PP%FREADALL = 13 - Bypass file read access
+				;		      checking
+	PP	FUSESYS		;PP%FUSESYS  = 12 - Access files using system
+				;		      protection
+	PP	FSPECIFY	;PP%FSPECIFY = 11 - May specify user for file
+				;		      access
+	PP	MEMLOCK		;PP%MEMLOCK  = 9  - May lock memory pages in
+				;		      place
+	PP	NOSWAP		;PP%NOSWAP   = 8  - May lock memory pages in
+				;		      memory
+	PP	READPHY		;PP%READPHY  = 7  - May read physical memory
+	PP	WRITEPHY	;PP%WRITEPHY = 6  - May write physical memory
+	PP	READKER		;PP%READKERL = 5  - May read kernel mem.
+	PP	WRITEKER	;PP%WRITEKER = 4  - May write kernel mem.
+	PP	SCRNSYM		;PP%SCRNSYM  = 1  - May execute screen symbiont
+				;		      functions
+	PP	LKELOAD		;PP%LKELOAD  = 0  - May execute LKE load
+				;		      functions
+	PP	NONE
+NUMPRIV=!{$-privtbl}/12t
+	.LONG	0
+
+	CODE
+.PAGE
+	.SBTTL	PROCESS class, get SECTAVL characteristic
+
+;Subroutine to get value of the PROCESS class SECTAVL characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getsectavl
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getsectavl:
+	MOVB	AH, #0
+	JMP	2$.S
+
+	.SBTTL	PROCESS class, get SECTCUR characteristic
+
+;Subroutine to get value of the PROCESS class SECTCUR characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	getsectcur
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getsectcur:
+	MOVB	AH, #0x01
+2$:	JREGZ	ECX, 4$
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc
+	MOVL	EDX, pdaSesPda#[EBX]	;Get address of the session PDA
+	POPL	ECX
+	POPL	EBX
+
+
+	MOVL	ESI, pdaSection#[EDX]	;Get offset of the section name list
+	TESTL	ESI, ESI		;Do we have a list?
+;;;;;	JNE	6$			;Yes
+
+	IFFAULT	knlRtnAdrEr#		;No - return a null list
+	MOVB	[EBX], #0
+4$:	CLRL	ECX
+	RET
+
+;Here with a list to return
+
+6$:	MOVL	EDI, EBX		;Remember where the user's buffer starts
+	MOVL	EDX, [ESI]		;Get size of the section name list
+8$:	MOVB	AL, [ESI]		;Get first character
+	INCL	ESI
+	DECL	EDX
+	CMPB	AL, #'a'		;Lower case?
+	JB	14$			;No - always return the entry
+	ADDB	AL, #'A'-'a'		;Yes - convert to upper case
+	CMPB	AH, #0			;Want only current entries?
+	JE	14$			;No - return this one
+10$:	MOVB	AL, [ESI]		;Yes - skip this name
+	INCL	ESI
+	DECL	EDX
+	TESTB	AL, #0x80
+	JE	10$
+	JMP	18$
+
+;Here to get next character
+
+12$:	MOVB	AL, [ESI]		;Get character
+	INCL	ESI
+	DECL	EDX			;Reduce number left
+	TESTB	AL, #0x80		;End of name?
+	JNE	16$			;Yes
+14$:	CALL	gsstore			;No - store character
+	JNC	12$			;Continue if no error
+	JMP	24$			;If error storing character
+
+;Here at end of section name
+
+16$:	ANDB	AL, #0x7F		;Remove high bit
+	CALL	gsstore			;Store it
+	JC	24$			;If error
+	MOVB	AL, #'+'		;Store separator character
+	CALL	gsstore
+	JC	24$			;If error
+18$:	TESTL	EDX, EDX		;Any more to do?
+	JE	20$			;No
+	CMPB	[ESI], #0		;Maybe
+	JNE	8$			;Yes
+20$:	DECL	EBX
+	MOVL	ECX, EBX		;Finished - calculate amount stored
+	SUBL	ECX, EDI
+	JNS	22$			;If something stored
+	INCL	EBX			;Nothing stored - fix up the pointer
+	CLRL	ECX			;  and count
+	IFFAULT	knlRtnAdrEr#		;Store final null (this will replace the
+22$:	MOVB	[EBX], #0		;  final seperator character stored)
+	BTL	EAX, #31t		;Set C if error
+	RET
+
+;Here if error storing character
+
+24$:	MOVL	ECX, EBX
+	SUBL	ECX, EDI
+	BTL	EAX, #31
+	RET
+
+;Subroutine to store data for getsection
+;	c(AL)  = Value to store
+;	c{EBX} = Address
+;	c{ECX} = Space left
+;	CALL	gsstore
+;	C:set = Error
+;	  c{EAX} = Error code (positive means buffer is full)
+;	C:clr = Normal
+
+gsstore:SUBL	ECX, #1			;Have any space left?
+	JLE	26$			;No
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL		;Yes - store character
+	INCL	EBX
+	RET
+
+;Here if user's buffer is full
+
+26$:	STC
+	RET
+.PAGE
+	.SBTTL	PROCESS class, set NAME characteristic
+
+;Subroutine to set value of the PROCESS class NAME characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setprocname
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprocname:
+	MOVL	ESI, EBX
+	CALL	getproc			;Get address of PDA for process
+	MOVL	EBX, pdaSpy#[EBX]
+	TESTL	ECX, ECX		;Name cannot be zero length!
+	JE	knlBadCharV#
+	IFFAULT	knlRtnAdrEr#
+	CMPB	[ESI], #0
+	JE	knlBadCharV#
+	CMPL	ECX, #32t
+	JB	4$
+	MOVL	ECX, #32t
+4$:	CLRL	EAX
+	MOVL	[EBX], EAX
+	MOVL	4[EBX], EAX
+	MOVL	8[EBX], EAX
+	MOVL	12t[EBX], EAX
+	MOVL	16t[EBX], EAX
+	MOVL	20t[EBX], EAX
+	MOVL	24t[EBX], EAX
+	MOVL	28t[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+6$:	MOVZBL	EAX, [ESI]		;Get character
+	INCL	ESI
+	CMPB	AL, #0			;End of name?
+	JE	8$			;Yes
+	MOVB	[EBX], AL		;Store it
+	INCL	EBX
+	LOOP	ECX, 6$			;No - continue if more
+	CLRL	EAX
+8$:	RET				;Finished
+.PAGE
+	.SBTTL	PROCESS class, set NUM characteristic
+
+;Subroutine to set value of the PROCESS class NUM characteristic - this is
+;  one way of selecting the process for other characteristic values, it does
+;  not actually change the process number
+;	c{EAX} = Process number
+;	CALL	setprocnum
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprocnum:
+	TESTL	EAX, EAX
+	JE	6$
+	JS	8$
+2$:	CMPL	EAX, #MAXPROCS		;Valid number?
+4$:	JAE	knlBadCharV#		;No
+
+	CRASH	????
+
+;;;;;	CMPW	knlProcTable#[EAX*2], #3 ;Yes - is the slot in use?
+	JBE	knlBadCharV#		;No
+;;;;;	MOVW	ES, knlProcTable#[EAX*2] ;Yes - get PDA selector
+	CMPL	pdaLabel#, #'PDA&'	;Is this really a PDA?
+	JNE	knlBadCharV#		;No - not valid here
+	MOVL	knlTda+tdaCharData#, ES	;Yes - remember the PDA selector
+	RET				;Thats all
+
+;Here if want the session process
+
+6$:	MOVL	EAX, #pdaSesPda#
+	JMP	10$
+
+;Here if want the parent process
+
+8$:	MOVL	EAX, #pdaParPda#
+10$:	CMPL	knlTda+tdaCharData#, #0
+	JE	12$
+	MOVL	ES, knlTda+tdaCharData#
+	MOVZWL	EAX, [EAX]
+	JMP	2$
+
+12$:	MOVZWL	EAX, [EAX]
+	JMP	2$
+.PAGE
+	.SBTTL	PROCESS class, set CONTRM characteristic
+
+;Subroutine to set value of the PROCESS class CONTRM characteristic - this is
+;  one way of selecting the process for other characteristic values - the
+;  process with the highest sequence number which has the specified terminal
+;  as its controlling terminal is selected
+;	c{EBX} = Address of the value
+;	c{ECX} = Length of the value
+;	CALL	setprocnum
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+$$$=!0
+FRM sct_name, 16t
+sct_SIZE=!$$$
+
+setcontrm:
+	CMPL	ECX, #16t
+	JA	knlBadCharS
+	ENTER	sct_SIZE, 0
+	CLRL	EAX
+	MOVL	sct_name+0[EBP], EAX
+	MOVL	sct_name+4[EBP], EAX
+	MOVL	sct_name+8[EBP], EAX
+	MOVL	sct_name+12t[EBP], EAX
+	LEAL	EDX, sct_name[EBP]
+	IFFAULT	knlRtnAdrErLv#
+2$:	MOVZBL	EAX, [EBX]
+	TESTL	EAX, EAX
+	JE	4$
+	INCL	EBX
+	MOVB	[EDX], AL
+	INCL	EDX
+	LOOP	ECX, 2$
+4$:	MOVL	EBX, #1			;Start with process 1
+	CLRL	ECX			;Clear highest sequence number found
+6$:	CMPB	knlPdaTable#[EBX], #PDATYPE_PDA ;Is this slot in use?
+	JNE	12$			;No
+	MOVL	ESI, EBX		;Yes - get address of the PDA
+	SHLL	ESI, #pda_SHIFT
+	ADDL	ESI, #pdabase
+	CMPL	pdaLabel#[ESI], #'PDA&'	;Is this really a PDA?
+	JE	8$
+	CRASH	NPDA
+
+8$:	TESTB	pdaStatus1#[ESI], #P1$SETUP ;Yes - is it being set up now?
+	JNE	8$			;Yes - don't look at it
+	MOVL	EDI, pdaHndlTbl#+DH_STDTRM*8[ESI] ;No - get offset of DCB for
+	CMPL	EDI, #0x1000			  ;  the controlling terminal
+	JB	12$			;If none
+	BTL	EDI, #1t		;Is this device being transfered now?
+	JC	12$			;Yes - skip it
+	MOVL	EAX, sct_name+0[EBP]	;Is this the one we want?
+	CMPL	dcb_name+0[EDI], EAX
+	JNE	12$			;No
+	MOVL	EAX, sct_name+4[EBP]	;Maybe
+	CMPL	dcb_name+4[EDI], EAX
+	JNE	12$			;No
+	MOVL	EAX, sct_name+8[EBP]	;Maybe
+	CMPL	dcb_name+8[EDI], EAX
+	JNE	12$			;No
+	MOVL	EAX, sct_name+12t[EBP]	;Maybe
+	CMPL	dcb_name+12t[EDI], EAX
+	JNE	12$			;No
+	CMPW	CX, pdaPid#+2[ESI]	;Yes - is the sequence number better?
+	JA	12$			;No
+	MOVW	CX, pdaPid#+2[ESI]	;Yes - remember this one
+	MOVL	EDX, ESI
+12$:	INCL	EBX			;Bump process number
+	CMPL	EBX, knlProcHigh#	;More to look at?
+	JBE	6$			;Yes - continue
+	TESTL	ECX, ECX		;No - did we find one?
+	JE	knlBadCharVLv#		;No - fail
+	MOVL	knlTda+tdaCharData#, EDX ;Yes - use it
+	LEAVE	
+	RET				;Finished
+.PAGE
+	.SBTTL	PROCESS class, set SEQ characteristic
+
+;Subroutine to set value of the PROCESS class SEQ characteristic - this does
+;  not really set it but varifies that the value is correct
+;	c[AX] = Process sequence number
+;	CALL	setprocseq
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprocseq:
+	PUSHL	EAX
+	CALL	getproc			;Get selector for PDA for process
+	POPL	EAX
+	CMPW	pdaPid#+2[EBX], AX	;Is the value right?
+	JNE	knlBadCharV#		;No - fail
+	RET				;Yes
+.PAGE
+;Here for the DEVLIMIT characteristic - set device limit
+
+setdevlimit:
+	PUSHL	EAX
+	CALL	sysIoSetDevLimit#
+	RET
+
+	.SBTTL	setpda2byte - Set 2 byte value for PROCESS characteristic
+
+;Subroutine to set value of process characteristic which has a 2 byte value
+;	c{EAX} = Value to store
+;	c{EBX} = Data value
+;	CALL	setpda2byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setpda2byte:
+	CALL	getproc
+	MOVW	[EBX], AX		;Set value
+	CLC
+	RET
+.PAGE
+	.SBTTL	PROCESS class, set PRIVCUR characteristic
+
+;Subroutine to set value of the PROCESS class PRIVCUR characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Maximum length of string to store
+;	CALL	setprivcur
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprivcur:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc			;Get selector for PDA
+	MOVL	EDI, EBX
+	POPL	ECX
+	POPL	EBX
+	MOVL	EAX, pdaActPriv#+0[EDI]	;Get active privilege bits
+	MOVL	EDX, pdaActPriv#+4[EDI]
+	CALL	parsepriv		;Parse his list
+	JC	4$			;If error
+	ANDL	EAX, pdaAvlPriv#+0[EDI]	;Remove non-allowed bits
+	ANDL	EDX, pdaAvlPriv#+4[EDI]
+	MOVL	pdaActPriv#+0[EDI], EAX	;Store new bits
+	MOVL	pdaActPriv#+4[EDI], EDX
+4$:	RET
+
+	.SBTTL	PROCESS class, set PRIVAVL characteristic
+
+;Subroutine to set value of the PROCESS class PRIVACL characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Maximum length of string to store
+;	CALL	setprivavl
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprivavl:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc			;Get selector for PDA
+	MOVL	EDI, EBX
+	POPL	ECX
+	POPL	EBX
+	MOVL	EAX, pdaAvlPriv#+0[EDI]	;Get available privilege bits
+	MOVL	EDX, pdaAvlPriv#+4[EDI]
+	CALL	parsepriv		;Parse his list
+	JC	4$			;If error
+	ANDL	pdaAvlPriv#+0[EDI], EAX	;Store new bits
+	ANDL	pdaAvlPriv#+4[EDI], EDX
+	ANDL	pdaActPriv#+0[EDI], EAX	;Also make sure no extra current bits
+	ANDL	pdaActPriv#+4[EDI], EDX	;  are set
+6$:	RET
+
+	.SBTTL	PROCESS class, set PRIVCHK characteristic
+
+;Subroutine to set value of the PROCESS class PRIVCHK characteristic - This
+;  characteristic simply verifies that the privileges specified are current
+;  privilegs.
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Maximum length of string to store
+;	CALL	setprivchk
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprivchk:
+	PUSHL	EBX
+	PUSHL	ECX
+	CALL	getproc			;Get selector for PDA
+	MOVL	EDI, EBX
+	POPL	ECX
+	POPL	EBX
+	CLRL	EAX
+	CLRL	EDX
+	CALL	parsepriv		;Parse his list
+	JC	6$
+	MOVL	ECX, pdaActPriv#+0[EDI]
+	NOTL	ECX
+	ANDL	ECX, EAX
+	JNE	10$
+	MOVL	EAX, pdaActPriv#+4[EDI]
+	NOTL	EAX
+	ANDL	EAX, EDX
+	JE	6$
+10$:	JMP	knlBadCharV#
+
+	.SBTTL	PROCESS class, set PRIVVLD characteristic
+
+;Subroutine to set value of the PROCESS class PRIVVLD characteristic - This
+;  characteristic simply verifies that the privileges specified are valid.
+;  Nothing is changed.
+;	c{EBX} = Address of user's string buffer
+;	c{ECX}    = Maximum length of string to store
+;	CALL	setprivvld
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setprivvld:
+
+	CRASH	????
+
+	CALL	getproc			;Get selector for PDA
+	CLRL	EAX
+	CLRL	EDX
+	JMP	parsepriv		;Parse his list
+.PAGE
+	.SBTTL	PROCESS class, set SECTCUR characteristic
+
+;Subroutine to set value of the PROCESS class SECTCUR characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setsectcur
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+$$$=!0
+FRM sc_name    , 20t		;Section name buffer
+FRM sc_begin   , 4t		;Offset of beginning of name
+FRM sc_error   , 4t		;Error code
+FRM sc_nexttype, 1t		;Type for next name
+FRM sc_thistype, 1t		;Type for this name
+FRM            , 2t
+sc_SIZE=!$$$
+
+setsectcur:
+
+	CRASH	????
+
+.IF NE 0
+	ENTER	sc_SIZE, 0
+	CALL	getproc
+	MOVZBL	EAX, pdaSesPda#
+	MOVW	GS, knlProcTable#[EAX*2]
+	TESTL	ECX, ECX
+	JNE	1$.S
+	MOVL	ECX, #0x7FFFFFFF
+1$:	IFFAULT	knlRtnAdrErLv#
+	MOVB	AL, [EBX]
+	CMPB	AL, #0			;Null list?
+	JE	16$			;Yes - go nothing
+	CMPB	AL, #'+'		;No - incremental request?
+	JE	6$.S			;Yes
+	CMPB	AL, #'-'		;Maybe
+	JE	6$.S			;Yes
+	MOVL	ESI, pdaSection#	;No - point to start of section list
+	MOVL	EDX, [ESI]
+
+;Here if request is not incremental - we first scan the list of sections and
+;  make them all not current (i.e., we make sure the first character of each
+;  is lower case)
+
+2$:	DECL	EDX			;More?
+	JS	6$.S			;No
+	MOVB	AL, [ESI]		;Get first character of section name
+	CMPB	AL, #0			;End?
+	JE	6$.S			;Yes
+	CMPB	AL, #'a'		;Lower case?
+	JAE	4$.S			;Yes
+	ADDB	[ESI], #'a'-'A'		;No - make it lower case
+4$:	INCL	ESI
+	DECL	EDX			;Eat the rest of the name
+	TESTB	[ESI], #80
+	JE	4$.S
+	INCL	ESI
+	JMP	2$.S			;Continue with next name
+
+;Here with all items made non-current if necessary
+
+6$:	MOVL	sc_error[EBP], #0
+	MOVB	sc_thistype[EBP], #'+'
+8$:	CALL	nextsect		;Get next section name
+	JNC	9$.S
+	CMPL	EAX, #ER_SCTNA		;Section not available error?
+	JNE	16$.S			;No - fail immediately
+	MOVL	sc_error[EBP], EAX	;Yes - save error and continue
+9$:	CMPB	sc_name+0[EBP], #0	;Null name?
+	JE	14$.S			;Yes
+	MOVB	AL, [ESI]		;No - get first character
+	CMPB	sc_thistype[EBP], #'+' ;Want to add name?
+	JNE	10$.S			;No
+	CMPB	AL, #'a'		;Yes - lower case?
+	JB	12$.S			;No
+	ADDB	AL, #'A'-'a'		;Yes - change to upper case
+	JMP	12$.S
+
+;Here if want to remove name
+
+10$:	CMPB	AL, #'a'		;Change first character to lower case
+	JAE	12$.S
+	ADDB	AL, #'a'-'A'
+12$:	MOVB	[ESI], AL
+14$:	MOVB	AL, sc_nexttype[EBP]
+	MOVB	sc_thistype[EBP], AL
+	CMPB	AL, #0
+	JNE	8$.S
+	MOVL	EAX, sc_error[EBP]	;Get error code to return
+	BTL	EAX, #31t		;Set C if error
+16$:	LEAVE
+	RET
+.ENDC
+.PAGE
+	.SBTTL	PROCESS class, set SECTAVL characteristic
+
+;Subroutine to set value of the PROCESS class SECTAVL characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setsectavl
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+$$$=!0
+FRM ss_buffer, 8t		;Address of user's buffer
+FRM ss_length, 4t		;Length of user's buffer
+FRM ss_number, 4t		;Number of sections specified
+FRM ss_size  , 4t		;Size needed for data block
+FRM ss_begin , 4t		;Offset of beginning of section name
+FRM ss_pda   , 4t		;Selector for session PDA
+ss_SIZE=!$$$
+
+setsectavl:
+
+.IF NE 0
+
+	CALL	getproc
+	MOVZBL	EAX, pdaSesPda#
+	MOVW	GS, knlProcTable#[EAX*2]
+	MOVL	EAX, pdaSesData#
+	ADDL	EAX, #ses_grpname
+	CMPB	[EAX], #0		;Is the user logged in now?
+	JE	100$.S			;No - go on
+	BTL	pdaActPriv#, #PP%ANYLOGIN ;Yes - can he do this anyway?
+	JNC	knlPrivFail#		;No - fail!
+100$:	TESTL	ECX, ECX		;OK
+	JNE	1$.S
+	MOVL	ECX, #0x7FFFFFFF
+1$:	ENTER	ss_SIZE, 0
+	MOVL	ss_pda[EBP], GS
+	MOVL	ss_buffer+0[EBP], EBX
+	MOVL	ss_buffer+4[EBP], ES
+	MOVL	ss_length[EBP], ECX
+	CLRL	EAX
+	MOVL	ss_number[EBP], EAX
+	MOVL	ss_size[EBP], EAX
+
+;First we scan the string and count the number of section names specified and
+;  determine that all of the names are valid
+
+2$:	MOVL	ss_begin[EBP], EBX	;Save beginning of name
+	IFFAULT	knlRtnAdrErLv#
+	MOVB	AL, [EBX]		;Get first character
+	CMPB	AL, #'a'		;Lower case?
+	JB	4$.S			;No
+	ADDB	AL, #'A'-'a'		;Yes - change to upper case
+4$:	CMPB	AL, #'A'		;Letter?
+	JB	16$.S
+	CMPB	AL, #'Z'
+	JA	18$.S
+	IFFAULT	knlRtnAdrErLv#
+6$:	MOVB	AL, [EBX]		;Get character
+	INCL	EBX
+	DECL	ECX
+	CMPB	AL, #0			;End of name?
+	JE	12$.S			;Yes
+	TESTB	AL, #80h		;Maybe - have non-delimiter end?
+	JE	10$.S			;No
+	ANDB	AL, #7Fh		;Yes
+	CMPB	AL, #'+'		;Valid character?
+	JE	16$.S			;No
+	CMPB	AL, #'-'
+	JE	16$.S			;No
+	CMPB	AL, #' '
+	JBE	16$.S			;No
+	LEAL	EDX, 1[EBX]		;Yes - get length of name + 1
+	ORL	ECX, ECX
+	JG	8$.S
+	MOVB	AL, #0
+	JMP	14$.S			;Continue
+
+8$:	MOVB	AL, [EBX]
+	JMP	14$.S
+
+10$:	CMPB	AL, #'+'		;Maybe
+	JE	12$.S			;Yes
+	CMPB	AL, #'-'		;No - valid character?
+	JE	16$.S			;No
+	CMPB	AL, #' '		;Maybe
+	JBE	16$.S			;No
+	ORL	ECX, ECX
+	JG	6$.S			;Yes - continue if more there
+	MOVB	AL, #0			;End of buffer - fake up final null
+	INCL	EBX
+12$:	MOVL	EDX, EBX		;Get length of name + 1
+14$:	SUBL	EDX, ss_begin[EBP]
+	CMPL	EDX, #2t
+16$:	JBE	knlBadCharVLv#		;Error if not at leat 2 characters
+	CMPL	EDX, #17t
+18$:	JA	knlBadCharVLv#		;Also error if longer than 16
+	INCL	ss_number[EBP]		;OK - count the session name
+	DECL	EDX
+	ADDL	ss_size[EBP], EDX
+	CMPB	AL, #0			;End of list?
+	JNE	2$.S			;No - continue
+
+;Here with list scanned, now allocate memory and store the list
+
+	MOVL	ESI, pdaSection#	;Do we have a section list defined now?
+	TESTL	ESI, ESI
+	JE	20$			;No
+	CLRL	EAX			;Yes - give it up
+	MOVL	pdaSection#, EAX
+	MOVL	ES, ss_pda[EBP]
+	CALL	knlGivePdaMemP#
+20$:	MOVL	ECX, ss_size[EBP]
+	MOVL	ES, ss_pda[EBP]
+	CALL	knlGetPdaMemP#		;Allocate space
+	JC	38$			;If error
+	MOVL	GS, ss_pda[EBP]
+	MOVL	mb_pnt1[ESI], #pdaSection ;Store offset of pointer in block
+	MOVL	pdaSection#, ESI	;Store offset of table
+	MOVL	EBX, ss_buffer[EBP]	;Resetore offset of buffer
+	MOVL	ECX, ss_length[EBP]	;And length of buffer
+22$:	MOVB	AL, [EBX]		;Get first character
+	INCL	EBX
+	CMPB	AL, #'a'		;Force to lower case
+	JAE	30$
+	ADDB	AL, #'a'-'A'
+	JMP	30$
+
+24$:	MOVB	AL, [EBX]		;Get next character
+	INCL	EBX
+	DECL	ECX
+	CMPB	AL, #0			;End of name?
+	JE	32$			;Yes
+	TESTB	AL, #0x80
+	JE	28$
+	ANDB	AL, #0x7F
+	CMPB	AL, #'a'		;Make sure upper case
+	JB	25$
+	ADDB	AL, #'A'-'a'
+25$:	MOVB	[ESI], AL
+	INCL	ESI
+	ORL	ECX, ECX
+	JG	26$
+	MOVB	AL, #0
+	JMP	32$
+
+26$:	MOVB	AL, [EBX]
+	JMP	32$
+
+28$:	CMPB	AL, #'+'		;Maybe
+	JE	32$.S			;Yes
+	CMPB	AL, #'a'		;No - make sure upper case
+	JB	30$.S
+	ADDB	AL, #'A'-'a'
+30$:	MOVB	[ESI], AL		;Store character
+	INCL	ESI
+	ORL	ECX, ECX
+	JG	24$.S			;Continue if more there
+	MOVB	AL, #0			;End of buffer - fake up final null
+32$:	ORB	-1[ESI], #80h		;Flag end of name
+	CMPB	AL, #0			;End of list?
+	JNE	22$.S			;No - continue
+34$:	TESTL	ESI, #03h		;Yes - fill out last long with nulls
+	JE	36$.S			;  if necessary
+	MOVB	[ESI], #0
+	INCL	ESI
+	JMP	34$.S
+
+36$:	CLRL	EAX			;Return 0
+38$:	LEAVE
+	RET
+.ENDC
+
+.PAGE
+	.SBTTL	PROCESS class, set SECTCHK characteristic
+
+;Subroutine to set value of the PROCESS class SECTCHK characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	CALL	setsectchk
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setsectchk:
+
+	CRASH	????
+
+.IF NE 0
+	ENTER	sc_SIZE, 0
+	CALL	getproc
+	MOVZBL	EAX, pdaSesPda#
+	MOVW	GS, knlProcTable#[EAX*2]
+	TESTL	ECX, ECX
+	JNE	2$.S
+	MOVL	ECX, #0x7FFFFFFF
+2$:	CALL	nextsect		;Get next section name
+	JC	10$.S			;If error
+	CMPB	[ESI], #'a'
+	JAE	knlBadCharVLv#
+	CMPB	sc_nexttype[EBP], #0
+	JNE	2$.S
+10$:	LEAVE
+	RET
+.PAGE
+;Subroutine to get next section name from the user's list and find it in the
+;  definition
+;	c{EBX} = Pointer to input buffer
+;	c{ECX} = Number of characters left in input buffer
+;	CALL	nextsect
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{sc_begin{ESP}} = Offset of entry in section list
+;	  c{EBX} = Updated pointer to input buffer
+;	  c{ECX} = Updated number of characters left in input buffer
+
+nextsect:
+	LEAL	ESI, sc_name[EBP]	;Point to our name buffer
+	MOVL	EDX, #16t		;Get maximum length
+	IFFAULT	knlRtnAdrEr#
+2$:	MOVB	AL, [EBX]		;Get name character
+	INCL	EBX			;Bump pointer
+	DECL	ECX
+	CMPB	AL, #0			;End of name?
+	JE	8$			;Yes
+	TESTB	AL, #80h		;Maybe
+	JNE	6$			;Yes
+	CMPB	AL, #'+'		;Maybe
+	JE	8$			;Yes
+	CMPB	AL, #'-'		;Maybe
+	JE	8$			;Yes
+	CMPB	AL, #'a'		;No - lower case?
+	JB	4$			;No
+	ADDB	AL, #'A'-'a'		;Yes - change to upper case
+4$:	DECL	EDX			;Too long?
+	JL	knlBadCharV#		;Yes - fail
+	MOVB	[ESI], AL		;No - store in name buffer
+	INCL	ESI			;Bump buffer poiner
+	ORL	ECX, ECX
+	JG	2$			;Continue if more in buffer
+	MOVB	AL, #0
+	JMP	8$
+
+;Here if have high order bit set in character - this flags the end of a name
+;  without using a delimiter character - we assume a + delimiter
+
+6$:	ANDB	AL, #7Fh		;Store last character
+	CMPB	AL, #'a'		;No - lower case?
+	JB	7$.S			;No
+	ADDB	AL, #'A'-'a'		;Yes - change to upper case
+7$:	MOVB	[ESI], AL
+	INCL	ESI
+	MOVB	AL, #'+'		;Get assumed delimiter
+	ORL	ECX, ECX		;End?
+	JG	8$.S			;No
+	MOVB	AL, #0			;Yes - get right value
+
+;Here at end of name - we now have the name in our name buffer in all upper
+;  case
+
+8$:	MOVB	sc_nexttype[EBP], AL	;Store type of next item
+	MOVB	[ESI], #0		;Store final null
+	CMPB	sc_name+0[EBP], #0	;Is this a null name?
+	JE	18$.S			;Yes
+	MOVL	ESI, pdaSection#	;No - point to start of section list
+	MOVL	EDX, [ESI]
+10$:	LEAL	EDI, sc_name[EBP]
+	MOVL	sc_begin[EBP], ESI
+12$:	MOVB	AL, [ESI]		;Get character from list
+	INCL	ESI
+	DECL	EDX
+	TESTB	AL, #80h		;End of name?
+	JNE	16$.S			;Yes
+	CMPB	AL, #'a'		;No - make sure upper case
+	JB	14$.S
+	ADDB	AL, #'A'-'a'
+14$:	CMPB	[EDI], AL		;Does it match?
+	JNE	20$.S			;No
+	INCL	EDI			;Yes - continue checking
+	JMP	12$.S
+
+;Here with last character in list entry
+
+16$:	ANDB	AL, #7F			;Remove end flag
+	CMPB	[EDI], AL		;Does it match?
+	JNE	22$.S			;No
+	CMPB	1[EDI], #0		;Yes - end of user's name?
+	JNE	22$.S			;No - no match
+	MOVL	ESI, sc_begin[EBP]	;Yes - point to start of name
+18$:	RET				;Give good return
+
+;Here if not a match - scan to end of list entry
+
+20$:	MOVB	AL, [ESI]
+	INCL	ESI
+	DECL	EDX
+	TESTB	AL, #80h
+	JE	20$.S
+22$:	TESTL	EDX, EDX
+	JE	24$.S
+	CMPB	[ESI], #0
+	JNE	10$.S
+24$:	MOVL	EAX, #ER_SCTNA
+	STC
+	RET
+.ENDC
+
+.PAGE
+	.SBTTL	ACCOUNT class, set SESSEQ characteristic
+
+;Subroutine to set ACCOUNT class SESSEQ characteristic
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	setsesseq
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setsesseq:
+	CMPL	ECX, #16t		;We must write the whole thing!
+	JNE	knlBadCharS
+	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesmdpntr
+	POPL	ESI
+	JC	2$.S
+	PUSHL	ES
+	POPL	GS
+	MOVL	EDI, EBX
+	PUSHL	FS
+	POPL	ES
+	CLD
+	SHRL	ECX, #2
+	IFFAULT	knlRtnAdrEr#
+	RMOVSL	[EDI], [ESI]
+	CLRL	EAX
+2$:	RET
+
+	.SBTTL	ACCOUNT class, get SESSEQ characteristic
+
+;Subroutine to get ACCOUNT class SESSEQ characteristic
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	getsesseq
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getsesseq:
+	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesrdpntr
+	POPL	EDI
+	JC	2$.S
+	MOVL	ESI, EBX
+	CLD
+	CMPL	ECX, #16t
+	JBE	4$.S
+	MOVL	ECX, #16t
+4$:	MOVL	EAX, ECX
+	ANDL	EAX, #0FFFFFFFCh
+	SHRL	ECX, #2
+	IFFAULT	knlRtnAdrEr#
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	RET
+.PAGE
+	.SBTTL	ACCOUNT class, set BILLING characteristic
+
+;Subroutine to set ACCOUNT class BILLING characteristic
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's data buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	setbilling
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;The data for this characteristic has the following format:
+;	Offset  Size   Description
+;	  0       1    Billing class
+;	  1       1    Number of time intervals (must be between 0 and 3)
+;	  2       1    Number of billing levels (must be 8)
+;	  3       1    Reserved, must be 0
+;	  4       4    Billing key value
+;	  8       4    1st time value (fractional days)
+;	 12       2    1st interval, level 0 cost (cents/hour)
+;	 14       2    1st interval, level 1 cost (cents/hour)
+;	 16       2    1st interval, level 2 cost (cents/hour)
+;	 18       2    1st interval, level 3 cost (cents/hour)
+;	 20       2    1st interval, level 4 cost (cents/hour)
+;	 22       2    1st interval, level 5 cost (cents/hour)
+;	 24       2    1st interval, level 6 cost (cents/hour)
+;	 26       2    1st interval, level 7 cost (cents/hour)
+;	 28       4    2nd time value (fractional days)
+;	 32       2    2nd interval, level 0 cost (cents/hour)
+;	 34       2    2nd interval, level 1 cost (cents/hour)
+;	 36       2    2nd interval, level 2 cost (cents/hour)
+;	 38       2    2nd interval, level 3 cost (cents/hour)
+;	 40       2    2nd interval, level 4 cost (cents/hour)
+;	 42       2    2nd interval, level 5 cost (cents/hour)
+;	 44       2    2nd interval, level 6 cost (cents/hour)
+;	 46       2    2nd interval, level 7 cost (cents/hour)
+;	 48       4    3rd time value (fractional days)
+;	 52       2    3rd interval, level 0 cost (cents/hour)
+;	 54       2    3rd interval, level 1 cost (cents/hour)
+;	 56       2    3rd interval, level 2 cost (cents/hour)
+;	 58       2    3rd interval, level 3 cost (cents/hour)
+;	 60       2    3rd interval, level 4 cost (cents/hour)
+;	 62       2    3rd interval, level 5 cost (cents/hour)
+;	 64       2    3rd interval, level 6 cost (cents/hour)
+;	 66       2    3rd interval, level 7 cost (cents/hour)
+
+;The data buffer must contain at least 68 bytes, unused values must be set
+;  to 0.
+
+setbilling:
+	CMPL	ECX, #68t		;We must write the whole thing!
+	JB	knlBadCharS
+	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesmdpntr		;Get pointer for writing session data
+	POPL	ESI
+	JC	10$.S			;If error
+	PUSHL	ES
+	POPL	GS
+	PUSHL	FS
+	POPL	ES
+	IFFAULT	knlRtnAdrEr#
+	MOVB	AL, 55t[ESI]		;Make sure end of buffer is readable
+	IFFAULT	knlRtnAdrEr#
+	CLD
+	LODSL	[ESI]			;Get billing class, number of time
+	CMPB	AH, #1			;  intervals, and number of levels
+	JB	2$.S			;Must have 0 to 3 intervals
+	CMPB	AH, #3
+	JA	2$.S
+	MOVL	ECX, EAX		;Get number of levels
+	SHRL	ECX, #16t
+	CMPB	CL, #8t			;For now, it must be 8!
+2$:	JNE	knlBadCharV#
+	MOVW	[EBX], AX
+	LODSL	[ESI]			;Store the billing key value
+	MOVL	ses_billkey-ses_billcls[EBX], EAX
+	CLI				;Get current date/time in system format
+	MOVL	EDX, knlSysDateTime#+4	;  and store it as the last billing
+	MOVL	EAX, knlSysDateTime#+0	;  date/time
+	STI
+	MOVL	ses_billtime+0-ses_billcls[EBX], EAX
+	MOVL	ses_billtime+4-ses_billcls[EBX], EDX
+	LEAL	EDI, ses_rates1-ses_billcls[EBX]
+	ADDL	EBX, #ses_atime1-ses_billcls
+	MOVL	EDX, #3
+4$:	LODSL	[ESI]			;Store the time value
+	MOVL	[EBX], EAX
+	ADDL	EBX, #4t
+	MOVL	ECX, #8t
+6$:	CLRL	EAX
+	STOSL	[EDI]
+	LODSW	[ESI]
+	SHLL	EAX, #16t
+	STOSL	[EDI]
+	LOOP	ECX, 6$
+	DECL	EDX
+	JNE	4$.S
+	CLRL	EAX			;Return 0
+10$:	RET
+
+	.SBTTL	ACCOUNT class, get BILLING characteristic
+
+;Subroutine to get ACCOUNT class BILLING characteristic
+;	c{EDX} = Data value
+;	c{EBX} = Address of user's data buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	getbilling
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+getbilling:				;This always fails!
+	CLRL	ECX
+	MOVL	EAX, #ER_CHARF
+	STC
+	RET
+.PAGE
+	.SBTTL	ACCOUNT class, set characteristics with 4-byte numeric values
+
+;Subroutine to set ACCOUNT class characteristics with 4-byte numeric values
+;	c{EAX} = New value
+;	c{EBX} = Offset of value in the accounting data block
+;	CALL	setses4byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setses4byte:
+
+	CRASH	????
+
+	CALL	sesmdpntr
+	JC	6$
+	MOVL	[EBX], EAX
+6$:	RET
+
+	.SBTTL	ACCOUNT class, get characteristics with 4-byte numeric values
+
+;Subroutine to get ACCOUNT class characteristics with 4-byte numeric values
+;	c{EBX} = Offset of value in the accounting data block
+;	CALL	setses4byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getses4byte:
+
+	CRASH	????
+
+	CALL	sesrdpntr
+	MOVL	EAX, [EBX]
+	RET
+.PAGE
+	.SBTTL	ACCOUNT class, set characteristics with string values
+
+;Subroutine to set ACCOUNT class characteristics with string values
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	c{EDX} = Offset of value in the accounting data block
+;	CALL	setsesstr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setsesstr:
+
+	CRASH	????
+
+	MOVZWL	EAX, dct_length[ESI]
+	CMPL	ECX, EAX
+	JBE	2$
+	MOVL	ECX, EAX
+2$:	PUSHL	EBX
+	MOVL	EBX, EDX
+	CALL	sesmdpntr
+	POPL	ESI
+	JC	8$
+	MOVL	EDI, EBX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EAX
+	PUSHL	ECX
+	PUSHL	EDI
+	SHRL	ECX, #2
+	RSTOSL	[EDI]
+	POPL	EDI
+	POPL	ECX
+	IFFAULT	knlRtnAdrEr#
+6$:	LODSB	[ESI]			;Get character
+	STOSB	[EDI]			;Store it
+	CMPB	AL, #0			;End of name?
+	JE	8$.S			;Yes
+	LOOP	ECX, 6$			;No - continue if more
+	CLRL	EAX
+8$:	RET				;Finished
+
+	.SBTTL	ACCOUNT class, get characteristics with string values
+
+;Subroutine to get ACCOUNT class characteristics with string values
+;	c{EBX} = Offset of value in the session data block
+;	CALL	setsesstr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+
+getsesstr:
+
+	CRASH	????
+
+	MOVL	EDI, EBX
+	MOVL	EBX, EDX
+	MOVZWL	EAX, dct_length[ESI]
+	CMPL	ECX, EAX
+	JBE	12$
+	MOVL	ECX, EAX
+12$:	PUSHL	EAX
+	CALL	sesrdpntr
+	POPL	EDX
+	MOVL	ESI, EBX
+	CLD
+14$:	DECL	ECX
+	JLE	knlBadCharV#
+	LODSB	[ESI]			;Get character
+	IFFAULT	knlRtnAdrEr#
+	STOSB	[EDI]			;Store it
+	CMPB	AL, #0			;End of name?
+	JE	16$			;Yes
+	INCB	DH			;No - count the character
+	CMPB	DH, DL			;More?
+	JB	14$			;Yes
+	DECL	ECX			;No - room for a final null?
+	JLE	16$			;No
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EDI], #0		;Yes
+16$:	MOVZBL	ECX, DH			;Get length stored
+	RET				;Finished
+
+	.SBTTL	sesmdpntr - Subroutine to get pointer to modify session data
+
+;Subroutine to get pointer to modify session data
+;	c{EBX} = Offset of item in session data block
+;	CALL	sesmdpntr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Address of item
+
+sesmdpntr:
+	CALL	sesrdpntr		;Get address of data item
+	CMPB	ses_grpname[ESI], #0	;Is he logged in now?
+	JE	20$			;No - OK
+	BTL	pdaActPriv#, #PP%ANYLOGIN ;Yes - can he do this anyway?
+	JNC	knlPrivFail#		;No - fail
+	CLC
+	RET
+
+	.SBTTL	sesrdpntr - Subroutine to get pointer to read session data
+
+;Subroutine to get pointer to read session data
+;	c{EBX} = Offset of item in session data block
+;	CALL	sesrdpntr
+;	c{EBX} = Address of item
+;	c{ESI} = Address of session data block
+
+sesrdpntr:
+	CALL	getproc			;Get PDA selector
+	MOVL	ESI, pdaSesPda#[EBX]	;Get session process
+
+	CRASH	????
+
+;;;;;;	MOVW	FS, knlProcTable[ESI*2]	;Get session PDA selector
+	MOVL	ESI, pdaSesData#	;Get offset of the session data
+	ADDL	EBX, ESI		;Get offset of our item
+20$:	RET
+.PAGE
+;Subroutine to get address of PDA for process
+;	CALL	getproc
+;	c{EBX} = Address of PDA
+
+getproc:CMPL	knlTda+tdaCharData#, #0	;Was a process specified?
+	JNE	2$			;Yes - go use it
+	MOVL	EBX, #knlPda		;No - use current process
+	RET
+
+;Here if a process was specified
+
+2$:	MOVL	EBX, knlTda+tdaCharData# ;Get address of the PDA
+	RET
+.PAGE
+	.SBTTL	svcSysSetBillLvl SVC to set billing level
+
+;Here for the svcSysSetBillLvl SVC - Set billing level
+;	int level;		// New billing level (0 - 7) or -1 to
+;				//   initialize billing key value
+;	int key;		// Billing key value
+;	rtn = svcSysSetBillLvl(level, key);
+;  Value returned is 0 if normal or negative error code if error
+
+psvcSysSetBillLvl::
+rsvcSysSetBillLvl::
+	MOVL	EAX, pdaSesPda#		;Get session process
+
+	CRASH	????
+
+;;;;;	MOVW	FS, knlProcTable[EAX*2]	;Get session PDA selector
+	MOVL	ESI, pdaSesData#	;Get offset of the session billing data
+	ADDL	ESI, #ses_billcls
+	MOVL	EAX, knlTda+tdaArg2#
+	ORL	EAX, EAX
+	JE	10$
+	CMPL	ses_billkey-ses_billcls[ESI], EAX
+	JNE	10$
+	MOVL	EAX, knlTda+tdaArg1#	;Get new billing level
+	CMPL	EAX, #7			;Valid level?
+	JA	knlBadValue#		;No - fail
+	MOVZBL	EDX, ses_billlvl-ses_billcls[ESI] ;Get current level
+	CMPB	DL, AL			;Really changing it?
+	JE	4$			;No - nothing to do here
+	MOVB	ses_billlvl-ses_billcls[ESI], AL ;OK - store new level
+	CLI
+	MOVL	EDI, knlSysDateTime#+4
+	MOVL	EAX, knlSysDateTime#+0
+	STI
+	MOVL	EBX, EAX
+	MOVL	ECX, EDI
+	SUBL	EAX, ses_billtime+0-ses_billcls[ESI] ;Get incremental value
+	SBBL	EDI, ses_billtime+4-ses_billcls[ESI]
+	ADDL	ses_rates1+0-ses_billcls[ESI+EDX*8], EAX ;Add it into the
+	ADCW	ses_rates1+4-ses_billcls[ESI+EDX*8], DI  ;  total for the
+							    ;  previous level
+	MOVL	ses_billtime+0-ses_billcls[ESI], EBX ;Store new date/time
+	MOVL	ses_billtime+4-ses_billcls[ESI], ECX
+	MOVB	ses_billlvl-ses_billcls[ESI], DL ;Store new billing level
+4$:	CLRL	EAX
+	RET
+
+;Here if the billing key value is wrong - terminate the process!
+
+10$:	PUSHL	#TC_ACCT<24t
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	CALL	sysSchTerminate#	;Will not return!
+	CRASH	KILL
+.PAGE
+	.SBTTL	svcSysLog - SVC to send data to the system log
+
+;Here for the svcSysLog SVC - Send data to the system log
+;	char *text;		// Message text
+;	long  length;		// Message length
+;	rtn = svcSysLog(text, length);
+;  Value returned is 0 if normal or negative error code if error
+
+;The message text starts with 4 bytes that will be overwritten here.
+
+psvcSysLog::
+	MOVL	ECX, knlTda+tdaArg2#	;Get length of message
+	CMPL	ECX, #4			;Is it long enough?
+	JB	knlBadValue#		;No - fail
+	MOVL	ESI, knlTda+tdaArg1#	;Get address of message text
+	MOVL	EAX, #MT_SYSLOG+0x300	;Get function bytes
+	IFFAULT	knlRtnAdrEr#
+	CMPL	[ESI], #'roll'		;What to roll the log file?
+	JNE	4$			;No
+	MOVB	AH, #0xFF		;Yes
+	IFFAULT	knlRtnAdrEr#
+4$:	MOVL	[ESI], EAX		;Store the function bytes
+	PUSHL	knlPda+pdaPid#		;Construct source string
+	PUSHL	#-1
+	LEAL	EAX, 3[ESP]
+	PUSHL	#syslogdst		;Address of destination string
+	PUSHL	EAX			;Address of source string
+	PUSHL	knlPda+pdaPid#		;Source PID
+	PUSHL	ESI			;Address of message buffer
+	PUSHL	knlTda+tdaArg2#		;Length of message
+	TOFORK
+	CALL	sysIpmSendMsg#		;Send the message
+	FROMFORK
+	ADDL	ESP, #8			;Fix up the stack
+	RET				;Finished
+
+syslogdst:
+	.ASCIZ	"SYS^XOSACT^XOS^LOG"
+.PAGE
+	.SBTTL	knlSysStrDefine - Define system string
+
+;Subroutine to define a system string
+;	c{EBX} = Address of string name (null terminated)
+;	c{EDX} = Address of string value
+;	c{ECX} = Length of string value
+;	CALL	knlSysStrDefine
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  Must be called with the exec memory resource
+
+;System strings are stored in the following format:
+;   Size    Description
+;     4   Offset of next system string definition
+;     1   Length of name
+;     1   Length of value
+;     n   Name
+;     m   Value
+
+$$$=!0
+FRM ssd_vallen, 4t
+FRM ssd_namlen, 4t
+ssd_SIZE=!$$$
+
+knlSysStrDefine::
+	ENTER	ssd_SIZE, 0
+	MOVL	ssd_vallen[EBP], ECX
+	CALL	sysstrlen		;Get length of the name
+	JC	4$			;If error
+	MOVL	ssd_namlen[EBP], EAX
+	LEAL	ECX, 6[EAX]
+	ADDL	ECX, ssd_vallen[EBP]	;Get total space needed
+	CALL	knlGetXMem#		;Get memory for the definition block
+	JC	4$			;If error
+	MOVL	EAX, EDI
+	ADDL	EDI, #6t		;First store the name
+	MOVL	ESI, EBX
+	MOVL	ECX, ssd_namlen[EBP]
+	MOVB	4[EAX], CL
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSB	[EDI], [ESI]
+	MOVL	ESI, EDX		;Now store the value
+	MOVL	ECX, ssd_vallen[EBP]
+	MOVB	5[EAX], CL
+	IFFAULT	knlRtnAdrErLv#
+	RMOVSB	[EDI], [ESI]
+	MOVL	EDX, sysstrhead		;Link the new definition into the list
+	MOVL	[EAX], EDX
+	MOVL	sysstrhead, EAX
+	CLC
+4$:	LEAVE
+	RET
+
+	.SBTTL	knlSysStrGet - Get value of system string
+
+;Subroutine to get value of a system string
+;	c{EBX} = Address of string name (null terminated)
+;	c{EDX} = Address of buffer to receive value
+;	c{ECX} = Length of buffer
+;	CALL	knlSysStrGet
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Length of value stored
+
+knlSysStrGet::
+	PUSHL	ECX
+	CALL	sysstrlen		;Get length of the name
+	JC	18$
+	MOVL	ESI, sysstrhead
+10$:	TESTL	ESI, ESI
+	JE	14$
+	CMPB	4[ESI], AL		;Is the name length the same?
+	JNE	12$			;No - go on
+	PUSHL	ESI
+	ADDL	ESI, #6
+	MOVL	EDI, EBX
+	MOVL	ECX, EAX
+	RECMPSB	[EDI], [ESI]
+	POPL	ESI
+	JE	20$
+12$:	MOVL	ESI, [ESI]
+	JMP	10$
+
+;Here if name not found
+
+14$:	MOVL	EAX, #ER_NTDEF
+	STC
+18$:	POPL	ECX
+	RET
+
+;Here with match on string name
+
+20$:	POPL	EBX			;Restore buffer length
+	MOVZBL	ECX, 5[ESI]		;Get length of the value
+	CMPL	ECX, EBX		;Is the buffer big enough?
+	JA	22$			;No - fail
+	LEAL	ESI, 6[ESI+EAX]	;Yes - point to the value
+	MOVL	EDI, EDX
+	PUSHL	DS
+	POPL	ES
+	MOVL	EAX, ECX
+	IFFAULT	knlRtnAdrEr#
+	RMOVSB	[EDI], [ESI]
+	CLC
+	RET
+
+;Here if value is longer than the buffer
+
+22$:	MOVL	EAX, #ER_RTOBG
+	STC
+	RET
+.PAGE
+;Subroutine to get the length of a system string
+;	c{EBX} = Address of the string name
+;	CALL	sysstrlen
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Length of the name
+;	  c[ES]  = Selector for address of name
+;	  D bit is clear
+
+sysstrlen:
+	MOVL	ECX, #-1
+	PUSHL	FS
+	POPL	ES
+	MOVL	EDI, EBX
+	MOVB	AL, #0
+	CLD
+	IFFAULT	knlRtnAdrEr#
+	RNSCASB	[EDI]
+	NOTL	ECX
+	LEAL	EAX, -1[ECX]
+	CLC
+	RET
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+sysstrhead: .LONG  0
+sysccb::.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'SYST', 'EM'	;ccb_name    - Name of this class
+	.LONG	0xFFFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	0		;ccb_devchk  - Address of device check routine
+	.LONG	0		;ccb_fdsp    - Address of class func disp table
+	.LONG	sysdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+procccb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'PROC', 'ESS'	;ccb_name    - Name of this class
+	.LONG	0xFFFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	0		;ccb_devchk  - Address of device check routine
+	.LONG	0		;ccb_fdsp    - Address of class func disp table
+	.LONG	procdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+sessionccb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'SESS', 'ION'	;ccb_name    - Name of this class
+	.LONG	0xFFFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	0		;ccb_devchk  - Address of device check routine
+	.LONG	0		;ccb_fdsp    - Address of class func disp table
+	.LONG	procdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+accountccb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'ACCO', 'UNT'	;ccb_name    - Name of this class
+	.LONG	0xFFFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	0		;ccb_devchk  - Address of device check routine
+	.LONG	0		;ccb_fdsp    - Address of class func disp table
+	.LONG	accountdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+	END

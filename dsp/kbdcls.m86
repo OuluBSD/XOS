@@ -1,0 +1,453 @@
+	.TITLE	kbdcls - Keyboard class driver
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This device class implements general keyboard support. Two types of keyboard
+;  devices are implmented. The first is actually the input part of the TRM0:
+;  console device. This device obtains input from all keyboard devices
+;  connected to the system that have not been individually opened for input.
+;  Second, each individual keyboard device (except KBD0:) can be accessed as
+;  a KBDn: device, where n is a decimal number between 1 and 99. Each of
+;  these devices obtains input from a single physical keyboard.
+
+;Each KBDn: device and be opened any number of times, except that only one
+;  open can specify input. Opens that do not specify input can be used to
+;  obtain or set parameter or characteristics values. Setting a parameter
+;  or characteristic value for the TRM: device sets that value for all
+;  KBDn: devices that are not themselves open for input. Switching to a
+;  different virtual console causes all KBDn: parameters and characteristics
+;  to be set to the values for the TRM: device for that virtual console.
+
+;This means that the console keyboard (KBD0:) is always associated with the
+;  TRM: console device. All other keyboards that are not individually open
+;  for input are also associated with TRM:, that is, keypresses from all
+;  associated keyboards are combined into a single input stream for TRM:.
+;  Note that his may cause unexpected behavior in programs which use the raw
+;  scan-code input mode. Make and break codes will be intermixed as they are
+;  received from each keyboard. Also the states of the shift-like keys will
+;  be the OR of the state of each such key on each keyboard.
+
+;Each KBDn: device is basically an input only console device (except that
+;  there cannot be a mouse directly associated with it).
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosxtrm.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxkbd.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	KBDCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xoskbdCcb
+	.EXPORT	xoskbdSDisp
+	.EXPORT	xoskbdMsgMType
+	.EXPORT	xoskbdScanCode
+
+	CODE
+
+	.SBTTL	SVC dispatch table for KBD class devices
+
+;SVC dispatch table for KBD class devices
+
+xoskbdSDisp:
+	.LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	kbdcdcb		;sd_cleardcb =  4 - Clear DCB
+	.LONG	kbdopen		;sd_opena    =  8 - Open additional
+	.LONG	kbdopen		;sd_open1    = 12 - Open device/file
+	.LONG	knlRtnZero##	;sd_devparm  = 16 - Device parameters
+	.LONG	knlIFnDev##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename   = 24 - Rename file
+	.LONG	knlIllInp##	;sd_inblock  = 28 - Input block
+	.LONG	knlIllOut##	;sd_outblock = 32 - Output block
+	.LONG	knlRtnMOne##	;sd_getiosts = 38 - Get input/output status
+	.LONG	knlIFnDev##	;sd_special  = 40 - Special device function
+	.LONG	kbdclose	;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+	.LONG	kbdioparms	;sd_opnsdpt  = 64 - Open paramter table
+	.LONG	knlComDPParms##	;sd_opnddpt  = 68 - Device dependent paramaters
+KBDDSPSZ=!{$-xoskbdSDisp}/4
+
+;Class function dispatch table for KBD class devices
+
+	.LONG	CLSFMX
+kbdcls:	.LONG	kbdaddunit	;CF_ADDUNIT = 1. - Add unit
+	.LONG	kbdunitinfo	;CF_PUNITS  = 2. - Get information about
+				;		     physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 3. - Get information about active
+				;		     units
+CLSFMX=!{$-kbdcls}/4
+
+msgkblist:CHARINFO  {Physical keyboard unit list}
+
+xoskbdMsgMType:
+	  CHARINFO  {Keyboard type}
+.PAGE
+;Device parameter table for KBD IO operations
+
+	.MOD	4
+	.LONG	PARMMAX
+kbdioparms:
+	.LONG	kbdiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+PARMMAX=!{$-kbdioparms}/4
+
+	.LONG	PARMGENMAX
+kbdiogenparms:
+	.LONG	0		;               = 0x0000
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN = 0x0001
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC = 0x0002
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS   = 0x0003
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM  = 0x0004
+	.LONG	knlIopGlbId##	;IOPAR_GLBID    = 0x0005
+	.LONG	knlIopDelay##	;IOPAR_DELAY    = 0x0006
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT  = 0x0007
+	.LONG	0		;IOPAR_INPSTS   = 0x0008
+	.LONG	0		;IOPAR_OUTSTS   = 0x0009
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT  = 0x000A
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT  = 0x000B
+	.LONG	0		;IOPAR_SIGVECT1 = 0x000C
+	.LONG	0		;IOPAR_SIGVECT2 = 0x000D
+	.LONG	0		;IOPAR_SIGDATA  = 0x000E
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN  = 0x000F
+	.LONG	0		;IOPAR_BUFRLMT  = 0x0010
+PARMGENMAX=!{$-kbdiogenparms}/4
+.PAGE
+	.SBTTL	kbdinit - Keyboard class initialization routine
+
+;This class driver must be loaded after CONDEV has been loaded. The KBD0:
+;  device is created automatically when this driver is loaded.  Additional
+;  KBDn: devices are created using the ADDUNIT class function. Additional
+;  keyboards are only supported using a link driver to other low level
+;  drivers. Currently only USB is supported.
+
+	INITSUB	kbdinit
+
+kbdinit:PUSHL	#xoskbdCcb		;Install the KBD class
+	CALL	sysIoNewClass##
+	JC	6$			;This should not fail!
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	kbdaddunit - Subroutine to add physical keyboard unit
+
+;Here for the CL_ADDUNIT function
+;	CALL	kbdaddunit
+;	c{EAX} = 0
+
+$$$=!0
+FRM kau_iorb   , 4
+FRM kau_unit   , 4	;Unit number
+FRM kau_type   , 8	;Type name
+FRM kau_display, 16t	;Name of associated console device
+kau_SIZE=!$$$
+
+;Description block for adding unit
+
+	.MOD	4
+kbdaublk:
+ CHARBGN  2, 0
+ CHARENT  UNIT   , DECV, , 4, 0, 0, kbdauunit   , 0
+ CHARENT  TYPE   , TEXT, , 8, 0, 0, kbdautype   , 0
+ CHARENT  DISPLAY, STR , ,16, 0, 0, kbdaudisplay, 0
+ CHAREND
+
+kbdaddunit:
+	ENTER	kau_SIZE, 0		;Set up and initialize our stack frame
+	MOVL	kau_iorb[EBP], ESI
+	CLRL	EAX
+	MOVL	kau_display+0[EBP], EAX
+	MOVL	kau_display+4[EBP], EAX
+	MOVL	kau_display+8[EBP], EAX
+	MOVL	kau_display+12t[EBP], EAX
+	DECL	EAX
+	MOVL	kau_unit[EBP], EAX
+	MOVL	kau_type[EBP], EAX
+	CMPL	knlTda+tdaBuffer2##, #0
+	JE	10$
+	PUSHL	#1			;Ignore bad names here
+	PUSHL	#kbdaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JNS	12$			;If no error
+	JMP	24$
+
+8$:	MOVL	EAX, #ER_CHARM
+	JMP	24$
+
+10$:	MOVL	EAX, #ER_NOCON
+	JMP	24$
+
+;Here with all parameters processed - make sure we got everything we need
+
+12$:	MOVL	EAX, kau_unit[EBP]
+	TESTL	EAX, EAX
+	JS	8$
+	CMPL	kau_type[EBP], #-1
+	JE	8$
+	MOVL	EAX, kau_display+0[EBP]
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	EBX, kau_display+4[EBP]
+	MOVL	ECX, kau_display+8[EBP]
+	MOVL	EDX, kau_display+12t[EBP]
+	MOVL	ESI, #knlConDhdb##
+14$:	TESTL	ESI, ESI
+	JE	10$
+	CMPL	EAX, dhdb_devname+0[ESI]
+	JNE	16$
+	CMPL	EBX, dhdb_devname+4[ESI]
+	JNE	16$
+	CMPL	ECX, dhdb_devname+8[ESI]
+	JNE	16$
+	CMPL	EDX, dhdb_devname+12t[ESI]
+	JE	18$
+16$:	MOVL	ESI, dhdb_next[ESI]
+	JMP	14$
+
+18$:	MOVL	EBX, kau_iorb[EBP]	 ;Store address of the DHDB for the
+	MOVL	knlTda+tdaBuffer1##, ESI ;  keyboard driver addunit function
+	TOFORK
+	MOVL	EAX, kau_unit[EBP]
+	MOVL	EDX, xoskbdCcb+ccb_dcbhead ;See if this keyboard already exists
+20$:	TESTL	EDX, EDX
+	JE	26$
+	CMPB	dcb_punit[EDX], AL
+	JE	22$
+	MOVL	EDX, dcb_next[EDX]
+	JMP	20$
+
+22$:	FROMFORK
+	MOVL	EAX, #ER_PDADF
+24$:	MOVL	knlTda+tdaError##, EAX
+	JMP	32$
+
+;Here if keyboard does not exist
+
+26$:	FROMFORK
+	LEAL	EAX, kau_type[EBP]
+	PUSHL	EAX
+	PUSHL	#xoskbdCcb
+	PUSHL	kau_unit[EBP]
+	CALL	sysIoDriverAddUnit##
+	TESTL	EAX, EAX
+	JS	24$
+	MOVL	knlTda+tdaAmount##, #1
+32$:	LEAVE
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+.PAGE
+;Here for the UNIT characteristic
+
+kbdauunit:
+	MOVL	kau_unit[EBP], EAX	;Store unit number
+	CMPL	EAX, #99t		;Is it a reasonable value?
+	JBE	4$			;Yes
+	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Here for the TYPE characteristic
+
+kbdautype:
+	MOVL	kau_type+0[EBP], EAX	;Store type name
+	MOVL	kau_type+4[EBP], EDX
+4$:	CLC
+ret002:	RET
+
+;Here for the DISPLAY characteristic
+
+kbdaudisplay:
+	JREGZ	ECX, 8$
+	LEAL	EDX, kau_display[EBP]
+6$:	MOVZBL	EAX, [EBX]
+	CMPB	AL, #0
+	JE	8$
+	CMPB	AL, #':'
+	JE	8$
+	INCL	EBX
+	MOVB	[EDX], AL
+	INCL	EDX
+	CMPB	AL, #0
+	JE	8$
+	LOOP	ECX, 6$
+8$:	CLC
+	RET
+.PAGE
+	.SBTTL	CF_PUNITS - Get device unit information
+
+;Here for the get device information entry
+;	c{EDI}    = Offset of DCB
+
+kbdunitinfo:
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+;Device check routine for keyboard devices
+;	long kbddevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 0 no match, 1 if found a match, 2 if need to restart
+;    search (never returned here), or a negative XOS error code if error.
+
+;Note that even though sysIoFindDevByName has checked the first 3 character
+;  we need to check the 4th. It's actually cheaper to simply check the first
+;  4 rather than to check only the 4th. (Alligned long references are usually
+;  cheaper than byte references, they never cost more.) We only need to check
+;  8 bytes since we know the longest keyboard name can only be 6 characters
+;  long.
+
+devc_name  =!16t
+devc_path  =!12t
+devc_rtndcb=!8
+
+kbddevchk:
+	PUSHL	EBX
+	MOVL	EBX, devc_name[ESP]
+	MOVL	EDX, xoskbdCcb+ccb_dcbhead
+	TESTL	EDX, EDX
+	JE	18$
+10$:	MOVL	EAX, dcb_name+0[EDX]	;Does name match?
+	CMPL	[EBX], EAX
+	JNE	16$			;No
+	MOVL	EAX, dcb_name+4[EDX]
+	CMPL	4[EBX], EAX
+	JE	24$			;Yes - this is it!
+16$:	MOVL	EDX, dcb_next[EDX]	;Not this one - try next
+	TESTL	EDX, EDX
+	JNE	10$			;Continue if another
+18$:	CLRL	EAX			;No more - return 0
+20$:	POPL	EBX
+	RET	12t
+
+;Here with matching name
+
+24$:	CMPL	devc_rtndcb[ESP], #0	;Do we want a DCB?
+	JE	28$			;No
+	TESTB	dcb_kbdsts1[EDX], #KBDSTS1$INPUT|KBDSTS1$INIT
+					;Yes - is someone else dong input?
+	JE	26$			;No - let him open the device
+	TESTB	knlTda+tdaOption##, #XO$IN ;Yes - say not found if he want to
+	JNE	18$			   ;  do input
+26$:	MOVL	knlTda+tdaDcb##, EDX
+28$:	MOVL	EAX, #1
+	JMP	20$
+.PAGE
+;Here for the sd_open entry - Open device
+
+kbdopen:TESTB	knlTda+tdaOption##, #XO$IN ;Want input?
+	JE	4$			;No
+	TESTB	dcb_kbdsts1[EDI], #KBDSTS1$INPUT|KBDSTS1$INIT ;Is that OK?
+	JNE	knlIllInp##		;No
+	ORB	dcb_kbdsts1[EDI], #KBDSTS1$INPUT ;Yes - indicate doing input
+	MOVL	EAX, knlTda+tdaHandle##
+	MOVL	dcb_kbdinphndl[EDI], EAX
+	MOVL	EAX, knlPda+tdaAddr##
+	MOVL	dcb_kbdinppda[EDI], EAX
+4$:	RET
+.PAGE
+;Here for the sd_close function
+
+kbdclose:
+	PUSHL	EDI
+	TESTB	dcb_kbdsts1[EDI], #KBDSTS1$INPUT
+	JE	8$
+	MOVL	EAX, dcb_kbdinphndl[EDI]
+	CMPL	knlTda+tdaHandle##, EAX
+	JNE	8$
+	MOVL	EAX, knlPda+pdaAddr##
+	CMPL	EAX, dcb_kbdinppda[EDI]
+	JNE	8$
+	ANDB	dcb_kbdsts1[EDI], #~KBDSTS1$INPUT
+	CLRL	EAX
+	MOVL	dcb_kbdinphndl[EDI], EAX
+	MOVL	dcb_kbdinppda[EDI], EAX
+8$:	POPL	EDI
+	RET
+.PAGE
+;Here for the sd_cleardcb function - The keyboard device generally has a
+;  single static DCB but it can be removed if the keyboard is removed from
+;  the system.
+
+kbdcdcb:MOVL	EAX, dcb_kbddisp[EDI]
+	CALLI	kfx_cdcb[EAX]
+	RET
+.PAGE
+;Function called with keyboard scan code
+;	void xoskbdScanCode(
+;	    DCB *dcb,
+;	    long sc);
+
+;For now, all data goes to consol driver.
+
+scncd_dcb=!8t
+scncd_sc =!4t
+
+xoskbdScanCode:
+	PUSHL	scncd_dcb[ESP]
+	PUSHL	scncd_sc+4[ESP]
+	CALL	xosconConScanCode##
+	RET	8t
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+	.MOD	4
+xoskbdCcb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'KBD', 0	;ccb_name    - Name of this class
+	.LONG	0x00FFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'KBD'		;ccb_npfxval - Name prefix part value
+	.LONG	kbddevchk	;ccb_devchk  - Address of device check routine
+	.LONG	kbdcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	0		;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+kbdfdrv:.LONG	0
+
+	LKEEND

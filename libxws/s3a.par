@@ -1,0 +1,39 @@
+;Parameter definitions for the S3 ViRGE display controller
+
+.IF NDF DEFINES
+	.NLIST
+        .INCLUD XOSINC:\XMAC\DEFINES.PAR
+	.LIST
+.ENDC
+	.PARM
+
+;Define the miscellaneous registers
+
+S3REG_STATUS  =!08504h		;Subsystem status register (read only)
+S3REG_CONTROL =!08504h		;Subsystem control register (write only)
+S3REG_ADVFUNC =!0850Ch		;Advanced functino control register
+
+;Define the BITBLT/fill registers
+
+S3REG_BBSRC   =!0A4D4h		;Source base address register
+S3REG_BBDST   =!0A4D8h		;Destination base address register
+S3REG_BBLRCLIP=!0A4DCh		;Left/right clipping register
+S3REG_BBTBCLIP=!0A4E0h		;Top/bottom clipping register
+S3REG_BBSTRIDE=!0A4E4h		;Destination/source stride register
+S3REG_BBMPAT0 =!0A4E8h		;Mono pattern 0 register
+S3REG_BBMPAT1 =!0A4ECh		;Mono pattern 1 register
+S3REG_BBMPBC  =!0A4F0h		;Mono pattern background color register
+S3REG_BBMPFC  =!0A4F4h		;Mono pattern foreground color register
+S3REG_BBSRCBC =!0A4F8h		;Source background color register
+S3REG_BBSRCFC =!0A4FCh		;Source foreground color register
+S3REG_BBCMDSET=!0A500h		;Command set register
+S3REG_BBSIZE  =!0A504h		;Rectangle width/height register
+S3REG_BBSRCPOS=!0A508h		;Rectangle source X/Y register
+S3REG_BBDSTPOS=!0A50Ch		;Rectangle destination X/Y register
+
+;Define the DMA command transfer channel registers
+
+S3REG_CMDBASE =!08590h		;Command DMA base address register
+S3REG_CMDWRITE=!08594h		;Command DMA write pointer register
+S3REG_CMDREAD =!08598h		;Command DMA read pointer register
+S3REG_CMDENB  =!0859Ch		;Command DMA enable register

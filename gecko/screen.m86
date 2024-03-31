@@ -1,0 +1,843 @@
+	.TITLE	screen - Screen related functions
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	XOSINC:/xmac/xos.par
+	.INCLUD	XOSINC:/xmac/xostrm.par
+	.INCLUD	XOSINC:/xmac/xosrun.par
+	.INCLUD	gecko.par
+
+	CODE
+
+;This file contains functions that put characters on the display screen and
+;  otherwise manage the display.
+
+CCHR  =!' '+TXTATR*0x100  ;Character + attributes to clear screen
+VBCHR =!0BAh+BRDATR*0x100 ;Character + attributes for vertical border
+HBCHR =!0CDh+BRDATR*0x100 ;Character + attributes for horizontal border
+
+TXTLINES==!60t		;Total number of text mode lines
+GPHLINES==!75t		;Maximum total number of graphic mode lines
+NSLINES ==!6		;Number of non-scrolling lines (including 2 header
+			;  lines)
+
+txtscnbufr==!0xB80F0000	;Offset for text mode screen buffer
+gphscnbufr==!0xB8800000	;Offset for graphic mode screen buffer
+
+;In text mode, GECKO always uses text page 0. The user's current page number,
+;  cursor position, display mode, and the contents of this page 0 (assuming a
+;  60 line display is saved when entering gecko . (The screen buffer is saved
+;  in usrsavbufr) and restored when leaving gecko. Gecko always puts the
+;  display in 60 line mode when entered. The gecko screen display is saved in
+;  gkosavbufr when leaving gecko and restored to page 0 when entering gecko.
+
+;In graphic mode, GECKO uses the second display page and does not change
+;  the user program's display memory which is assumed to be in the first
+;  page. This requires that display memory be large enough to hold two
+;  complete display pages. for a 1280 X 1024 display this is somewhat more
+;  than 5MB. GECKO also maintains a text mode display buffer in gkosavbufr
+;  which is used to restore the graphic mode display when necessary (such as
+;  after displaying a region, which also uses the second display page, or when
+;  switching back to this screen). GECKO assumes that the horizontal resolution
+;  is at least 1280 pixels and will not display its screen correctly if it is
+;  less than this!
+
+	CODE
+
+;Subroutine to set up our display routine
+;	CALL	setdisp
+
+setdisp::
+	PUSHL	#DH_STDTRM		;Get number of virtual screens
+	PUSHL	#nvschar
+	CALL	svcIoDevChar##
+	PUSHL	#DH_STDTRM		;Get current mode
+	PUSHL	#DM$RTNDATA
+	PUSHL	#dispdata
+	CALL	svcTrmDspMode##
+	TESTL	EAX, EAX		;Serial terminal?
+	JG	initdisp		;No
+2$:	MOVB	serterm#, #1		;Yes
+	RET
+
+;Here if not a serial terminal
+
+initdisp::
+	CMPB	AL, #DM_TEXT		;Text mode display
+	JNE	initgraph		;No
+
+;Here if display is in text mode
+
+inittext::
+	MOVL	numlines, #TXTLINES
+	PUSHL	#DH_STDTRM		;Yes - get text mode screen buffer
+	PUSHL	#txtscnbufr
+	PUSHL	#0x8000
+	PUSHL	#0
+	CALL	svcTrmMapScrn##
+	TESTL	EAX, EAX
+	JS	2$			;If error, assume serial terminal
+	MOVB	gphmode, #0
+	JMP	initscn
+
+;Here if display is in graphic mode
+
+initgraph::
+	MOVL	dispbits, EAX		;Save the mode bits
+	MOVL	EAX, #16t		;Assume high resolution display
+	CMPL	dispdata+dm_vert, #960t
+	JAE	6$
+	SUBL	EAX, #8
+6$:	MOVL	EAX, dispdata+dm_vert	;Get the number of text lines we can
+	CLRL	EDX			;  display
+	DIVL	ychar
+	CMPL	EAX, #GPHLINES
+	JBE	8$
+	MOVL	EAX, #GPHLINES
+8$:	MOVL	ychar, EAX
+	MOVL	xchar, EAX
+	MOVL	numlines, EAX
+	PUSHL	#DH_STDTRM		;Get graphic mode screen buffer
+	PUSHL	#gphscnbufr
+	MOVL	EAX, dispdata+dm_pagesize
+	ADDL	EAX, EAX
+	PUSHL	EAX
+	PUSHL	#0
+	CALL	svcTrmMapScrn##
+	TESTL	EAX, EAX
+	JS	2$			;If error, assume serial terminal
+	MOVB	gphmode, #1
+	CALL	rgnclear#
+
+;Function to initialize the gecko screen - This sets up the contents of the
+;  gecko saved screen buffer. It does not modify the actual display buffer.
+;  The gecko screen buffer will eventually be copied to the display buffer
+;  by xscreen.
+
+initscn::
+	CLRL	EAX
+	MOVL	horpsn, EAX
+	MOVL	verpsn, EAX
+	MOVL	EAX, #CCHR+CCHR*0x10000	;Fill buffer with spaces (Don't need
+	MOVL	EDI, #gkosavbufr+160t	;  to fill first and last lines since
+	MOVL	ECX, numlines		;  we write those completely below.)
+	SUBL	ECX, #2
+	IMULL	ECX, #40t
+	RSTOSL	[EDI]
+	MOVL	EDI, #gkosavbufr	;Set up our frame
+	MOVL	ESI, #lblmsg		;Top line
+	MOVL	EDX, #LBLSIZE
+	CALL	mline
+	MOVL	EDI, #gkosavbufr+160t*5	;Middle line
+	CALL	fline
+	MOVL	EDI, numlines
+	DECL	EDI
+	IMULL	EDI, #160t		;Bottom line
+	ADDL	EDI, #gkosavbufr
+	MOVL	ESI, #cprmsg
+	MOVL	EDX, #CPRSIZE
+	CALL	mline
+	MOVL	EDI, #gkosavbufr+158t	;Left and right sides
+	MOVL	ECX, numlines
+	DECL	ECX
+	MOVL	EAX, #VBCHR+VBCHR*0x10000
+12$:	STOSL	[EDI]
+	ADDL	EDI, #156t
+	LOOP	ECX, 12$
+	MOVW	gkosavbufr+0, #0xC9+BRDATR*0x100 ;Corners
+	MOVW	gkosavbufr+158t, #0xBB+BRDATR*0x100
+	MOVW	gkosavbufr+800t, #0xCC+BRDATR*0x100
+	MOVW	gkosavbufr+958t, #0xB9+BRDATR*0x100
+	MOVL	ECX, numlines
+	IMULL	ECX, #160t
+	MOVW	gkosavbufr-160t[ECX], #0xC8+BRDATR*0x100
+	MOVW	gkosavbufr-160t+158t[ECX], #0xBC+BRDATR*0x100
+	RET				;Finished
+.PAGE
+;Subroutine to display message in frame border
+;	c[EDX] = Length of message (number of words)
+;	c[EDI] = Offset for place to start border in screen save buffer
+;	c[ESI] = Offset for message string in code segment (includes
+;		   attribute bytes)
+;	CALL	mline
+
+mline:	CALL	fline			;Put border line in buffer
+	SUBL	EDI, #80t		;Calculate address for message
+	SUBL	EDI, EDX
+	ANDL	EDI, #0xFFFFFFFE	;Make sure word address
+	MOVL	ECX, EDX
+	RMOVSW	[EDI], [ESI]		;Put message in buffer
+	RET				;Finished
+
+;Subroutine to store horizontal border line in screen save buffer
+;	c[DI] = Offset for place to start border in screen save buffer
+;	CALL	fline
+
+fline:	MOVL	ECX, #40t		;Border is 80 characters
+	MOVL	EAX, #HBCHR+HBCHR*0x10000 ;Get attribute byte and character
+	RSTOSL	[EDI]			;Put border in buffer
+	RET				;Thats all
+.PAGE
+;Here for the CLR command - Clear screen
+
+clrscreen::
+	CALL	initscn			;Clear the screen
+	MOVL	horpsn, #0
+	MOVL	verpsn, #NSLINES
+	CMPB	gphmode, #0		;Graphic mode display?
+	JNE	4$			;Yes
+	CALL	cpytxt			;No
+	JMP	xregdmp#
+
+4$:	CALL	cpygph
+	JMP	xregdmp		;Update register display
+.PAGE
+;Subroutine to display GECKO's screen
+;	CALL	xscreen
+
+xscreen::
+	CMPB	serterm#, #0		;Using a serial terminal?
+	JNE	2$			;Yes - nothing needed here
+	PUSHL	#DH_STDTRM		;No - get current display mode data
+	PUSHL	#DM$RTNDATA
+	PUSHL	#dispdata
+	CALL	svcTrmDspMode##
+	MOVL	usermode, EAX
+	CMPB	AL, #DM_TEXT		;Text mode?
+	JNE	4$			;No
+
+;Here if in text mode
+
+	PUSHL	#DH_STDTRM		;Set GECKO display mode
+	PUSHL	#DM$NOCLEAR|DM$USEDATA|DM_TEXT
+	PUSHL	#gecdata
+	CALL	svcTrmDspMode##
+	PUSHL	#DH_STDTRM
+	PUSHL	#0
+	CALL	svcTrmDspPos##
+	MOVL	userpage, EAX
+	MOVL	EDI, #usrsavbufr	;Save user's screen
+	MOVL	ESI, #txtscnbufr
+	MOVL	ECX, #TXTLINES*80t/2
+	RMOVSL	[EDI], [ESI]
+	PUSHL	#DH_STDTRM		;Save user's cursor position
+	PUSHL	userpage
+	PUSHL	#-1
+	PUSHL	#-1
+	CALL	svcTrmCurPos##
+	MOVW	ucursor, AX
+	PUSHL	#DH_STDTRM		;Set GECKO cursor position
+	PUSHL	#0
+	MOVZBL	EAX, xcursor+0
+	PUSHL	EAX
+	MOVZBL	EAX, xcursor+1
+	PUSHL	EAX
+	CALL	svcTrmCurPos##
+cpytxt::MOVL	EDI, #txtscnbufr	;Set up GECKO's screen
+	MOVL	ESI, #gkosavbufr
+	MOVL	ECX, #TXTLINES*80t/2
+	RMOVSL	[EDI], [ESI]
+	MOVB	screen, #1		;Remember displaying GECKO's screen
+2$:	RET				;Thats all
+
+;Here if in graphic mode
+
+4$:	MOVL	dispbits, EAX		;Save the mode bits (the only one we
+					;  really need is DM$ACTIVE)
+	MOVL	EAX, dispdata+dm_pagesize
+	MOVL	EAX, #16t		;Assume high resolution display
+	CMPL	dispdata+dm_vert, #960t
+	JAE	6$
+	SUBL	EAX, #8
+6$:	MOVL	ychar, EAX
+	MOVL	xchar, EAX
+	MOVL	EAX, dispdata+dm_vert	;Calculate the number of text lines
+	CLRL	EDX			;  that we can display
+	IDIVL	ychar
+	CMPL	EAX, #GPHLINES
+	JBE	8$
+	MOVL	EAX, #GPHLINES
+8$:	MOVL	numlines, EAX
+	CMPB	gphmode, #0		;Did we just switch modes?
+	JNE	12$			;No
+
+;Here if we just switched to graphic mode
+
+	PUSHL	#txtscnbufr		;Give up the text mode screen
+	PUSHL	#0			;  screen mapping
+	PUSHL	#0
+	CALL	svcMemChange##
+	PUSHL	#DH_STDTRM		;Map the graphic mode screen buffer
+	PUSHL	#gphscnbufr
+	MOVL	EAX, dispdata+dm_pagesize
+	ADDL	EAX, EAX
+	PUSHL	EAX
+	PUSHL	#0
+	CALL	svcTrmMapScrn##
+	TESTL	EAX, EAX
+	JS	30$			;If error, bail out!
+	CALL	rgnclear#
+12$:	PUSHL	#DH_STDTRM		;Switch to display page 1
+	PUSHL	dispdata+dm_pagesize
+	CALL	svcTrmDspPos##
+	MOVB	screen, #1		;Remember displaying GECKO's screen
+	PUSHL	#DH_STDTRM		;Disable the graphics cursor
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#0
+	CALL	svcTrmGSetCurPos##
+	CMPB	gphmode, #0
+	JNE	20$
+	MOVB	gphmode, #1
+	CALL	initscn
+	MOVL	horpsn, #0
+	MOVL	verpsn, #NSLINES
+cpygph::MOVB	updreq, #0
+	TESTL	dispbits, #DM$ACTIVE	;Are we the active session?
+	JE	20$			;No - do nothing here
+	PUSHL	verpsn			;Yes - regenerate the Gecko screen
+	PUSHL	horpsn
+	PUSHL	numlines
+	MOVL	verpsn, #0
+	MOVL	horpsn, #0
+	MOVL	ESI, #gkosavbufr
+14$:	MOVL	ECX, #80t
+16$:	LODSW	[ESI]
+	CALL	onsgm4
+	INCL	horpsn
+	LOOP	ECX, 16$
+	MOVL	horpsn, #0
+	INCL	verpsn
+	DECL	[ESP]
+	JNE	14$
+	POPL	EAX			;Fix up the stack
+	POPL	horpsn
+	POPL	verpsn
+20$:	RET
+
+30$:	PUSHL	#0FFF
+	JMP	exit2#
+.PAGE
+;Subroutine to save GECKO screen and display user screen
+;	CALL	uscreen
+
+uscreen::
+	CMPB	serterm#, #0		;Using a serial terminal?
+	JNE	14$			;Yes - nothing needed here
+	CMPB	gphmode, #0		;No - graphic mode?
+	JNE	4$			;Yes - go handle that
+	MOVL	EDI, #gkosavbufr	;No - save GECKO's screen
+	MOVL	ESI, #txtscnbufr
+	MOVL	ECX, #TXTLINES*80t/2
+	RMOVSL	[EDI], [ESI]
+	PUSHL	#DH_STDTRM		;Restore user's display mode
+	MOVL	EAX, usermode
+	ORL	EAX, #DM$NOCLEAR|DM$USEDATA
+	PUSHL	EAX
+	PUSHL	#dispdata
+	CALL	svcTrmDspMode##
+
+	PUSHL	#DH_STDTRM
+	PUSHL	userpage
+	CALL	svcTrmDspPos##
+	PUSHL	#DH_STDTRM		;Save GECKO cursor position
+	PUSHL	#0
+	PUSHL	#-1
+	PUSHL	#-1
+	CALL	svcTrmCurPos##
+	MOVW	xcursor, AX
+	PUSHL	#DH_STDTRM		;Restore user's cursor position
+	PUSHL	userpage
+	MOVZBL	EAX, ucursor+0
+	PUSHL	EAX
+	MOVZBL	EAX, ucursor+1
+	PUSHL	EAX
+	CALL	svcTrmCurPos##
+	MOVL	EDI, #txtscnbufr	;Set up user's screen
+	MOVL	ESI, #usrsavbufr
+	MOVL	ECX, #TXTLINES*80t/2
+	RMOVSL	[EDI], [ESI]
+	JMP	10$
+
+;Here if graphic mode
+
+4$:	TESTL	dispbits, #DM$ACTIVE	;Are we the active session?
+	JE	14$			;No - do nothing here
+	PUSHL	#DH_STDTRM		;Switch to display page 0
+	PUSHL	#0
+	CALL	svcTrmDspPos##
+10$:	MOVB	screen, #0		;Remember displaying user's screen
+14$:	RET				;Thats all
+.PAGE
+;Subroutine to output character to scrolling region
+;	c(AL) = Character to output
+;	CALL	outchx
+;  This function preserves all registers
+
+outchx::PUSHAL
+	CMPB	stpflg#, #0		;Want to stop output?
+
+	JNE	outchx			;Yes - wait ??????
+
+	MOVB	nohalt#, #1		;No - indicate should not stop now
+	CMPB	AL, #' '		;Printing character?
+	JAE	outcprt			;Yes
+
+;Here if not a printing character
+
+	CMPB	AL, #ERR		;Change color for error text?
+	JNE	2$			;No
+	MOVB	attrib, #ERRATR		;Yes
+	JMP	outcdn
+
+2$:	CMPB	AL, #TXT		;Change color for normal text?
+	JNE	4$			;No
+	MOVB	attrib, #TXTATR		;Yes
+	JMP	outcdn
+
+4$:	CMPB	AL, #INV		;Change to inverse video?
+	JNE	6$			;No
+	MOVB	attrib, #INVATR
+	JMP	outcdn
+
+6$:	CMPB	AL, #CLR		;Clear line?
+	JNE	10$			;No
+	MOVB	horpsn, #0		;Reset position
+	CMPB	serterm#, #0		;Using a serial terminal?
+	JNE	outcdn
+	CALL	clrline			;No - clear the display line
+	JMP	outcdn
+
+;Here if not a special control function
+
+10$:	CMPB	serterm#, #0		;Using a serial terminal?
+	JNE	30$			;Yes - just output the character
+	CMPB	AL, #CR			;No - CR?
+	JNE	12$			;No
+	MOVB	horpsn, #0		;Yes - reset position
+	JMP	outcdn			;That's all
+
+;Here if not CR
+
+12$:	CMPB	AL, #LF			;Line feed?
+	JNE	16$			;No
+	MOVZBL	EAX, verpsn		;Yes - on last line now?
+	ADDL	EAX, #2
+	CMPB	AL, numlines
+	JAE	14$			;Yes
+	INCL	verpsn			;No - just move down a line
+	JMP	outcdn
+
+;Here with LF on last line - scroll the screen
+
+14$:	CALL	scroll
+	JMP	outcdn
+
+;Here if not line feed
+
+16$:	CMPB	AL, #BS			;Backspace?
+	JNE	20$			;No
+	CMPB	horpsn, #0		;Yes - at beginning of line?
+	JE	outcdn			;Yes - ignore it
+	DECB	horpsn			;No - reduce position
+
+;;;; FIX UP GRAPHICS CURSOR HERE!!!!
+
+	JMP	outcdn
+
+;Here if not backspace
+
+20$:	CMPB	AL, #HT			;Horizontal tab?
+	JNE	outcdn			;No - ignore it
+22$:	MOVB	AL, #' '		;Yes - output space
+	INCB	horpsn
+	CALL	onscrn
+	TESTB	horpsn, #7		;At tab stop yet?
+	JNE	22$			;No - continue
+	JMP	outcdn			;Yes - finished
+
+;Here with printing character
+
+outcprt:INCB	horpsn			;Bump horizontal position
+30$:	CALL	onscrn			;Put character on screen
+outcdn:	POPAL
+	MOVB	nohalt#, #0		;Allow stopping now
+	CMPB	hltflg#, #0		;Should we stop now?
+	JE	32$
+	MOVB	hltflg#, #0		;Yes - only once!
+
+;NEED TO ADD CODE HERE TO STOP!!
+
+32$:	RET
+.PAGE
+;Function to clear a line on the screen
+
+clrline:IMULL	EDI, verpsn, #80t	;Point to beginning of text line
+	INCL	EDI
+	ADDL	EDI, EDI
+
+	MOVB	AH, #TXTATR
+	MOVB	AL, #' '
+	MOVL	ECX, #78t
+
+	CMPB	gphmode, #0
+	JNE	4$
+	ADDL	EDI, #txtscnbufr
+	RSTOSW	[EDI]
+	RET
+
+;Here if in graphic mode - first clear the text mode buffer and then clear
+;  the line on the display
+
+4$:	ADDL	EDI, #gkosavbufr
+	RSTOSW	[EDI]
+	MOVL	EDI, verpsn		;Now clear it on the graphic mode
+	IMULL	EDI, ychar		;  screen
+	ADDL	EDI, EDI
+	IMULL	EDI, dispdata+dm_horiz
+	ADDL	EDI, xchar
+	ADDL	EDI, xchar
+	ADDL	EDI, #gphscnbufr
+	ADDL	EDI, dispdata+dm_pagesize
+	CLRL	EAX			;Clear the last line
+	MOVL	EDX, ychar
+6$:	MOVL	ECX, #78t*4
+	IMULL	ESI, dispdata+dm_horiz, #2
+	ADDL	ESI, EDI
+	RSTOSL	[EDI]
+	MOVL	EDI, ESI
+	DECL	EDX
+	JNE	6$
+	RET
+.PAGE
+;Function to scroll screen up one line
+
+scroll:	CMPB	gphmode, #0		;Graphic mode?
+	JNE	6$			;Yes
+	CMPB	screen, #0		;No - displaying GECKO's screen?
+	JE	8$			;No
+	MOVL	EDI, #txtscnbufr+NSLINES*160t ;Yes - scroll the real display
+	JMP	10$
+
+6$:	MOVB	updreq, #1		;Indicate need to update the screen
+8$:	MOVL	EDI, #gkosavbufr+NSLINES*160t ;Scroll the saved display
+10$:	MOVL	ECX, numlines		;Get size of scrolling area (lines)
+	SUBL	ECX, #NSLINES+2		;Minus one
+	IMULL	ECX, #40t		;Change to number of longs
+	LEAL	ESI, 160t[EDI]
+	RMOVSL	[EDI], [ESI]		;Move screen up one line
+	MOVW	AX, #VBCHR
+	STOSW	[EDI]
+	MOVL	EAX, #CCHR+CCHR*0x10000	;Fill last line with spaces
+	MOVL	ECX, #39t
+	RSTOSL	[EDI]
+	MOVW	AX, #VBCHR
+	STOSW	[EDI]
+	RET
+.PAGE
+;Subroutine to place character on the display screen
+;	c(AL) = Character
+;	CALL	onscrn
+
+onscrn:	CMPB	serterm#, #0		;Using a serial terminal?
+	JE	4$			;No
+	PUSHL	#DH_STDTRM		;Yes - just output character to the
+	PUSHL	EAX			;  terminal
+	CALL	svcIoOutSingle##
+2$:	RET
+
+;Here if not using a serial terminal
+
+4$:	MOVB	AH, attrib
+	CMPB	horpsn, #78t		;Too far right?
+	JA	2$			;Yes - discard the character
+	IMULL	EBX, verpsn, #80t
+	ADDL	EBX, horpsn
+	ADDL	EBX, EBX
+	CMPB	gphmode, #0		;Graphic mode display?
+	JNE	onsgm			;Yes
+
+;Here if in text mode - In this case we always store the character, either in
+;  the screen buffer or in the saved copy of the buffer. It does not matter
+;  if this is the current display session or not. The screen symbiont takes
+;  care of virtuallizing the display buffer if we are not active.
+
+	CMPB	screen, #0
+	JE	8$
+	ADDL	EBX, #txtscnbufr
+	JMP	10$
+
+8$:	ADDL	EBX, #gkosavbufr
+10$:	MOVW	[EBX], AX
+	RET
+.PAGE
+;Here if in graphic mode - In this case we always store the character in our
+;  text buffer. We only write to the display if we are the current session
+;  for the display. If we are the current session we always write to the
+;  display buffer, regardless of whether the user or gecko screen is being
+;  displayed.
+;	c{EBX} = Offset of character from start of buffer
+
+onsgm:	MOVW	gkosavbufr[EBX], AX	;Store character and attribute
+onsgm4:	TESTL	dispbits, #DM$ACTIVE	;Are we the active session?
+	JE	18$			;No - do nothing here
+	MOVL	EBX, verpsn		;Get offset to start of line
+	IMULL	EBX, ychar
+	IMULL	EBX, dispdata+dm_horiz
+	ADDL	EBX, EBX
+	MOVL	EDX, horpsn		;Get offset in line to start of
+	IMULL	EDX, xchar		;  character
+	ADDL	EDX, EDX
+	ADDL	EBX, EDX		;Get offset to start of character
+	ADDL	EBX, #gphscnbufr
+	ADDL	EBX, dispdata+dm_pagesize
+
+;Subroutine to put character on graphic mode screen
+;	c[AX]  = Attribute and character
+;	c{EBX} = Address of first pixel in character cell
+;	CALL	putgchr
+
+putgchr:PUSHL	ECX
+	PUSHL	ESI
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EDI, dispdata+dm_horiz
+	ADDL	EDI, EDI
+	MOVZBL	EDX, AH
+	ANDL	EDX, #0x0F		;Get the foreground attribute value
+	MOVZWL	EBP, coltbl[EDX*2]	;Get the corresponding pixel value
+	MOVL	EDX, EBP
+	SHLL	EDX, #16t
+	ORL	EBP, EDX
+	MOVZBL	ESI, AH			;Get the background attribute value
+	SHRL	ESI, #4
+	MOVZWL	ESI, coltbl[ESI*2]	;Get the corresponding pixel value
+	MOVL	EDX, ESI
+	SHLL	EDX, #16t
+	ORL	ESI, EDX
+	MOVZBL	EDX, AL			;Calculate offset in the font table
+	IMULL	EDX, #8
+	ADDL	EDX, #fonttbl#
+	MOVB	CL, #8
+	CMPL	ychar, #8
+	JE	20$
+10$:	MOVB	CH, #8
+	MOVB	AL, [EDX]
+	INCL	EDX
+12$:	RCLB	AL, #1
+	JC	14$
+	MOVL	[EBX], ESI
+	MOVL	[EBX+EDI], ESI
+	JMP	16$
+
+14$:	MOVL	[EBX], EBP
+	MOVL	[EBX+EDI], EBP
+16$:	ADDL	EBX, #4
+	DECB	CH
+	JNE	12$
+	SUBL	EBX, #32t
+	ADDL	EBX, EDI
+	ADDL	EBX, EDI
+	DECB	CL
+	JNE	10$
+	POPL	EBP
+	POPL	EDI
+	POPL	ESI
+	POPL	ECX
+18$:	RET
+
+20$:	MOVB	CH, #8
+	MOVB	AL, [EDX]
+	INCL	EDX
+22$:	RCLB	AL, #1
+	JC	24$
+	MOVW	[EBX], SI
+	JMP	26$
+
+24$:	MOVW	[EBX], BP
+26$:	ADDL	EBX, #2
+	DECB	CH
+	JNE	22$
+	SUBL	EBX, #16t
+	ADDL	EBX, EDI
+	DECB	CL
+	JNE	20$
+	POPL	EBP
+	POPL	EDI
+	POPL	ESI
+	POPL	ECX
+	RET
+.PAGE
+;Subroutine to display cursor at the current position
+
+dspcur::CMPB	gphmode, #0		;No - text mode?
+	JNE	6$			;No
+	CMPB	screen, #0		;Displaying GECKO's screen now?
+	JE	4$			;No
+	PUSHL	#DH_STDTRM		;Yes
+	PUSHL	#0
+	MOVZBL	EAX, horpsn		;Get column number
+	INCL	EAX
+	PUSHL	EAX
+	PUSHL	verpsn			;Set GECKO cursor position
+	CALL	svcTrmCurPos##
+4$:	RET				;Thats all
+
+;Here to display graphic mode text cursor
+
+6$:	TESTL	dispbits, #DM$ACTIVE	;Are we the active session?
+	JE	4$			;No - do nothing here
+	CMPL	horcur, #-1		;Yes - have a cursor on the screen now?
+	JE	putgcur			;No
+	IMULL	EBX, vercur, #80t	;Yes - get character under cursor
+	ADDL	EBX, horcur
+	MOVW	AX, gkosavbufr[EBX*2]
+	CALL	putgc4			;Put it back with the original
+	MOVL	horcur, #-1		;  attributes
+	MOVL	vercur, #-1
+					;Fall into putgcur
+
+;Subroutine to remove cursor from graphic mode screen
+;	CALL	rmvgcur
+
+;Subroutine to put cursor on graphic mode screen
+;	CALL	putgcur
+
+putgcur:MOVL	EAX, horpsn
+	INCL	EAX
+	MOVL	horcur, EAX
+	MOVL	EBX, verpsn
+	MOVL	vercur, EBX
+	IMULL	EBX, #80t		;Get character under cursor
+	ADDL	EBX, EAX
+	MOVW	AX, gkosavbufr[EBX*2]
+	ORB	AH, #0x70		;Change background to white
+	ANDB	AH, #0x7F
+putgc4:	MOVL	EBX, vercur		;Get offset to start of line
+	IMULL	EBX, ychar
+	IMULL	EBX, dispdata+dm_horiz
+	ADDL	EBX, EBX
+	MOVL	EDX, horcur		;Get offset in line to start of
+	IMULL	EDX, xchar		;  character
+	ADDL	EDX, EDX
+	ADDL	EBX, EDX		;Get offset to start of character
+	ADDL	EBX, #gphscnbufr
+	ADDL	EBX, dispdata+dm_pagesize
+	JMP	putgchr
+.PAGE
+	DATA
+
+	.MOD	4
+
+gphmode::.BYTE	0	;Non-zero if have graphic mode display
+nonscrl: .BYTE	0	;Non-zero to output to nonscrolled region
+attrib:	 .BYTE	TXTATR	;Current character attributes
+updreq:: .BYTE	0	;Non-0 if need to update graphics mode screen
+
+ucursor: .LONG	0	;User cursor location while GECKO screen is displayed
+xcursor: .LONG	0	;GECKO cursor location while user screen is displayed
+curlin:	 .LONG	0	;Current line in scrolling region
+horpsn:: .LONG	0	;Horizontal position in current line
+verpsn:: .LONG	0	;Vertical position of start of current line
+horcur:	 .LONG	-1
+vercur:	 .LONG	-1
+screen:: .LONG	0	;Non-zero when GECKO's screen is displayed
+
+ychar:	 .LONG	16t
+xchar:	 .LONG	16t
+
+numlines:.LONG	0
+
+nvschar: DCHAR	NUMSCN, GET, DECV, 4
+numscns::.LONG	0
+	 .LONG	0	;????
+
+userpage: .LONG	0
+usermode: .LONG	0
+dispbits::.LONG 0		;Display mode bits
+dispdata::.BLKB	dm_SIZE
+gecdata:  .LONG	0
+	  .LONG	80t		;dm_columns
+	  .LONG	TXTLINES	;dm_rows
+	  .LONG	0		;dm_horiz
+	  .LONG	0		;dm_vert
+	  .LONG	0		;dm_dsptype
+	  .LONG	0		;dm_curmode
+	  .LONG	0
+
+coltbl:	.WORD	0x0000		;0 - Black
+	.WORD	0x0015		;1 - Blue
+	.WORD	0x0540		;2 - Green
+	.WORD	0x0555		;3 - Cyan
+	.WORD	0xA800		;4 - Red
+	.WORD	0xA815		;5 - Magenta
+	.WORD	0xBBB0 ;;;0xAAA0		;6 - Brown
+	.WORD	0xAD55		;7 - White
+	.WORD	0x52CA		;8 - Gray
+	.WORD	0x52DF		;9 - Light blue
+	.WORD	0x57EA		;A - Light green
+	.WORD	0x57FF		;B - Light cyan
+	.WORD	0xFAAA		;C - light red
+	.WORD	0xFADF		;D - Light magenta
+	.WORD	0xFFEA		;E - Light brown (yellow)
+	.WORD	0xFFFF		;F - Bright white
+
+gkosavbufr:.BLKW GPHLINES*80t	;GECKO text mode save buffer
+usrsavbufr:.BLKW TXTLINES*80t	;User text mode save buffer
+
+	.MACRO	& SCNMSG  attr, string
+	.IRPC	&& qq,{string}
+	.BYTE	'qq', attr
+	.ENDR
+	.ENDM
+
+	.RADIX	10t
+	.IRP	maj, >MAJVER
+	.IRP	min, >MINVER
+	.IRP	& edit, >EDITNUM
+lblmsg:	SCNMSG	INVBRD, { GECKO (user mode) v&maj.&min.&edit }
+	.ENDR
+	.ENDR
+	.ENDR
+LBLSIZE=!{$-lblmsg}/2
+	.RADIX	16t
+
+cprmsg:	SCNMSG	BRDATR, {1}
+	SCNMSG	INVBRD, {Help}
+	SCNMSG	BRDATR, { 2}
+	SCNMSG	INVBRD, {SwScrn}
+	SCNMSG	BRDATR, { 4}
+	SCNMSG	INVBRD, {ExmEIP}
+	SCNMSG	BRDATR, { 5}
+	SCNMSG	INVBRD, {ExmPrev}
+	SCNMSG	BRDATR, { 6}
+	SCNMSG	INVBRD, {ExmSame}
+	SCNMSG	BRDATR, { 7}
+	SCNMSG	INVBRD, {ExmNext}
+	SCNMSG	BRDATR, { 8}
+	SCNMSG	INVBRD, {Step}
+	SCNMSG	BRDATR, { 9}
+	SCNMSG	INVBRD, {Trace}
+	SCNMSG	BRDATR, {10}
+	SCNMSG	INVBRD, {Go}
+CPRSIZE=!{$-cprmsg}/2
+
+	.MOD	4

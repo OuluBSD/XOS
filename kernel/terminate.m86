@@ -1,0 +1,656 @@
+	.TITLE	terminate - Routines to terminate threads and processes
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD XOSINC:\xmac\pcat.par
+
+	CODE
+
+;A process termination signal is sent to the thread in the parent process
+;  that created the process which is terminating if a termination signal was
+;  request when the process was created. Only the status of the base thread
+;  is reported. It always generates at least 10 data items as follows:
+;	 0:  Process ID (PID)
+;	 4:  Exit status value - high 8 bits contain termination reason
+;	 8:  EIP
+;	12:  CS
+;	16:  EFR
+;	20:  ESP
+;	24:  SS
+;	28:  Address data (offset)
+;	32:  Address data (segment)
+;	36:  Data
+;If the process terminating is a session process and process accounting is
+;  enabled, additional data items are included to report accounting data as
+;  follows:
+;	40:  Billing class (bits 7-0)
+;	     Number of intervals (bits 15-8)
+;	     Number of billing levels in each interval (bits 23-16)
+;	     Reserved, always 0 (bits 31-24)
+;This item is followed by a group of blocks for each interval. There is one
+;  block for each billing level.  Each block contains two items.  The first
+;  item contains the low order 32 bits of the 48 bit accumulated time value.
+;  The low order 16 bits of the second item contains the high 16 bits of the
+;  accumulated time value.  The high order 16 bits contains the rate (cents
+;  per hour) for the billing level for the interval.
+;The current implemenation always includes values for 8 billing levels for each
+;  interval, even if some (or all) are 0. It only includes as many intervals as
+;  are actually used (between 0 and 3).
+
+;When a user thread other than the base thread terminates, a thread termination
+;  signal is sent to the thread when created the thread which is terminating if
+;  it was requested when the thread was created. It contains the first 10 items
+;  described above except that the first item is the thread ID (TID)
+.PAGE
+;Here for the svcSchExit0 SVC - Terminate current thread with 0 exit status
+;	__noreturn svcSchExit0(void);
+;  Never returns! - This SVC is mainly intended for use when a process is
+;    being terminated and may not have a user stack. When executed as a
+;    direct call no user stack is necessary since it has no parameters.
+
+psvcSchExit0::
+	MOVL	knlTda+tdaArg1#, #0	;Set status to 0 and fall into code for
+					;  svcSchExit (Normally this will be
+					;  executing when redoing termination
+					;  in which case the status value will
+					;  be ignored. We set it to 0 here so
+					;  it will be well defined if it is
+					;  executed initially to terminate a
+					;  thead.)
+
+;Here for the svcSchExit SVC - Terminate current thread.
+;	__noreturn svcSchExit(
+;	    long status);	// Exit status value
+;  Never returns!
+
+psvcSchExit::
+	MOVL	EDI, knlTda+tdaAddr#
+	JMP	14$
+
+;Here for the svcSchTerminate SVC - Terminate any thread in current process.
+;	long svcSchTerminate(
+;	    long status,	// Exit status value
+;	    long tid);		// Thread ID (0 means current thread, -1 means
+;				//   base thread)
+;  Value returned is 0 if normal or negative error code if error. Does not
+;    return if killing current or base thread.
+
+psvcSchTerminate::
+	PUSHL	knlTda+tdaArg2#
+	CALL	gettda#
+	TESTL	EAX, EAX
+	JE	4$			;If bad TID
+	MOVL	EDX, tdaPda#[EAX]	;Is this TID for the current process?
+	CMPL	EDX, knlPda+pdaAddr#
+	JNE	4$			;No - fail
+	MOVL	EDI, EAX		;Yes - go on
+	JMP	14$
+
+;Here if invalid TID
+
+4$:	MOVL	EAX, #ER_BDTID
+	RET
+
+;Here for the svcSchKill SVC - Terminate any thread in any process.
+;	long svcSchKill(
+;	    long status,	// Exit status value
+;	    long tid);		// 0 means current thread, -1 means base thread
+;				//   of current process, otherwise:
+;				//   Bit 31 = 0 - TID
+;				//   Bit 31 = 1 - PID (Base thread for process
+;				//                is terminated which terminates
+;				//                the process.)
+;  Value returned is 0 if normal or negative error code if error. Does not
+;    return if killing current or base thread. While this SVC can be used to
+;    terminate a thread in the current process this should be avoided to
+;    eliminate the possibilty of actidentally killing a thread in a different
+;    process. The svcSchTerminate SVC should be used to terminate a thread in
+;    the current process.
+
+psvcSchKill::
+	MOVL	EAX, knlTda+tdaArg2#
+	BTZL	EAX, #31t		;Did he give us a PID?
+	PUSHL	EAX
+	JNC	8$			;No
+	CALL	getpda#			;Yes - get address of the PDA
+	TESTL	EAX, EAX
+	JE	22$
+	MOVL	EAX, pdaTdaHead#[EAX]	;Get TDA for the base thread
+	JMP	10$
+
+8$:	CALL	gettda#
+10$:	TESTL	EAX, EAX
+	JE	20$			;If bad TID or PID
+	MOVL	EDI, EAX
+	PUSHL	tdaPda#[EDI]
+	CALL	checkkill		;See if we can kill this process
+	TESTL	EAX, EAX
+	JS	20$			;If can't
+14$:	TESTB	tdaTSts1#[EDI], #T1$KILL ;Already killing this thread?
+	JNE	20$			;Yes - can't do it again
+	CMPB	knlTda+tdaArg1#+3, #0	;Did he specify a termination reason?
+	JNE	18$			;Yes - use it
+	MOVB	knlTda+tdaArg1#+3, #TC_EXIT ;No - assume exit
+	CMPL	EDI, knlTda+tdaAddr#	;Right?
+	JE	18$			;Yes
+	MOVB	knlTda+tdaArg1#+3, #TC_KILL ;No - use right reason
+18$:	PUSHL	knlTda+tdaArg1#		;Terminate the thread
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	sysSchTerminate
+	RET
+
+20$:	TESTB	knlTda+tdaArg2#+3, #0x80
+	JE	24$
+
+;Here if bad PID
+
+22$:	MOVL	EAX, #ER_BDPID
+	RET
+
+;Here if bad TID
+
+24$:	MOVL	EAX, #ER_BDTID
+	RET
+.PAGE
+;Here for the svcSchExitX SVC - Terminate current thread with specified
+;  termination data. This SVC is  only valid when executed as a direct SVC
+;  from the global user msect.  If executed as a stub SVC or from any other
+;  area, it is treated as an svcSchExit call and only the first argument is
+;  used. Note that this does not provide 100% protection from a mallicous
+;  program using this call to report false termination values, but should
+;  prevent accidental use. Reporting false termination values will not be
+;  harmful to the system but may provide misleading information about why
+;  a thread terminated. There are no known ways that this can compromise
+;  system security or integrity.
+;	long svcSchExitX(
+;	    ulong status,	// Exit status value
+;	    ulong eip,		// EIP value
+;	    ulong cs,		// CS value
+;	    ulong efr,		// EFR value
+;	    ulong esp,		// ESP value
+;	    ulong ss,		// SS value
+;	    ulong data);	// Data value
+;  Value returned is 0 if normal or a negative error code if error. Does not
+;    return if killing self. Killing self is unconditional, no errors are
+;    possible.
+
+psvcSchExitX::
+	MOVL	EAX, knlTda+tdaArg1#	;Get termination status
+	CMPL	34[ESP], #usercodebase	;Is this from the global user msect?
+	JB	psvcSchTerminate	;No - just do a normal svcSchTerminate
+					;  to terminate this thread
+	CMPL	34[ESP], #usercodetop#	;Maybe
+	JAE	psvcSchExit		;No
+	CMPB	knlTda+tdaArg1#+3, #0	;Is the termination status valid?
+	JLE	psvcSchExit		;No
+	MOVL	ESI, #knlTda+tdaArg2#	 ;Yes - copy the arguments to the saved user
+	MOVL	EDI, #knlTda+tdaURegEIP# ;  user registers
+	MOVL	ECX, #5
+4$:	MOVL	EAX, [ESI]
+	SUBL	ESI, #4
+	MOVL	[EDI], EAX
+	ADDL	EDI, #4
+	LOOP	ECX, 4$
+	PUSHL	knlTda+tdaArg1#
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	knlTda+tdaArg7#
+	CALL	sysSchTerminate
+	RET
+.PAGE
+;Function to terminate a process - May be called from any thread in the system,
+;  but will usually be called for a thread belonging to the process being
+;  terminated. It is normally called when a serious error occures in a thread
+;  (such as a bad stack pointer) which is serious enough to warrent terminating
+;  the entire process. This function does not return if called in a thread
+;  belonging to the process being terminated.
+;	long sysSchTermProc(
+;	    long tsts,		// Termination status
+;	    long tda,		// Actual address of TDA of thread to terminate
+;	    long data);		// Termination data value
+;  Value returned is 1 if started terminating thread or 0 if already being
+;    terminated.
+
+
+tpro_tsts=!12t
+tpro_pda =!8
+tpro_data=!4
+
+sysSchTermProc::
+	PUSHL	tpro_tsts[ESP]		;Terminate the base thread (This will
+	MOVL	EDX, tpro_pda+4[ESP]	;  not return if this is the base
+	PUSHL	pdaTdaHead#[EDX]	;  thread.)
+	PUSHL	tpro_data+8[ESP]
+	CALL	sysSchTerminate
+
+;If get here this is not the base thread for the process
+
+	MOVL	EDX, tpro_pda[ESP]	;Are terminating our own process?
+	CMPL	EDX, knlTda+tdaPda#
+	JNE	4$			;No - finished
+	PUSHL	tpro_tsts[ESP]		;Yes - terminate this thread now (This
+	PUSHL	knlTda+tdaAddr#		;   will not return.)
+	PUSHL	tpro_data+8[ESP]
+	CALL	sysSchTerminate
+
+4$:	RET	12t
+.PAGE
+;Function to terminate a user thread - This function may be called from any
+;  level code below interrupt level and may specify any thread, including a
+;  thread in a different process or the currently executing thread. If it
+;  specifies the current thread, it never returns and the process is
+;  terminated immediately. If it specifies a different thread the thread is
+;  allowed to run until it is about to return to user mode. If it is waiting
+;  for a device that can be aborted, the wait is ended with an ER_ABORT error.
+;  Care must be taken when calling this function as no process level locks or
+;  process resources are given up. Caller must have verified that the thread
+;  exists and that it is valid to terminate it.
+;	long sysSchTerminate(
+;	    long tsts,		// Termination status
+;	    long tda,		// Actual address of TDA of thread to terminate
+;	    long data);		// Termination data value
+;  Value returned is 1 if started terminating thread or 0 if already being
+;    terminated.
+
+term_tsts=!12t
+term_tda =!8
+term_data=!4
+
+sysSchTerminate::
+	MOVL	ECX, term_tda[ESP]	;Get TDA address
+	CLRL	EAX
+	TESTB	tdaTSts1#[ECX], #T1$KILL ;Already being terminated?
+	JNE	10$			;Yes
+	MOVL	EAX, term_tsts[ESP]	;No
+	MOVL	tdaTermSts#[ECX], EAX	;Store termination status
+	ORB	tdaTSts1#[ECX], #T1$KILL
+	ORB	tdaSSigType#[ECX], #SSIG$KILL
+	MOVL	EDX, tdaSpy#[ECX]
+	MOVB	tspy_state[EDX], #TSSTA_TERM
+	CMPL	tdaPrev[ECX], #0	;Is this a base thread?
+	JNE	2$			;No
+	MOVL	EDX, tdaPda#[ECX]	;Yes - also indicate the process is
+	MOVL	EDX, pdaSpy#[EDX]	;  being terminated
+	MOVB	pspy_state[EDX], #PSSTA_TERM
+2$:	ORB	tdaSigReq#[ECX], #0x01	;Request exec signal
+	CMPB	knlForkLvl#, #FORK_SFORK ;At scheduler or device fork level?
+	JAE	4$			;Yes
+	CMPL	ECX, knlTda+tdaAddr#	;No - terminating self?
+	JNE	4$			;No
+	INSUREFORK				
+	LEAL	ESP, tdaXStkBegin#[ECX]	;Reset ESP to make it look like we are
+					;  about to return to user code so will
+					;  grant the exec signal
+	JMP	knlSignalChk#		;Handle the signal we just requested
+
+;Here if not terminating self
+
+4$:	PUSHL	ECX
+	TOFORK	6$
+	CALL	dorequeue
+	FROMFORK
+	JMP	8$
+
+6$:	CALL	dorequeue
+8$:	MOVL	EAX, #1
+10$:	RET	12t
+.PAGE
+;Function to requeue device being terminated if necessary - must be called at
+;  fork level, returns at fork level (unchanged)
+;	void derequeue(
+;	    TDA *tda);
+
+drq_tda=!4
+
+dorequeue:
+	MOVL	ECX, drq_tda[ESP]
+	MOVL	EAX, tdaState#[ECX]	;Get current state
+	CMPB	AL, #THDS_RN1		;Currently at least in RN1?
+	JB	4$			;Yes - nothing needed here
+4$:	CMPB	AL, #THDS_RUNMAX	;No - was it runnable?
+	JBE	8$			;Yes - move it to RN1
+	CMPB	AL, #THDS_USERW		;No - was it waiting in user mode?
+	JAE	8$			;Yes - all we need to do is requeue it
+	CMPB	AL, #THDS_DW3		;No - was it waiting for IO
+	JA	10$			;No - all we can do is wait
+	MOVL	EDX, tdaDcb#[ECX]	;Yes - get the DCB
+	TESTL	dcb_dsp[EDX], #DS$NOABORT ;Can we abort this device?
+	JNE	10$			;No - must wait (it should finish soon!)
+	MOVL	tdaRtnValue0#[ECX], #ER_ABORT ;Yes - abort it!
+8$:	PUSHL	ECX			;No - requeue it to RN2
+	PUSHL	#THDS_RN1
+	CALL	sysSchRequeue#
+10$:	RET	4
+.PAGE
+;Here for a special exec signal when terminating a user thread
+
+termthread::
+	MOVL	EAX, knlTda+tdaAddr#	;Does this thread own the FPU?
+	CMPL	EAX, fputda#
+	JNE	2$			;No
+	MOVL	fputda#, #0		;Yes - but not any longer
+2$:	CMPL	knlTda+tdaPrev#, #0	;Is this the base thread?
+	JNE	termt4			;No - go on
+
+;Here if terminating the base thread - First cancel all alarm timers for the
+;  process.
+
+4$:	PUSHL	knlPda+pdaAddr#
+	CALL	sysSchTmrCancel#
+
+;Terminate all other user threads
+
+	MOVL	EAX, knlTda+tdaAddr#
+	CMPL	EAX, knlPda+pdaTdaHead#
+	JE	10$
+	CRASH	NBTH			;[Not Base THread]
+
+;NOTE: This code counts on the fact that this is a single processor system
+;      and that the actions requested by calling sysSchTerminate will not
+;      happen until we give up the processor!
+
+10$:	MOVL	EDI, #1
+	PUSHL	#0
+	MOVL	ESI, knlTda+tdaNext#
+14$:	TESTL	ESI, ESI
+	JE	18$
+	TESTB	tdaType#[ESI], #0x01	;Is it a user thread?
+	JE	16$			;No
+	INCL	[ESP]			;Yes
+	PUSHL	#TC_KILL<24t
+	PUSHL	ESI
+	PUSHL	#0
+	CALL	sysSchTerminate
+	CLRL	EAX
+	MOVL	tdaTermSigPid#[ESI], EAX  ;Don't generate termination signal or
+	MOVL	tdaTermEvPid#[ESI], EAX	  ;  event
+	MOVB	tdaTermEvNum#[ESI], AL
+16$:	MOVL	ESI, tdaNext#[ESI]
+	JMP	14$
+
+18$:	POPL	EAX			;Did we terminate anything?
+	TESTL	EAX, EAX
+	JE	termt2			;No
+
+;Here if we terminated 1 or more user threads - must wait until all are gone
+
+20$:	MOVL	ESI, knlTda+tdaNext#
+22$:	TESTL	ESI, ESI
+	JE	termt2
+	TESTB	tdaType#[ESI], #0x01
+	JE	24$
+	PUSHL	tdaTid#[ESI]		;Wait until someone terminates
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#THDS_PROC
+	CALL	sysSchRequeue#
+	PUSHFL
+	CALLF	knlSchedule#
+	TOFORK
+	JMP	20$			;Check again
+
+;Here if not a user thread
+
+24$:	MOVL	ESI, tdaNext#[ESI]
+	JMP	22$
+.PAGE
+;Here with all other user threads terminated - Terminate any child processes.
+;  This is only executed for the base thread.
+
+termt2:	MOVL	EDI, knlPda+pdaChildPda#
+	TESTL	EDI, EDI
+	JE	termt4
+
+	PUSHL	pdaSibPda#[EDI]
+	MOVL	ESI, pdaTdaHead#[EDI]	;Get address of the TDA for the base
+	TESTL	ESI, ESI		;  thread
+	JE	1$
+	CMPL	tdaLabel#[ESI], #'TDA&'
+	JE	2$
+1$:	CRASH	NTDA
+
+2$:	CLRL	EAX
+
+;;;;; POSSIBLE RACE HERE????
+
+	MOVL	tdaTermSigPid#[ESI], EAX ;Don't generate termination signal or
+	MOVL	tdaTermEvPid#[ESI], EAX  ;  event
+	MOVB	tdaTermEvNum#[ESI], AL
+	PUSHL	#TC_KILL<24t
+	PUSHL	ESI
+	PUSHL	#0
+	CALL	sysSchTerminate
+4$:	INSUREFORK
+	PUSHL	tdaTid#[ESI]
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#		;Wait until it finishes terminating
+	PUSHL	#THDS_PROC
+	CALL	sysSchRequeue#
+	PUSHFL
+	CALLF	knlSchedule#
+	CMPL	EDI, knlPda+pdaChildPda# ;Is it really gone?
+	JE	4$			;No - wait some more
+	JMP	termt2			;Yes - continue
+.PAGE
+;Cancel any active devices which are doing IO for this thread. Wait until all
+;  such devices are idle. This is executed for all threads, not just for the
+;  base thread.
+
+termt4:	INSUREFORK
+	PUSHL	#CAN$WAIT|CAN$ALL|CAN$NOSIG|CAN$INPUT|CAN$OUTPUT
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	CALL	sysIoCancel#
+
+;If this is a base thread, close all open devices and give up various lists
+;  of XMBs.
+
+	FROMFORK
+	CMPL	knlTda+tdaPrev#, #0	;Is this the base thread?
+	JNE	termt6
+
+;Following check is for debugging only - At this point there should be no
+;  other threads left.
+
+	MOVL	EAX, knlPda+pdaTdaHead#
+	CMPL	EAX, knlPda+pdaTdaTail#
+	JE	12$
+	CRASH	TWNT			;[Thread Was Not Terminated]
+
+;End of debug code
+
+;Close all devices. This is only executed by a base thread.
+
+12$:	CALL	closeall#
+
+;Here with all devices closed
+
+20$:	CALL	eventgiveall#		;Give up any event blocks (ECBs)
+	CALL	logicalgiveall#		;Give up any logical name definition
+					;  blocks (LNBs)
+.PAGE
+;Delete any pending timers or signals.
+
+termt6:	INSUREFORK
+	MOVL	EAX, knlPda+pdaAddr#	;Does this process have the exec
+	CMPL	EAX, knlXResPda#	;  memory resource?
+	JNE	8$			;No
+	CALL	knlGiveXRes#		;Yes - give it up now
+8$:	PUSHL	#0			;Remove all pending signals
+	PUSHL	#0
+	CALL	clrsignals#
+	CMPL	knlTda+tdaWakeTmr#, #0	;Does thread have a wake request?
+	JE	10$			;No
+	CRASH	HWKR			;[Have WaKe Request]
+
+10$:	FROMFORK
+.PAGE
+;Here with everything but the thread itself given up
+
+termt8:	CMPL	knlTda+tdaTermSigPid#, #0 ;Should we generate a termination
+					  ;  signal?
+	JE	termt10			;No
+	MOVL	EDX, #VECT_PTERM	;Yes - assume this is the base thread
+	MOVL	EDI, knlPda+pdaPid#
+	CMPL	knlTda+tdaPrev#, #0	;Right?
+	JE	4$			;Yes
+	ADDL	EDX, #VECT_TTERM-VECT_PTERM ;No - use the right vector
+	MOVL	EDI, knlTda+tdaTid#
+4$:	TOFORK
+	PUSHL	knlTda+tdaTermData#	;Store data value
+	PUSHL	knlTda+tdaURegSS#	;Store SS value
+	PUSHL	knlTda+tdaURegESP#	;Store ESP value
+	PUSHL	knlTda+tdaURegEFR#	;Store EFR value
+	PUSHL	knlTda+tdaURegCS#	;Store CS value
+	PUSHL	knlTda+tdaURegEIP#	;Store EIP value
+	PUSHL	knlTda+tdaTermSts#	;Store termination status
+	PUSHL	EDI			;Store process or thread ID
+	PUSHL	#8			;8 data items
+	PUSHL	knlTda+tdaTermSigPid#	;PID
+	PUSHL	#0			;No grant function
+	PUSHL	#0
+	PUSHL	EDX			;Vector number
+	CALL	sysSchReqSignal#
+	ADDL	ESP, #52t
+	FROMFORK
+.PAGE
+termt10:CMPL	knlTda+tdaTermEvPid#, #0 ;Want a termination event?
+	JE	termt12			;No
+	TOFORK
+	PUSHL	knlTda+tdaTermEvPid#	;Yes
+	CALL	getpda#
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	EDI, EAX
+	PUSHL	#0			;See if he has a ^XOS^PROC event
+	MOVL	EDX, ESP		;  cluster
+	PUSHL	EDI
+	PUSHL	#runecname
+	PUSHL	#0
+	PUSHL	EDX
+	CALL	sysSchFindEvClus#
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	8$			;If no event cluster, forget it!
+	PUSHL	EDI
+	PUSHL	ESI			;OK - set the event
+	PUSHL	knlTda+tdaTermSts#
+	MOVZBL	EAX, knlTda+tdaTermEvNum#
+	PUSHL	EAX
+	CALL	sysSchSetEvent#
+8$:	FROMFORK
+.PAGE
+termt12:MOVL	EAX, knlTda+tdaIoBMTop#	;Has additional memory been
+	SUBL	EAX, knlTda+tdaAddr#	;  allocated for the IO bitmap?
+	SUBL	EAX, #0x2000
+	JBE	2$			;No
+	ADDL	EAX, #0xFFF		;Yes - get number of extra pages
+	SHRL	EAX, #12t
+	MOVL	EDX, knlTda+tdaAddr#
+	ADDL	EDX, #0x2000
+	PUSHL	knlTda+tdaPda#		;Give up the extra pages
+	PUSHL	EDX
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	EAX
+	CALL	sysMemGivePages#
+	TESTL	EAX, EAX
+	JNS	2$
+	CRASH	EGUM			[Error Giving Up Memory]
+
+2$:	CMPL	knlTda+tdaPrev#, #0	;Terminating the base thread?
+	JNE	4$			;No
+	PUSHL	#-1			;Yes - give up all user memory
+	CALL	removemem#
+	TESTL	EAX, EAX
+	JS	10$
+4$:	TOFORK
+	PUSHL	knlTda+tdaTid#
+	CALL	sysSchEndWaitAll#
+	FROMFORK
+	PUSHL	knlTda+tdaAddr#		;Give up the thread - If this is the
+	CALL	removethread#		;  base thread this will also give up
+					;  the process. Since we are giving up
+					;  the current thread this does not
+					;  return.
+	CRASH	TWNT			;[Thread Was Not Terminated]
+
+;Here if error giving up the process's memory - this can only happen if a page
+;  is locked, which is not possible since we have already closed all devices!
+
+10$:	CRASH	MPIL			;[Memory Page Is Locked]
+
+runecname:.ASCII "^XOS^PROC"
+	  .BYTE  0, 0, 0, 0, 0, 0, 0
+.PAGE
+;Routine to terminate process on unimplimented real mode INT
+
+knlUnimOp::
+	POPL	lastunimop		;Save for debugging
+	PUSHL	#TC_UNIMOP*1000000h
+	PUSHL	SS
+
+	CRASH	????
+
+;;;;;;	CALL	sysSchKillProc		;Terminate the process
+	RET
+
+	DATA
+
+lastunimop::.LONG 0
+
+	CODE
+.PAGE
+;Function to see if it is valid to kill a process
+;	long checkkill(
+;	    PDA *pda
+;  Value return 0 if OK to kill process or a negative XOS error code if error.
+
+chkk_pda=!4
+
+checkkill::
+	MOVL	EAX, chkk_pda[ESP]
+	CMPL	EAX, knlPda+pdaAddr#	;Self?
+	JE	4$			;Yes - that's always OK
+	MOVL	EBX, pdaTdaHead#[EAX]
+	TESTB	tdaTSts1#[EBX], #T1$KILL ;No - already killing this process?
+	JNE	6$			;Yes - can't do it again!
+chkkil2:MOVL	EDX, knlPda+pdaSesPda#	;Is it a member of our session?
+	CMPL	pdaSesPda#[EAX], EDX
+	JE	4$			;Yes - that's OK
+	MOVL	EDX, knlPda+pdaAddr#	;No - is it our child?
+	CMPL	pdaParPda#[EAX], EDX
+	JE	4$			;Yes - that's OK too
+	BTL	knlPda+pdaActPriv#, #PP%ALLPROC ;No - can he do this?
+	JNC	6$			;No
+4$:	CLRL	EAX
+	RET	4
+
+6$:	MOVL	EAX, #ER_BDPID
+	JMP	4$
+
+	END

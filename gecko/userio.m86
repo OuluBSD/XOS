@@ -1,0 +1,511 @@
+	.TITLE	userio  - Character I/O routines using user mode IO for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	XOSINC:/xmac/xos.par
+	.INCLUD	XOSINC:/xmac/xostrm.par
+	.INCLUD	XOSINC:/xmac/xosrun.par
+	.INCLUD	gecko.par
+
+	CODE
+
+;This file contains routines that depend of the mode (user mode) that gecko
+;  is running in.
+
+;Here for the TRM command - switch to or from a serial port
+
+swterm::MOVL	EBX, #niytmsg#
+	JMP	outstrca#
+.PAGE
+;Here for the SS ommand - switch virtual screen
+
+swscreen::
+	CMPB	gphmode#, #0		;Graphic mode?
+	JE	badcmd#			;No - bad command
+	CALL	getchr#			;Yes - get screen "number"
+	JE	20$
+	CMPB	AL, #'a'
+	JB	2$
+	SUBL	EAX, #20
+2$:	CMPB	AL, #'0'
+	JB	20$
+	CMPB	AL, #'9'
+	JA	4$
+	ANDL	EAX, #0x0F
+	JMP	6$
+
+4$:	CMPB	AL, #'A'
+	JB	20$
+	CMPB	AL, #'Z'
+	JA	20$
+	ANDL	EAX, #0x1F
+	ADDL	EAX, #9
+6$:	CMPL	EAX, numscns#
+	JG	20$
+	PUSHL	#DH_STDTRM
+	PUSHL	EAX
+	CALL	svcTrmSwScreen##
+	TESTL	EAX, EAX
+	JS	22$
+10$:	CALL	inpchx			;Get a character
+
+;;;;	CALL	out4hx
+
+	CMPB	AL, #ISC_SSCOMP+0x80	;Must be a SSCOMP character
+	JNE	10$
+	PUSHL	#DH_STDTRM		;Switch to display page 1 (This should
+	PUSHL	dispdata#+dm_pagesize	;  not be needed but there is a bug
+	CALL	svcTrmDspPos##		;  in the screen switching stuff. It
+					;  does not correctly save and restore
+					;  the graphic mode page number!)
+
+;The following code can be inserted to verify that the debug screen is being
+;  correctly restored.
+
+;;;	MOVL	EDI, gnscladdr
+;;;	SUBL	EDI, #10000
+;;;	MOVL	ECX, #0xB0000
+;;;	MOVL	EAX, #0xF000F000
+;;;	RSTOSL	[EDI]
+
+	MOVL	userchr, #ISC_SSCOMP	;Send this to the user
+	CALL	rgnclear#		;Rebuild the screen and return from the
+	JMP	cpygph#			;  VS command
+
+20$:	MOVL	EBX, #bdsnmsg
+	JMP	outstrca#
+
+22$:	MOVL	EBX, #eswsmsg
+	JMP	outstrca#
+
+bdsnmsg:.ASCIZ	{ERR,LF,CLR}"? Invalid screen number"{TXT}
+eswsmsg:.ASCIZ	{ERR,LF,CLR}"? Error switching screens"{TXT}
+.PAGE
+;Subroutine to set up GECKO's vectors
+;	CALL	setvec
+
+setvec::PUSHL	EAX
+	PUSHL	EBX
+	PUSHL	EDI
+	PUSHL	#VECT_DEBUG		;Set debug/trace trap vector
+	PUSHL	#0
+	PUSHL	#debugtrapu
+	CALL	svcSchSetVector##
+	PUSHL	#VECT_BRKPNT		;Set INT3 vector
+	PUSHL	#0
+	PUSHL	#bptent#
+	CALL	svcSchSetVector##
+	PUSHL	#VECT_PROT		;Set protection error vector
+	PUSHL	#0
+	PUSHL	#perint#
+	CALL	svcSchSetVector##
+	PUSHL	#VECT_PAGEFLT		;Set page fault error vector
+	PUSHL	#0
+	PUSHL	#ferint#
+	CALL	svcSchSetVector##
+	PUSHL	#VECT_SEGNP		;Set segment not present vector
+	PUSHL	#0
+	PUSHL	#nerint#
+	CALL	svcSchSetVector##
+	PUSHL	#VECT_ILLINS
+	PUSHL	#0
+	PUSHL	#illinsint#
+	CALL	svcSchSetVector##
+	POPL	EDI
+	POPL	EBX
+	POPL	EAX
+	RET
+
+;Subroutine to initialize the user environment when GECKO is started
+;	CALL	intusr
+
+intusr::RET
+.PAGE
+;Subroutine to set up for entry to GECKO
+;	CALL	entgecko
+
+entgecko::
+	CLD
+	PUSHL	#GS_UDATA
+	POPL	DS
+	POPL	entrtn#			;Save our return address
+	POPL	uregGS#			;Save segment registers
+	POPL	uregFS#
+	POPL	uregES#
+	POPL	uregDS#
+	POPL	uregEIP# 		;Save user IP
+	POPL	uregCS#			;Save user CS
+	POPL	uregEFR#		;And save user flags
+	ADDL	ESP, #4			;Discard stack count/interrupt number
+	TESTB	uregEFR#+2, #02		;Trap from V86 mode?
+	JE	2$			;No
+	POPL	uregESP#		;Yes - save V86 stack pointer
+	POPL	uregSS#
+	MOVL	uESP, ESP
+	MOVL	uSS, SS
+	JMP	4$
+
+2$:	MOVL	uregESP#, ESP		;Save user stack pointer
+	MOVL	uregSS#, SS
+4$:	PUSHL	DS			;Set up the GECKO stack pointer
+	POPL	SS
+
+	CMPL	xESP#, #0
+	JE	6$
+
+	MOVL	ESP, xESP#
+	MOVL	xESP#, #0
+	JMP	8$
+
+6$:	MOVL	horpsn#, #0
+	MOVL	verpsn#, #NSLINES#
+
+8$:	CALL	savusr
+	CALL	xscreen#		;Set up GECKO's screen
+
+	CALL	xregdmp#		;Update register display
+	MOVL	EDI, #bpttbl#		;Point to breakpoint table
+	MOVL	ECX, #BPTNUM
+	CLRL	ESI
+10$:	CMPB	[EDI], #0		;Is this entry in use?
+	JE	16$			;No - go on
+	MOVL	EBX, bt_addr[EDI]	;Yes - get address
+	INCL	EBX
+	CMPL	EBX, uregEIP#		;Now stopped at this breakpoint?
+	JNE	14$			;No
+	MOVL	ESI, EDI		;Yes - remember it
+14$:	DECL	EBX
+	MOVB	AL, bt_ins[EDI]		;Get instruction
+	CALL	putmbyte		;Restore instruction
+16$:	ADDL	EDI, #bt_ENSZ
+	LOOP	ECX, 10$
+	MOVL	EAX, oradix#		;Reset temporary output radix
+	MOVL	tradix#, EAX
+	MOVB	AL, poutmd#		;And reset temporary output mode
+	MOVB	toutmd#, AL
+	JMPIL	entrtn#			;Return from entgecko
+.PAGE
+savusr::MOVL	uregEAX#, EAX		;Save EAX
+	PUSHL	#8			;Disable signals
+	CALL	svcSchSetLevel##
+	MOVL	uregEBX#, EBX		;Save other registers
+	MOVL	uregECX#, ECX
+	MOVL	uregEDX#, EDX
+	MOVL	uregEDI#, EDI
+	MOVL	uregESI#, ESI
+	MOVL	uregEBP#, EBP
+	CLRL	EAX
+	TESTB	uregEFR#+2, #02		;From V86 mode?
+	JE	4$			;No
+	INCL	EAX			;Yes
+4$:	MOVW	uregSS#+2, AX
+	MOVW	uregES#+2, AX
+	MOVW	uregDS#+2, AX
+	MOVW	uregFS#+2, AX
+	MOVW	uregGS#+2, AX
+	MOVW	uregCS#+2, AX
+	PUSHL	#0x80000000		;Disable watchpoints
+	CALL	svcMemWPCntl##
+
+;;;	PUSHL	#DH_STDTRM		;Get current mode
+;;;	PUSHL	#DM$RTNDATA
+;;;	PUSHL	#userdata
+;;;	CALL	svcTrmDspMode##
+;;;	CMPL	EAX, #DM_TEXT
+;;;	SETG	gmode			;TRUE if graphics mode
+
+;;;;	CMPB	gmode, #0		;Graphic mode?
+;;;;	JNE	8$			;Yes - don't try to change the
+					;  terminal's state
+
+
+.IF NE 0
+	PUSHL	#DH_STDTRM		;No - get user's terminal state
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#trmgetparm
+	CALL	svcIoInBlockP##
+	MOVL	inpbits, #TIM$IMAGE|TIM$DEBUG ;Set up GECKO's terminal state
+	MOVL	outbits, #TOM$IMAGE
+	PUSHL	#DH_STDTRM
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#trmsetparm
+	CALL	svcIoInBlockP##
+.ENDC
+
+
+8$:	RET
+.PAGE
+;Subroutine to restore user state
+;	CALL	rstusr
+
+rstusr::CMPB	screen, #0		;Need to switch screens?
+	JE	rstus2			;No
+	CALL	uscreen			;Yes - restore user screen
+rstus2:
+
+.IF NE 0
+	CMPB	gmode, #0		;Graphic mode?
+	JNE	4$			;Yes - don't try to change the
+					;  terminal's state
+	MOVL	EAX, inpbitg		;No - restore user's terminal state
+	MOVL	inpbits, EAX
+	MOVL	EAX, outbitg
+	MOVL	outbits, EAX
+	PUSHL	#DH_STDTRM
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#trmsetparm
+	CALL	svcIoInBlockP##
+4$:
+.ENDC
+
+	PUSHL	#0x40000000		;Enable watchpoints
+	CALL	svcMemWPCntl##
+	MOVL	EDI, uregEDI#
+	MOVL	ESI, uregESI#
+	MOVL	EBP, uregEBP#
+	MOVL	EDX, uregEDX#
+	MOVL	ECX, uregECX#
+	MOVL	EBX, uregEBX#
+	MOVL	EAX, uregEAX#
+retio06:RET				;Finished
+.PAGE
+;Here for exit command
+
+goexit::CALL	outcrl#
+	CMPB	screen#, #0		;Need to switch screens?
+	JE	2$			;No
+	CALL	uscreen#		;Yes - restore user screen
+2$:	PUSHL	#0
+exit2::	PUSHL	#0x80000000|DH_STDTRM	;Clear debug input mode
+	CALL	svcTrmDebugIn##
+	CALL	svcSchExit##
+4$:	JMP	4$
+.PAGE
+;Here on terminal ^P interrupt
+
+cpent::	CALL	entgecko   		;Do common entry stuff
+	MOVL	curbpt#, #0		;No current breakpoint now
+	MOVL	EBX, #ci0msg		;No
+	JMP	bpten6#
+.PAGE
+;Subroutine to get byte from memory
+;	c{EBX} = Memory address
+;	CALL	getmbyte
+;	c{EAX} = Value (byte zero extended to 32 bits)
+
+getmbyte::
+	MOVB	AL, #1
+	CALL	memfunc
+	JC	2$
+	MOVZBL	EAX, memval
+	RET
+
+;Subroutine to get word from memory
+;	c[DX]  = Segment selector
+;	c{EBX} = Segment offset
+;	CALL	getmword
+;	c{EAX} = Value (word zero extended to 32 bits)
+
+getmword::
+	MOVB	AL, #2			;Read word item
+	CALL	memfunc
+	JC	2$
+	MOVZWL	EAX, memval
+	RET
+
+;Subroutine to get long from memory
+;	c[DX]  = Segment selector
+;	c{EBX} = Segment offset
+;	CALL	getmlong
+;	c{EAX} = Value
+
+getmlong::
+	MOVB	AL, #3			;Read long item
+	CALL	memfunc
+	JC	2$
+	MOVL	EAX, memval
+2$:	RET
+
+;Subroutine to store byte in memory
+;	c(AL)  = Value
+;	c[DX]  = Segment selector
+;	c{EBX} = Segment offset
+;	CALL	putmbyte
+
+putmbyte::
+	MOVB	memval, AL		;Store value
+	MOVB	AL, #4			;Write byte item
+	JMP	memfunc
+
+;Subroutine to store word in memory
+;	c[AX]  = Value
+;	c[DX]  = Segment selector
+;	c{EBX} = Segment offset
+;	CALL	putmbyte
+
+putmword::
+	MOVW	memval, AX		;Store value
+	MOVB	AL, #5			;Write byte item
+	JMP	memfunc
+
+;Subroutine to store long in memory
+;	c{EAX} = Value
+;	c[DX]  = Segment selector
+;	c{EBX} = Segment offset
+;	CALL	putmbyte
+
+putmlong::
+	MOVL	memval, EAX		;Store value
+	MOVB	AL, #6			;Write byte item
+					;Fall into memfunc
+;Subroutine to do memory debug function
+;	c{EBX} = Address
+;	c(AL)  = Function
+;	CALL	memfunc
+;	c{EAX} = Returned value
+;  Value read is stored in memval
+
+memfunc:MOVZBL	EAX, AL
+	PUSHL	EAX			;Function
+	PUSHL	EBX			;Address
+	PUSHL	#memval
+	CALL	svcMemDebug##
+	BTL	EAX, #31t
+	RET
+.PAGE
+;Subroutine to set or clear a watchpoint
+;	c(AL)  = Trap number (0 to 3)
+;	c(CL)  = Type type:
+;		   0 = None (clear trap)
+;		   1 = Instruction
+;		   2 = Data write
+;		   3 = Data access
+;	c(CH)  = Trap size:
+;		   1 = Byte
+;		   2 = Word
+;		   3 = Long
+;	c{EBX} = Linear address
+;	CALL	wptsetclr
+;	C:set = Error
+;	C:clr = Normal
+
+wptsetclr::
+	MOVZBL	EAX, AL			;Watchpoint number
+	PUSHL	EAX
+	MOVZBL	EAX, CL			;Watchpoint type
+	PUSHL	EAX
+	MOVZBL	EAX, CH			;Watchpoint size
+	PUSHL	EAX
+	PUSHL	EBX			;Linear address
+	CALL	svcMemWPSet##
+	BTL	EAX, #31t
+	RET
+.PAGE
+;Subroutine to get input character from terminal
+;	CALL	inpchx
+;	c(AL) = Character
+
+inpchx::PUSHL	EBX
+	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	EDI
+	PUSHL	ESI
+	CMPB	updreq#, #0
+	JE	2$
+	CALL	cpygph#
+2$:	CMPB	nocursor, #0
+	JNE	4$
+	CALL	dspcur#
+4$:	PUSHL	#DH_STDTRM
+	CALL	svcTrmDebugIn##
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	trmdata, EAX
+	ANDL	EAX, #0x7F
+	JNE	6$
+	MOVZBL	EAX, trmdata+1
+	CMPL	EAX, #0x0F
+	JA	2$
+	ORL	EAX, #0x80
+	TESTB	AL, trmdata+2		;Either shift key pressed?
+	JE	6$			;No
+	ORL	EAX, #0x10		;Yes
+6$:	POPL	ESI
+	POPL	EDI
+	POPL	EDX
+	POPL	ECX
+	POPL	EBX
+	RET
+
+;Here if error reading console input - this is a serious problem so just tell
+;  him as best we can and exit quickly!
+
+10$:	SUBL	ESP, #100t
+	MOVL	EDX, ESP
+	PUSHL	EAX
+	PUSHL	#3
+	PUSHL	EDX
+	MOVL	EBX, #ciemsg
+	CALL	outstr#
+	CALL	svcSysErrMsg##
+	ADDL	EAX, ESP
+	MOVL	[EAX], #CR+{LF<8}
+	MOVL	EBX, ESP
+	CALL	outstr#
+	PUSHL	#1
+	JMP	exit2
+
+ciemsg:	.ASCIZ	{LF,CLR,ERR}"? Error reading console input - fatal"{CR,LF}"  "
+.PAGE
+;Here on a debug trap
+
+debugtrapu::
+	CALL	entgecko		;Do common GECKO entry stuff
+	PUSHL	#0x400F
+	CALL	svcMemWPCntl##
+	JMP	debugtrap#
+.PAGE
+	.MOD	4
+lit80:	.LONG	80t
+
+ci0msg:	.ASCIZ	{CR,LF}"User interrupt at CS:EIP} "
+
+	DATA
+
+	.MOD	4
+uESP::	 .LONG	0	;Actual user stack pointer when called from V86 mode
+uSS::	 .LONG	0
+v86img:: .LONG	0	;Bit 16 set if V86 program loaded, all 0 otherwise
+memval:	 .LONG	0, 0	;Memory value for svcMemDebug SVCs
+inpbuf:	 .LONG	0	;Console character input buffer
+userchr::.LONG	0
+
+trmdata: .LONG	0
+
+hltflg:: .WORD	0	;Non-zero if need to halt GECKO
+nohalt:: .WORD	0	;Non-zero if cannot halt because in critical code
+stpflg:: .WORD	0	;Non-zero to stop output
+nocursor::
+	 .BYTE	0
+	 .BYTE	0

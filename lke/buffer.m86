@@ -1,0 +1,2275 @@
+	.TITLE	buffer - Disk cache buffer management routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xossinfo.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+	.EXPORT	xosdskClrBufr
+	.EXPORT	xosdskDataCbdb
+	.EXPORT	xosdskFindBlock
+	.EXPORT	xosdskFlush
+	.EXPORT	xosdskGetBufr
+	.EXPORT	xosdskGiveBufr
+	.EXPORT	xosdskIsBufrLocked
+	.EXPORT	xosdskLockBufrF
+	.EXPORT	xosdskLockBufrW
+	.EXPORT	xosdskNewBlock
+	.EXPORT	xosdskReadBufr
+	.EXPORT	xosdskRelsBufr
+	.EXPORT	xosdskRenameBufr
+	.EXPORT	xosdskSenseChange
+	.EXPORT	xosdskSrchForBlock
+	.EXPORT	xosdskSysCbdb
+	.EXPORT	xosdskUnlkBufr
+	.EXPORT	xosdskWriteBufr
+	.EXPORT	xosdskInWriteFats
+
+$$CHKALLOC=!0		;Set non-zero to include debug disk cache checking
+			;  (WARNING: Enabling this REALLY slows down the system,
+			;  even on a fast machine. There are usually a LOT of
+			;  cache buffers and this checks ALL of them whenever
+			;  ANYTHING about the cache changes!) It will also
+			;  significantly change disk timing! Use with care.)
+
+;There are two pools of cache buffers: data buffers and system buffers. Buffers
+;  can be added to either pool at any time but once added cannot be removed.
+;  At system start-up a small number of buffers are added to each pool. This
+;  basically just enough to allow the startup procedures to function.
+;  Additional buffers are normally added in startup.bat.
+;  System buffers are used when reading boot blocks, FAT blocks, directories,
+;  and to hold fake-FIBs. Data buffers are used for all user iniated data
+;  transfers. This two part structure prevents large data transfers from
+;  forcing file structure data from the cache.
+
+;A cache buffer which is associated with a disk blocks is located using a hash
+;  scheme. There is a table associated with each base UCB which is indexed by
+;  the low order N bits of the block number. Each item is the head pointer for
+;  a list of buffers (doublely linked using bfr_hnext and bfr_hprev) each of
+;  which has the same N order order block number bits. The size of this table
+;  and the number of low order bits used varies between 256 (8 bits) and 16K
+;  (14 bits) pointers based on the total size of the base disk. This table is
+;  allocated in an XMB (which determines the maximum size of 16K pointers or
+;  64KB which is the maximum size for an XMB).
+
+;A number of resources are used to manage access to cache buffers:
+;  Cache acess list resource: This resource protects access to the access
+;    lists. There are two such resources, one for data buffers and one for
+;    system buffers. Locked access to this resource is obtained before adding
+;     a buffer to an access list or removing a buffer from an access list.
+;  Cache device resource: This resource protects access to the hash lists for
+;    a disk device. There is one resource associated with each base disk 
+;    device. Partitions use the resource for their base disk. Normal access
+;    is obtained before searching for a block using the hashing scheme.
+;    Locked access is obtained before accessing a hash list.
+;  Cache block resource: There is a block resource associated with each cache
+;    block. Normal access must be obtained before accessing a cache block in
+;    any way. Locked access must be obtained before reading the contents of
+;    a block from the corresponding disk block or writing it back to the disk
+;    block and kept until the IO operation is complete.
+
+;NOTE: Only the block cache resources are really needed for this version of
+;      XOS since threads using the global and device cache resources never
+;      do IO. These resources have been implemented now looking forward to a
+;      future multi-processor version of XOS.
+
+;Deadlock rules:
+;  A thread with access to a cache access list resource may not wait for any
+;    other cache resource.
+;  A thread with access to a cache device resource may not wait for access to
+;    any block cache resource.
+;  Rules for waiting for a block resource when a block resource is held are
+;    quite a bit more complex and are discused below.
+
+;A cache buffer may be in one of 4 states:
+;  1) Free - The buffer is on a free list. It is not associated with any
+;     disk block and its contents is undefined. There is no link for the free
+;     list in the buffer header. The first long in the data part of the buffer
+;     is used instead. BFRS$FREE is set to indicate that a buffer is on a free
+;     list. There are two system-wide free lists, one for system buffers and
+;     one for data buffers.
+;  2) Avaliable - The buffer is associated with a disk block or a file but is
+;     not in use. It generally will never be "dirty" (different from the
+;     corresponding disk data). There are two system-wide available lists, one
+;     for system buffers and one for data buffers. These are doublely-linked
+;     lists using bfr_anext and bfr_aprev. If a buffer is not in an allocation
+;     list, both of these items are set to 0xFFFFFFFF.
+;  3) In-use - The buffer corresponds to a disk block or file and at least
+;     one process has obtained access to the block's resource. In use blocks
+;     are almost always on a hash list but may not be in a few special cases
+;     (mainly when reading special blocks when mounting a disk). In use blocks
+;     are never on the available list.
+;  4) Locked - The buffer is in-use and one thread has obtained locked access
+;     to its resource.
+;  The above implies the following:
+;  1) If the buffer is on the allocation list its use count must be 0.
+
+;There are several global functions defined here for managing buffers in the
+;  disk cache:
+;  xosdskSrchForBlock - Looks for a specified block in the cache and creates
+;                       a buffer for the block if it is not found. This buffer
+;                       is NOT zeroed as it is assumed that the caller is going
+;                       to fill it. If a new buffer was created, it is returned
+;                       in-use and locked. If it was found, it is returned
+;                       in-sue and unlocked.
+;  xosdskFindBlock    - Looks for a specified block in the cache and creates
+;                       the buffer and reads its data from the disk. The buffer
+;                       is returned in-use and locked.
+;  xosdskNewBlock     - Looks for a specified block in the cache and zeros its
+;                       buffer. If it is not found a the buffer is created and
+;                       zeroed. This is useful when writing a complete block.
+;  xosdskGetBufr      - Creates an empty cache buffer which is not associated
+;                       with a disk block. This is mainly used when creating
+;                       extended fake FIB blocks for the FAT file system.
+;  xosdskRelsBufr     - Places an in-use buffer on an allocation list. Buffer
+;                       must be in a hash list.
+;  xosdskGiveBufr     - Places an in-use buffer on a free list.
+
+;Directory FIBs are locked when searching or modifying the directory to prevent 
+;  conflicts. File FIBs are locked while a file's attributes are being
+;  modified. Data and FAT buffers are locked while being read from or written
+;  to the disk.
+
+;The following rules apply to blocking requests to lock a buffer (knlLockBufrW).
+;  For this discussion, cache blocks are divided into 3 catagories:
+;    Data blocks
+;    FAT blocks
+;    FIBs
+;	If any FIBs are locked, only FIBs for files in a locked directory can
+;	  be locked.
+;	Only one FIB of a file or directory contained in any directory can be
+;         locked at a time. (This and the preceeding rule implies that if more
+;	  than one FIB is locked, the locked FIBs must form a single chain
+;         through the directory tree.  It does not have to start at the root,
+;	  but if it does not, it cannot be extended backwards.)
+;       If any FIBs are locked, any single data block can be locked.
+;	If any FIBs or data blocks are locked, NO data blocks can be locked
+;	  unless the data block is in the file associated with a locked FIB
+;	  and all other locked data blocks and is from a higher numbered block
+;         than any locked data block.
+;	If any data or FAT block is locked, NO FIB can be locked.
+;       If any FAT block is locked NO data blocks or FIBs can be locked.
+;         Additional FAT blocks may be locked if their block number is higher
+;         than any locked FAT block.
+;	The disk resource cannot be obtained if any data or FAT blocks are
+;	  locked (FIBs can be locked).
+;	When have the disk resource no FIBs can be locked (data or FAT blocks
+;	  can be locked).
+;	The disk resource is required for any operation which changes a FAT
+;	  block or which searches for empty space in the FAT blocks.
+;  Searching for a block in the cache ALWAYS locks the block if it is found.
+;  The above rules only apply when the knlLockBufrW call is used.  It is OK to
+;    lock any combination of FIBs and blocks using the knlLockBufrF call. The
+;    usual proceedure is to attempt to lock the additional block with a
+;    knlLockBufrF call.  If it does not succeed, enough blocks must be unlocked
+;    to allow locking all necessary blocks in a legal order with the
+;    knlLockBufrW call.  Once the blocks are locked, a check must be made to
+;    ensure that no one else snuck in and changed something critical while
+;    blocks were unlocked.  If it is necessary to lock two data blocks, this
+;    can only be done using knlLockBufrF calls with a delay and retry (after
+;    unlocking all data blocks) if any knlLockBufrF call fails.  This is true
+;    because there is no valid sequence of knlLockBufrW calls for locking
+;    multiple data blocks.  There is no garentee that this sequence will work
+;    any given time and it should be avoided if at all possible!  Any other
+;    scheme which guarantees that no deadlocks can occur is allowed.  It should
+;    be noted that when a buffer is initially allocated for a block that buffer
+;    cannot be locked, so it can be safely locked, regardless of what other
+;    blocks are locked.  Locking a FIB is equivilent to locking the file.  Any
+;    operation that changes the allocation or directory entry for a file
+;    requires that the file's FIB be locked.  Also, any operation which changes
+;    the contents of a directory requires that the directory be locked.
+;  It must be noted that searching for a buffer locks the buffer before
+;    returning it, so these rules MUST be considered when searching for a
+;    block in the cache.
+;  The intent of these rules is to allow all common operations to be done
+;    without creating deadlock situations. This implies the following next
+;    level rules:
+;    1) Files are always opened by starting at the root and locking and opening
+;       each directory found in sequence. Each directory is kept locked as it
+;       is searched and is unlocked when completely advancing to the  next
+;       level.  All directories leading to a final file or directory are kept
+;       open (but not locked!) as long as the final file or directory is open.
+;    2) The read-ahead routine (which locks multiple data blocks) never waits
+;       when locking a block. It simply stops collecting blocks for read-ahead
+;       when it encounters a locked block.
+;    3) In almost all cases more than one data or FAT block should ever be
+;       locked at a time by a thread (except during read-ahead, see above).
+;  Giving up buffers (placing them on the free list) presents a special problem.
+;    If a buffer is to be given up and is in use any other user(s) it is
+;    released after setting a status bit that requests that it be given up after
+;    the last release. Generally, data buffers (including FAT buffers) should
+;    not be given up unless a read error occures. FAT buffers are given up only
+;    when the corresponding file is deleted.
+;  Calling xosdskGiveBufr on a buffer which is in use by anyone else
+;    effectively releases the buffer and sets a status bit that requests
+;    that the buffer be given up when it is released by the last user. Note
+;    that normally the only hashed buffers that should be given up are FFS
+;    fake FIBs. Buffers containing disk blocks should always be released
+;    unless a read error has occured.
+
+;  Searching the hash lists presents a special problem. We would like to do
+;    a non-exclusive search but this creates a race if two threads are looking
+;    for the same block at the same time that is not in the cache and both then
+;    decide to create and read the block. This could be handled but it would
+;    require searching the hash list twice if no match is found (once without
+;    a resource and once the a resource). This does not seem worth it since
+;    their should not be that many conflicts for the resource. Thus we do the
+;    following:
+;	1) Get exculsive access for the cache device resource.
+;	2) Search the hash list for the block.
+;	3) If found, give up the cache device resource. Get locked access to
+;	   the block resource. If error, go to step 1. If OK, verify that the
+;	   block is still on the hash list, if not give up the block resource
+;	   and go to stop 1. (There is a small window here since we must give
+;	   up the device cache resource before getting the block resource to
+;	   eliminate the possibility of a deadlock. This check takes of that.)
+;	   Go to stop 5.
+;	4) If not found, allocate a buffer for the block and get excusive
+;	   access to the block resource (this will never have to wait since
+;	   we have just allocated the block), add the block to the hash list,
+;	   and release the device cache resource.
+;	5) If necessary, read the block.
+;	6) Return the block.
+
+;  Giving up a block is somewhat easier:
+;	1) Get locked access to the block resource if don't already have it.
+;	2) Get locked access to the device cache resource.
+;	3) Remove the block from the hash list. This must be done so that the
+;	   forward pointer chain is always valid.
+;	4) Flush the block resource.
+;	5) Give up the device cache resource.
+
+;  Releasing a block is simliar:
+;	1) Get locked access to the block resource if don't already have it.
+;	2) Get locked access to the corresponding cache allocation list
+;	   resource.
+;	3) Put the block on the access list.
+;	4) Give up the block resource and give up the allocation list resource
+;	   (either order).
+
+;  Allocating blocks is done simply under locked access to the cache allocation
+;    list resource. This resource can be obtained at any time but once obtained
+;    no other resources can be obtained. To allocate a block (the thread may
+;    already have exclusive access to the cache device resource):
+;	1) Obtain exclusive access to the cache allocation list resource for
+;	   the buffer type desired.
+;	2) Obtain a buffer from the free list or the allocation list.
+;	3) Give up the cache allocation list resource
+
+	ONCE
+
+;Buffer initialization routine
+
+initbufr::
+	PUSHL	#SYSCBINI		;Number of system buffers wanted
+	PUSHL	#'SCB='			;Get label for the buffers
+	PUSHL	#xosdskSysCbdb
+	CALL	addcbufrs		;Create the system buffers
+	TESTL	EAX, EAX
+	JS	4$
+	PUSHL	#DATACBINI		;Number of data buffers wanted
+	PUSHL	#'DCB='			;Get label for the buffers
+	PUSHL	#xosdskDataCbdb
+	CALL	addcbufrs		;Create the data buffer
+	TESTL	EAX, EAX
+	JS	4$
+	RET
+
+4$:	CRASH	FACB			;[Failed to allocate cache buffers]
+
+	CODE
+.PAGE
+;Function to create and initialize disk cache buffers
+;	long addcbufrs(
+;	    long  num,		// Number of buffers to add
+;	    long  label		// Label
+;	    CBDB *cbdb		// Address of the cache buffer descriptor block
+;  Value returned is the number of buffers added if normal or a negative xOS
+;    error code if error.
+
+$$$=!0
+FRM acb_pcnt, 4		;Page count
+FRM acb_pnum, 4		;Number of pages
+FRM acb_bcnt, 4
+ab_SIZE=!$$$
+
+acb_num  =!28t
+acb_label=!24t
+acb_cbdb =!20t
+
+addcbufrs::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	ab_SIZE, 0		;Set up our stack frame
+	CLRL	EDX			;Get number of pages needed
+	MOVL	ESI, acb_cbdb[EBP]
+	MOVL	EAX, acb_num[EBP]
+	ADDL	EAX, #5			;Round up to a multiple of 6 (since
+	DIVL	lit6			;  we get 6 buffers/page)
+	MOVL	acb_pcnt[EBP], EAX
+	MOVL	acb_pnum[EBP], EAX
+	PUSHL	cbdb_addr[ESI]		;Get memory pages
+	PUSHL	EAX
+	PUSHL	#MT_SYS
+	PUSHL	#0x63
+	PUSHL	#0
+	CALL	sysMemGetPages##
+	TESTL	EAX, EAX	
+	JS	10$			;If can't get the pages
+	MOVL	EBX, cbdb_addr[ESI]	;Get address of first new buffer
+	MOVL	EAX, acb_pcnt[EBP]
+	SUBL	knlMemUser##, EAX
+	SHLL	EAX, #12t		;Bump address
+	ADDL	cbdb_addr[ESI], EAX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ECX, acb_pnum[EBP]	;Clear the new pages
+	SHLL	ECX, #10t
+	MOVL	EDI, EBX
+	CLRL	EAX
+	RSTOSL	[EDI]
+4$:	MOVL	acb_bcnt[EBP], #6	;Get number of buffers per page
+6$:	DECL	bfr_hnext[EBX]		;  buffer is in the free list
+	DECL	bfr_hprev[EBX]		;Indicate not in hash list
+	DECL	bfr_anext[EBX]		;Indicate not in allocation list
+	DECL	bfr_aprev[EBX]
+	MOVB	bfr_status[EBX], #BS$FREE ;Indicate buffer is on a free list
+	MOVL	EAX, acb_label[EBP]	;Store label
+	MOVL	bfr_label[EBX], EAX
+	MOVL	ECX, #512t
+	PUSHL	EBX
+	CALL	sysMemGetPhyAddr##	;Get physical address of buffer
+
+;;;;	CALL	knlForceLowMem##
+;;;;	POPL	EBX
+;;;;8$:	JC	12$
+
+	ADDL	EAX, #bfr_data
+	MOVL	bfr_paddr[EBX], EAX	;Store physical address of bfr_data
+	LEAL	EAX, bfr_rmb[EBX]
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	MOVL	EAX, cbdb_freelist[ESI]	;Link buffer into free list
+	MOVL	bfr_data[EBX], EAX
+	MOVL	cbdb_freelist[ESI], EBX
+	LEAL	EAX, bfr_rmb[EBX]
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	ADDL	EBX, #bfr_SIZE 		;Bump address
+	DECL	acb_bcnt[EBP]		;More buffers in this page?
+	JNE	6$			;Yes - continue
+	ANDL	EBX, #0xFFFFF000	;No - advance to start of next page
+	ADDL	EBX, #0x1000
+	DECL	acb_pcnt[EBP]		;More pages to do?
+	JNE	4$			;Yes - continue
+	MOVL	EAX, acb_pnum[EBP]	;No - restore number of pages
+	IMULL	EAX, #6			;Change to number of buffers
+	ADDL	cbdb_total[ESI], EAX
+	ADDL	cbdb_numfree[ESI], EAX
+10$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+12$:	CRASH	CGPA			;[Can't Get Physical Address]
+.PAGE
+;Function to find a buffer containing disk block - if block is not in a buffer
+;  buffer, a buffer of the requested type is allocated and the block is read -
+;  must be called at main program level. This function impliments read-ahead.
+;	long xosdskFindBlock(
+;	    txt4 type,		// Buffer type ('DCB=' or 'SCB=')
+;	    long avail,		// Amount available in contiguous blocks
+;				//   (bytes, includes first block)
+;	    BFR **pbfr);	// Address of pointer to receive buffer address
+
+$$$=!0
+FRM fbfr_bytes , 4	;Total bytes read
+FRM fbfr_ppntr , 4	;Address of pointer to current buffer
+FRM fbfr_1stbfr, 4	;Address of first buffer in list
+fbfr_SIZE=!$$$
+
+fbfr_type =!28t
+fbfr_ahead=!24t
+fbfr_pbfr =!20t
+
+xosdskFindBlock::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	fbfr_SIZE
+	CMPL	fbfr_ahead[EBP], #0
+	JNS	2$
+	CRASH	BRAA			;[Bad Read-Ahead Amount]
+
+2$:	MOVL	EDI, knlTda+tdaDcb##
+	PUSHL	fbfr_type[EBP]
+	PUSHL	fbfr_pbfr[EBP]
+	CALL	xosdskSrchForBlock
+	MOVL	EBX, fbfr_pbfr[EBP]
+	MOVL	EBX, [EBX]
+	TESTL	EAX, EAX
+	JS	fbfrdn
+	JNE	mustread
+	TESTB	bfr_status[EBX], #BS$FULL ;Found it - is the buffer full now?
+	JE	mustread		;No - must have had a write error - try
+					;  to read it again
+	CALL	xosdskSenseChange	;Yes - check for changed disk if need to
+	TESTL	EAX, EAX
+	JS	4$
+	CLRL	EAX
+	JMP	fbfrdn
+
+;Here if error when checking for a changed disk
+
+;;;; THIS NEEDS TO BE FIXED
+
+4$:	PUSHL	EAX			;Error
+	PUSHL	EBX
+	CALL	xosdskGiveBufr		;Give up the buffer
+	MOVL	EDX, fbfr_pbfr[EBP]	;Clear the address we gave him
+	MOVL	[EDX], #0
+	POPL	EAX
+	JMP	fbfrdn
+.PAGE
+;Here if did not find the buffer in memory - xosdskSrchForBlock has already
+;  allocated an empty buffer for the block. If XO$NORDAH is not set, we will
+;  read ahead the lessor of:
+;    1) (free buffers + available buffers) / 2 - 1 (rounded down - This check
+;         generally does nothing since there will normally be a LOT of free
+;         and/or available buffers, but could be important during start-up
+;         before most of the buffers are created.)
+;    2) The RAMAX value for the disk
+;    3) The number of blocks known to be available at this location on the disk
+;  NOTE: The low level disk drivers generally count on this code to enforce
+;        the RAMAX limit. They also count on RAMAX being constrained to be
+;        no larger than DTHLIMIT (unless DTHLIMIT is 0).
+;  NOTE: Doing read-ahead is a SIGNIFICANT performance enhancement. Virtually
+;        all disk controllers (legacy floppies are about the only exception)
+;        have a significant set up time for commands while the number of blocks
+;        transfered has realitively little effect on the total time for a
+;        transfer. The observed improvement when reading a significant number
+;        of continuous blocks is generally significantly greater then 10X.
+
+mustread:
+	MOVL	ESI, dcb_dkucb[EDI]	;Get address of the UCB
+	MOVL	EAX, ucb_csecsz[ESI]	;Initialize total blocks to read
+	MOVL	fbfr_bytes[EBP], EAX
+	MOVL	fbfr_1stbfr[EBP], EBX
+	LEAL	EAX, bfr_nextxfr[EBX]
+	MOVL	fbfr_ppntr[EBP], EAX
+	TESTL	knlTda+tdaCmd##, #XO$NORDAH ;Should we try to do read-ahead?
+	JNE	ahdcmpl			;No
+	MOVZBL	ECX, ucb_blockshft[ESI]	;Yes - convert available bytes to
+	SHRL	fbfr_ahead[EBP], CL	;  available blocks (round down)
+	SUBL	fbfr_ahead[EBP], #1	;Allow for the requested block
+	JLE	ahdcmpl			;If no read-ahead
+
+;Check for enough buffers available
+
+	CMPL	bfr_label[EBX], #'SCB='	;System buffer?
+	JNE	2$			;No
+	MOVL	EDX, #xosdskSysCbdb	;Yes
+	JMP	6$
+
+2$:	CMPL	bfr_label[EBX], #'DCB='	;Data buffer?
+	JE	4$			;No
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+4$:	MOVL	EDX, #xosdskDataCbdb
+6$:	MOVL	EAX, cbdb_numavail[EDX]
+	ADDL	EAX, cbdb_numfree[EDX]
+	SHRL	EAX, #1			;Get 1/2 of number of available buffers
+	DECL	EAX			;Plus one
+	JS	ahdcmpl
+	CMPL	EAX, ucb_ramax[ESI]	;Is this more than we can use?
+	JBE	10$			;No
+	MOVL	EAX, ucb_ramax[ESI]	;Yes - just use maximum
+10$:	DECL	EAX
+	JS	ahdcmpl
+	CMPL	fbfr_ahead[EBP], EAX	;Want to read too much?
+	JBE	ahead			;No
+	MOVL	fbfr_ahead[EBP], EAX	;Yes - just read what we can
+.PAGE
+;The following loop sets up the list of buffers for read-ahead - The first
+;  buffer is the one requested followed by as many sequential blocks as we
+;  can read ahead - read ahead is stopped when we encounter a buffer which
+;  is already in memory - these buffers are all locked, but since none of
+;  them were found in memory, there is no chance of a deadlock, even though
+;  we are locking multiple buffers. (Actually, this should be OK in general
+;  since we are locking the buffers in order of increasing offset in their
+;  file.) Note that we cannot call searchcache here since it locks each
+;  buffer that it finds. It seems easier to just duplicate a bit of the code
+;  here and have it do the right thing. This also allows use to keep the
+;  cache device resource through out this rather than get in and giving it
+;  up each time through the loop.
+
+ahead:	PUSHL	ucb_pcdrmb[ESI]		;Get locked access to the cache device
+	PUSHL	#RMBB$LOCKED		;  resource for the base disk
+	CALL	sysSchGetResource##
+ahdloop:CMPL	fbfr_ahead[EBP], #0	;Finished?
+	JLE	14$			;Yes
+	ADDL	dcb_dkdskblk+0[EDI], #1	;No - bump disk block
+	ADCL	dcb_dkdskblk+4[EDI], #0
+
+;See if the next block is in the cache
+
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;Get block number on the base disk
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	ADDL	EAX, ucb_partnoff+0[ESI]
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	MOVL	ECX, EAX		;Calculate the address of the head
+	ANDL	ECX, ucb_hashmsk[ESI]	;  pointer for the block's hash list
+	SHLL	ECX, #2
+	ADDL	ECX, ucb_hashtbl[ESI]
+	MOVL	EBX, [ECX]		;Get first buffer in the hash list
+4$:	TESTL	EBX, EBX
+	JE	10$
+	MOVL	ECX, ucb_baseucb[ESI]	;Have correct UCB pointer in the buffer?
+	CMPL	bfr_dev[EBX], ECX
+	JE	6$			;Yes
+	CRASH	BUCB			;[Bad UCB pointer]
+
+6$:	CMPL	bfr_block+0[EBX], EAX	;Is this the one we are looking for?
+	JNE	8$
+	CMPL	bfr_block+4[EBX], EDX
+	JE	14$			;Yes - stop now
+8$:	MOVL	EBX, bfr_hnext[EBX]	;No - advance to next buffer
+	JMP	4$
+
+;Here if didn't find the block we want - create a buffer for it
+
+10$:	PUSHL	#0			;Get a buffer for the block (The buffer
+	MOVL	ECX, ESP		;  returned is locked.)
+	PUSHL	fbfr_type[EBP]
+	PUSHL	EDX
+	PUSHL	EAX
+	PUSHL	ECX
+	CALL	getbuffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	14$			;Stop building the list if error! (If
+					;  this fails (no buffer available) the
+					;  system is probably unstable and will
+					;  soon fail completely!!)
+	MOVL	EAX, fbfr_ppntr[EBP]	;Link it to the list
+	MOVL	[EAX], EBX
+	LEAL	EAX, bfr_nextxfr[EBX]
+	MOVL	fbfr_ppntr[EBP], EAX
+	MOVL	EAX, ucb_csecsz[ESI]	;Increase total bytes read
+	ADDL	fbfr_bytes[EBP], EAX
+	DECL	fbfr_ahead[EBP]
+	JMP	ahdloop
+
+;Here if found the next buffer in the cache - stop building the list
+
+14$:	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource
+	CALL	sysSchGiveResource##
+
+;Here with the buffer list complete
+
+ahdcmpl:MOVL	EAX, fbfr_ppntr[EBP]	;Clear last link pointer
+	MOVL	[EAX], #0
+	MOVL	EBX, fbfr_1stbfr[EBP]	;Restore address of first buffer
+	MOVL	EAX, bfr_block+0[EBX]	;Restore first disk block number
+	MOVL	EDX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	EBX
+	PUSHL	fbfr_bytes[EBP]
+	CALL	readbufrlist
+fbfrdn:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+.PAGE
+;Function to read a buffer list
+;	long readbufrlist(
+;	    BFR *first,		// Address of first buffer in list
+;	    long size);		// Total size
+
+$$$=!0
+FRM rbl_rtnval , 4
+FRM rbl_nextxfr, 4
+rbl_SIZE=!$$$
+
+rbl_first=!16t
+rbl_size =!12t
+
+readbufrlist:
+	PUSHL	EBX
+	ENTER	rbl_SIZE
+	MOVL	EBX, rbl_first[EBP]
+	PUSHL	#kf_readlist		;Function
+	PUSHL	EBX
+	PUSHL	rbl_size[EBP]
+	CALL	xosdskTransfer#		;Do the transfer
+	MOVL	EAX, bfr_errcode[EBX]	;Return the error code from the first
+	MOVL	rbl_rtnval[EBP], EAX	;  buffer
+
+;Here with the transfer complete - Process the list of buffers.  We give up
+;  all buffers with errors.  We keep the first buffer and release all others
+;  with no errors.
+
+	MOVL	EAX, bfr_nextxfr[EBX]	;Save address of next buffer
+	MOVL	bfr_nextxfr[EBX], #0xFFFFFFFF
+	MOVL	rbl_nextxfr[EBP], EAX
+	CMPL	bfr_errcode[EBX], #0	;Error on the first buffer?
+	JS	8$
+	MOVL	EBX, rbl_nextxfr[EBP]
+4$:	TESTL	EBX, EBX		;More to do?
+	JE	rbldn			;No - finished
+	MOVL	EAX, bfr_nextxfr[EBX]	;Yes - save address of next buffer
+	MOVL	rbl_nextxfr[EBP], EAX
+	MOVL	bfr_nextxfr[EBX], #0xFFFFFFFF
+	CMPL	bfr_errcode[EBX], #0	;Error on this buffer?
+	JS	8$			;Yes
+	TESTB	bfr_status[EBX], #BS$FULL ;No - did we fill the buffer?
+	JNE	10$			;Yes
+	CMPL	bfr_errcode[EBX], #0	;No - error on the buffer?
+	TESTL	EAX, EAX
+	JS	8$			;Yes
+	MOVL	bfr_errcode[EBX], #ER_DTINT ;No - say ER_DTINT so anyone waiting
+					    ;  will reread the block (this will
+					    ;  happen if had an error on a
+					    ;  previous buffer)
+8$:	PUSHL	EBX			;Give up the buffer
+	CALL	xosdskGiveBufr
+	JMP	12$
+
+;Here with a valid buffer to release
+
+10$:	PUSHL	EBX			;Release the buffer
+	CALL	xosdskRelsBufr
+12$:	MOVL	EBX, rbl_nextxfr[EBP]	;Get address of next buffer
+	JMP	4$			;Continue
+
+;Here when finished
+
+rbldn:	MOVL	EAX, rbl_rtnval[EBP]
+	LEAVE
+	POPL	EBX
+	RET	8
+.PAGE
+;Function to read a single cache buffer into a cache buffer. This is a simple
+;  raw read of the data. It makes NO changes to the buffer header.
+;	long xosdskReadBufr(
+;	    BFR *bufr,
+
+rsb_bufr=!4
+
+xosdskReadBufr::
+	MOVL	EAX, rsb_bufr[ESP]
+	MOVL	bfr_nextxfr[EAX], #0	;No next buffer
+	PUSHL	EAX
+	PUSHL	#512t
+	CALL	readbufrlist
+	RET	4
+.PAGE
+;Function to create zeroed data buffer for a disk block
+;	long xosdskNewBlock(
+;	    txt4 type,
+;	    BFR **pbfr);
+
+nbfr_type=!12t
+nbfr_pbfr=!8
+
+xosdskNewBlock::
+	PUSHL	EBX
+	PUSHL	nbfr_type[ESP]
+	PUSHL	nbfr_pbfr+4[ESP]
+	CALL	xosdskSrchForBlock	;Find the buffer
+	MOVL	EBX, nbfr_pbfr[ESP]
+	MOVL	EBX, [EBX]
+	TESTL	EAX, EAX
+	JS	8$			;If error
+4$:	PUSHL	EBX			;Clear the buffer
+	CALL	xosdskClrBufr
+8$:	POPL	EBX
+	RET	8
+.PAGE
+;Function to clear a cache buffer
+;	long xosdskClrBufr(
+;	   BFR *bfr);
+;  Value returned is always 0
+
+cbfr_bfr=!8
+
+xosdskClrBufr::
+	PUSHL	EDI
+	MOVL	EDI, cbfr_bfr[ESP]
+	CMPL	bfr_dev[EDI], #0
+	JNE	4$
+	CRASH	NUCB
+
+4$:	ORB	bfr_status[EDI], #BS$FULL ;Indicate buffer is full
+	ADDL	EDI, #bfr_data		;Clear the buffer data area
+	PUSHL	DS
+	POPL	ES
+	MOVL	ECX, #128t
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to search for disk block in a buffer - If not found, a buffer of
+;  the requested type is allocated and set up to receive the block. If the
+;  requested block is already in a buffer, it is  returned. Must be called
+;  at main program level.
+;	long xosdskSrchForBlock(
+;	    txt4 type,
+;	    BFR **pbfr);
+;  Value returned is 0 if an existing buffer was found, 1 if a new buffer was
+;    created, or a negative XOS error code if error. If not an error return,
+;    the buffer address is stored in pbfr. The buffer returned is locked.
+
+sfb_type=!20t
+sfb_pbfr=!16t
+
+xosdskSrchForBlock::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+2$:	TESTB	ucb_sts2[ESI], #U2$DCHG	;Has this disk been removed?
+	JNE	18$
+	MOVL	EAX, dcb_dkdskblk+0[EDI]
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	ADDL	EAX, ucb_partnoff+0[ESI]
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	searchcache		;Find the buffer if the block is in
+	TESTL	EAX, EAX		;  the cache
+	JNE	20$			;If found it
+	PUSHL	#0			;Not found - get a buffer
+	MOVL	ECX, ESP
+	PUSHL	sfb_type+4[ESP]
+	MOVL	EAX, dcb_dkdskblk+0[EDI]
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	ADDL	EAX, ucb_partnoff+0[ESI]
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	PUSHL	EDX
+	PUSHL	EAX
+	PUSHL	ECX
+	CALL	getbuffer
+	POPL	EBX
+	PUSHL	EAX
+	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource (It
+	CALL	sysSchGiveResource##	;  was obtained by searchcache.)
+	POPL	EAX
+	TESTL	EAX, EAX
+	JS	16$			;If error
+	MOVL	EAX, #1			;Return 1 to indicate new buffer
+10$:	MOVL	EDX, sfb_pbfr[ESP]	;Give the caller the buffer address
+	MOVL	[EDX], EBX
+16$:
+
+.IF NE $$CHKALLOC
+	CALL	chkalloc
+.ENDC
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if disk has been removed
+
+18$:	MOVL	EAX, #ER_MDCHG
+	JMP	16$
+
+;Here with buffer we are looking for - The block is locked. We can now remove
+;  it from the allocation list if necessary.
+
+20$:	MOVL	EBX, EAX
+	CMPL	bfr_anext[EBX], #-1	;Is it on the allocation list?
+	JE	24$			;No
+	PUSHL	EBX
+	CALL	removealloc		;Yes - remove it from the allocation
+.IF NE $$CHKALLOC			;  list
+	CALL	chkalloc
+.ENDC
+24$:	MOVXWL	EAX, bfr_errcode[EBX]	;Any error on the buffer?
+	TESTL	EAX, EAX
+	JS	26$			;Yes
+	CLRL	EAX			;No - make sure we return 0
+	JMP	10$			;Finished
+
+;Here if there is an error on the buffer
+
+26$:	CMPL	EAX, #ER_DTINT		;Yes - is it an interrupted tranfer?
+	JNE	30$			;No - just return the error
+28$:	PUSHL	EBX			;Yes
+	CALL	xosdskGiveBufr		;Give up the buffer
+	JMP	2$			;And go try again
+
+30$:	PUSHL	EAX
+	PUSHL	EBX
+	CALL	xosdskGiveBufr
+	POPL	EAX
+	JMP	16$
+.PAGE
+;Function to search for disk block in memory.
+;	BFR *searchcache(
+;	    ui64 block);
+;  Value returned is the address of the cache buffer if block was found in
+;    the cache or NULL if not found. The buffer returned is locked. If the
+;    buffer is not found, the cache device resource is locked on return. (It
+;    is assumed that the caller will be creating the block that was not found
+;    and thus must have uninterrupted locked access to the that resource.)
+
+;NOTE: Since all references to the cache resources should only be in this
+;      module, if this function is called externally the only valid response
+;      to a not found return is to crash the system!! This is done in ffsfib
+;      when locking for a FIB that is known to be in the cache.
+
+;NOTE: We would like to search the hash list without fully locking the
+;      resource, but, since, in almost all cases, we will want to create a
+;      block if it is not found, this would mean having to search the list
+;      again with it locked if the block was not found. This would seem to
+;      be more expensive that fully locking the hash list for the search.
+
+;NOTE: Since buffers are removed from their hash list without the device
+;      resource, there is a small chance that the buffer was removed from
+;      the list after we found it but before we got it locked. Thus we must
+;      verify the the buffer's block number is still the same after it is
+;      locked. If it is not, we release unlock the buffer and repeat the
+;      search.
+
+srchc_blk=!12t
+
+searchcache::
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+2$:	TESTB	ucb_sts2[ESI], #U2$DCHG	;Has this disk been changed?
+	JNE	16$			;Yes
+	PUSHL	ucb_pcdrmb[ESI]		;Get locked access to the cache device
+	PUSHL	#RMBB$LOCKED		;  resource for the base disk
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX		;This may fail is device was just
+	JS	16$			;  removed
+	MOVL	EAX, srchc_blk+0[ESP]	;No
+	ANDL	EAX, ucb_hashmsk[ESI]
+	SHLL	EAX, #2
+	ADDL	EAX, ucb_hashtbl[ESI]
+	MOVL	EBX, [EAX]
+	TESTL	EBX, EBX
+	JE	12$
+	MOVL	EAX, srchc_blk+0[ESP]
+	MOVL	EDX, srchc_blk+4[ESP]
+4$:	MOVL	ECX, ucb_baseucb[ESI]	;Have correct UCB pointer in the buffer?
+	CMPL	bfr_dev[EBX], ECX
+	JE	6$
+	CRASH	BUCB			;[Bad UCB pointer]
+
+6$:	CMPL	bfr_block+0[EBX], EAX	;This one?
+	JNE	8$
+	CMPL	bfr_block+4[EBX], EDX
+	JE	20$			;Yes
+8$:	MOVL	EBX, bfr_hnext[EBX]	;No - advance to next buffer
+	TESTL	EBX, EBX
+	JNE	4$
+12$:	MOVL	EAX, EBX
+14$:	POPL	EBX
+	POPL	ESI
+	RET	8
+
+;Here if disk has been changed
+
+16$:	CLRL	EAX
+	JMP	14$
+
+;Here if the block was found - Get here with the cache device resource only.
+
+20$:	LEAL	EAX, bfr_rmb[EBX]	;Try to lock the block without waiting
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED|RMBB$NOWAIT
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX		;Did it work?
+	JNS	22$			;Yes
+	PUSHL	ucb_pcdrmb[ESI]		;No - give up the cache device resource
+	CALL	sysSchGiveResource
+	LEAL	EAX, bfr_rmb[EBX]
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED		;Lock the block
+	CALL	sysSchGetResource##
+
+;Here with the block locked - We must make sure that we still have the right
+;  block. If not, we release the block and try again.
+
+22$:	MOVL	EAX, ucb_baseucb[ESI]
+	CMPL	EAX, bfr_dev[EBX]
+	JNE	24$
+	MOVL	EAX, srchc_blk+0[ESP]
+	MOVL	EDX, srchc_blk+4[ESP]
+	CMPL	EAX, bfr_block+0[EBX]
+	JNE	24$
+	CMPL	EDX, bfr_block+4[EBX]
+	JE	26$			;OK - return the locked buffer
+24$:	PUSHL	EBX			;Release the buffer
+	CALL	xosdskRelsBufr
+	MOVL	EAX, ucb_pcdrmb[ESI]	;Do we have the cache device resource?
+	MOVL	EDX, knlTda+tdaAddr#
+	CMPL	EDX, rmb_locktda[EAX]
+	JNE	2$			;No
+	PUSHL	EAX			;Yes - give it up
+	CALL	sysSchGiveResource
+	JMP	2$			;Try again
+
+;Here with the correct block locked
+
+26$:	MOVL	EAX, ucb_pcdrmb[ESI]	;Do we have the cache device resource?
+	MOVL	EDX, knlTda+tdaAddr#
+	CMPL	EDX, rmb_locktda[EAX]
+	JNE	12$			;No
+	PUSHL	EAX			;Yes - give it up
+	CALL	sysSchGiveResource
+	JMP	12$			;Return the block
+.PAGE
+;Function to check for a changed disk if need to
+;	long xosdskSenseChange(void);
+;  Value returned is 0 if normal (no disk change occured) or a negative XOS
+;    error code if error (ER_MDCHG if disk was changed)
+
+xosdskSenseChange::
+	PUSHl	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_disp[ESI]	;Check for possible changed disk
+	CALLI	ks_senchg[EAX]
+	TESTL	EAX, EAX
+	JS	4$			;If error
+	JNE	8$			;If need to check
+2$:	CLRL	EAX
+4$:	ANDB	dcb_sts2[EDI], #~D2$CHKCHG
+	POPL	ESI
+	POPL	EDI
+	RET
+
+;Here if disk may have been changed
+
+8$:	TESTB	dcb_sts2[EDI], #D2$CHKCHG ;Already doing disk change check?
+	JNE	2$			;Yes - don't be recursive!
+	ORB	dcb_sts2[EDI], #D2$CHKCHG ;No - but we are now
+	MOVL	EAX, dcb_sdisp[EDI]	;Read and compare disk data to see if
+	CALLI	sd_vfychg[EAX]		;  we still have the same disk
+	JMP	4$
+.PAGE
+;Function to remove all blocks from a disk unit from the disk cache. We scan
+;  the hash lists, mark each buffer as deleted by setting BS$DEL, and try to
+;  lock each buffer without waiting. If we can lock it we give it up, which
+;  immediately puts in on the free list. Otherwise we let it be given up when
+;  the current user is finished with it (it will always be given up since
+;  we set BS$DEL). This is all done with the cache device resource. We are
+;  locking buffers when the device resource but this is OK since we don't
+;  wait.
+;	void xosdskFlush(void);
+
+$$$=!0
+FRM flsh_cnt, 4
+flsh_SIZE=!$$$
+
+flsh_ucb =!20t
+
+xosdskFlush::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	flsh_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	PUSHL	ucb_pcdrmb[ESI]
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	MOVL	EDI, ucb_hashtbl[ESI]	;Point to start of the hash table
+	MOVL	EAX, ucb_hashmsk[ESI]	;Get number of pointers in the table
+	INCL	EAX
+	MOVL	flsh_cnt[EBP], EAX
+4$:	MOVL	EBX, [EDI]		;Get first buffer in hash chain
+	TESTL	EBX, EBX
+	JE	12$			;If no more on this list
+	MOVL	EAX, bfr_hnext[EBX]	;Remove it from the hash chain
+	MOVL	[EDI], EAX
+
+	SLOCK	ucb_hashsl[ESI]
+
+	MOVL	bfr_hnext[EBX], #-1
+	MOVL	bfr_hprev[EBX], #-1
+
+	SRELS	ucb_hashsl[ESI]
+
+	ORB	bfr_status[EBX], #BS$DEL ;Indicate buffer is deleted
+	LEAL	EAX, bfr_rmb[EBX]
+	PUSHL	EAX
+	PUSHL	#RMBB$NOWAIT|RMBB$LOCKED
+	CALL	sysSchGetResource##	;Try to lock it
+	TESTL	EAX, EAX		;Did it work?
+	JS	4$			;No - it's in use - It will be given
+					;  up soon (Since it's in use it
+					;  cannot be on an allocation list.)
+	CMPL	bfr_anext[EBX], #-1	;Is this buffer on an allocation list?
+	JE	8$			;No
+	PUSHL	EBX			;Yes - remove it from that list
+	CALL	removealloc
+8$:	PUSHL	EBX			;Put it on the free list
+	CALL	xosdskGiveBufr
+	JMP	4$			;Continue
+
+;Here with this hash list empty
+
+12$:	ADDL	EDI, #4t		;Bump hash table pointer
+	DECL	flsh_cnt[EBP]		;Continue if more hash lists to check
+	JNE	4$
+	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource
+	CALL	sysSchGiveResource##
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET				;Finished
+.PAGE
+;Function to allocate an uncached system disk cache buffer. Caller MUST NOT
+;  have access to any cache resource
+;	long xosdskGetBufr(
+;	    BFR **pbfr);	// Address of pointer to receive buffer address
+;  Value returned is 0 if normal or a negative XOS error code if error. Buffer
+;    returned is locked and is hashed if that was requested.
+
+gtbfr_pbfr =!8t
+
+xosdskGetBufr::
+	PUSHL	ESI
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+	PUSHL	ucb_pcdrmb[ESI]		;Lock the cache device resource
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	PUSHL	#'SCB='			;Get an uncached system buffer
+	PUSHL	#0xFFFFFFFF
+	PUSHL	#0xFFFFFFFF
+	PUSHL	gtbfr_pbfr+12t[ESP]
+	CALL	getbuffer
+	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource
+	CALL	sysSchGiveResource##
+	POPL	ESI
+	RET	4
+.PAGE
+;Local function to allocate a disk cache buffer. Caller MUST have LOCKED
+;  access to the cache device resource and MUST NOT have access to the cache
+;  allocation list resource.
+;	long getbuffer(
+;	    txt4  type,		// Buffer type 'SCB=' or 'DCB='
+;	    ui64  block,	// Block number (0xFFFFFFFFFFFFFFFF if not to
+;				//   be hashed)
+;	    BFR **pbfr);	// Address of pointer to receive buffer address
+;  Value returned is 0 if normal or a negative XOS error code if error. Buffer
+;    returned is locked and is hashed if that was requested. The cache device
+;    resource is always given up.
+
+;  We first check the free list and if it is not empty we get the access list
+;    resource and check the free list again. If it is still not empty we
+;    simply use a block from the free list (which will never be hashed). We
+;    then lock the buffer (which will never require waiting), give up the
+;    access list resource and get the device resource and hash the buffer.
+;    If the free list is empty (if we discover this after locking the access
+;    list resource we give up that resource) we get the device resource (We
+;    need to do this so we can remove the buffer we take from the access list
+;    from the hash list. We must get this resource first because of the deadlock
+;    rules.) and then get the access list resource. We than remove a block
+;    from the tail of the access list, unhash it, and make in in-use.
+;    We can always get its resource without waiting since blocks from the
+;    access list are never in use and the block's state cannot change since
+;    we have both the device and access resources locked.
+
+gbfr_type =!28t
+gbfr_block=!20t
+gbfr_pbfr =!16t
+
+getbuffer:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	gbfr_type[ESP], #'SCB='	;Want a system buffer?
+	JNE	2$			;No
+	MOVL	EDI, #xosdskSysCbdb
+	JMP	4$
+
+2$:	CMPL	gbfr_type[ESP], #'DCB='
+	JE	3$
+	CRASH	BCBT			;[Bad Cache Buffer Type]
+
+3$:	MOVL	EDI, #xosdskDataCbdb
+4$:	LEAL	EAX, cbdb_armb[EDI]	;Get the access list resource
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	CMPL	cbdb_freelist[EDI], #0	;Is there something on the free list?
+	JE	10$			;No
+
+;Here with a buffer on the free list that we would like to use. This is pretty
+;  easy since the only way buffers on the free list can be accessed is through
+;  the free list and we have that locked (it's protected by the cache
+;  allocation list resource which we have now). Thus we have all the resources
+;  we need to remove the buffer from the free list. Also, locking the buffer
+;  without waiting should never fail. Just to be safe, we lock the buffer
+;  first.
+
+	MOVL	EBX, cbdb_freelist[EDI]	;Remove the buffer from the free list
+	MOVL	EAX, bfr_data[EBX]
+	MOVL	cbdb_freelist[EDI], EAX
+	DECL	cbdb_numfree[EDI]
+	MOVL	EAX, gbfr_type[ESP]	;Is the label right?
+	CMPL	EAX, bfr_label[EBX]
+	JE	6$			;Yes
+	CRASH	BDCB			;[Bad Data Cache Buffer]
+
+6$:	LEAL	EAX, bfr_rmb[EBX]	 ;Get locked access to the buffer's
+	PUSHL	EAX			 ;  resource without waiting
+	PUSHL	#RMBB$NOWAIT|RMBB$LOCKED
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX
+	JNS	8$			;If this worked
+	CRASH	FBNA			;[Free Buffer is Not Available
+
+8$:	LEAL	EAX, cbdb_armb[EDI]	;Give up the access list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	JMP	gtbfr4
+
+;Here if the free list is empty
+
+10$:	MOVL	EBX, cbdb_atail[EDI]	;Get buffer from tail of the allocation
+	TESTL	EBX, EBX		;  list
+	JE	gtbfrna			;If no buffer available!
+
+;Here with a buffer on the allocation list that we would like to use. This
+;  is really messy because we need to lock the buffer before removing it from
+;  either the allocation or hash lists. We cannot do this with either of the
+;  cache allocation list or cache device resources locked according to the
+;  deadlock rules. (We now have both!)
+
+;  We handle #1 by attempting to lock the buffer without waiting (which can be
+;  done anytime). This should be successful almost all of the time. If it
+;  fails, we give up the allocation list and cache device resources and lock
+;  the buffer and then lock the allocation list again. If the buffer is still
+;  on its allocation list after this we continue as if nothing unusual had
+;  happened and remove the buffer from its allocation list. If not, we release
+;  the buffer, give up the cache allocation list resource and start over.
+;  Once the buffer has been removed from its allocation list we give up the
+;  allocation list resource and remove the buffer from its hash list. (Which
+;  does NOT require that the corresponding device resource be locked!) 
+
+gtbfr2:	LEAL	EAX, bfr_rmb[EBX]	 ;Get locked access to the buffer's
+	PUSHL	EAX			 ;  resource if we can without waiting
+	PUSHL	#RMBB$NOWAIT|RMBB$LOCKED
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX
+	JNS	14$			;If this worked
+
+;Here if the buffer is being used now
+
+	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource
+	CALL	sysSchGiveResource##
+	LEAL	EAX, cbdb_armb[EDI]	;Give up the access list resource
+	PUSHL	EAX
+	LEAL	EAX, bfr_rmb[EBX]	 ;Get locked access to the buffer's
+	PUSHL	EAX			 ;  resource
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX
+	JS	12$			;If error (very unlikely)
+	PUSHL	ucb_pcdrmb[ESI]		;Get the cache device resource again
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	LEAL	EAX, cbdb_armb[EDI]	;Get the cache access list resource
+	PUSHL	EAX			;  again
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	CMPL	bfr_anext[EBX], #-1	;Is the buffer still on its access list?
+	JNE	16$			;Yes - everything is fine
+	LEAL	EAX, bfr_rmb[EBP]	;No - release the buffer
+	PUSHL	EAX
+12$:	CALL	sysSchGiveResource##
+	LEAL	EAX, cbdb_armb[EDI]	;Give up the access list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	JMP	4$			;Try again
+
+;Here with the buffer locked and still in its access list. Both cache resources
+;  are also locked.
+
+;NOTE: Since we may have had to give up the allocation list resource after we
+;      first got the buffer, it may no longer be at the end of the list!
+
+14$:	TESTB	bfr_status[EBX], #BS$CHNGD ;Has this buffer been changed?
+	JE	16$			;No
+	CRASH	BHBC			;[Block Has Been Changed]
+
+16$:	MOVL	EAX, bfr_anext[EBX]	;Remove buffer from its allocation list
+	MOVL	EDX, bfr_aprev[EBX]
+	TESTL	EAX, EAX
+	JNE	20$
+	MOVL	cbdb_atail[EDI], EDX
+	JMP	22$
+
+20$:	MOVL	bfr_aprev[EAX], EDX
+22$:	TESTL	EDX, EDX
+	JNE	24$
+	MOVL	cbdb_ahead[EDI], EAX
+	JMP	26$
+
+24$:	MOVL	bfr_anext[EDX], EAX
+26$:	MOVL	bfr_anext[EBX], #-1	;Indicate not in allocation list now
+	MOVL	bfr_aprev[EBX], #-1
+
+;Here with exclusive access to the buffer - We still have both the cache
+;  device and cache allocation list resources.
+
+	LEAL	EAX, cbdb_armb[EDI]	;Give up the access list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+
+;Here with the buffer removed from its allocation list - remove it from its
+;  hash list and give up any associated extended FIBs
+
+	CMPL	bfr_hnext[EBX], #0xFFFFFFFF ;Still in a hash list? (IS THIS
+	JE	27$			    ;  CHECK NEEDED???)
+	PUSHL	EBX
+	CALL	rmvfromhash		;Remove buffer from its hash list
+27$:	TESTB	bfr_status[EBX], #BS$FFIB ;Is this an FSS fake FIB?
+	JE	gtbfr4			;No
+	CMPL	ff_nextfib[EBX], #0	;Yes - have any linked FIBs?
+	JE	gtbfr4			;No
+	PUSHL	EBX			;Yes - free them up
+	MOVL	EBX, ff_nextfib[EBX]
+28$:	PUSHL	ff_nextfib[EBX]
+	ORB	bfr_status[EBX], #BS$FREE ;Indicate buffer is on the free list
+	MOVL	EAX, cbdb_freelist[EDI]	;Put on the free list
+	MOVL	bfr_data[EBX], EAX
+	MOVL	cbdb_freelist[EDI], EBX
+	INCL	cbdb_numfree[EDI]
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	28$
+	POPL	EBX
+
+;Here with buffer completely removed from it's previous context - Initialize
+;  it for our block.
+
+gtbfr4:	PUSHL	EDI
+	LEAL	EDI, bfr_fclear[EBX]
+	PUSHL	DS			;Clear the buffer header (except for
+	POPL	ES			;  the first few items)
+	MOVL	ECX, #{bfr_eclear-bfr_fclear}/4
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]
+	POPL	EDI
+	DECL	bfr_anext[EBX]		;Indicate not in an allocation list
+	DECL	bfr_aprev[EBX]
+	DECL	bfr_hnext[EBX]		;Indicate not in a hash list
+	DECL	bfr_hprev[EBX]
+	DECL	bfr_nextxfr[EBX]	;Indicate not in a transfer list
+	MOVL	EAX, ucb_baseucb[ESI]
+	MOVL	bfr_dev[EBX], EAX
+	MOVL	EAX, gbfr_block+0[ESP]	;Store block number in the buffer
+	MOVL	EDX, gbfr_block+4[ESP]
+	MOVL	bfr_block+0[EBX], EAX
+	MOVL	bfr_block+4[EBX], EDX
+	ANDL	EAX, EDX		;Should we hash this block?
+	INCL	EAX
+	JE	36$			;No
+	PUSHL	EBX			;Yes - put it in its hash list
+	CALL	putinhash
+36$:	MOVL	EDX, gbfr_pbfr[ESP]	;Give the caller the buffer address
+	MOVL	[EDX], EBX
+	CLRL	EAX
+38$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	16t			;And return
+
+;Here if there is nothing on the access list
+
+gtbfrna:LEAL	EAX, cbdb_armb[EDI]	;Give up the access list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	MOVL	EAX, #ER_NODCB		;Get error code
+	JMP	38$
+.PAGE
+;Function to release disk buffer - Buffer MUST be locked. May or may not
+;  have the cache device resource locked.
+;	void xosdskRelsBufr(
+;	    BFR *pbfr);		// Address of buffer
+;  On return, cache device resource locked state is unchanged.
+
+;THIS IS WRONG FOR THE SMP CASE! IT CONTAINS SEVERAL RACES!! IT IS OK FOR
+;  THE SINGLE PROCESSOR CASE.
+
+rlsbfr_pbfr=!8
+
+xosdskRelsBufr::
+	PUSHL	EBX
+	MOVL	EBX, rlsbfr_pbfr[ESP]
+	MOVL	EAX, knlTda+tdaAddr##	;Do we have this buffer locked?
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX]
+	JE	2$			;Yes
+	CRASH	BINL			;[Buffer Is Not Locked
+
+2$:	TESTB	bfr_status[EBX], #BS$DEL ;Has this buffer been deleted?
+	JNE	4$			;Yes - need to do this the hard way!
+	CMPL	bfr_rmb+rmb_waittda[EBX], #0 ;Anyone waiting for this buffer?
+					     ;  (Do this quick check first so
+					     ;  we can bypass all of the stuff
+					     ;  below if someone is already
+					     ;  waiting.)
+	JE	4$			;No - this is quite a bit harder!
+	LEAL	EAX, bfr_rmb[EBX]	;Yes - just give up the buffer's
+	PUSHL	EAX			;  resource
+	CALL	sysSchGiveResource##
+	POPL	EBX
+	RET	4			;That's all
+
+;Here if no one is waiting for the buffer or if it has been marked as deleted.
+;  This requires changing lists, etc., and thus requires several resources.
+
+4$:	PUSHL	EDI			;Save the additional registers we need
+	PUSHL	ESI			;  to use
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	bfr_label[EBX], #'SCB='
+	JNE	6$
+	MOVL	EDI, #xosdskSysCbdb
+	JMP	10$
+
+6$:	CMPL	bfr_label[EBX], #'DCB='
+	JE	8$
+	CRASH	NTCB
+
+8$:	MOVL	EDI, #xosdskDataCbdb
+
+;We must have the cache device resourced locked for the rest of this. This
+;  is done conditionally since this function can be called with or without
+;  this resource locked.
+
+10$:	MOVL	EDX, ucb_pcdrmb[ESI]	;Do we have the resource locked?
+	MOVL	EAX, knlTda+tdaAddr##
+	CMPL	EAX, rmb_locktda[EDX]
+	JE	12$			;Yes
+	PUSHL	ucb_pcdrmb[ESI]		;No - lock now (This keeps anyone else
+	PUSHL	#RMBB$LOCKED		;  from finding this buffer while we
+	CALL	sysSchGetResource##	;  decide what to do with it.)
+	JMP	14$
+
+12$:	CLRL	ESI			;Already locked - clear ESI to indicate
+					;  this
+14$:	TESTB	bfr_status[EBX], #BS$DEL ;Has this buffer been deleted?
+	JNE	30$			;Yes
+	CMPL	bfr_rmb+rmb_waittda[EBX], #0 ;Anyone waiting for this buffer?
+					     ;  (We already checked but we must
+					     ;  make sure no one snuck in
+					     ;  befpre we locked the resource.)
+	JNE	28$			;Yes - nothing needed here
+	CMPW	bfr_usecnt[EBX], #0	;Is the buffer "in-use"? (either a
+					;  FAT block on the write list, an open
+					;  FIB, or a pending write block)
+	JNE	28$			;Yes - don't put in on an allocation
+					;  list
+	TESTB	bfr_status[EBX], #BS$CHNGD ;Does the buffer match the disk?
+	JE	20$			;Yes
+	CRASH	BHBC			;[Block Has Been Changed]
+
+20$:	LEAL	EAX, cbdb_armb[EDI]	;Get the allocation list resource
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	MOVL	EAX, cbdb_ahead[EDI]	;Put the buffer at the head of its
+	MOVL	bfr_anext[EBX], EAX	;  allocation list
+	MOVL	bfr_aprev[EBX], #0
+	TESTL	EAX, EAX		;Was the list empty?
+	JE	24$
+	MOVL	bfr_aprev[EAX], EBX	;No
+	JMP	26$
+
+24$:	MOVL	cbdb_atail[EDI], EBX	;Yes
+26$:	MOVL	cbdb_ahead[EDI], EBX
+	INCL	cbdb_numavail[EDI]
+	LEAL	EAX, cbdb_armb[EDI]	;Give up the allocation list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+28$:	LEAL	EAX, bfr_rmb[EBX]	;Give up the buffer's resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	JMP	40$
+
+;Here if the buffer has been given up (deleted). We get here with the cache
+;  device resource locked and the buffer resource locked.
+
+30$:	PUSHL	EBX			;Remove the buffer from its hash list
+	CALL	rmvfromhash
+	TESTB	bfr_status[EBX], #BS$FFIB ;Is this an FSS fake FIB?
+	JE	36$			;No
+	CMPL	ff_nextfib[EBX], #0	;Yes - have any linked FIBs?
+	JE	36$			;No
+	PUSHL	EBX			;Yes - free them up
+	MOVL	EBX, ff_nextfib[EBX]
+34$:	PUSHL	ff_nextfib[EBX]
+	ORB	bfr_status[EBX], #BS$FREE ;Indicate buffer is on the free list
+	MOVL	EAX, cbdb_freelist[EDI]	;Put on the free list
+	MOVL	bfr_data[EBX], EAX
+	MOVL	cbdb_freelist[EDI], EBX
+	INCL	cbdb_numfree[EDI]
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	34$
+	POPL	EBX
+36$:	ORB	bfr_status[EBX], #BS$FREE ;Indicate buffer is on the free list
+	MOVL	EAX, cbdb_freelist[EDI]	;Put the buffer on the free list
+	MOVL	bfr_data[EBX], EAX
+	MOVL	cbdb_freelist[EDI], EBX
+	INCL	cbdb_numfree[EDI]
+	LEAL	EAX, bfr_rmb[EBX]	;Flush anyone waiting for this buffer
+	PUSHL	EAX			;  (This also give up the buffer's
+	CALL	sysSchFlushResource##	;  resource.)
+40$:	TESTL	ESI, ESI		;Do we need to give up the cache
+					;  device resource?
+	JE	42$			;No
+	PUSHL	ucb_pcdrmb[ESI]		;Yes - give it up
+	CALL	sysSchGiveResource##
+42$:	CLRL	EAX
+	POPL	ESI
+	POPL	EDI
+	POPL	EBX
+	RET	4
+.PAGE
+;Function to give up disk buffer - Must have locked access to the cache
+;  device resource. Buffer can be locked or unlocked.
+;	void xosdskGiveBufr(
+;	    BFR *bfr);
+;  All resource status is unchanged.
+
+givbfr_bfr=!4
+
+xosdskGiveBufr::
+	MOVL	EDX, givbfr_bfr[ESP]	;Mark buffer as deleted
+	ORB	bfr_status[EDX], #BS$DEL
+	PUSHL	EDX
+	CALL	xosdskRelsBufr
+	RET	4
+.PAGE
+;Function to "rename" a buffer. The changes the block number of the buffer.
+;  Buffer must be locked. This is used when renaming an FFS file when it is
+;  necessary to change the "block number" of the fake FIB which is generated
+;  from the location of the file's directory entry. It should never be called
+;  for a normal cache buffer than corresponds to a disk block. Note that since
+;  this is called without the cache device resource locked, it is possible
+;  that someone has found this buffer using its current block number and is not
+;  waiting for access to the buffer (which is locked). This is not a problem
+;  this when this occurs it is always verified that we still have the current
+;  buffer (see code at searchcache). If the buffer address has changed, it
+;  will be given up and the search will be done again (which will probably
+;  fail since the original block number will no longer be valid).
+;	void xosdskRenameBufr(
+;	    BFR *buffer,
+;	    ui32 newblk);	// New block number on base unit)
+
+rnbfr_bfr=!20t
+rnbfr_blk=!12t
+
+xosdskRenameBufr::
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+	PUSHL	ucb_pcdrmb[ESI]		;Get locked access to the cache
+	PUSHL	#RMBB$LOCKED		;  device rsouurce
+	CALL	sysSchGetResource##
+	MOVL	EBX, rnbfr_bfr[ESP]
+	PUSHL	EBX			;Remove the block from its hash list
+	CALL	rmvfromhash
+	MOVL	EAX, rnbfr_blk+0[ESP]	;Store the new "block number"
+	MOVL	EDX, rnbfr_blk+4[ESP]
+	MOVL	bfr_block+0[EBX], EAX
+	MOVL	bfr_block+4[EBX], EDX
+	PUSHL	EBX			;Hash it again with the new block
+	CALL	putinhash		;  number
+	PUSHL	ucb_pcdrmb[ESI]		;Give up the cache device resource
+	CALL	sysSchGiveResource##
+	POPL	EBX
+	POPL	ESI
+	RET	12t
+.PAGE
+;Function to place buffer into a hash list
+;	void putinhash(
+;	    BFR *bfr);
+
+puth_bfr=!8
+
+putinhash:
+	PUSHL	ESI
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+	MOVL	ECX, puth_bfr[ESP]
+	CMPL	bfr_label[ECX], #'SCB='	;Make sure label is right
+	JE	2$
+	CMPL	bfr_label[ECX], #'DCB='
+	JE	2$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+2$:	CMPL	bfr_hnext[ECX], #-1	;Is this block in a hash list now?
+	JE	4$			;No
+	CRASH	BIHL			;[Buffer In Hash List]
+
+4$:	MOVL	EDX, bfr_block+0[ECX]	;No - index into the hash table
+	ANDL	EDX, ucb_hashmsk[ESI]
+	SHLL	EDX, #2t
+	ADDL	EDX, ucb_hashtbl[ESI]
+
+;Start of extra debug checks
+
+	PUSHL	EBX
+	MOVL	EBX, [EDX]
+6$:	TESTL	EBX, EBX
+	JE	12$
+	MOVL	EAX, bfr_block+0[ECX]	;Check for duplicate block
+	XORL	EAX, bfr_block+0[EBX]
+	JNE	8$
+	MOVL	EAX, bfr_block+4[ECX]
+	CMPL	EAX, bfr_block+4[EBX]
+	JNE	10$
+	CRASH	BDHL
+
+8$:	TESTL	EAX, ucb_hashmsk[ESI]	;Check for correct list
+	JE	10$
+	CRASH	BDHL
+
+10$:	MOVL	EBX, bfr_hnext[EBX]
+	JMP	6$
+
+12$:	POPL	EBX
+
+;End of extra debug checks
+
+	MOVL	EAX, [EDX]		;Link into hash chain for block
+	MOVL	bfr_hnext[ECX], EAX
+	MOVL	bfr_hprev[ECX], #0
+	MOVL	[EDX], ECX
+	TESTL	EAX, EAX		;Was the list empty to start with?
+	JE	22$			;Yes
+
+	MOVL	EDX, bfr_block+0[ECX]
+	XORL	EDX, bfr_block+0[EAX]
+	TESTL	EDX, ucb_hashmsk[ESI]
+	JE	20$
+	CRASH	BHIN
+
+20$:	MOVL	bfr_hprev[EAX], ECX	;No - update back link in previous first
+22$:	POPL	ESI			;  packet
+	RET	4
+.PAGE
+;Function to remove disk buffer from its hash list. Must be called with the
+;  buffer's resource locked.
+;	void rmvfromhash(
+;	    BFR *bfr);
+
+;NOTE: This function DOES NOT require the cache device resource! This is
+;      necessary because it may be necessary to remove a buffer from its
+;      hash list when taking it from an allocation list at which time we
+;      may have a device resource for a different base disk unit and be in
+;      such a state that we cannot savely give it up. Thus we CANNOT get
+;      this buffer's device resource without creating a possible deadlock.
+;      The actual instructions that remove the buffer from the hash list are
+;      protected with a global spinlock and thus are atomic. This ensures
+;      that the doubly linked hash lists are always valid. It does not harm
+;      to call this function with the corresponding device resource. As a
+;      consequence of this, anyone removing a buffer from a hash list (see
+;      getbuffer) must verify that the buffer still contains the expected
+;      block after it has been locked.
+
+;NOTE: This function includes a LOT of debug consistancy checks, some of which
+;      (at least) should be removed at some point. These were put in because
+;      some problems with inconsistant hash lists were observed.
+
+rmvh_bfr=!12t
+
+rmvfromhash:
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EBX, rmvh_bfr[ESP]
+	CMPL	bfr_label[EBX], #'SCB='
+	JE	2$
+	CMPL	bfr_label[EBX], #'DCB='
+	JE	2$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+2$:	MOVL	ESI, bfr_dev[EBX]
+	CMPL	ucb_label[ESI], #'UCB*'
+	JE	4$
+	CRASH	BUCB			;[Bad UCB address]
+
+4$:	CMPL	bfr_hnext[EBX], #-1	;Really in a hash list?
+	JE	34$			;No (possible if flushing the cache)
+
+	MOVL	EAX, knlTda+tdaAddr##
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX] ;Yes - do we have the buffer's
+					      ;  resource olocked?
+	JE	8$			;Yes
+	CRASH	BRNL			;[Buffer Resource is Not Locked]
+
+8$:	MOVL	ECX, bfr_block+0[EBX]	;Get block number
+	SLOCK	ucb_hashsl[ESI]		;There's quite a bit of code under this
+					;  spinlock, but most of it is debug
+					;  stuff that should go away soon!
+	MOVL	EAX, bfr_hprev[EBX]	;Remove from hash list
+	MOVL	EDX, bfr_hnext[EBX]
+	TESTL	EAX, EAX
+	JE	16$			;If first in hash list
+
+;Here if this buffer is not first in its hash list
+
+	CMPL	bfr_label[EAX], #'SCB='	;Not first - make sure previous buffer
+	JE	10$			;  is valid
+	CMPL	bfr_label[EAX], #'DCB='
+	JE	10$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+10$:	CMPL	bfr_dev[EAX], ESI
+	JE	12$
+	CRASH	BUCB			;[Bad UCB address]
+
+12$:	XORL	ECX, bfr_block[EAX]	;Is the hash index the same?
+	TESTL	ECX, ucb_hashmsk[ESI]
+	JE	14$
+	CRASH	BHIN
+
+14$:	MOVL	bfr_hnext[EAX], EDX
+	JMP	20$
+
+;Here if this buffer is first in its hash list
+
+16$:	ANDL	ECX, ucb_hashmsk[ESI]	;Get hash table index
+	SHLL	ECX, #2t
+	ADDL	ECX, ucb_hashtbl[ESI]
+	CMPL	[ECX], EBX		;Is the head pointer right?
+	JE	18$			;Yes
+	CRASH	BDHL			;[Bad Disk Hash List]
+
+18$:	MOVL	[ECX], EDX		;Update pointer in hash table
+
+20$:	TESTL	EDX, EDX		;Is this buffer last in the hash list?
+	JE	rfhldn			;Yes - there's nothing else to check
+					;  or update
+
+;Here if this buffer is not last in its hash list
+
+	CMPL	bfr_label[EDX], #'SCB='	;Make sure next buffer is valid
+	JE	24$
+	CMPL	bfr_label[EDX], #'DCB='
+	JE	24$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+24$:	CMPL	bfr_dev[EDX], ESI
+	JE	28$
+	CRASH	BUCB			;[Bad UCB address]
+
+28$:	MOVL	ECX, bfr_block+0[EBX]	;Get hash table index
+	XORL	ECX, bfr_block[EDX]	;Is the hash index the same?
+	TESTL	ECX, ucb_hashmsk[ESI]
+	JE	30$
+	CRASH	BHIN
+
+30$:	MOVL	bfr_hprev[EDX], EAX	;Not last
+rfhldn:	SRELS	ucb_hashsl[ESI]
+	MOVL	bfr_hprev[EBX], #-1	;Indicate not in a hash list now
+	MOVL	bfr_hnext[EBX], #-1
+34$:	POPL	EBX
+	POPL	ESI
+	RET	4			;Return
+.PAGE
+;Function to remove disk buffer from allocation list - Block must be locked.
+;  May or may not have the cache device resource.
+;	void removealloc(
+;	    BFR *bfr);
+
+rmva_bfr=!12t
+
+removealloc:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, rmva_bfr[ESP]
+	CMPL	bfr_anext[EBX], #-1	;Really on an allocation list?
+	JNE	2$			;Yes
+	CRASH	BALC
+
+2$:	CMPL	bfr_label[EBX], #'SCB='
+	JE	4$
+	CMPL	bfr_label[EBX], #'DCB='
+	JE	6$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+4$:	MOVL	EDI, #xosdskSysCbdb
+	JMP	8$
+
+6$:	MOVL	EDI, #xosdskDataCbdb
+8$:	LEAL	EAX, cbdb_armb[EDI]	;Lock the allocation list resource
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	MOVL	EAX, bfr_aprev[EBX]	;Remove the buffer from the allocation
+	MOVL	EDX, bfr_anext[EBX]	;  list
+	TESTL	EAX, EAX		;First in list?
+	JNE	10$			;No
+	MOVL	cbdb_ahead[EDI], EDX	;Yes
+	JMP	12$
+
+;Here if not first in allocation list
+
+10$:	MOVL	bfr_anext[EAX], EDX
+12$:	TESTL	EDX, EDX		;Last in allocation list?
+	JNE	14$			;No
+	MOVL	cbdb_atail[EDI], EAX	;Yes
+	JMP	16$
+
+;Here if not last in allocation list
+
+14$:	MOVL	bfr_aprev[EDX], EAX
+16$:	DECL	cbdb_numavail[EDI]
+	LEAL	EAX, cbdb_armb[EDI]	;Give up the allocation list resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	MOVL	bfr_anext[EBX], #-1	;Indicate buffer not in allocation
+	MOVL	bfr_aprev[EBX], #-1	;  list
+	POPL	EBX
+	POPL	EDI
+	RET	4			;Return
+.PAGE
+	.SBTTL	chkalloc
+
+.IF NE $$CHKALLOC
+
+chkalloc::
+	PUSHAL
+	MOVL	EAX, xosdskSysCbdb+cbdb_ahead ;Check the system buffer
+	MOVL	EBX, xosdskSysCbdb+cbdb_atail ;  allocation list
+	MOVL	EDI, #'SCB='
+	MOVL	ESI, xosdskSysCbdb+cbdb_avail
+	ADDL	ESI, ESI
+	CALL	chkalloc2
+	MOVL	EAX, xosdskSysCbdb+cbdb_freelist ;Check the system buffer free
+	CALL	chkfree				 ;  list
+
+	MOVL	EAX, xosdskDataCbdb+cbdb_ahead ;Check the data buffer allocation
+	MOVL	EBX, xosdskDataCbdb+cbdb_atail ;  list
+	MOVL	EDI, #'DCB='
+	MOVL	ESI, xosdskDataCbdb+cbdb_avail
+	ADDL	ESI, ESI
+	CALL	chkalloc2
+	MOVL	EAX, xosdskSysCbdb+cbdb_freelist ;Check the data buffer free
+	CALL	chkfree				 ;  list
+	POPAL
+	RET
+
+;Subroutine to check an allocation list
+;	c{EAX} = First buffer in list
+;	c{EBX} = Last buffer in list
+;	c{EDI} = Label
+;	c{ESI} = Maximum number of buffers
+;	CALL	chkalloc2
+
+chkalloc2::
+	PUSHL	ESI
+	CLRL	ECX
+2$:	TESTL	EAX, EAX		;End of list?
+	JE	30$			;Yes
+	CMPL	EAX, #0xFFFFFFFF
+	JNE	4$	
+	CRASH	XPNT
+
+4$:	CMPL	bfr_label[EAX], EDI	;No - check the label
+	JE	6$
+	CRASH	XLBL
+
+6$:	CMPL	bfr_aprev[EAX], ECX	;Is back pointer OK?
+	JE	8$
+	CRASH	XBCK
+
+8$:	MOVL	ESI, bfr_dev[EAX]	;##################
+	CMPL	ucb_label[ESI], #'UCB*'
+	JE	10$
+	CRASH	XUCB
+
+10$:	MOVL	EDX, bfr_hprev[EAX]	;Is it in a hash list?
+	CMPL	EDX, #0xFFFFFFFF
+	JNE	12$			;Yes
+	CMPL	bfr_hnext[EAX], #0xFFFFFFFF ;No - make sure pointers are OK
+	JE	22$
+	CRASH	XBHP
+
+;Here if buffer is in a hash list - Make sure the pointers are reasonable but
+;  don't take the time to follow and verify the hash lists.
+
+12$:	TESTL	EDX, EDX		;Is it the first in the list?
+	JNE	14$			;No
+	MOVL	EDX, bfr_block+0[EAX]	;Yes - check the list head pointer
+	ANDL	EDX, ucb_hashmsk[ESI]
+	SHLL	EDX, #2
+	ADDL	EDX, ucb_hashtbl[ESI]
+	CMPL	EAX, [EDX]
+	JE	18$
+	CRASH	XBHH
+
+;Here if not first in the hash list
+
+14$:	CMPL	bfr_label[EDX], #'SCB='	;Check the label on the previous buffer
+	JE	16$			;  (System and data buffer use the
+	CMPL	bfr_label[EDX], #'DCB='	;  same hash lists.)
+	JE	16$
+	CRASH	XLBL
+
+16$:	CMPL	bfr_dev[EDX], ESI	;####################
+	JE	18$
+	CRASH	XUCB
+
+18$:	MOVL	EDX, bfr_hnext[EAX]	;Check the next pointer
+	TESTL	EDX, EDX
+	JE	22$			;If at end of the hash list
+	CMPL	bfr_label[EDX], #'SCB='	;Not at end - check the label on the
+	JE	20$			;  next buffer
+	CMPL	bfr_label[EDX], #'DCB='
+	JE	20$
+	CRASH	XLBL
+
+20$:	CMPL	bfr_dev[EDX], ESI	;####################
+	JE	22$
+	CRASH	XUCB
+
+;Here when finished checking this buffer
+
+22$:	MOVL	ECX, EAX		;Advance to next buffer in list
+	MOVL	EAX, bfr_anext[EAX]
+	DECL	[ESP]
+	JNS	2$
+	CRASH	XLOP
+
+;Here at end of list
+
+30$:	CMPL	ECX, EBX		;Is tail pointer right?
+	JE	32$
+	CRASH	XTLP
+
+32$:	POPL	ESI
+34$:	RET
+
+;Subroutine to check a free list
+;	c{EAX} = First buffer in list
+;	c{EDI} = Label
+;	c{ESI} = Maximum number of buffers
+;	CALL	chkfree
+
+chkfree::
+	TESTL	EAX, EAX
+	JE	34$
+	CMPL	EAX, #0xFFFFFFFF
+	JNE	40$
+	CRASH	XPNT
+
+40$:	CMPL	bfr_label[EAX], EDI	;Check the label
+	JE	46$
+	CRASH	XLBL
+
+46$:	MOVL	EDX, bfr_hnext[EAX]	;Make sure not in hash list
+	ANDL	EDX, bfr_hprev[EAX]
+	INCL	EDX
+	JE	48$
+	CRASH	XIHL
+
+48$:	MOVL	EDX, bfr_anext[EAX]	;Make sure not in allocation list
+	ANDL	EDX, bfr_aprev[EAX]
+	INCL	EDX
+	JE	50$
+	CRASH	XIAL
+
+50$:	MOVL	EAX, bfr_data[EAX]	;Advance to next buffer
+	DECL	ESI
+	JNS	chkfree
+	CRASH	XLOP
+.ENDC
+.PAGE
+;Function to write contents of a buffer to disk
+;	long xosdskWriteBufr(
+;	    BFR *bfr);
+
+wrtbfr_bfr=!12t
+
+xosdskWriteBufr::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EBX, wrtbfr_bfr[ESP]
+
+;;;;	TESTB	bfr_status[EBX], #BS$FAT ;FAT block?
+;;;;	JE	1$
+;;;;	CMPB	xosdskInWriteFats, #1
+;;;;	JE	1$
+;;;;	CRASH	WFAT
+
+1$:
+	MOVL	EAX, knlTda+tdaAddr#
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX]
+	JE	2$
+	CRASH	BNLW			;[Buffer Not Locked for Write]
+
+2$:	CMPL	bfr_label[EBX], #'SCB='	;Check the label
+	JE	4$
+	CMPL	bfr_label[EBX], #'DCB='
+	JE	4$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+4$:	TESTB	bfr_block+7[EBX], #0x80
+	JE	6$
+	CRASH	BDDA
+
+6$:	MOVL	ESI, dcb_dkucb[EDI]	;Get address of UCB
+	CLRL	EAX
+	MOVL	bfr_nextxfr[EBX], #0	;Indicate single buffer list
+	ANDB	bfr_status[EBX], #~BS$CHNGD ;Indicate buffer matches disk
+	MOVL	EAX, bfr_block+0[EBX]	;Get block number
+	MOVL	EDX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#kf_writlist		;Function
+	PUSHL	EBX
+	PUSHL	#512t
+	CALL	xosdskTransfer#		;Do the transfer
+	TESTL	EAX, EAX
+	JNS	10$			;If OK
+	ORB	bfr_status[EBX], #BS$CHNGD ;Error - say buffer still changed
+10$:	MOVL	bfr_nextxfr[EBX], #0xFFFFFFFF ;Clear the transfer list pointer
+	POPL	EBX
+	POPL	EDI
+	RET	4
+
+xosdskInWriteFats:.BYTE 0
+.PAGE
+;Function to lock buffer for single access - Fails if buffer not immediately
+;  available
+;	long xosdskLockBufrF(
+;	    BFR *bfr);
+;  Value returned is 0 if the buffer was locked or 1 if it was already
+;    locked by someone else. No errors are returned.
+
+lckf_bfr=!4
+
+xosdskLockBufrF::
+	MOVL	ECX, lckf_bfr[ESP]
+	CMPL	bfr_label[ECX], #'SCB='	;No - check the label
+	JE	2$
+	CMPL	bfr_label[ECX], #'DCB='
+	JE	2$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+2$:	CMPL	knlTda+tdaDcb##, #0
+	JNE	4$
+	CRASH	NDCB
+
+4$:	MOVL	EAX, knlTda+tdaDcb##
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX] ;Make sure we don't have the
+	JNE	6$			      ;  buffer locked now
+	CRASH	BNIU			;[Buffer Not In Use]
+
+6$:	CMPL	bfr_anext[ECX], #-1	;Make sure not in allocation list
+	JE	8$
+	CRASH	BOAL			;[Buffer is On Allocation List]
+
+8$:	LEAL	EAX, bfr_rmb[EBX]
+	PUSHL	EAX
+	PUSHL	#RMBB$UPGRD|RMBB$NOWAIT
+	CALL	sysSchGetResource##
+	RET	4
+.PAGE
+;Function to lock buffer for single access - Waits until buffer is available
+;  if currently locked.
+;	long xosdskLockBufrW(
+;	    BFR *bfr);
+;  Value returned is 0 if normal or a negative error code if error. Only
+;    possible error is ER_CBDIS which means someone else has deleted the
+;    buffer while we were waiting.
+
+lckw_bfr=!4
+
+xosdskLockBufrW::
+	MOVL	EDX, lckw_bfr[ESP]
+	CMPL	bfr_label[EDX], #'SCB='	;Check the label
+	JE	2$
+	CMPL	bfr_label[EDX], #'DCB='
+	JE	2$
+	CRASH	BCBH			;[Bad Cache Buffer Header]
+
+2$:	CMPL	knlTda+tdaDcb##, #0
+	JNE	4$
+	CRASH	NDCB
+
+4$:	MOVL	EAX, knlTda+tdaDcb##
+	CMPL	EAX, bfr_rmb+rmb_locktda[EDX] ;Make sure we don't have the
+	JNE	6$			      ;  buffer locked now
+	CRASH	BNIU			;[Buffer Not In Use]
+
+6$:	CMPL	bfr_anext[EDX], #-1	;Make sure not in allocation list
+	JE	8$
+	CRASH	BOAL			;[Buffer is On Allocation List]
+
+8$:	LEAL	EAX, bfr_rmb[EDX]
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	RET	4
+.PAGE
+;Function to unlock buffer
+;	void xosdskUnLkBufr(
+;	    BFR *bfr);
+
+unlk_bfr=!8
+
+xosdskUnlkBufr::
+	MOVL	EDX, unlk_bfr[ESP]
+	ADDL	EDX, #bfr_rmb
+	PUSHL	EDX
+	CALL	sysSchUnlockResource##
+	RET	4
+
+;Function to determine if a buffer is locked.
+;	long xosdskIsBufrLocked(
+;	   BFR *bfr);
+;  Value returned is TRUE if buffer is locked or FALSE if not locked by
+;    the caller
+
+islck_bfr=!4
+
+xosdskIsBufrLocked::
+	MOVL	EDX, islck_bfr[ESP]
+	ADDL	EDX, #bfr_rmb
+	PUSHL	EDX
+	CALL	sysSchIsResourceLocked##
+	RET	4
+.PAGE
+	.SBTTL	dcsinfo - Process the DCSINFO class characteristic
+
+;Here for the DCSINFO class characteric to return disk cache status information
+;	c{ECX} = Size of user's data array
+;	c{EBX} = Address of user's data array
+;	CALL	dcsinfo
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Amount of data stored (dcsi_SIZE)
+
+;Format of the data returned: (always 80 bytes, all items are 4 bytes)
+;  Offset Description
+;     0   Total number of system cache buffers
+;     4   Number of available system cache buffers
+;     8   Number of free system cache buffers
+;    12   Number of system cache buffers with 0 users (open file FIBs)
+;    16   Number of system cache buffers with 0 users (deferred write blocks)
+;    20   Number of system cache buffers with 1 user
+;    24   Number of system cache buffers with 2 users
+;    28   Number of system cache buffers with 3 users
+;    32   Number of system cache buffers with 4 users
+;    36   Number of system cache buffers with 5 or more users
+;    40   Total number of data cache buffers
+;    44   Number of available data cache buffers
+;    48   Number of free data cache buffers
+;    52   Number of system cache buffers with 0 users (open file FIBs)
+;    56   Number of system cache buffers with 0 users (deferred write blocks)
+;    60   Number of data cache buffers with 1 user
+;    64   Number of data cache buffers with 2 users
+;    68   Number of data cache buffers with 3 users
+;    72   Number of data cache buffers with 4 users
+;    76   Number of data cache buffers with 5 or more users
+
+dcsinfo::
+	CMPL	ECX, #80t
+	JB	10$
+	PUSHL	#'SCB='			;Get value for bfr_label
+	PUSHL	#xosdskSysCbdb		;Address of system CBDB
+	PUSHL	EBX
+	CALL	usgbufrs
+	TESTL	EAX, EAX
+	JS	4$
+	PUSHL	#'DCB='			;Get value for bfr_label
+	PUSHL	#xosdskDataCbdb		;Address of data CBDB
+	ADDL	EBX, #40t
+	PUSHL	EBX
+	CALL	usgbufrs
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EAX, #80t
+4$:	RET				;All done
+
+;Here if his block is too small
+
+10$:	MOVL	EAX, #ER_BFRTS
+	STC
+	RET
+.PAGE
+;function to get usage for system or data buffers
+;	long usgbufrs(
+;	    long  label,	// Cache buffer label
+;	    CBDB *dbdb,		// Address of CBDB
+;	    long *data);	// Address of data block
+
+;NOTE: This is done without obtaining any resources. This may result in
+;      slightly incorrect values being obtained but will not casue any
+;      other problems since we are not really doing anything with the
+;      buffers other than counting their states. We are not following
+;      any of the buffer lists, but are just looking at the buffers in
+;      the order they occur in memory.
+
+usgb_label=!20t
+usgb_cbdb =!16t
+usgb_data =!12t
+
+usgbufrs:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, usgb_data[ESP]
+	MOVL	ECX, #8
+	PUSHL	DS
+	POPL	ES
+	CLRL	EAX			;Clear the user's counts
+	CLD
+	IFFAULT	30$
+	RSTOSL	[EDI]
+	MOVL	EDI, usgb_data[ESP]
+	MOVL	EDX, usgb_label[ESP]
+	MOVL	ECX, usgb_cbdb[ESP]
+	MOVL	ESI, cbdb_total[ECX]
+	MOVL	ECX, cbdb_first[ECX]
+2$:	DECL	ESI
+	JS	20$
+	CMPL	EDX, bfr_label[ECX]
+	JE	4$
+	CRASH	BDBL
+
+	IFFAULT	30$
+4$:	INCL	[EDI]			;Count the buffer
+
+	TESTB	bfr_status[ECX], #BS$FREE ;Is it on the free list?
+	JNS	8$			;No
+	IFFAULT	30$
+	INCL	8[EDI]			;Yes - count that
+	JMP	18$
+
+;Here if not on the free list
+
+8$:	CMPL	bfr_anext[ECX], #-1	;Is it on an available list?
+	JE	10$			;No
+	INCL	4[EDI]			;Yes - count that
+	JMP	18$
+
+;Here if not on an available list
+
+10$:	MOVZWL	EAX, bfr_rmb+rmb_usecnt[ECX] ;Get the buffer's use count
+	TESTL	EAX, EAX
+	JNE	12$
+	TESTB	bfr_status[ECX], #BS$FFIB|BS$FIB
+	JNE	14$
+12$:	INCL	EAX
+14$:	CMPL	EAX, #6			;More than 5 users?
+	JLE	16$			;No
+	MOVL	EAX, #6			;Yes - just say 5
+	IFFAULT	30$
+16$:	INCL	12t[EDI+EAX*4]		;Bump user's count
+18$:	ADDL	ECX, #bfr_SIZE		;Bump address to next buffer
+	MOVL	EAX, ECX		;At top of a page?
+	ANDL	EAX, #0x0FFF
+	CMPL	EAX, #0x0F00
+	JNE	2$			;No
+	ADDL	ECX, #0x0100		;Yes - fix up the address
+	JMP	2$			;Continue
+
+;Here when finished
+
+20$:	CLRL	EAX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+;Here if address error
+
+	FAULTHDR
+30$:	MOVL	EAX, #ER_ADRER
+	JMP	18$
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+xosdskSysCbdb::
+	.LONG	syscbbase	;cbdb_first    - Address of first buffer
+	.LONG	syscbbase	;cbdb_addr     - Address for next buffer created
+	.LONG	0		;cbdb_total    - Total number of buffers created
+	.LONG	0		;cbdb_numavail - Number of available buffers
+	.LONG   0		;cbdb_numfree  - Number of free buffers
+	.LONG	0		;cbdb_free     - Address of first free buffer
+	.LONG	0		;cbdb_ahead    - Allocation list head pointer
+	.LONG	0		;cbdb_atail    - Allocation list tail pointer
+	.BLKB	rmb_SIZE	;cbdb_armb     - RMB for the allocation list
+				;                  resource
+
+xosdskDataCbdb::
+	.LONG	datacbbase	;cbdb_first    - Address of first buffer
+	.LONG	datacbbase	;cbdb_addr     - Address for next buffer created
+	.LONG	0		;cbdb_total    - Total number of buffers created
+	.LONG	0		;cbdb_numavail - Number of available buffers
+	.LONG   0		;cbdb_numfree  - Number of free buffers
+	.LONG	0		;cbdb_free     - Address of first free buffer
+	.LONG	0		;cbdb_ahead    - Allocation list head pointer
+	.LONG	0		;cbdb_atail    - Allocation list tail pointer
+	.BLKB	rmb_SIZE	;cbdb_armb     - RMB for the allocation list
+				;                  resource
+
+lit6:	.LONG	6
+
+	LKEEND

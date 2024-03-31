@@ -1,0 +1,377 @@
+	.TITLE	conkey - Device driver for console keyboard - logical routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosdos.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosxtrm.par
+	.INCLUD	xosinc:\xmac\xosxkbd.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+
+	LKECONT
+
+	.EXPORT	xosconConScanCode
+	.EXPORT	xosconScanCode
+
+	CODE
+
+;NOTE:
+;  This version no longer attempts to emulate direct access to the keyboard
+;  controller by DOS programs!
+
+.PAGE
+;Function to process a scan code from a real console terminal - This function
+;  checks for the reboot key, the system menu key, and the debugger entry key
+;  and then calls the common scan code routine.
+;	void xoskbaConScanCode(
+;	    DHDB *dhdb
+;	    long  sc);
+
+scncd_dhdb=!16t
+scncd_sc  =!12t
+
+xosconConScanCode::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, scncd_dhdb[ESP]
+	MOVL	ESI, dhdb_curtdb[EDI]
+	MOVL	EAX, scncd_sc[ESP]
+	CMPB	AL, #0xF0		;Is this a special code?
+	JAE	10$			;Yes - go handle it
+scancd2:TESTB	dhdb_keysts[EDI], #KS$SYSSHFT ;No - system-shift state?
+	JNE	almact			;Yes - go handle that case
+scancd4:PUSHL	ESI
+	PUSHL	EAX
+	CALL	xosconScanCode		;Process the character
+scdone:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here for a special key
+
+10$:	JE	scdone			;If should ignore it
+	TESTL	EAX, #KB$RELEASE	;Key release code?
+	JNE	scancd2			;Yes - its not special here
+	JMPIL	CS:spckeydsp-0xF0*4[EAX*4] ;No - dispatch on the special key
+					   ;  code
+	.MOD	4
+spckeydsp:
+	.LONG	0		;ISX_IGNORE = F0 - Character to be ignored
+	.LONG	sysshf		;ISX_PRTSCN = F1 - Print screen
+	.LONG	havedel		;ISX_DELETE = F2 - DEL
+	.LONG	havekpd		;ISX_KEYDEL = F3 - Keypad DEL
+.PAGE
+;Here with make of keypad DEL key
+
+havekpd:MOVB	AL, #ISC_KPDELETE
+	JMP	2$
+
+;Here with make of DELETE key
+
+havedel:MOVB	AL, #ISC_DELETE
+2$:	BTL	knlSysDescp##, #SYSD%KBRESET ;Is ctl-alt-DEL reboot enabled?
+	JNC	scancd2			;No - not special
+	MOVB	BL, tdb_keysts0[ESI]	;Yes - get state bits
+	MOVB	BH, BL			;Merge left and right bits
+	SHLB	BH, #4
+	ORB	BL, BH
+	NOTB	BL
+	TESTB	BL, #KS0$LCTRL|KS0$LALT	;Both CTRL and ALT pressed?
+	JNE	scancd2			;No - not special
+	JMP	knlReboot##		;Yes - reboot the system
+
+;Here with make of the PRINT SCREEN key
+
+sysshf:	MOVL	EAX, #ISC_SYSSHF
+	CMPB	tdb_mode[ESI], #DM_TEXT ;Text mode?
+	JNE	scancd4			;No - this is just a character
+	ORB	dhdb_keysts[EDI], #KS$SYSSHFT ;Yes
+4$:	CALL	almproc			;Process this character
+	JMP	scdone			;Return from xoskbaScanCode
+
+;Here with any character when an alarm window is active
+
+almact:	MOVL	ESI, dhdb_curtdb[EDI]
+	MOVB	BL, tdb_keysts0[ESI]	;Get shift and control state
+	MOVB	BH, BL			;Merge left and right bits
+	SHRB	BL, #4t
+	ORB	BL, BH
+	ANDL	EBX, #0x07
+	MOVL	EBX, knlScnTblX##[EBX*4] ;Get offset of table for this state
+	MOVZBL	EDX, AL
+	MOVZBL	ECX, [EBX+EDX]		;Get translation for character
+	TESTL	EAX, #KB$RELEASE	;Is this a key-release code?
+	JNE	10$			;Yes - go handle it
+	TESTB	CL, CL			;Special dispatch needed?
+	JNS	4$			;No
+	PUSHL	ESI
+	CALLI	kbdmakekeytbl-0x80[ECX] ;Yes - dispatch on the special code
+	JMP	scdone
+
+;Here for key-release code from keyboard
+
+10$:	TESTB	CL, CL			;Special handling needed?
+	JNS	scdone			;No - ignore it
+	MOVL	EDX, kbdrelkeytbl-0x80[ECX] ;Yes - clear a bit
+	ANDL	tdb_keysts0[ESI], EDX
+	JMP	scdone			;Otherwise, ignore it
+.PAGE
+$$$=!0
+FRM alm_msg, sss_cSIZE		;Message buffer
+FRM alm_dst, 12t		;Destination string buffer
+alm_SIZE=!$$$
+
+almproc:ENTER	alm_SIZE, 0		;Allocate a stack frame
+	MOVW	alm_msg+sss_char[EBP], AX ;Store character code
+	MOVB	alm_msg+sss_func[EBP], #MT_SSALMCHAR ;Store function
+	MOVL	EAX, tdb_keysts0[ESI]	;Store keyboard state bits
+	ANDL	EAX, #0x0FFF
+	MOVW	alm_msg+sss_bits[EBP], AX
+	MOVZBL	EAX, tdb_mode[ESI]	;Store display mode
+	MOVL	alm_msg+sss_dspmode[EBP], EAX
+	MOVW	AX, tdb_pnum[ESI]	  ;Store primary unit and secondary
+	MOVW	alm_msg+sss_pnum[EBP], AX ;  unit numbers
+	MOVL	alm_msg+sss_xtdb[EBP], ESI ;Store offset of the TDB
+	MOVL	alm_dst+0[EBP], #'SYS^' ;Build destination string
+	MOVL	alm_dst+4[EBP], #'TRM'
+	MOVZBL	EAX, tdb_pnum[ESI]
+	LEAL	EBX, alm_dst+7[EBP]
+	CALL	knlPutDecNmbr##
+	MOVB	[EBX], #0
+	LEAL	EAX, alm_dst[EBP]	;Address of destination string
+	PUSHL	EAX
+	PUSHL	#knlTrmMsgSrc##		;Address of source string
+	PUSHL	#0
+	LEAL	EAX, alm_msg[EBP]	;Address of message buffer
+	PUSHL	EAX
+	PUSHL	#sss_cSIZE		;Length of message
+	CALL	sysIpmSendMsg##		;Send the message
+	LEAVE				;Remove the stack frame
+	MOVL	EDI, tdb_dhdb[ESI]	;Restore offset of the DHDB
+	JNC	20$			;If OK
+
+;Here if error sending message to the screen symbiont - this should not
+;  happen, but if it does, it probably means the screen symbiont is not
+;  running - in this case we just forget about it after clearing the
+;  the KS$SYSSHFT bit.
+
+	ANDB	dhdb_keysts[EDI], #~KS$SYSSHFT
+	CALL	knlTrmOutDone##		;Just to be sure, see if need to wake
+					;  up anyone
+	MOVL	EDI, tdb_dhdb[ESI]	;Restore offset of the DHDB
+20$:	RET				;And continue
+.PAGE
+;Subroutine to process keyboard scan codes - this is a logical level routine
+;  which is used for both pseudo and real consoles
+;	void xosconScanCode(
+;	    TDB *tdb,
+;	    long sc);
+
+scncd_tdb=!16t
+scncd_sc =!12t
+
+xosconScanCode:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, scncd_tdb[ESP]
+	MOVL	EAX, scncd_sc[ESP]
+	MOVZBL	EDX, AL
+
+
+	CMPB	AL, #0xF0		;Special code?
+	JB	2$			;No
+	MOVZBL	EDX, spckeytbl-0xF0[EDX] ;Yes - get actual internal scan code
+2$:
+
+
+;;;;;;;	MOVZBL	EDX, knlKeyTblXN##[EDX]	;Get the ASCII value
+
+
+	MOVB	BL, tdb_keysts0[ESI]	;Get shift and control state
+	MOVB	BH, BL			;Merge left and right bits
+	SHRB	BL, #4
+	ORB	BL, BH
+	ANDL	EBX, #0x07
+	MOVL	EBX, knlScnTblX##[EBX*4] ;Get address of table for this state
+
+;;;;;;;	MOVZBL	EDX, AL
+
+	MOVZBL	ECX, [EBX+EDX]		;Get translation for character
+	TESTL	EAX, EAX		;Is this a key-release code?
+	JS	kbdhvrel		;Yes - go handle it
+	TESTB	CL, CL			;No - special dispatch needed?
+	JS	4$			;Yes
+
+;Here to send a scan code to the terminal driver.
+;	c{EAX} = Scan code value with bit 31 set if key release code
+;	c(CL)  = Corresponding ASCII character
+
+kbdproc:MOVL	EDX, tdb_keysts0[ESI]	;Get status bits
+	ANDL	EDX, #0x0FFF
+	SHLL	EDX, #16t
+	ORL	EAX, EDX		;Merge status bits with scan code
+	MOVB	AH, AL			;Get scan code value in right place
+	MOVB	AL, CL			;Put in the ASCII value
+	INCL	tdb_kbchar[ESI]
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	sysTrmInput##		;Process the character
+kbddone:POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if have a make code which requires a special dispatch
+
+4$:	PUSHL	EAX
+	PUSHL	ESI
+	CALLI	kbdmakekeytbl-0x80[ECX]
+	POPL	EAX
+	JMP	chkallsc
+
+;Here if have a key-release code from the keyboard
+
+kbdhvrel:
+	TESTB	CL, CL			;Special handling needed?
+	JNS	chkallsc		;No
+	MOVL	EDX, kbdrelkeytbl-0x80[ECX] ;Yes - clear a bit
+	ANDL	tdb_keysts0[ESI], EDX
+chkallsc:
+	TESTL	tdb_imode[ESI], #TIM$SCNCALL ;Returning all scan codes?
+	JNE	kbdproc			;Yes - send it up to the next level
+	JMP	kbddone			;No - finished with it
+.PAGE
+;Functions below all handle make codes that require a special dispatch
+;	void mxxxxx(
+;	    TDB *tdb)
+
+smk_tdb =!4
+
+kbdmakekeytbl:
+	.LONG	mdone		;SK_NULL   = 80 - Unused code
+	.LONG	mlshft		;SK_LSHFT  = 84 - Left shift key
+	.LONG	mrshft		;SK_RSHFT  = 88 - Right shift key
+	.LONG	mlctrl		;SK_LCTRL  = 8C - Left control key
+	.LONG	mrctrl		;SK_RCTRL  = 90 - Right control key
+	.LONG	mlaltkey	;SK_LALT   = 94 - Left alt key
+	.LONG	mraltkey	;SK_RALT   = 98 - Right alt key
+	.LONG	mcaplck		;SK_CAPS   = 9C - Caps lock key
+	.LONG	mnumlck		;SK_NUMLCK = A0 - Num lock key
+	.LONG	mscllck		;SK_SCLLCK = A4 - Scroll lock key
+
+;Here for make of left shift key
+
+mlshft:	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$LSHFT
+	JMP	mdone.S
+
+;Here for make of right shift key
+
+mrshft:	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$RSHFT
+	JMP	mdone.S
+
+;Here for make of left control key
+
+mlctrl:	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$LCTRL
+	JMP	mdone.S
+
+;Here for make of right control key
+
+mrctrl:	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$RCTRL
+	JMP	mdone.S
+
+;Here for make of left ALT key
+
+mlaltkey:
+	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$LALT
+	JMP	mdone.S
+
+;Here for make of right ALT key
+
+mraltkey:
+	MOVL	EDX, smk_tdb[ESP]
+	ORB	tdb_keysts0[EDX], #KS0$RALT
+mdone:	RET	4
+
+;Here for make of scroll lock key
+
+mscllck:MOVL	EDX, smk_tdb[ESP]
+	BTSL	tdb_keysts0[EDX], #KS0%SCLKY ;Is the key pressed now?
+	JC	chkallsc		;Yes - ignore it this time
+	BTCL	tdb_keysts0[EDX], #KS0%SCLLK ;No - toggle scroll lock state
+	JMP	tolites
+
+;Here for make of Num lock key
+
+mnumlck:MOVL	EDX, smk_tdb[ESP]
+	BTSL	tdb_keysts0[EDX], #KS0%NUMKY ;Is the key pressed now?
+	JC	chkallsc		;Yes - ignore it this time
+	BTCL	tdb_keysts0[EDX], #KS0%NUMLK ;No - toggle NUM lock state
+tolites:MOVL	EAX, tdb_dhdb[EDX]	;Update the keyboard lites if there
+	TESTL	EAX, EAX		;  are any
+	JE	mdone.S
+	PUSHL	EAX
+	PUSHL	#kfx_tolites
+	PUSHL	tdb_keysts0[EDX]
+	CALL	xosconToKeyboard#
+	JMP	mdone.S
+
+;Here for make of Caps lock key
+
+mcaplck:MOVL	EDX, smk_tdb[ESP]
+	BTSL	tdb_keysts0[EDX], #KS0%CAPKY ;Is the key down now?
+	JC	mdone.S			;Yes - ignore it this time
+	BTCL	tdb_keysts0[EDX], #KS0%CAPLK ;No - toggle CAPS lock state
+	JMP	tolites
+.PAGE
+;Table used to clear status bits on release of special keys
+
+	.MOD	4
+kbdrelkeytbl:
+	.LONG	0xFFFFFFFF	;SK_NULL   = 80 - Unused code
+	.LONG	~KS0$LSHFT	;SK_LSHFT  = 84 - Left shift key
+	.LONG	~KS0$RSHFT	;SK_RSHFT  = 88 - Right shift key
+	.LONG	~KS0$LCTRL	;SK_LCTRL  = 8C - Left control key
+	.LONG	~KS0$RCTRL	;SK_RCTRL  = 90 - Right control key
+	.LONG	~KS0$LALT	;SK_LALT   = 94 - Left alt key
+	.LONG	~KS0$RALT	;SK_RALT   = 98 - Right alt key
+	.LONG	~KS0$CAPKY	;SK_CAPS   = 9C - Caps lock key
+	.LONG	~KS0$NUMKY	;SK_NUMLCK = A0 - Num lock key
+	.LONG	~KS0$SCLKY	;SK_SCLLCK = A4 - Scroll lock key
+
+;Table used to translate extended scancode values
+
+	.MOD	4
+spckeytbl:
+	.BYTE	0		;ISX_IGNORE   = F0 - Character to be ignored
+	.BYTE	ISC_SYSSHF	;ISX_PRTSCN   = F1 - Print screen
+	.BYTE	ISC_DELETE	;ISX_DELETE   = F2 - DEL
+	.BYTE	ISC_KPDELETE	;ISX_KPDELETE = F3 - Keypad DEL
+	.BYTE	0, 0, 0, 0
+
+	LKEEND

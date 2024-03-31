@@ -1,0 +1,1290 @@
+	.TITLE	threads - Multiple thread routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+
+	.INCLUD	XOSINC:\xmac\stdio.par
+	.INCLUD	XOSINC:\xmac\ctype.par
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosthreads.par
+
+	.STDSEGS
+
+;These routines use the XOS signal system to implement multiple execution
+;  threads within a single OS provided major thread. These are generally
+;  refered to as minor threads.  Scheduling for threads within a major
+;  thread is NOT pre-emptive.
+
+;All minor threads execute at signal level 1.  Programs using the threads
+;  routines can also use signals directly if desired.  Level 1 signals will
+;  never interrupt a thread but can be used if desired to eliminate the need
+;  to reschedule a thread to process an event which generates a signal.
+;  Higher level signals can interrupt a thread and care should be taken to
+;  insure that proper interlocks are used to protect critical code sections.
+;  Signals use the stack in use when the signal is granted, which may be the
+;  control stack (see below).  Level 1 signals will always use the control
+;  stack. With the exception of thdCtlWake, thread functions (all functions
+;  who's names begin with "thd") must NOT be called from signal routines
+;  (including level 1 signals). These functions MUST ONLY be called from
+;  thread routines. This includes the base thread and any thread created by
+;  thdCtlCreate. thdCtlWake can be called from any signal routine at any signal level or
+;  from a thread routine.
+
+;With the exception of thdCtlWake these functions are NOT major-thread-safe.
+;  thdCtlWake is major-thread-safe in that it can be executed to wake up a
+;  minor thread belonging to a different major thread although it is NOT
+;  protected against the thread being woke up being terminated while it is
+;  being executed. This may cause a page fault.
+
+;This version of the threads routines has been modified to change the way
+;  the user's stacks are used.  Previously, the base thread used a
+;  pre-allocated TDB which did not have an associated stack.  Instead, the
+;  standard stack for the process was used as the stack for the base thread.
+;  All other threads used TDBs allocated by thdCtlCreate with the stack for
+;  the thread placed immediately below the TDB.  A "control" stack (which is
+;  used when waiting for a thread to be ready to execute) used a very small
+;  block of memory statically allocated in this module.  This caused a major
+;  problem if a program tried to mix the use of threads and signals since a
+;  signal could (and usually would) occure while the control stack was in
+;  use, not providing nearly enough stack space for a general signal routine.
+;  The solution to this problem is to use an allocated TDB (with the normal
+;  associated stack) for the base thread and to use the processes original
+;  stack as the control stack.  This modifies the calling sequence to
+;  thdCtlInitialize somewhat since the TDB argument must now specify an
+;  offset of non-allocated memory where the base thread's TDB will be
+;  allocated instead of an offset in already allocated memory.  Also, the
+;  stack pointer will be changed to the new stack upon return.  This should
+;  have little effect, however, since the complete stack contents is copied
+;  to the new stack.  This does impose the requirement that thdCtlInitialize
+;  MUST be called on the original stack set up by the C startup code.
+
+	.PSECT	_TEXT_p
+
+	.SBTTL	thdCtlInitialize - Function to initialize the thread manager
+
+;This founction initializes the thread manager.  Upon return, the base
+;  minor thread is active. The stack has been changed to the stack for the
+;  thread! To avoid problems with the caller keeping stack address in
+;  registers, this function is declared to change ALL registers except EBP!!
+;  Since the normal C startup code builds its argument table on the stack
+;  (which is function will overwrite) none of the arguments to main can be
+;  accessed after this function is called!!!
+;	XOSSVC thdCtlInitialize(
+;	    long maxnum,	// Maximum number of threads (There is no
+;				//   hard maximum, each possible thread uses
+;				//   4 bytes of memory)
+;	    long vectbase,	// Base signal vector (the thread manager must
+;				//   have exlusive use of 5 vectors starting
+;				//   with vectbase)
+;	    long membase,	// Offset of data area for base thread (must
+;				//   be in the base data segment and the area
+;				//   must NOT be allocated)
+;	    long stksize,	// Total size of the base thread's stack
+;	    long datasize);	// Size of the base thread's data area (does
+;				//   not include the stack)
+;  Value returned is 0 if OK or a negative error code if error
+
+arg_maxnum  =!52t
+arg_vectbase=!48t
+arg_membase =!44t
+arg_stksz   =!40t
+arg_datasz  =!36t
+
+2$:	MOVL	EAX, #ER_STKER
+	RET	20t
+
+4$:	POPAL
+	MOVL	EAX, errno#
+	NEGL	EAX
+	RET	20t
+
+	.ENTRY	thdCtlInitialize, fbrCtlInitialize
+thdCtlInitialize:
+fbrCtlInitialize:
+	CMPL	ESP, #_clib_stack#	;Using original stack?
+	JAE	2$			;No - fail
+	PUSHAL
+	MOVL	EAX, arg_maxnum[ESP]	;Get maximum number of threads
+	MOVL	thdnmbr, EAX		;Store number
+	PUSHL	EAX
+	SHLL	EAX, #2			;Allocate space for the thread pointer
+	PUSHL	EAX			;  table
+	CALL	sbrk#
+	ADDL	ESP, #8
+	TESTL	EAX, EAX
+	JS	4$			;If error
+	MOVL	thdtbl, EAX		;OK - store offset of the table
+	MOVL	EDI, EAX		;Zero the pointer table
+	PUSHL	DS
+	POPL	ES
+	PUSHL	EDI
+	MOVL	ECX, thdnmbr
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]
+	POPL	EDI
+	MOVL	EBX, arg_membase[ESP]	;Allocate memory for the stack and TDB
+	MOVL	ECX, arg_datasz[ESP]	;  for the base thread
+	MOVL	EDX, arg_stksz[ESP]
+	CALL	allocmem
+	JC	12$
+	MOVL	thdData, EBX		;This is the current thread
+	MOVB	tdb_state[EBX], #TS_ACTIVE ;It is active
+	MOVL	ECX, #_clib_stack#	;Set up to copy the stack
+	SUBL	ECX, ESP
+	SUBL	EBX, ECX
+	MOVL	EDI, EBX
+	SHRL	ECX, #2t
+	MOVL	ESI, ESP
+	CLD
+	RMOVSL	[EDI], [ESI]
+	CMPL	EBP, #_clib_stack#	;Does EBP point into the current stack?
+	JA	8$			;No
+	CMPL	EBP, ESP		;Maybe
+	JB	8$			;No
+	ADDL	EBP, EBX		;Probably - adjust its value (NOTE: this
+	SUBL	EBP, ESP		;  might cause a problem since some C
+	MOVL	8[EBX], EBP		;  compilers sometimes use EBP as a data 
+					;  register instead of a frame pointer!
+					;  Unfortunately, we don't have a better
+					;  solution!!)
+8$:	MOVL	ESP, EBX		;Switch stacks
+	MOVL	ESI, #inistk		;Set up the initial control stack
+	MOVL	EDI, #_clib_stack#-INISTK
+	MOVL	ECX, #INISTK/4
+	RMOVSL	[EDI], [ESI]
+	PUSHL	#1			;Raise to our signal level
+	CALL	svcSchSetLevel##
+
+;Now we set up the signal vectors that we need.
+
+	MOVL	EDI, arg_vectbase[ESP]	;Get base interrupt
+	MOVL	iodonevect, EDI
+	PUSHL	EDI			;Set the IO done vector
+	PUSHL	#1
+	PUSHL	#iodonesignal
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	12$
+	INCL	EDI
+	MOVL	waitvect, EDI
+	PUSHL	EDI			;Set the wait vector
+	PUSHL	#1
+	PUSHL	#waitsignal
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	12$
+	INCL	EDI
+	MOVL	wakevect, EDI
+	PUSHL	EDI			;Set the suspend wake-up vector
+	PUSHL	#1
+	PUSHL	#wakesignal
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	12$
+	INCL	EDI
+	MOVL	suspendvect, EDI
+	PUSHL	EDI			;Set the suspend time out vector
+	PUSHL	#1
+	PUSHL	#suspendsignal
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	12$
+	CLRL	EAX			;Return 0
+12$:	MOVL	28t[ESP], EAX
+	POPAL
+	RET	20t
+.PAGE
+	.SBTTL	thdCtlCreate - Function to create a new thread
+
+;This function creates a new minor thread and schedules its initial
+;  function for execution.  The stack for the thread is located downwards
+;  from the base offset specified.  Any stack space below the bottom of the
+;  memory page containing the base offset is virtually allocated.
+;	XOSSRV thdCtlCreate(base, stksize, datasize, func, arglst, argnum);
+;	    long   base,	// Base offset for thread data area
+;	    long   stksize,	// Total size of the thread's stack
+;	    long   datasize,	// Size of the thread's data area (does not
+;				//   include the stack)
+;	    void (*fnc)(...),	// Initial function for thread
+;	    void  *arglst,	// Argument list for initial function
+;	    long   argnum);	// Number of arguments
+;  Value returned if 0 if OK or a negative error code if error.
+
+;To determine the base offset of the msect containing the TDB, round down
+;  the "base" argument to a page boundry.  Any virtual stack below this is
+;  allocated in its own msect.
+
+arg_base  =!56t
+arg_stksz =!52t
+arg_datasz=!48t
+arg_func  =!44t
+arg_arglst=!40t
+arg_argnum=!36t
+
+2$:	POPAL
+	MOVL	EAX, #ER_TMTHD
+	RET	24t
+
+thdCtlCreate::
+fbrCtlCreate::
+	PUSHAL
+	MOVL	EBP, ESP
+	MOVL	ECX, thdnmbr		;Get maximum number of threads
+	CMPL	ECX, thdcnt		;Do we have this many now?
+	JBE	2$			;Yes - fail
+	MOVL	EDX, ECX
+	MOVL	EDI, thdtbl		;No - search the pointer table to
+	SUBL	EDI, #4			;  find an open slot
+4$:	ADDL	EDI, #4
+	CMPL	[EDI], #0
+	LOOPNE	ECX, 4$
+	MOVL	EBX, arg_base[EBP]
+	MOVL	ECX, arg_datasz[EBP]
+	MOVL	EDX, arg_stksz[EBP]
+	CALL	allocmem
+	JC	12$
+	MOVB	tdb_state[EBX], #TS_WAKEWAIT
+	MOVW	tdb_wkseq[EBX], #0x1000
+	LEAL	EDI, -4[EBX]		;Get his initial stack pointer
+	MOVL	ECX, arg_argnum[EBP]	;Get number of argments to give him
+	JREGZ	ECX, 10$		;If none
+	MOVL	ESI, arg_arglst[EBP]	;Get pointer to his argument list
+	LEAL	ESI, -4[ESI+ECX*4]	;Point to the last entry
+	PUSHL	DS
+	POPL	ES
+	STD
+	RMOVSL	[EDI], [ESI]		;Copy his arguments
+10$:	MOVL	[EDI], #thdCtlTerminate ;Store final return
+	SUBL	EDI, #4
+	MOVL	EAX, arg_func[EBP]	;Store offset of his function
+	MOVL	[EDI], EAX
+	SUBL	EDI, #32t		;Allow for initial stored registers
+	MOVL	tdb_ESP[EBX], EDI	;Store his initial stack pointer
+	PUSHL	EBX
+	CALL	thdCtlWake		;Let him execute
+	TESTL	EAX, EAX
+	JS	14$			;If error
+	CLRL	EAX			;Finished - return 0
+12$:	MOVL	28t[ESP], EAX
+	POPAL
+	RET	24t
+
+;Here if can't set the initial event
+
+14$:	PUSHL	EAX
+	CALL	givethread		;Give up the thread's memory
+	POPL	EAX
+	JMP	12$
+.PAGE
+;Subroutine to allocate memory for the stack and TDB for a minor thread
+;	c{EBX} = Offset for TDB
+;	c{ECX} = Data size
+;	c{EDX} = Stack size
+;	c{EDI} = Offset of thdtbl entry for thread
+;	CALL	allocmem
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Offset of TDB
+
+allocmem:
+	PUSHL	EBX
+	MOVL	EAX, EBX
+	ANDL	EBX, #0xFFFFF000
+	PUSHL	EBX
+	PUSHL	#PG$READ|PG$WRITE
+	ANDL	EAX, #0xFFF
+	ADDL	EAX, ECX
+	PUSHL	EAX
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	8$			;If error
+	MOVL	ECX, [ESP]		;See if we need any virtual stack
+	SUBL	ECX, EDX		;  pages
+	ANDL	ECX, #0xFFFFF000
+	CLRL	EDX
+	SUBL	EBX, ECX
+	JE	4$			;No - go on
+	MOVL	EDX, ECX
+	PUSHL	ECX			;Yes - allocate them
+	PUSHL	#PG$READ|PG$WRITE|PG$VIRTUAL
+	PUSHL	EBX
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	6$			;If error
+4$:	POPL	EBX
+	MOVL	tdb_stkalc[EBX], EDX
+	MOVL	[EDI], EBX		;Store base offset in our pointer table
+
+	MOVL	EAX, EDI		;Get the thread number
+	SUBL	EAX, thdtbl
+	SHRL	EAX, #2
+	MOVL	tdb_number[EBX], EAX	;Store thread number
+	CLC
+	RET
+
+;Here if error allocating the virtual part of the stack
+
+6$:	MOVL	EBX, [ESP]
+	PUSHL	EAX
+	CALL	givethread
+	POPL	EAX
+8$:	POPL	EBX
+	STC
+	RET
+.PAGE
+;This function terminates the current minor thread.
+;	void thdCtlTerminate(void);
+
+thdCtlTerminate::
+fbrCtlTerminate::
+	PUSHAL
+	MOVL	EAX, #0xF0F2
+	MOVL	EBX, thdData
+	JMP	2$
+
+;This function terminates the specified minor thread.
+;	long thddata		// Offset of thread data block
+;	void thdCtlKill(thddata);
+
+thdCtlKill::
+fbrCtlKill::
+	PUSHAL
+	MOVL	EAX, #0xF0F1
+	MOVL	EBX, 40t[ESP] 
+2$:	MOVL	EAX, thdtbl
+	CMPL	[EAX], EBX		;Is this the base thread?
+	JNE	4$			;No
+	PUSHL	#0			;Yes - just exit
+	CALL	exit#
+
+;Here if not terminating the base minor thread
+
+4$:	CMPL	EBX, thdData		;Terminating ourself?
+	JNE	6$			;No
+	MOVL	ESP, ctlESP		;Yes - switch to the control stack
+	MOVL	EDX, tdb_number[EBX]	;Clear our pointer table entry
+	CLRL	ECX
+	MOVL	[EAX+EDX*4], ECX	;Cancel signals and give up the thread's
+	CALL	givethread		;  memory
+	POPAL
+	DECL	xxxxcnt
+	CMPL	xxxxcnt, #0
+	JE	45$
+	INT3
+45$:
+	INT	knl_DISMISS##		;We are idle now
+
+;Here if not terminating the calling thread
+
+6$:	CMPB	tdb_state[EBX], #TS_IOWAIT ;Is the thread waiting for IO?
+	JNE	8$			;No
+	PUSHL	EBX
+	PUSHL	#CAN$WAIT|CAN$NOSIG|CAN$ALL|CAN$INPUT|CAN$OUTPUT
+	CALL	svcIoCancel##
+8$:	CALL	givethread		;Cancel signals and give up the thread's
+	POPAL				;  memory
+	CLRL	EAX
+	RET	4
+
+;Subroutine to cancel signals and give up a minor thread's memory
+;	c{EBX} = Offset of data area for thread
+;	CALL	givethread
+
+givethread:
+	MOVL	sigdata+0, EBX
+	MOVL	EAX, tdb_alhndl[EBX]	;Do we have an alarm pending?
+	TESTL	EAX, EAX
+	JE	10$			;No
+	PUSHL	EAX			;Yes - cancel it
+	CALL	svcSchClrAlarm##
+10$:	PUSHL	iodonevect		;Discard any IO done signals for the
+	PUSHL	#1			;  thread
+	PUSHL	#sigdata
+	PUSHL	#1
+	CALL	svcSchDisSignal##
+
+	PUSHL	wakevect		;Discard any wake signals for the
+	PUSHL	#1			;  thread
+	PUSHL	#sigdata
+	PUSHL	#1
+	CALL	svcSchDisSignal##
+
+	PUSHL	waitvect		;Discard any wait signals for the
+	PUSHL	#1			;  thread
+	PUSHL	#sigdata
+	PUSHL	#1
+	CALL	svcSchDisSignal##
+
+	MOVL	EAX, tdb_number[EBX]
+	MOVL	sigdata+0, EAX
+	MOVL	sigdata+4, #0xFFFF
+	PUSHL	suspendvect		;Discard any suspend signals for the
+	PUSHL	#1			;  thread
+	PUSHL	#sigdata
+	PUSHL	#2
+	CALL	svcSchDisSignal##
+
+	MOVL	ECX, tdb_stkalc[EBX]	;Do we have any stack space allocated?
+	JREGZ	ECX, 14$		;No - go on
+	PUSHL	ECX			;Yes - give it up
+	PUSHL	#0
+	PUSHL	#0
+	CALL	svcMemChange##
+14$:	ANDL	EBX, #0xFFFFF000	;Give up the data area
+	PUSHL	EBX
+	PUSHL	#0
+	PUSHL	#0
+	CALL	svcMemChange##
+	RET
+.PAGE
+;********************************************************************
+;Function: thdCtlSuspend - Suspends a thread for a specified interval
+;Returned: 0 if normal or a negative XOS error code if error
+;********************************************************************
+
+;	XOSSVC thdCtlWait(
+;	    llong time);	// Time to suspend (system ticks)
+;				//   means to susspend forever)
+
+thdCtlWait::
+fbrCtlWait::
+	CALL	wait
+	RET	8
+
+wait:	PUSHAL				;Save all registers
+	MOVL	EDI, thdData
+	MOVL	EAX, 40t[ESP]		;Get time value
+	MOVL	EDX, 44t[ESP]
+	MOVL	ECX, EAX
+	ORL	ECX, EDX		;Really want to wait at all?
+	JE	suspnd4			;No - nothing to do here
+	MOVL	EBX, #TS_TIMEWAIT	;Yes - get new state
+	PUSHL	waitvect		;Create an alarm to wake him up
+	PUSHL	EDI
+	JMP	suspnd2
+.PAGE
+
+;***********************************************************
+;Function: thdCtlSuspend - Suspends a thread for a specified
+;		interval (which may be infinite) or until an
+;		external event occures.
+;Returned: 0 if normal or a negative XOS error code if error
+;***********************************************************
+
+;	XOSSVC thdCtlSuspend(
+;	    long *flag,		// Pointer to suspend flags
+;	    llong time);	// Maximum time to suspend (system ticks, -1
+
+thdCtlSuspend::
+fbrCtlSuspend::
+	CALL	suspend
+	RET	12t
+
+suspend:PUSHAL				;Save all registers
+	MOVL	EDI, thdData
+	MOVL	EAX, 48t[ESP]		;Get address of flag long
+	TESTL	EAX, EAX		;NULL?
+	JE	2$			;Yes - always wait
+	CMPL	[EAX], #0		;No - is it 0?
+	JE	suspnd4			;Yes - return immediately
+2$:	MOVL	EAX, 40t[ESP]		;No - get time value
+	MOVL	EDX, 44t[ESP]
+	MOVL	ECX, EAX
+	ORL	ECX, EDX		;Really want to wait at all?
+	JE	suspnd4			;No - nothing to do here
+	MOVL	EBX, #TS_WAKEWAIT	;Yes - get new state
+	MOVL	ECX, EAX		;Want to wait forever?
+	ANDL	ECX, EDX
+	INCL	ECX
+	JE	8$			;Yes
+	PUSHL	suspendvect		;No - create an alarm to wake him up
+	MOVZWL	ECX, tdb_wkseq[EDI]
+	SHLL	ECX, #16t
+	MOVW	CX, tdb_number[EDI]
+	PUSHL	ECX
+suspnd2:PUSHL	EDX
+	PUSHL	EAX
+
+;Start of debug code
+
+	PUSHL	ESI
+	MOVL	ESI, debugpnt
+	MOVL	[ESI], #0xFFFF
+	MOVL	4[ESI], EDI
+	MOVL	8[ESI], ECX
+	MOVL	12t[ESI], EAX
+	ADDL	ESI, #0x10
+	CMPL	ESI, #debugtop
+	JB	3$
+	MOVL	ESI, #debugrng
+3$:	MOVL	debugpnt, ESI
+	POPL	ESI
+
+;End of debug code
+
+	CALL	svcSchSetAlarm##
+	TESTL	EAX, EAX
+	JNS	6$
+suspnd4:MOVL	28t[ESP], EAX
+	POPAL
+	RET
+
+6$:	MOVL	tdb_alhndl[EDI], EAX
+8$:	MOVB	tdb_state[EDI], BL	;Update thread's state
+thddone:MOVL	tdb_ESP[EDI], ESP	;Store the stack pointer
+	MOVL	ESP, ctlESP		;Switch to the control stack
+	POPAL
+	DECL	xxxxcnt
+	CMPL	xxxxcnt, #0
+	JE	7$
+	INT3
+7$:
+	INT	knl_DISMISS##
+.PAGE
+	.SBTTL	thdCtlRelease - Function to allow other threads to run
+
+;This function suppends the current thread to allow other threads to run. A
+;  wakeup request is entered for the current thread so it will start again
+;  as soon as all pending threads have given up the CPU. Note that thread
+;  scheduling will occur even if no other threads are pending so it is
+;  generally a good idea to use some external mechanism to determine when
+;  it is necessary to call this function.
+;	XWSSVC thdCtlRelease(void);
+;  Value returned is always 0.
+
+thdCtlRelease::
+fbrCtlRelease::
+	MOVL	EDX, thdData
+	MOVB	tdb_state[EDX], #TS_WAKEWAIT ;Update thread's state now so
+					     ;  thdtlWake will work
+	PUSHL	EDX			;Request a wake-up for this thread
+	CALL	thdCtlWake
+	CALL	release
+	RET
+
+release:PUSHAL				;Save all registers
+	MOVL	EDI, thdData
+	JMP	thddone			;This will to a simple RET when the
+					;  thread is again scheduled.
+.PAGE
+	.SBTTL	thdCtlWake - Function to wake up a thread
+
+;This function wakes up a thread that has been suspended because of a call
+;  to thdCtlSuspend.
+;	void thdCtlWake(
+;	    long thddata);	// Offset of data for thread to wake
+
+;This function may be called from ANY user mode level, including other major
+;  threads. It is thread-safe realitive to everything except termination
+;  of minor threads. If a minor thread is terminated while this function is
+;  executing, this function may page-fault.
+
+thdCtlWake::
+fbrCtlWake::
+	PUSHL	EDI
+	MOVL	EDI, 8[ESP]		;Get data offset for thread to wake
+	CMPB	tdb_state[EDI], #TS_WAKEWAIT ;Is it wakeable?
+	JNE	14$			;No - fail!
+	MOVL	sigdata, EDI		;Yes - request a wake signal for the
+	PUSHL	wakevect		;  thread
+	PUSHL	#sigdata
+	PUSHL	#1
+	PUSHL	#-1
+	CALL	svcSchReqSignal##
+12$:	POPL	EDI
+	RET	4
+
+;Here if thread is not suspended
+
+14$:	MOVL	EAX, #ER_THDNS
+	JMP	12$
+.PAGE
+	.SBTTL	thdIoDevParm - Function to acces a device without opening it
+
+;This function is the thread version of the svcIoDevParm call.
+;	XOSSVC thdIoDevParm(
+;	    long  bits,
+;	    char *name,
+;	    void *parms);
+
+thdIoDevParm::
+fbrIoDevParm::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_DEVPARM
+	JMP	6$
+
+	.SBTTL	thdIoOpen - Function to open a device
+
+;This function is the thread version of the svcIoOpen call.
+;	XOSSVC thdIoOpen(
+;	    long  bits,
+;	    char *name,
+;	    void *parms);
+
+open_bits =!16t
+open_name =!12t
+open_parms=!8t
+
+thdIoOpen::
+fbrIoOpen::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_OPEN
+6$:	MOVL	EAX, open_bits[ESP]
+	MOVL	tdb_qab+qab_option[EDI], EAX
+	MOVL	EAX, iodonevect
+	MOVW	tdb_qab+qab_vector[EDI], AX
+	MOVL	EAX, open_name[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, open_parms[ESP]
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	PUSHL	EDI
+	CALL	svcIoQueue##
+	TESTL	EAX, EAX
+	JS	8$
+	CALL	waitio
+	TESTB	tdb_qab+qab_status+1[EDI], #QSTS$DONE>8
+	JE	10$
+	MOVL	EAX, tdb_qab+qab_error[EDI]
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EAX, tdb_qab+qab_handle[EDI]
+8$:	POPL	EDI
+	RET	12t
+
+10$:	POPL	EDI
+	MOVL	EAX, #ER_IONTC
+	RET	12t
+.PAGE
+	.SBTTL	thdIoDevChar - Function to get or set device characteristics values
+
+;This function is the thread version of the svcIoDevChar call.
+;	XOSSVC thdIoDevParm(
+;	    long  handle,
+;	    void *chars);
+
+devchar_hndl =!12t
+devchar_chars=!8t
+
+thdIoDevChar::
+fbrIoDevChar::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_DEVCHAR
+	MOVL	tdb_qab+qab_option[EDI], #CF_VALUES
+	MOVL	EAX, devchar_hndl[ESP]
+	MOVL	tdb_qab+qab_handle[EDI], EAX
+	MOVL	EAX, devchar_chars[ESP]
+	MOVL	tdb_qab+qab_buffer2[EDI], EAX
+	CLRL	EAX
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	CALL	doio
+	POPL	EDI
+	RET	8
+.PAGE
+	.SBTTL	thdIoDelete - Function to delete a file
+
+;This function is the thread version of the svcIoDelete call.
+;	XOSSVC thdIoDelete(
+;	    long  bits,
+;	    char *name,
+;	    void *parms);
+
+delete_bits =!16t
+delete_name =!12t
+delete_parms=!8t
+
+thdIoDelete::
+fbrIoDelete::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_DELETE;
+	MOVL	EAX, delete_bits[ESP]
+	MOVL	tdb_qab+qab_option[EDI], EAX
+	MOVL	EAX, iodonevect
+	MOVW	tdb_qab+qab_vector[EDI], AX
+	MOVL	EAX, delete_name[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, delete_parms[ESP]
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	PUSHL	EDI
+	CALL	svcIoQueue##
+	TESTL	EAX, EAX
+	JS	8$
+	CALL	waitio
+	TESTB	tdb_qab+qab_status+1[EDI], #QSTS$DONE>8
+	JE	10$
+	MOVL	EAX, tdb_qab+qab_error[EDI]
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EAX, tdb_qab+qab_amount[EDI]
+8$:	POPL	EDI
+	RET	12t
+
+10$:	POPL	EDI
+	MOVL	EAX, #ER_IONTC
+	RET	12t
+.PAGE
+	.SBTTL	thdIoRename - Function to rename a file
+
+;This function is the thread version of the svcIoRename call.
+;	XOSSVC thdIoRename(
+;	    long  bits,
+;	    char *newname,
+;	    char *oldname,
+;	    void *parms);
+
+rename_bits =!20t
+rename_new  =!16t
+rename_old  =!12t
+rename_parms=!8t
+
+thdIoRename::
+fbrIoRename::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_RENAME
+	MOVL	EAX, rename_bits[ESP]
+	MOVL	tdb_qab+qab_option[EDI], EAX
+	MOVL	EAX, iodonevect
+	MOVW	tdb_qab+qab_vector[EDI], AX
+	MOVL	EAX, rename_new[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, rename_old[ESP]
+	MOVL	tdb_qab+qab_buffer2[EDI], EAX
+	MOVL	EAX, rename_parms[ESP]
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	PUSHL	EDI
+	CALL	svcIoQueue##
+	TESTL	EAX, EAX
+	JS	8$
+	CALL	waitio
+	TESTB	tdb_qab+qab_status+1[EDI], #QSTS$DONE>8
+	JE	10$
+	MOVL	EAX, tdb_qab+qab_error[EDI]
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EAX, tdb_qab+qab_amount[EDI]
+8$:	POPL	EDI
+	RET	16t
+
+10$:	POPL	EDI
+	MOVL	EAX, #ER_IONTC
+	RET	16t
+.PAGE
+	.SBTTL	thdIoClose - Function to close a device
+
+;This function is the thread version of the svcIoClose call.
+;	XOSSVC thdIoClose(
+;	    long handle,
+;	    long bits);
+
+close_hndl=!12t
+close_bits=!8
+
+thdIoClose::
+fbrIoClose::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_CLOSE|QFNC$QIO
+	MOVL	EAX, close_hndl[ESP]
+	MOVL	tdb_qab+qab_handle[EDI], EAX
+	MOVL	EAX, close_bits[ESP]
+	MOVL	tdb_qab+qab_option[EDI], EAX
+	CLRL	EAX
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	tdb_qab+qab_buffer2[EDI], EAX
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	CALL	doio
+	POPL	EDI
+	RET	8t
+
+;Internal subroutine to do IO
+;	c{EDI} = Offset of TDB (QAB must be set up except for signal vector)
+;	CALL	doio
+;	c{EAX} = Return value
+
+doio:	MOVL	EAX, iodonevect
+	MOVW	tdb_qab+qab_vector[EDI], AX
+	PUSHL	EDI			;Queue the IO request
+	CALL	svcIoQueue##
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	CALL	waitio			;Wait until finished
+	TESTB	tdb_qab+qab_status+1[EDI], #QSTS$DONE>8 ;Finished now?
+	JE	10$			;No - someone is very mixed up!
+	MOVL	EAX, tdb_qab+qab_error[EDI] ;Yes - error?
+	TESTL	EAX, EAX
+	JS	6$			;Yes
+	MOVL	EAX, tdb_qab+qab_amount[EDI] ;No - get amount
+6$:	RET
+
+10$:	MOVL	EAX, #ER_IONTC
+	RET
+.PAGE
+	.SBTTL	thdIoFunc - Function to do general IO function
+
+;This function is more-or-less the thread version of the svcIoQueue call.
+;  It allows full access to all QAB values as arguments and as results but
+;  forces a blocking (in the context of the thread) function.
+;	long far thdIoFunc(
+;	    QAB far *qab);
+;  Value returned is the value returned by svcIoQueue. If this is negative
+;    indicating an error, the QAB contents is not updated.  Otherwise the
+;    QAB fields contain the returned values.
+
+thdIoFunc::
+fbrIoFunc::
+	PUSHL	ECX
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	ES
+	MOVL	EDI, thdData		;Copy his QAB to ours
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, 20t[ESP]
+	MOVL	ECX, #qab_SIZE/4
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVL	EDI, thdData		;Make sure its not blocking
+	ANDB	tdb_qab+qab_func+1[EDI], #{~{QFNC$WAIT>8}}&0xFF
+	ORB	tdb_qab+qab_func+1[EDI], #QFNC$QIO>8 ;Make sure it is queued
+	MOVL	EAX, iodonevect
+	MOVW	tdb_qab+qab_vector[EDI], AX
+	PUSHL	EDI			;Queue the IO request
+	CALL	svcIoQueue##
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	CALL	waitio			;Wait until finished
+	TESTB	tdb_qab+qab_status+1[EDI], #QSTS$DONE>8 ;Finished now?
+	JE	10$			;No - someone is very mixed up!
+	PUSHL	EAX
+	MOVL	ESI, 24t[ESP]		;Copy results back to his QAB
+	MOVL	EAX, tdb_qab+qab_amount[EDI]
+	MOVL	qab_amount[ESI], EAX
+	MOVL	EAX, tdb_qab+qab_error[EDI]
+	MOVL	qab_error[ESI], EAX
+	MOVL	EAX, tdb_qab+qab_func[EDI]
+	MOVL	qab_func[ESI], EAX
+	MOVL	EAX, tdb_qab+qab_handle[EDI]
+	MOVL	qab_handle[ESI], EAX
+	POPL	EAX
+6$:	POPL	ES
+	POPL	ESI
+	POPL	EDI
+	POPL	ECX
+	RET	4
+
+10$:	MOVL	EAX, #ER_IONTC
+	RET
+.PAGE
+	.SBTTL	thdIoInBlock - Function to input a block
+
+;This function is the thread version of the svcIoInBlock call.
+;	XOSSVC thdIoInBlock(
+;	    long      handle,
+;	    char far *block,
+;	    long      count);
+
+inblk_hndl=!16t
+inblk_bufr=!12t
+inblk_cnt =!8
+
+thdIoInBlock::
+fbrIoInBlock::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_INBLOCK|QFNC$QIO
+donoprm:MOVL	EAX, inblk_hndl[ESP]
+	MOVL	tdb_qab+qab_handle[EDI], EAX
+	MOVL	EAX, inblk_bufr[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, inblk_cnt[ESP]
+	MOVL	tdb_qab+qab_count[EDI], EAX
+	CLRL	EAX
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	CALL	doio
+	POPL	EDI
+	RET	12t
+
+	.SBTTL	thdIoInBlockP - Function to input a block with parameters
+
+;This function is the thread version of the svcIoInBlockP call.
+;	long far thdIoInBlockP(long handle, char far *block, long count,
+;		void far *parms);
+
+inblkp_hndl =!20t
+inblkp_bufr =!16t
+inblkp_cnt  =!12t
+inblkp_parms=!8
+
+thdIoInBlockP::
+fbrIoInBlockP::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_INBLOCK|QFNC$QIO
+doparm:	MOVL	EAX, inblkp_hndl[ESP]
+	MOVL	tdb_qab+qab_handle[EDI], EAX
+	MOVL	EAX, inblkp_bufr[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, inblkp_cnt[ESP]
+	MOVL	tdb_qab+qab_count[EDI], EAX
+	MOVL	EAX, inblkp_parms[ESP]
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	CALL	doio
+	POPL	EDI
+	RET	16t
+
+	.SBTTL	thdIoOutBlock - Function to output a block
+
+;This function is the thread version of the svcIoOutBlock call.
+;	XOSSVC thdIoOutBlock(
+;	    long  handle,
+;	    char *block,
+;	    long  count);
+
+thdIoOutBlock::
+fbrIoOutBlock::
+	PUSHL	EDI
+outb:	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_OUTBLOCK|QFNC$QIO
+	JMP	donoprm
+
+	.SBTTL	thdIoOutBlockP - Function to output a block with parameters
+
+;This function is the thread version of the svcIoOutBlockP call.
+;	long far thdIoOutBlockP(
+;	    long  handle,
+;	    char *block,
+;	    long  count,
+;	    void *parms);
+
+thdIoOutBlockP::
+fbrIoOutBlockP::
+	PUSHL	EDI
+outbp:	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_OUTBLOCK|QFNC$QIO
+	JMP	doparm
+
+	.SBTTL	thdIoOutString - Function to output a string
+
+;This function is the thread version of the svcIoOutString call.
+;	XOSSVC thdIoOutString(
+;	    long  handle,
+;	    char *block,
+;	    long  count);
+
+thdIoOutString::
+fbrIoOutString::
+	PUSHL	EDI
+	PUSHL	DS			;Copy DS to ES
+	POPL	ES
+	CLD
+	MOVL	EDI, inblk_bufr[ESP]	;Get offset of string
+	MOVL	ECX, inblk_cnt[ESP]	;Get maximum length
+	CLRL	EAX                     ;Scan for NUL character
+	RNSCASB	[EDI]			;Scan to end of str
+	JNE	4$
+	INCL	ECX
+4$:	MOVL	EAX, inblk_bufr[ESP]
+	SUBL	EAX, ECX
+	MOVL	inblk_cnt[ESP], ECX
+	JMP	outb
+
+	.SBTTL	thdIoOutStringP - Function to output a string with parameters
+
+;This function is the thread version of the svcIoOutStringP call.
+;	XOSSVC thdIoOutStringP(
+;	    long  handle,
+;	    char *block,
+;	    long  count,
+;	    void *parms);
+
+thdIoOutStringP::
+fbrIoOutStringP::
+	PUSHL	EDI
+	PUSHL	DS			;Copy DS to ES
+	POPL	ES
+	CLD
+	MOVL	EDI, inblkp_bufr[ESP]	;Get offset of string
+	MOVL	ECX, inblkp_cnt[ESP]	;Get maximum length
+	CLRL	EAX                     ;Scan for NUL character
+	RNSCASB	[EDI]			;Scan to end of str
+	JNE	6$
+	INCL	ECX
+6$:	MOVL	EAX, inblkp_bufr[ESP]
+	SUBL	EAX, ECX
+	MOVL	inblkp_cnt[ESP], ECX
+	JMP	outbp
+.PAGE
+	.SBTTL	thdIoSpecial - Function to special device function
+
+;This function is the thread version of the svcIoSpecial call.
+;	XOSSVC thdIoSpecial(
+;	    long  handle,
+;	    long  func,
+;	    char *buffer,
+;	    long  count,
+;	    void *parms);
+
+spec_hndl =!24t
+spec_func =!20t
+spec_bufr =!16t
+spec_cnt  =!12t
+spec_parms=!8
+
+thdIoSpecial::
+fbrIoSpecial::
+	PUSHL	EDI
+	MOVL	EDI, thdData
+	MOVL	tdb_qab+qab_func[EDI], #QFNC_SPECIAL
+	MOVL	EAX, spec_hndl[ESP]
+	MOVL	tdb_qab+qab_handle[EDI], EAX
+	MOVL	EAX, spec_func[ESP]
+	MOVL	tdb_qab+qab_option[EDI], EAX
+	MOVL	EAX, spec_bufr[ESP]
+	MOVL	tdb_qab+qab_buffer1[EDI], EAX
+	MOVL	EAX, spec_cnt[ESP]
+	MOVL	tdb_qab+qab_count[EDI], EAX
+	MOVL	EAX, spec_parms[ESP]
+	MOVL	tdb_qab+qab_parm[EDI], EAX
+	CALL	doio
+	POPL	EDI
+	RET	20t
+.PAGE
+waitio:	PUSHAL				;Save registers on the thread's stack
+	MOVB	tdb_state[EDI], #TS_IOWAIT ;Indicate waiting for IO
+	MOVL	tdb_ESP[EDI], ESP	;Save the thread's stack pointer
+	MOVL	ESP, ctlESP		;Switch to the control stack
+	POPAL
+
+	DECL	xxxxcnt
+	CMPL	xxxxcnt, #0
+	JE	45$
+	INT3
+45$:
+	INT	knl_DISMISS##
+.PAGE
+	.SBTTL	ctlloop - Main loop for control mode
+
+;Main loop for control mode (we get here the first time because of the stuff
+;  that is pre-loaded on the control environment stack)
+
+ctlloop:PUSHL	#0
+	PUSHL	#-1
+	PUSHL	#-1
+	CALL	svcSchSuspend##
+	JMP	ctlloop
+.PAGE
+;Following all the thread signal routines. All of these signals are at level 1
+;  and thus can only occur when in control mode.
+
+;IO done signal routine - This signal is generated whenever an IO operation
+;  completes
+
+iodonesignal:
+	INCL	xxxxcnt
+	CMPL	xxxxcnt, #1
+	JE	1$
+	INT3
+1$:
+	PUSHAL
+	MOVL	EDI, 32t+32t[ESP]	;Get address of data area for the thread
+	CMPB	tdb_state[EDI], #TS_IOWAIT ;Is the state right?
+	JE	resume			;Yes
+4$:	POPAL
+	DECL	xxxxcnt
+	CMPL	xxxxcnt, #0
+	JE	45$
+	INT3
+45$:
+	INT	knl_DISMISS#		;No - ignore it!
+
+;Delay signal routine - This signal is generated by an alarm when a
+;  thdCtlWait call times out.
+
+waitsignal:
+	INCL	xxxxcnt
+	CMPL	xxxxcnt, #1
+	JE	5$
+	INT3
+5$:
+	PUSHAL
+	MOVL	EDI, 32t+36t[ESP]	;Get address of data area for the thread
+	CMPB	tdb_state[EDI], #TS_TIMEWAIT ;Is the state right?
+	JE	resume			;Yes
+	JMP	4$			;No
+
+;Timed wake-up signal routine - This signal is generated by an alarm when
+;  a thdCtlSuspend call times out. There is a possible race condition here
+;  in that the thread may have already been woke up by a thdCtlWake call and
+;  the timer when off before we could cancel it. We eliminate this by using
+;  wake sequence number.
+
+suspendsignal:
+	INCL	xxxxcnt
+	CMPL	xxxxcnt, #1
+	JE	55$
+	INT3
+55$:
+	PUSHAL
+	MOVL	EDI, 32t+36t[ESP]	;Get the thread number and the wake
+	MOVL	EAX, EDI		;  sequence number
+	ANDL	EDI, #0xFFFF
+	SHLL	EDI, #2
+	ADDL	EDI, thdtbl
+	MOVL	EDI, [EDI]
+
+;Start of debug code
+
+	PUSHL	ESI
+	PUSHL	ECX
+	MOVL	ESI, debugpnt
+	MOVL	[ESI], #-1
+	MOVL	4[ESI], EDI
+	MOVL	8[ESI], EAX
+	MOVL	12t[ESI], #0
+	ADDL	ESI, #0x10
+	CMPL	ESI, #debugtop
+	JB	6$
+	MOVL	ESI, #debugrng
+6$:	MOVL	debugpnt, ESI
+	POPL	ECX
+	POPL	ESI
+
+;End of debug code
+
+	CMPB	tdb_state[EDI], #TS_WAKEWAIT ;Is the state right?
+	JNE	4$			;No - ignore this!
+	SHRL	EAX, #16t		;Yes - is the wake sequence number
+	CMPW	tdb_wkseq[EDI], AX	;  right?
+	JE	10$			;Yes
+	JMP	4$			;No
+
+;Wake-up signal routine - This signal is generated by a thdCtlWake call.
+
+wakesignal:
+	INCL	xxxxcnt
+	CMPL	xxxxcnt, #1
+	JE	65$
+	INT3
+65$:
+	PUSHAL
+	MOVL	EDI, 32t+32t[ESP]	;Get address of the thread's data
+
+;Start of debug code
+
+	PUSHL	ESI
+	PUSHL	ECX
+	MOVL	ESI, debugpnt
+	MOVZWL	ECX, tdb_wkseq[EDI]
+	MOVL	[ESI], ECX
+	MOVL	4[ESI], EDI
+	MOVL	8[ESI], EAX
+	MOVL	12t[ESI], #0
+	ADDL	ESI, #0x10
+	CMPL	ESI, #debugtop
+	JB	7$
+	MOVL	ESI, #debugrng
+7$:	MOVL	debugpnt, ESI
+	POPL	ECX
+	POPL	ESI
+
+;End of debug code
+
+	CMPB	tdb_state[EDI], #TS_WAKEWAIT ;Is the state right?
+	JNE	4$			;No - ignore this!
+	MOVL	EAX, tdb_alhndl[EDI]	;Yes - do we have an alarm pending?
+	TESTL	EAX, EAX
+	JE	12$			;No
+	PUSHL	EAX			;Yes - cancel it
+	CALL	svcSchClrAlarm##
+10$:	MOVL	tdb_alhndl[EDI], #0
+12$:	INCW	tdb_wkseq[EDI]		;Bump the wake sequence number (in case
+					;  an alarm snuck in)
+
+;Common code to resume a thread - When we get here we are executing on the
+;  control mode stack.
+;	c{EDI} = Offset of data area for thread
+
+resume:
+	CMPL	ESP, #_clib_stack#
+	JB	14$
+	INT3
+14$:
+
+	MOVB	tdb_state[EDI], #TS_ACTIVE ;Update the thread's state
+	MOVL	ctlESP, ESP		;Save the control stack pointer
+	MOVL	ESP, tdb_ESP[EDI]	;Restore the thread's stack pointer
+	MOVL	thdData, EDI		;Make this the current thread
+	POPAL				;Restore registers
+	RET				;Return
+.PAGE
+	.SBTTL	Data
+
+	.MOD	4
+
+lit31:	.LONG	31t
+
+	.PSECT	_DATA_p
+
+ctlESP:     .LONG  _clib_stack#-INISTK ;Saved control environment stack pointer
+thdData::
+fbrData::   .LONG  0		;Offset of data for current thread
+thdnmbr:    .LONG  0		;Maximum number of threads
+
+iodonevect: .LONG  0		;IO done signal vector
+wakevect:   .LONG  0		;Requested wake-up signal vector
+suspendvect:.LONG  0		;Delayed wake-up signal vector
+waitvect:   .LONG  0		;Timer signal vector
+
+thdcnt:     .LONG  0		;Current number of threads
+thdtbl:	    .LONG  0		;Offset of thread pointer table
+sigdata:    .LONG  0, 0xFFFF
+xxxxcnt::   .LONG  1
+
+;Initial values for the control stack - This is a signal return frame that
+;  returns to ctlloop. It is not used directly but is copied to the caller
+;  initial stack in fbrCtlInitialize.
+
+inistk:	.BLKL	8		;Saved registers
+	.LONG	0		;Saved GS
+	.LONG	0		;Saved FS
+	.LONG	GS_UDATA	;Saved ES
+	.LONG	GS_UDATA	;Saved DS
+	.LONG	ctlloop		;Saved EIP
+	.LONG	GS_UCODE	;Saved CS
+	.LONG	0x200		;Saved EFR
+	.WORD	0		;Number of data items
+	.WORD	0		;Signal number
+INISTK=!$-inistk
+
+debugrng:.BLKL	512t
+debugtop:.LONG	0xFFFFFFFF
+debugpnt:.LONG	debugrng
+
+	.END

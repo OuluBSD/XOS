@@ -1,0 +1,1343 @@
+	.TITLE	ffsfib - FFS routines that deal with fake FIBs
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+$$CHKCHAIN=!0
+
+	CODE
+
+;NOTE: Files are normally accessed by searching directories starting with
+;      the root directory. (The NEXTFILE function is the exception to this.)
+;      Each directory is "opened" (By incrementing the bfr_usecnt value in
+;      the FIB.). As each directory leading to the target file (or directory)
+;      is opened, all underlying directories are left open. Thus when the
+;      final file (or directory) is opened, all of the underlying directories
+;      that were traversed are also open and remain open as long as the file
+;      is open. When the target file or directory is closed, all of the
+;      underlying directories are closed by decrementing their use count.
+;      They are placed on the allocation list if their use count goes to 0.
+;      The following terms are used in the comments:
+;        Open
+;          The file or directory has a FIB in memory and its bfr_usecnt value
+;          is non-zero.
+;        Open on a DCB
+;	   The file is "open" and the DCB's dcb_dkbasefib item contains the
+;          address of the file's FIB.
+;      Thus FIB's may be (and generally will be) in memory with non-zero use
+;      counts when no IO operations are active. Cache blocks containing file
+;      and directory data blocks will never have non-zero use counts unless
+;      they are associated with an active IO operation.
+;      The total numbers of files open on a FAT file system is thus equal to
+;      the open count in the root FIB. (The use count (but not the open count)
+;      of the root FIB is initialized to 1 so that it will never be released.)
+;      In the FAT file system there is no real need for a separate open count
+;      for FIBs, since they are not normal disks blocks that can be accessed by
+;      an IO operation. The two counts are used here so this code more closely
+;      resembles the XFS code. In the XFS file system, FIBs are actual disk
+;      blocks that can be read or written directly when accessing the raw disk,
+;      requiring separate counts.
+
+;NOTE: The address of the FIB for a file's directory is stored in a file's FIB
+;      while the file is open. It is cleared before a closed file's FIB is
+;      released. This is necessary because it is possible for a closed
+;      directory FIB for a closed FIB to be discarded and recreated in a
+;      different buffer. As long as the directory is open (which it will be
+;      as long as the file is open) its FIB cannot be discarded, thus the
+;      address is valid as long as the file is open.
+
+;NOTE: The physical block numbers for the first and base (last) directory
+;      entries are stored in a file's FIB. Since directory entires are never
+;      moved, these values are valid as long as the file exists. Storing
+;      these values allows the directory to be modified without having to
+;      access the directory's FIB, which would create massive deadlock
+;      problems.
+
+;Function to create a fake FIB for a new file - We have already determined
+;  that this will be a new FIB. There is no possiblity that it already exists.
+;  Directory must be open on the DCB and locked. If an old FIB is specified
+;  attributes are taken from it except where overridden by specified values.
+;  Writen length, allocated length, and the pointer table are always taken
+;  from the old FIB if it is specified. If it is not specified, the file is
+;  assumed to be 0 length with nothing allocated. The old FIB must be open
+;  for exclusive access but not locked.
+;	long ffsmakefib(
+;	    ODB *odb,
+;	    FIB *ofib);
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return, the file is open on the DCB and is locked. In all cases
+;    the directory is open (if error return it is open on the DCB) and is
+;    locked.
+
+;This is the function which creates a new directory entry. This is either for
+;  a new file (ofib argument is NULL) or is the new directory entry for a file
+;  that is being renamed (ofib points to the current file FIB). When it returns
+;  the file has been created in the directory that was open on the DCB and that
+;  file is open on the DCB. For most purposes, a file and a fake FIB are
+;  equivilant. One cannot exist without the other, although FIBs for files
+;  that have not been accessed (recently) are virtual. An actual FIB is
+;  instantiated when ffsreadfib is called.
+
+$$$=!0
+FRM mkf_xdb    , xdb_SIZE
+FRM mkf_xleft  , 4
+FRM mkf_avail  , 4	;Bytes available in current group when looking for
+			;  free slots
+FRM mkf_entneed, 4	;Total number of directory entries needed (This is
+			;  counted down when storing extented entries.)
+FRM mkf_enthave, 4	;Number of contiguous empty slots we have found
+FRM mkf_slot   , 4	;Position in directory of first slot to use
+FRM mkf_dirfblk, 8
+FRM mkf_dirbblk, 8
+FRM mkf_dirbfr , 4
+FRM mkf_dirent , 4
+FRM mkf_dirname, 4
+FRM mkf_fibbufr, 4	;Address of buffer containing the FIB we are making
+FRM mkf_flags  , 1
+FRM mkf_chksum , 1
+FRM mkf_idbyte , 1
+FRM mkf_extnum , 1	;Number of extended directory entries needed
+mkf_SIZE=!$$$
+
+;Define values for mkf_flags (values must match what is stored in the
+;  directory at 0x0C)
+
+MKFF$LCEXT =!0x10	;Extension part contains lower case character (Must
+			;  be same bit as the all lower case name bit in the
+			;  DFS directory byte.)
+MKFF$LCNAME=!0x08	;Name part contains lower case character (Must be
+			;  same bit as the all lower case name bit in the
+			;  DFS directory byte.)
+MKFF$UCEXT =!0x02	;Extension part contains upper case character
+MKFF$UCNAME=!0x01	;Name part contains upper case character
+
+mkf_odb =!24t
+mkf_ofib=!20t
+
+ffsmakefib::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	mkf_SIZE
+	MOVL	mkf_dirbfr[EBP], #0	;No buffer to begin with
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]	;Is the disk write protected?
+	TESTL	ESI, ESI
+	JE	6$
+	TESTB	ucb_sts1[ESI], #U1$WPROT
+	JE	setname
+	MOVL	EAX, #ER_WPRER
+	JMP	mkfibdn
+
+6$:	MOVL	EAX, #ER_MDCHG
+	JMP	mkfibdn
+.PAGE
+;Set up the directory name. First make a pass through the name and see if it
+;  it valid as an 8x3 name. The following conditions are all required for a
+;  valid 8x3 name:
+;    1) Name must be between 1 and 8 characters
+;    2) Extension must be between 0 and 3 characters
+;    3) Name must not be mixed case (must be all upper or all lower case)
+;    4) Extension must not be mixed case (must be all upper or all lower case)
+;    5) There must be no more than 1 period
+
+setname:MOVL	EBX, mkf_odb[EBP]
+	MOVB	mkf_flags[EBP], #0
+	LEAL	ESI, odb_name[EBX]
+	LEAL	EDI, odb_dirname[EBX]
+	MOVL	ECX, #8
+	MOVB	mkf_flags[EBP], #0
+2$:	MOVZBL	EAX, [ESI]		;Get a character
+	CMPB	AL, #0			;End of name?
+	JE	10$			;Yes
+	INCL	ESI
+	BTL	chrtbl, EAX		;Valid character?
+	JNC	badname			;No
+	TESTB	AL, #0x80		;More than 0x7F
+	JNE	not8x3			;No - not valid 8x3 character
+	CMPB	AL, #'.'		;Period?
+	JE	10$			;Yes - end of name part
+	CMPB	AL, #'a'		;Is this a lower case letter?
+	JB	4$			;No
+	CMPB	AL, #'z'
+	JA	4$			;No
+	TESTB	mkf_flags[EBP], #MKFF$UCNAME ;Yes - is this OK?
+	JNE	not8x3			;No
+	ADDL	EAX, #'A'-'a'		;Yes - make it upper case
+	ORB	mkf_flags[EBP], #MKFF$LCNAME
+	JMP	6$
+
+;Here if not a lower case letter
+
+4$:	CMPB	AL, #'A'		;Is this an upper case letter?
+	JB	6$			;No
+	CMPB	AL, #'Z'
+	JA	6$			;No
+	TESTB	mkf_flags[EBP], #MKFF$LCNAME ;Yes - is this OK?
+	JNE	not8x3			;No
+	ORB	mkf_flags[EBP], #MKFF$UCNAME
+
+;Here with an acceptable name character
+
+6$:	MOVB	[EDI], AL		;Yes - store character
+	INCL	EDI
+	LOOP	ECX, 2$			;Continue if need more
+	MOVZBL	EAX, [ESI]		;Have 8 name characters - next one must
+	INCL	ESI			;  be 0 or period
+	CMPB	AL, #0
+	JE	12$
+	CMPB	AL, #'.'
+	JE	12$
+	JMP	not8x3
+
+;Here if name part is less than 8 characters - fill it out with spaces
+
+10$:	MOVB	[EDI], #' '
+	INCL	EDI
+	LOOP	ECX, 10$
+
+;Here with the start of the extenstion
+
+12$:	MOVL	ECX, #3
+14$:	MOVZBL	EAX, [ESI]		;Get a character
+	CMPB	AL, #0			;End of name?
+	JE	20$			;Yes
+	INCL	ESI
+	BTL	chrtbl, EAX		;Valid character?
+	JNC	badname			;No
+	TESTB	AL, #0x80		;More than 0x7F
+	JNE	not8x3			;No - not valid 8x3 character
+	CMPB	AL, #'.'		;Period?
+	JE	not8x3			;Yes - not valid in the extension
+	CMPB	AL, #'a'		;Is this a lower case letter?
+	JB	16$			;No
+	CMPB	AL, #'z'
+	JA	16$			;No
+	TESTB	mkf_flags[EBP], #MKFF$UCEXT ;Yes - is this OK?
+	JNE	not8x3			;No
+	ADDL	EAX, #'A'-'a'		;Yes - make it upper case
+	ORB	mkf_flags[EBP], #MKFF$LCEXT
+	JMP	18$
+
+;Here if not a lower case letter
+
+16$:	CMPB	AL, #'A'		;Is this an upper case letter?
+	JB	18$			;No
+	CMPB	AL, #'Z'
+	JA	18$			;No
+	TESTB	mkf_flags[EBP], #MKFF$LCEXT ;Yes - is this OK?
+	JNE	not8x3			;No
+	ORB	mkf_flags[EBP], #MKFF$UCEXT
+
+;Here with an acceptable extension character
+
+18$:	MOVB	[EDI], AL		;Yes - store character
+	INCL	EDI
+	LOOP	ECX, 14$		;Continue if need more
+	MOVZBL	EAX, [ESI]		;Have 3 extension characters - next one
+	CMPB	AL, #0			;  must be 0
+	JE	have8x3
+	JMP	not8x3
+
+;Here if extension part is less than 3 characters - it it out with spaces
+
+20$:	MOVB	[EDI], #' '
+	INCL	EDI
+	LOOP	ECX, 20$
+
+;Here with a valid 8x3 name stored
+
+have8x3:MOVZBL	EAX, mkf_flags[EBP]
+	ANDL	EAX, #MKFF$LCNAME|MKFF$LCEXT
+	MOVL	odb_dirname+de_bits[EBX], EAX
+	CLRL	EAX
+	MOVB	odb_dirname+de_attrib[EBX], AL
+	MOVB	mkf_chksum[EBP], AL
+	JMP	30$
+
+;Here if not a valid 8x3 name - Continue scanning to the end of the name to
+;  check for invalid characters.
+
+not8x3:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JE	24$
+	BTL	chrtbl, EAX
+	JC	not8x3
+badname:MOVL	EAX, #ER_BDSPC
+	JMP	mkfibdn
+
+;Construct the dummy invalid 8x3 name to use and determine how many extended
+;  directory entries are needed.
+
+24$:	LEAL	EDI, odb_dirname[EBX]
+	MOVW	[EDI], #' '		;Store space followed by null
+	MOVL	EAX, fnvalue#+0
+	MOVL	EDX, fnvalue#+4
+	ADDL	fnvalue#+0, #1
+	ADCL	fnvalue#+4, #0
+	MOVL	2[EDI], EAX		;Store 6 unique bytes
+	MOVW	6[EDI], DX
+	MOVL	8[EDI], #'/'		;Store / followed by 2 nulls as the
+					;  extension (This is almost the same
+					;  format used by Linux. The only
+					;  difference is that we use an
+					;  incrementing value starting with a
+					;  value based on the time and date
+					;  the system was loaded instead of a
+					;  random number.)
+	MOVL	12t[EDI], #0		;Clear some "reserved" bytes
+	MOVL	ECX, #11t		;Calculate the checksum for this entry
+	CLRL	EAX
+26$:	RORB	AL
+	ADDB	AL, [EDI]
+	INCL	EDI
+	LOOP	ECX, 26$
+	MOVB	mkf_chksum[EBP], AL
+	MOVL	EAX, odb_namelen[EBX]	;Determin how many extended directory
+	CMPB	odb_name-1[EBX+EAX], #'.' ;Does the name end with a period?
+	JNE	28$
+	MOVB	odb_name-1[EBX+EAX], #0	;Yes - remove it
+	DECL	odb_namelen[EBX]
+	DECL	EAX
+28$:	ADDL	EAX, #12t		;Entries are needed (note that if the
+	CLRL	EDX			;  last entry is exactly filled there
+	CLRL	EDX			;  is no final 0 value stored)
+	DIVL	lit13#
+30$:	MOVB	mkf_extnum[EBP], AL	;Store number of extended entries
+	INCL	EAX
+	MOVL	mkf_entneed[EBP], EAX	;Store total number of entries needed
+.PAGE
+;Here with the name for the directory entry set up. Now scan the directory
+;  and try to find a big enough hole for this entry. We use the first one
+;  we find which is big enough.
+
+namerdy:MOVL	EDI, knlTda+tdaDcb##
+	CLRL	EAX
+	MOVL	mkf_enthave[EBP], EAX	;Not collecting space
+	MOVL	mkf_slot[EBP], EAX	;No space found yet
+	MOVL	dcb_dkfilepos[EDI], EAX	;Set to beginning of the directory
+	MOVL	EAX, dcb_dkbasefib[EDI]
+	MOVL	dcb_dkcurfib[EDI], EAX
+nxdblk:	CALL	ffssetrdpos#		;Get position for read
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error
+	JE	extddir			;If at end of directory
+	MOVL	mkf_avail[EBP], EAX	;Save amount available
+
+;Here to read the next block
+
+4$:	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	mkf_avail[EBP]
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Get block into a buffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error
+	MOVL	mkf_dirbfr[EBP], EBX
+	LEAL	EDX, bfr_data[EBX]
+	MOVL	mkf_dirent[EBP], EDX
+nxdent:	MOVL	EDX, mkf_dirent[EBP]
+	CMPB	[EDX], #0		;Is this entry available?
+	JE	18$			;Yes
+	CMPB	[EDX], #0xE5		;Maybe
+	JNE	16$			;No
+	MOVZBL	EAX, de_bits[EDX]	;Maybe - is the entry being renamed?
+	ANDL	EAX, #0x07
+	CMPB	AL, #0x07
+	JNE	18$			;No
+	CMPB	de_renchr[EDX], #0	;Maybe
+	JE	18$			;No
+	TESTB	de_renchr[EDX], #0x80	;Maybe
+	JNE	18$			;No
+16$:	MOVB	mkf_enthave[EBP], #0	;Slot is not available
+	JMP	24$
+
+;Here with an available slot
+
+18$:	CMPB	mkf_enthave[EBP], #0	;First slot this time?
+	JNE	20$			;No
+	MOVL	EAX, dcb_dkfilepos[EDI]	;Yes - save its position
+	MOVL	mkf_slot[EBP], EAX
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;And its block number
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	MOVL	mkf_dirfblk+0[EBP], EAX
+	MOVL	mkf_dirfblk+4[EBP], EDX
+20$:	INCB	mkf_enthave[EBP]	;Count it
+	MOVZBL	EAX, mkf_enthave[EBP]	;Is it enough?
+	CMPB	AL, mkf_entneed[EBP]
+	JAE	hvslot
+24$:	ADDL	mkf_dirent[EBP], #32t
+	ADDL	dcb_dkfilepos[EDI], #32t
+	TESTL	dcb_dkfilepos[EDI], #0x1FF ;At end of a block?
+	JNE	nxdent			;No - continue
+	PUSHL	EBX			;Yes - release the current block
+	CALL	xosdskRelsBufr##
+	MOVL	mkf_dirbfr[EBP], #0
+	SUBL	mkf_avail[EBP], #0x200	;More available in this group?
+	JLE	nxdblk			;No
+	INCL	dcb_dkdskblk[EDI]	;Yes - just bump the block number
+	JMP	4$
+.PAGE
+;Here if didn't find enough space for the entry - Must extend the directory.
+;  We do this in two steps to protect against a failure during this from
+;  exposing previously written data on the disk. The first step allocates the
+;  blocks, marks them as allocated but does not link them to the FAT chain for
+;  the directory. We zero these blocks and then link them into the FAT chain.
+;  Doing the last two steps in the opposite (more obvious) order would result
+;  in unzeroed blocks in the directory if the system failed between the two
+;  steps. This would not be necessary if the FAT file system kept a written
+;  length for directories.
+
+extddir:MOVL	EBX, dcb_dkbasefib[EDI] ;Get base FIB for directory
+	CMPL	ff_f1pnt+1[EBX], #1	;Is it the fixed root directory?
+	JNE	8$			;No - go on
+	MOVL	EAX, #ER_DIRFL		;Error = DIRectory FuLl
+	JMP	mkfibdn
+
+;We always expand the directory by 1 cluster. Since the longest name we allow
+;  is 96 characters (which would require a total of 9 directory slots) an
+;  entry will always fit in one block starting at the beginning of the block
+;  (which contains 16 directory slots). Thus one cluster is enough, even if
+;  we have 1 block clusters.
+
+;NOTE: We keep the first block which we allocate while writing any other
+;      blocks that we need to zero. This is OK by the deadlock rules since
+;      these blocks are always in order of increasing block number (actually
+;      they are continuous).
+
+8$:
+
+	CALL	xosdskGetDiskRes##	;Get the disk resource (We only have
+	TESTL	EAX, EAX		;  the directory FIB locked at this
+					;  point so this is OK.)
+	JS	mkfibdn			;If error
+	PUSHL	#1			;Amount to extend
+	LEAL	EAX, mkf_xdb[EBP]
+	PUSHL	EAX
+	CALL	ffsextend#		;Start extending the directory
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error!
+	MOVL	ESI, dcb_dkucb[EDI]	;Get address of the UCB
+	MOVL	EAX, ucb_clussize[ESI]
+	MOVZBL	ECX, ucb_clusshft[ESI]
+	MOVL	mkf_xleft[EBP], EAX
+	MOVL	EAX, mkf_xdb+xdb_first[EBP] ;Get first cluster allocated
+	CLRL	EDX
+	SHLDL	EDX, EAX, CL		;Convert to block number
+	SHLL	EAX, CL
+	ADDL	EAX, ucb_fcblk+0[ESI]	;Add block for "first" cluster
+	ADCL	EDX, ucb_fcblk+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	CMPB	mkf_enthave[EBP], #0	;Did we find any space at the end?
+	JNE	12$			;Yes - use it
+	MOVL	mkf_dirfblk+0[EBP], EAX	;No - put the new entry at the start
+	MOVL	mkf_dirfblk+4[EBP], EDX	;  of what we just added
+	MOVL	EAX, dcb_dkfilepos[EDI]
+	MOVL	mkf_slot[EBP], EAX
+12$:	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	EAX
+	CALL	xosdskNewBlock##	;Get a zeroed buffer for this block
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	28$
+	PUSHL	EBX
+	CALL	xosdskWriteBufr##	;Write out the buffer
+	TESTL	EAX, EAX
+	JS	28$
+	CMPL	mkf_dirbfr[EBP], #0	;First new block?
+	JNE	16$			;No
+	MOVL	mkf_dirbfr[EBP], EBX	;Yes - remember it
+	JMP	18$
+
+16$:	PUSHL	EBX			;Not first buffer allocated - give it up
+	CALL	xosdskRelsBufr##
+18$:	ADDL	dcb_dkdskblk+0[EDI], #1	;Bump block number
+	ADCL	dcb_dkdskblk+4[EDI], #0
+	DECL	mkf_xleft[EBP]		;More to initialize here?
+	JNE	12$			;Yes - continue
+	LEAL	EAX, mkf_xdb[EBP]
+	PUSHL	EAX
+	CALL	ffsextfin#		;Finish extending the directory
+	TESTL	EAX, EAX
+	JS	30$
+	CALL	xosdskGiveDiskRes##	;Give up the disk resource
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	MOVL	EAX, ff_alloc[EBX]	;Update written size to be same as
+	MOVL	ESI, dcb_dkucb[EDI]	;  allocated size
+	MOVB	CL, ucb_clusshft[ESI]
+	ADDB	CL, #9
+	SHLL	EAX, CL
+	MOVL	ff_length[EBX], EAX
+	MOVZBL	EAX, mkf_extnum[EBP]	;Set dcb_dkfilepos to point to where
+	SHLL	EAX, #5			;  the base entry goes
+	ADDL	EAX, mkf_slot[EBP]
+	MOVL	dcb_dkfilepos[EDI], EAX
+
+;Here with the directory extended. Since directories are not extended very
+;  often, it seems like a good idea to commit the new allocation to disk at
+;  this point even though this will slow things down somewhat. It is NOT
+;  necessary to update the directory entry for the directry since all we
+;  have changed is the allocated length of the directory which is not stored
+;  in the directory entry. (The written length of a directory, which is stored
+;  in its directory, is always 0.) 
+
+	CALL	ffswritefats#		;Write any FAT blocks that have been
+	TESTL	EAX, EAX		;  changed
+	JS	28$			;If error, try to give up the blocks
+					;  (Which will probably fail!)
+	MOVL	EAX, dcb_dkbasefib[EDI] ;Get base FIB for directory we are
+					;  extending
+	ANDB	bfr_status[EAX], #~BS$CHNGD ;Indicate not changed
+	JMP	hvslot
+
+24$:	MOVL	EAX, #ER_MDCHG
+	JMP	mkfibdn
+
+;Here if error writing the newly allocated blocks
+
+28$:	PUSHL	EAX
+	PUSHL	mkf_xdb+xdb_first[EBP]	;Give up the cluster we got
+	PUSHL	#1
+	CALL	ffsdeallocc#		;Give up the clusters we have
+	POPL	EAX
+30$:	PUSHL	EAX
+	CALL	xosdskGiveDiskRes##	;Give up the disk resource
+	POPL	EAX
+	JMP	mkfibdn
+.PAGE
+;Here with the position of the first slot to use in the directory. When get
+;  here mkf_dirfblk contains the number of the block for the first directory
+;  entry. mkf_dirbfr points to the locked buffer containg the block for the
+;  base directory entry. These may be the same or different blocks.
+
+hvslot:	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, mkf_dirbfr[EBP]	;Get buffer for the base entry
+	MOVL	EAX, mkf_dirfblk+0[EBP]	;Is the entry split across 2 blocks?
+	MOVL	EDX, mkf_dirfblk+4[EBP]
+	ADDL	EAX, ucb_partnoff+0[ESI]
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	CMPL	EAX, bfr_block+0[EBX]
+	JNE	4$			;Yes
+	CMPL	EDX, bfr_block+4[EBX] ;Maybe
+	JE	6$			;No - this is easy!
+4$:	MOVL	EAX, mkf_dirfblk+0[EBP]	;Yes
+	MOVL	EDX, mkf_dirfblk+4[EBP]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	MOVL	EAX, bfr_block+0[EBX]
+	MOVL	EDX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	mkf_dirbblk+0[EBP], EAX
+	MOVL	mkf_dirbblk+4[EBP], EDX
+	PUSHL	EBX			;Give up the second block
+	CALL	xosdskRelsBufr##
+	MOVL	mkf_dirbfr[EBP], #0
+	PUSHL	#'SCB='			;Get the block for the first entry
+	PUSHL	mkf_avail[EBP]
+	LEAL	EAX, mkf_dirbfr[EBP]
+	PUSHL	EAX
+	CALL	xosdskFindBlock##
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error (Unlikely since we just read
+					;  it here!)
+	MOVL	EBX, mkf_dirbfr[EBP]
+
+;When get here:
+;	c{EBX}         = Address of buffer for block for first directory entry
+;	                   (this buffer is locked)
+;	c{mkf_dirbblk} = Block number of block in partition for base directory
+;			   entry if base entry is in different block
+;	c{mkf_slot}    = Offset in file of first directory entry
+
+6$:	MOVL	EDX, mkf_slot[EBP]
+	ANDL	EDX, #0x01E0
+	LEAL	EDX, bfr_data[EBX+EDX]
+	MOVL	mkf_dirent[EBP], EDX
+	MOVB	mkf_idbyte[EBP], #0x40	;Get value for first extended entry
+doslot:	CMPB	[EDX], #0xE5		;Is this an available slot?
+	JE	12$			;Yes
+	CMPB	[EDX], #0		;Maybe
+	JE	12$
+	CRASH	DSNA			;[Directory Slot Not Available]
+
+12$:	DECL	mkf_entneed[EBP]	;Is this the final slot?
+	JE	intobase		;Yes
+
+;Here to write a long name directory entry
+
+	MOVL	EAX, mkf_entneed[EBP]	;Store the ID byte
+	ADDB	AL, mkf_idbyte[EBP]
+	MOVB	mkf_idbyte[EBP], #0
+	MOVB	[EDX], AL
+	MOVB	xe_attrib[EDX], #0x0F	;Store the attribute byte
+	MOVB	AL, mkf_chksum[EBP]	;Store the checksum byte
+	MOVB	xe_chksum[EDX], AL
+	MOVB	xe_resrvd[EDX], #0	;Clear the reserved bytes
+	MOVW	xe_pntr[EDX], #0
+	IMULL	EAX, mkf_entneed[EBP], #13t
+	ADDL	EAX, mkf_odb[EBP]	;Store the part of the long name
+	ADDL	EAX, #odb_name-13t	;  that goes in this slot
+	PUSHL	EAX
+	ADDL	EDX, #xe_name0
+	PUSHL	EDX
+	PUSHL	#5
+	CALL	putlongchrs		;Store first 5 characters
+	PUSHL	EAX
+	MOVL	EAX, mkf_dirent[EBP]
+	ADDL	EAX, #xe_name1
+	PUSHL	EAX
+	PUSHL	#6
+	CALL	putlongchrs		;Store next 6 characters
+	PUSHL	EAX
+	MOVL	EAX, mkf_dirent[EBP]
+	ADDL	EAX, #xe_name2
+	PUSHL	EAX
+	PUSHL	#2
+	CALL	putlongchrs		;Store next 2 characters
+	ADDL	mkf_dirent[EBP], #32t	;Bump to next slot
+	ADDL	mkf_slot[EBP], #32t
+	MOVL	EDX, mkf_dirent[EBP]
+	TESTL	mkf_slot[EBP], #0x1FF	;At end of this block?
+	JNE	doslot			;No - continue with this block
+
+;Here if at end of block. Because we got here, we know that the mkf_dirbblk
+;  value is valid.
+
+	PUSHL	EBX			;Write out the block
+	CALL	xosdskWriteBufr##
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##	;Give up the buffer
+	MOVL	mkf_dirbfr[EBP], #0
+	MOVL	EAX, mkf_dirbblk+0[EBP]
+	MOVL	EDX, mkf_dirbblk+4[EBP]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#'SCB='			;Get the next block
+	PUSHL	mkf_avail[EBP]
+	LEAL	EAX, mkf_dirbfr[EBP]
+	PUSHL	EAX
+	CALL	xosdskFindBlock##
+	TESTL	EAX, EAX
+	JS	mkfibdn			;If error (Unlikely since we just read
+					;  it here!)
+	MOVL	EBX, mkf_dirbfr[EBP]
+	LEAL	EDX, bfr_data[EBX]
+	MOVL	mkf_dirent[EBP], EDX
+	JMP	doslot			;Continue
+.PAGE
+;Here to fill the final (base) directory slot - This is the standard DOS
+;  8x3 directory entry. First we allocate and set up the new FIB which we
+;  can do now that we have the disk block number for this directory block.
+;  We could have done this a bit ealier, but there is no real reason to
+;  and doing it here seems a bit easier.
+
+intobase:
+	MOVL	EDX, mkf_slot[EBP]	;Build a "block number" for the fake
+	ORL	EDX, #0xFFFFFE00	;  FIB as follows:
+	SHLL	EDX, #22t		;    1 (1) Entry # in block (4)
+	ORL	EDX, bfr_block+4[EBX]	;    Directory block # (59)
+	MOVL	EAX, bfr_block+0[EBX]
+	MOVL	EBX, mkf_ofib[EBP]	;Do we have an old FIB?
+	TESTL	EBX, EBX
+	JE	ndnfib			;No - go create a new one
+
+;Here if have an old FIB (rename) - We must first "rename" the FIB, which
+;  means that we simply change its "block number" to reflect the new position
+;  of the corresponding directory entry.
+
+	PUSHL	EBX			;Push arguments for xosdskRenameBufr
+	PUSHL	EDX			;Block number on base unit
+	PUSHL	EAX
+	PUSHL	EBX			;Lock the FIB first
+	CALL	xosdskLockBufrW##
+	CALL	xosdskRenameBufr##	;Now "rename" it
+	JMP	parmrdy			;Continue
+.PAGE
+;Here if need to create a new FIB (not rename)
+
+ndnfib:	SUBL	EAX, ucb_partnoff+0[ESI] ;Change to block number in partition
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#0			;Search for the fake FIB for the file
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	EAX
+	CALL	xosdskSrchForBlock##
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	rdfibdn			;If error (This is messy since we have
+					;  partly written the directory entry
+					;  if there are extended entries. We
+					;  would like to go back and remove
+					;  these, but if this fails the system
+					;  is probably unstable so this is not
+					;  a good idea. The lost entries will
+					;  do no harm and should eventually be
+					;  recovered when a disk cleanup is
+					;  done.)
+	JNE	hvfibb			;If not there
+	CRASH	FNDF			;Found it - should not be possible!!
+
+;Here with a new block created for the FIB
+
+hvfibb:	MOVL	mkf_fibbufr[EBP], EBX
+	PUSHL	EBX
+	CALL	xosdskClrBufr##		;Clear the buffer
+	MOVL	EDX, dcb_dkbasefib[EDI]
+	INCW	bfr_usecnt[EBX]		;Increment open count
+	MOVL	EAX, bfr_block+0[EDX]	;Store the "block number" of the
+	MOVL	EDX, bfr_block+4[EDX]	;  directory FIB in the file FIB
+	SUBL	EAX, ucb_partnoff+0[ESI] ;Convert to block in partition
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	ff_dirfib+0[EBX], EAX
+	MOVL	ff_dirfib+4[EBX], EDX
+	ORB	bfr_status[EBX], #BS$FFIB ;Indicate this is a fake FIB
+	MOVL	ff_label[EBX], #'NFIB'	;Store label for debugging
+
+;Initialize the file's parameters
+
+	MOVB	ff_attrib[EBX], #XA$FILE ;Assume it's a file
+	TESTL	knlTda+tdaOption##, #XO$ODFS ;Is it a directory?
+	JE	4$			;No
+	MOVB	ff_attrib[EBX], #XA$DIRECT ;Yes - indicate that
+4$:	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_grpsize[ESI]	;Store group size
+	MOVL	ff_grpsize[EBX], EAX
+	CALL	getcurffsdttm#		;Get the current date and time
+	MOVL	ff_mdttm[EBX], EAX	;Store it as the modify date/time
+	MOVL	ff_cdttm[EBX], EAX	;And as the creation date/time
+	SHRL	EAX, #16t
+	MOVW	ff_adate[EBX], AX	;And as the access date
+.PAGE
+;Here with the parameter values initialized
+
+parmrdy:MOVL	EAX, dcb_dkfilepos[EDI]
+	MOVL	ff_dirpos[EBX], EAX	;Store position of directory entry
+	MOVZBL	EAX, mkf_extnum[EBP]	;Store number of extended directory
+	MOVB	ff_extnum[EBX], AL	;  entries used
+	MOVL	EAX, mkf_dirfblk+0[EBP]	;Store the block number for the block
+	MOVL	EDX, mkf_dirfblk+4[EBP]	;  containing the first directory entry
+	MOVL	ff_dirfblk+0[EBX], EAX
+	MOVL	ff_dirfblk+4[EBX], EDX
+	MOVZBL	EAX, mkf_chksum[EBP]	;Store short name checksum
+	MOVB	ff_chksum[EBX], AL
+	PUSHL	EBX			;Update the file parameters with any
+	CALL	ffsupdateparm#		;  that he specified
+	MOVL	EAX, dcb_dkbasefib[EDI]	;Store address of the directory FIB
+	MOVL	bfr_dirfiba[EBX], EAX
+	MOVL	dcb_dkbasefib[EDI], EBX	;Make the file open on the DCB
+	MOVL	dcb_dkcurfib[EDI], EBX
+	MOVL	dcb_dkfilepos[EDI], #0
+	MOVL	EDX, mkf_odb[EBP]	;Store file name in the FIB
+	MOVL	ECX, odb_namelen[EDX]
+	LEAL	ESI, ff_name[EBX]
+	ADDL	EDX, #odb_name
+6$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	MOVB	[ESI], AL
+	INCL	ESI
+	LOOP	ECX, 6$
+	MOVB	[ESI], #0		;Store final null
+	MOVL	ECX, mkf_odb[EBP]	;Copy the 8x3 name to the directory
+	ADDL	ECX, #odb_dirname
+	MOVL	EDX, mkf_dirent[EBP]
+	MOVL	EAX, [ECX]
+	MOVL	[EDX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	4[EDX], EAX
+	MOVL	EAX, 8[ECX]
+	MOVL	8[EDX], EAX
+	MOVL	EAX, 12t[ECX]		;Copy the case bits
+	MOVW	12t[EDX], AX
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, mkf_dirbfr[EBP]
+	ORL	EAX, bfr_block+0[EBX]
+	MOVL	ECX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	ECX, ucb_partnoff+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], ECX
+	PUSHL	dcb_dkbasefib[EDI]
+
+	PUSHL	EDX
+	MOVL	EDX, dcb_dkbasefib[EDI]
+	CMPB	ff_extnum[EDX], #0
+	JNE	10$
+	MOVL	ECX, bfr_block+4[EDX]
+	MOVL	EAX, bfr_block+0[EDX]
+	ANDL	ECX, #0x07FFFFFF
+
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	ECX, ucb_partnoff+4[ESI]
+	CMPL	EAX, ff_dirfblk+0[EDX]
+	JNE	8$
+	CMPL	ECX, ff_dirfblk+4[EDX]
+	JE	10$
+8$:	CRASH	BDFB
+
+10$:	POPL	EDX
+
+	PUSHL	EBX
+	MOVL	mkf_dirbfr[EBP], #0	;ffsupdatedir will release the block
+
+	PUSHL	EDX			;Store the file parameters in the
+	CALL	ffsupdatedir		;  directory and write the directory
+					;  block and release the block
+mkfibdn:CMPL	mkf_dirbfr[EBP], #0	;Release any directory buffers we still
+	JE	12$			;  have
+	PUSHL	EAX
+	PUSHL	mkf_dirbfr[EBP]
+	CALL	xosdskRelsBufr##
+	POPL	EAX
+12$:	LEAVE
+	POPL	EBX			;  block
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to store Unicode characters into an extended directory entry
+;	char *putlongchrs(
+;	    char   *src,	// Address of source string or NULL if past
+;				//   end of the string
+;	    ushort *dst,	// Destination address
+;	    int     cnt);	// Number of character to store
+;  Value returned is the address of the next source character of NULL if
+;    have reached the end of the source string.
+
+plc_src=!12t
+plc_dst=!8
+plc_cnt=!4
+
+putlongchrs:
+	MOVL	EAX, plc_src[ESP]
+	MOVL	ECX, plc_dst[ESP]
+	TESTL	EAX, EAX
+	JE	10$
+4$:	MOVZBL	EDX, [EAX]
+	INCL	EAX
+	MOVW	[ECX], DX
+	DECL	plc_cnt[ESP]
+	JE	14$
+	ADDL	ECX, #2
+	CMPB	DL, #0
+	JNE	4$
+	CLRL	EAX
+10$:	MOVW	[ECX], #0xFFFF
+	ADDL	ECX, #2
+	DECL	plc_cnt[ESP]
+	JNE	10$
+12$:	RET
+
+14$:	CMPB	DL, #0
+	JNE	12$
+	CLRL	EAX
+	RET
+.PAGE
+;Function to set up a fake FIB for an existing file - Directory must be open
+;  on the DCB and locked.
+;	long ffsreadfib(
+;	    ODB  *odb);		;Address of the ODB
+;  Value returned is 0 if normal or a negative XOS error code if error. On
+;    a normal return the FIB is open on the DCB and is locked. In all cases
+;    the directory is open (if error it is still open on the DCB) and is
+;    locked.
+
+$$$=!0
+FRM rdf_dirblk, 4
+FRM rdf_dirbfr, 4
+rdf_SIZE=!$$$
+
+rdf_odb=!20t
+
+ffsreadfib::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rdf_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, rdf_odb[EBP]
+	MOVL	EAX, odb_dirpos[EBX]	 ;Build a "block number" for the fake
+	ORL	EAX, #0xFFFFFE00	 ;  FIB as follows:
+	SHLL	EAX, #22t		 ;    1 (1) Entry # in block (4)
+	MOVL	ECX, odb_dirbblk+4[EBX]	 ;    Directory block # (59)
+	ANDL	ECX, #0x07FFFFFF
+	ORL	EAX, ECX
+	MOVL	dcb_dkdskblk+4[EDI], EAX
+	MOVL	EAX, odb_dirbblk+0[EBX]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	PUSHL	#0			;Search for the fake FIB for the file
+	MOVL	EAX, ESP		;  (We can do this with the directory
+	PUSHL	#'SCB='			;  FIB and directory page locked since
+	PUSHL	EAX			;  if this FIB exists it is for a file
+	CALL	xosdskSrchForBlock##	;  in the directory.)
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	rdfibdn			;If error
+	JNE	10$			;If not there
+
+;Here if found the FIB in the cache
+
+	TESTB	bfr_status[EBX], #BS$FFIB ;Is it a fake FIB?
+	JNE	4$
+	CRASH	NAFF			;[Not A Fake FIB]
+
+4$:	MOVL	EAX, dcb_dkbasefib[EDI]
+	CMPL	bfr_dirfiba[EBX], #0	;Is the directory FIB address set?
+	JNE	6$			;Yes
+	MOVL	bfr_dirfiba[EBX], EAX	;No - set it now
+	JMP	fibrdy
+
+6$:	CMPL	EAX, bfr_dirfiba[EBX]	;Is it right?
+	JE	fibrdy			;Yes
+	CRASH	BDFA			;[Bad Directory FIB Address]
+
+;Here if FIB not found in the cache - must build it from the file's directory
+;  entry.
+
+10$:	PUSHL	EBX			;Clear the buffer
+	CALL	xosdskClrBufr##
+	MOVL	ff_label[EBX], #'OFIB'	;Store label
+	ORB	bfr_status[EBX], #BS$FFIB ;Indicate this is a fake FIB
+	MOVL	EDX, dcb_dkbasefib[EDI]
+	MOVL	EAX, bfr_block+0[EDX]	;Store the "block number" of the
+	MOVL	EDX, bfr_block+4[EDX]	;  directory FIB
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	ff_dirfib+0[EBX], EAX
+	MOVL	ff_dirfib+4[EBX], EDX
+	MOVL	EAX, dcb_dkbasefib[EDI]	;Store address of the directory FIB
+	MOVL	bfr_dirfiba[EBX], EAX
+	MOVL	ECX, rdf_odb[EBP]
+	MOVL	EDX, dcb_dkfilepos[EDI]	;Get position in directory of directory
+					;  entry
+	MOVL	ff_dirpos[EBX], EDX	;Store in file FIB
+	MOVZBL	EAX, odb_extnum[ECX]	;Store number of extended directory
+	MOVB	ff_extnum[EBX], AL	;  entries
+	MOVZBL	EAX, odb_chksum[ECX]	;Store short name checksum value
+	MOVB	ff_chksum[EBX], AL
+	MOVL	EAX, odb_dirfblk+0[ECX]	;Store the directory block numbers in
+	MOVL	EDX, odb_dirfblk+4[ECX]	;  the FIB
+	MOVL	ff_dirfblk+0[EBX], EAX
+	MOVL	ff_dirfblk+4[EBX], EDX
+	MOVL	EDX, bfr_block+4[EBX]	 ;Get the directory block that contains
+	MOVL	EAX, bfr_block+0[EBX]	 ;  the base entry for the file (We get
+	ANDL	EDX, #0x07FFFFFF	 ;  the block number from the fake
+	SUBL	EAX, ucb_partnoff+0[ESI] ;  block number for the directory
+	SBBL	EDX, ucb_partnoff+4[ESI] ;  FIB!)
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#'SCB='
+	PUSHL	#0			;No read-ahead here (Shouldn't make any
+	LEAL	EAX, rdf_dirbfr[EBP]	;  difference since the block should
+	PUSHL	EAX			;  be in the cache since we just read
+	CALL	xosdskFindBlock##	;  it when searching the directory.)
+	TESTL	EAX, EAX
+	JS	rdfdre			;If error
+	MOVL	ECX, rdf_odb[EBP]
+	MOVL	EDX, odb_dirpos[ECX]	;Get address of directory entry in the
+	ANDL	EDX, #0x1E0		;  buffer
+	ADDL	EDX, rdf_dirbfr[EBP]
+	ADDL	EDX, #bfr_data
+	MOVZBL	EAX, de_attrib[EDX]
+	TESTB	AL, #XA$DIRECT|XA$LABEL	;Is this a file?
+	JNE	12$			;No
+	ORL	EAX, #XA$FILE		;Yes - indicate that
+12$:	MOVB	ff_attrib[EBX], AL	;Store attribute byte in the FIB
+	MOVL	EAX, ucb_grpsize[ESI]	;Store group size (since the group size
+	MOVL	ff_grpsize[EBX], EAX	;  is not stored in the directory, we
+					;  always use the default for the disk)
+	MOVL	EAX, de_cdttm[EDX]	;Store date and time for file
+	MOVL	ff_cdttm[EBX], EAX
+	MOVL	EAX, de_mdttm[EDX]
+	MOVL	ff_mdttm[EBX], EAX
+	MOVZWL	EAX, de_adate[EDX]
+	MOVW	ff_adate[EBX], AX
+	MOVL	EAX, de_size[EDX]	;Store written length in FIB
+	MOVL	ff_length[EBX], EAX
+	CLRL	EAX
+	TESTB	ucb_sts3[ESI], #U3$FAT32 ;Have 32 bit FATs?
+	JE	14$			;No
+	MOVW	AX, de_pntrhi[EDX]	;Yes - get high 16 bits of cluster
+	SHLL	EAX, #16t		;  number
+14$:	MOVW	AX, de_pntr[EDX]	;Get low 16 bits of cluster number
+	TESTL	EAX, EAX		;Null file?
+	JNE	16$			;No
+	MOVL	ff_length[EBX], EAX	;Yes - make sure length is 0
+16$:	MOVL	ff_f1pnt+1[EBX], EAX	;Store first cluster number
+	TESTL	EAX, EAX		;Is this a null file?
+	JE	18$			;Yes
+	MOVL	EAX, #-1		;No - indicate need to scan FATs
+18$:	MOVL	ff_alloc[EBX], EAX
+	PUSHL	EBX
+	ADDL	EBX, #ff_name		;Store the file name in the FIB
+	MOVL	ECX, rdf_odb[EBP]
+	ADDL	ECX, #odb_dirname
+20$:	MOVZBL	EAX, [ECX]
+	INCL	ECX
+	MOVB	[EBX], AL
+	INCL	EBX
+	CMPB	AL, #0
+	JNE	20$
+	POPL	EBX
+
+	PUSHL	EBX			;Make sure the FIB matches the
+	PUSHL	EDX			;  directory entry
+	CALL	ffsverifydirent#
+
+	PUSHL	rdf_dirbfr[EBP]		;Give up the directory block
+	CALL	xosdskRelsBufr##
+.PAGE
+;Here with the FIB set up (the FATs have not been scaned yet)
+
+fibrdy:
+
+.IF NE 0
+	MOVL	EDX, dcb_dkfilepos[EDI]	;Get address of directory entry
+	ANDL	EDX, #0x1E0
+	MOVL	ECX, rdf_odb[EBP]
+	ADDL	EDX, odb_dirbufr[ECX]
+	ADDL	EDX, #bfr_data
+	PUSHL	EBX
+	PUSHL	EDX
+	CALL	ffsverifydirent#	;Make sure the directory entry is right
+.ENDC
+
+	CMPL	ff_alloc[EBX], #-1	;Do we have allocation data now?
+	JNE	36$			;Yes
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is this a directory?
+	JE	36$			;No
+	PUSHL	EBX
+	CALL	ffsscanfile#		;Yes - scan FATs now to get length
+	TESTL	EAX, EAX
+	JS	rdfsfpe
+36$:	INCW	bfr_usecnt[EBX]		;Increment open count (xosdskSrchSBufr
+					;  already incremented the use
+					;  count)
+	MOVL	dcb_dkbasefib[EDI], EBX	;Make it open on the DCB
+	MOVL	dcb_dkcurfib[EDI], EBX
+	CLRL	EAX
+	MOVL	dcb_dkfilepos[EDI], EAX
+	BTL	bfr_block+4[EBX], #31t	;Make sure block number indicates a
+	JC	38$			;  FIB (DEBUG)
+	CRASH	NFIB
+
+38$:	MOVL	EAX, knlTda+tdaAddr##
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX] ;Make sure locked (DEBUG)
+	JE	40$
+	CRASH	BNLK			;[Buffer Not LocKed]
+
+40$:	CLRL	EAX
+rdfibdn:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if error reading the directory
+
+rdfdre:	PUSHL	#ER_DRRER
+	JMP	42$
+
+;Here if error setting up the FIB pointers
+
+rdfsfpe:PUSHL	EAX
+42$:	CMPW	bfr_usecnt[EBX], #0	;Is the FIB open by anyone else?
+	JNE	44$			;Yes
+	MOVL	bfr_dirfiba[EBX], #0	;No - clear the directory FIB address
+44$:	PUSHL	EBX			;Give up the FIB buffer we were trying
+	CALL	xosdskGiveBufr##	;  to set up
+	POPL	EAX
+	JMP	rdfibdn
+.PAGE
+;Function to write a FIB (actually updates file parameters in the directory,
+;  including the pointer to the first allocated cluster) - It does NOT update
+;  the name. This function does NOT write any FAT blocks. This must be done
+;  before or after this function is called, depending on if space is being
+;  increated (call before) or reduced (call after).
+;	long ffswritefib(void);
+
+wfib_fib=!8
+
+ffswritefib::
+	PUSHL	EBX
+	MOVL	EBX, wfib_fib[ESP]
+	MOVL	EDX, bfr_block+4[EBX]	;Get the block number for the block
+	MOVL	EAX, bfr_block+0[EBX]	;  containing the base directory entry
+	ANDL	EDX, #0x07FFFFFF
+	MOVL	ECX, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[ECX]
+	SUBL	EAX, ucb_partnoff+0[ECX]
+	SBBL	EDX, ucb_partnoff+4[ECX]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#0			;Get the directory block into a buffer
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	#0
+	PUSHL	EAX
+	CALL	xosdskFindBlock##
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ECX, ff_dirpos[EBX]
+	ANDL	ECX, #0x1E0
+	LEAL	ECX, bfr_data[ECX+EDX]
+	PUSHL	EBX
+	PUSHL	EDX
+	PUSHL	ECX
+	CALL	ffsupdatedir
+4$:	POPL	EBX
+	RET	4			;Finished
+
+;Function to update a file's directory entry from the FIB. dcb_dkdskblk must
+;  contain the block number for the block containing the directory entry
+;  being updated.
+;	long ffsupdatedir(
+;	    FIB  *fib,
+;	    char *blk,
+;	    char *ent);
+
+upddir_fib=!12t
+upddir_blk=!8
+upddir_ent=!4
+
+ffsupdatedir:
+
+	PUSHL	upddir_fib[ESP]		;Make sure this entry matches
+	PUSHL	upddir_ent+4[ESP]
+	CALL	ffsverifydirent#
+
+	MOVL	EDX, upddir_ent[ESP]
+	MOVL	ECX, upddir_fib[ESP]	;Get the file's FIB
+	MOVL	EAX, ff_length[ECX]	;Store current file size in directory
+	TESTB	ff_attrib[ECX], #XA$DIRECT ;Is this a directory?
+	JE	6$			;No
+	CLRL	EAX			;Yes - store size as 0!
+6$:	MOVL	de_size[EDX], EAX
+	MOVL	EAX, ff_f1pnt+1[ECX]	;Store first cluster in directory
+	MOVW	de_pntr[EDX], AX
+	SHRL	EAX, #16t
+	MOVW	de_pntrhi[EDX], AX
+	MOVL	EAX, ff_mdttm[ECX]	;Store modication date/time in directory
+	MOVL	de_mdttm[EDX], EAX
+	MOVL	EAX, ff_cdttm[ECX]	;Store creation date/time in directory
+	MOVL	de_cdttm[EDX], EAX
+	MOVZWL	EAX, ff_adate[ECX]
+	MOVW	de_adate[EDX], AX
+	MOVB	AL, ff_attrib[ECX]	;Get attribute byte
+	ANDB	AL, #0x3F		;Clear bits DOS does not want
+	MOVB	de_attrib[EDX], AL	;Store attribute bits in directory
+	ANDB	bfr_status[ECX], #~BS$CHNGD ;Indicate FIB not changed now
+	PUSHL	upddir_blk[ESP]
+	CALL	xosdskWriteBufr##	;Write out the directory block
+	PUSHL	EAX
+	PUSHL	upddir_blk+4[ESP]
+	CALL	xosdskRelsBufr##	;Release the buffer
+	POPL	EAX
+	TESTL	EAX, EAX
+	JS	14$
+	CLRL	EAX
+10$:	RET	12t			;Finished
+
+;Here if error writing the directory block
+
+14$:	CMPL	EAX, #ER_MDCHG
+	JE	10$
+	MOVL	EAX, #ER_DRWER		;Error = DiRectory Write ERror
+	JMP	10$
+.PAGE
+;Function to close a FIB - This also gives up all underlying FIBs, up to and
+;  including the root.
+;	void ffsclosefib(void);
+
+;We must reduce the in-use count on the file FIB and on all underlying
+;  directories. To do this, we must have the file and ALL of the underlying
+;  directories locked. In most cases we will get here with the file FIB locked
+;  and maybe with the FIB for the directory containing the file locked. Any
+;  other underlying directories will probably not be locked. This creates
+;  a problem since, to prevent deadlocks, we are only allowed to lock
+;  directories in order starting with the root! About the only thing we can
+;  do is unlock the file and all of its underlying directories and then lock
+;  them all, starting with the root. This is not really a problems since all
+;  of the directores (and the file) are open and thus cannot be changed
+;  significately while we are doing this. We do know that if any directory
+;  is not locked, all of the directories under it will also not be locked.
+
+ffsclosefib::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+
+;First make sure everything we care about is unlocked
+
+	MOVL	EBX, dcb_dkbasefib[EDI]
+4$:	MOVL	EAX, knlTda+tdaAddr#	;Is this FIB locked?
+	CMPL	EAX, bfr_rmb+rmb_locktda[EBX]
+	JNE	6$			;No
+	PUSHL	EBX			;Yes - release this one
+	CALL	xosdskRelsBufr##
+	MOVL	EBX, bfr_dirfiba[EBX]	;Get address of next FIB
+	TESTL	EBX, EBX
+	JNE	4$
+
+;Here with all relavent FIBs unlocked
+
+6$:	PUSHL	dcb_dkbasefib[EDI]	;Lock all underlying FIBs, starting
+	CALL	lockallfibs		;  at the root
+	MOVL	EBX, dcb_dkbasefib[EDI]
+10$:	PUSHL	bfr_dirfiba[EBX]	;Save address of next directory FIB
+	PUSHL	EBX			;Close this FIB
+	CALL	ffscloseonefib
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	10$
+	CLRL	EAX
+	MOVL	dcb_dkbasefib[EDI], EAX
+	POPL	EBX
+	POPL	EDI
+	RET
+.PAGE
+;Function to close one FIB - FIB must be locked and will be released here
+;	long closeonefib
+;	    FIB *fib);
+
+cof_fib=!4
+
+ffscloseonefib::
+	MOVL	EDX, cof_fib[ESP]
+	DECW	bfr_usecnt[EDX]		;Reduce the FIB's use count
+	JNS	4$
+	CRASH	BFUC			;[Bad FIB Use Count]
+
+4$:	JNE	6$			;If file is still open
+	MOVL	bfr_dirfiba[EDX], #0	;File is no longer open so clear this
+					;  value which is no longer valid
+	MOVL	EAX, bfr_exrddcb[EDX]	;These values must all be 0 here!
+	ORL	EAX, bfr_exwrtdcb[EDX]
+	ORL	EAX, bfr_readcnt[EDX]
+	ORL	EAX, bfr_writecnt[EDX]
+	JE	6$
+	CRASH	FINI			;[FIB Is Not Idle]
+
+6$:	PUSHL	EDX			;Release the FIB
+	CALL	xosdskRelsBufr##
+	RET	4
+.PAGE
+;Function to lock all directory FIBs for a file and the file itself, starting
+;  with the root directory FIB. This function calls itself recursively.
+;	long lockallfibs(
+;	    FIB *fib);
+;  Value return is 0 if normal or a negative XOS error code if error. On an
+;    error return, no FIBs are locked.
+
+laf_fib=!12t
+
+lockallfibs:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, laf_fib[ESP]
+	MOVL	EDI, bfr_dirfiba[EBX]
+	TESTL	EDI, EDI		;Is this the root FIB?
+	JE	4$			;Yes
+	PUSHL	EDI			;No - recur
+	CALL	lockallfibs
+	TESTL	EAX, EAX
+	JS	8$			;If error
+
+4$:	PUSHL	EBX			;Lock this FIB
+	CALL	xosdskLockBufrW##
+6$:	POPL	EBX
+	POPL	EDI
+	RET	4
+
+;Here if error locking a FIB - Unlock any FIBs we already locked.
+
+8$:	PUSHL	EAX
+	MOVL	EBX, EDI
+10$:	TESTL	EBX, EBX
+	JE	12$
+	PUSHL	bfr_dirfiba[EBX]
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	POPL	EBX
+	JMP	10$
+
+12$:	POPL	EAX
+	JMP	6$
+.PAGE
+;Function to give up a FIB - This effectively closes the file WITHOUT closing
+;  the underly directories.
+
+rfib_fib=!4
+
+ffsrelsfib::
+	MOVL	EDX, rfib_fib[ESP]
+	TESTB	bfr_status[EDX], #BS$CHNGD ;Has the FIB been changed?
+	JE	10$			;No
+	PUSHL	EDX			;Yes
+	CALL	ffswritefib
+10$:	JMP	xosdskRelsBufr##
+
+.PAGE
+;Bit table with indicates valid characters for a directory entry
+
+	.MOD	4
+chrtbl:	.WORD	0x0000
+	.WORD	0x0000
+	.WORD	0x63BF
+	.WORD	0x03FF
+	.WORD	0xFFFF
+	.WORD	0xC7FF
+	.WORD	0xFFFF
+	.WORD	0x6FFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0xFFFF
+	.WORD	0x7FFF
+
+	LKEEND

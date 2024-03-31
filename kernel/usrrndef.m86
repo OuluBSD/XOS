@@ -1,0 +1,154 @@
+	.TITLE	usrrndef - Definitions for USRRN for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSRUN.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXRUN.PAR
+
+RUNLOADHNDL==!IHNDLNUM-1
+RUNBATHNDL ==!IHNDLNUM-2
+
+$$$=!humrundata
+GBK             , 512t		;User mode stack
+GBK run_userstk , 0
+GBK run_parmlist, 128t		;Parameter list (must be followed immediately by
+				;  the data buffer since the parameter list may
+				;  extend into the buffer!)
+GBK run_buffer  , 512t		;Data buffer
+GBK run_bufend  , 0
+GBK run_memlist , 16t		;Memory list for svcSysSpawn
+GBK run_ldevlist, 32t		;Device list for batch and load devices
+GBK run_procname, 16t		;Process name
+GBK run_openqab , qab_SIZE	;QAB for opening files
+
+GBK run_bfrpnt  , 4		;Pointer to data buffer
+GBK run_bfrcnt  , 4		;Data buffer byte count
+GBK run_bfrofs  , 4		;Data buffer file offset
+GBK run_timeout , 4		;Time-out value
+GBK run_itype   , 1		;Image type
+GBK run_status  , 1		;Status byte
+GBK run_func    , 1		;Function
+GBK             , 1
+GBK run_filelen , 4		;Length of file being loaded
+GBK run_event   , 4		;Event number used to wait for child
+GBK run_ppid    , 4		;PID of parent process
+GBK run_hndlmap , 4		;Device handle bit map
+
+GBK run_mempnt  , 4		;Offset of top of environment (DOS)
+GBK run_memtop  , 4		;Offset of top of allocated memory (DOS)
+
+GBK run_loadhndl, 4		;Handle for file being loaded
+GBK run_bathndl , 4		;Handle for .BAT file
+GBK run_msnum   , 4		;Msect number
+
+GBK run_header  , 64t		;File header buffer
+GBK run_seghdr  , 12t		;Segment header buffer
+GBK run_mschdr  , 36t		;Msect header buffer
+
+GBK run_usrqab  , 4		;Address of caller's QAB
+
+GBK run_fileoptn, 4		;File specification option bits
+GBK run_filespec, 4		;Address of file specification buffer
+GBK run_filespsz, 4		;Size of file specification buffer
+GBK run_fillnpnt, 4		;Address of file specification length word
+
+GBK run_argaddr , 4
+GBK run_argsize , 4
+
+GBK run_humtotal, 4
+
+GBK run_actpriv , 8		;Active privlege mask for child
+GBK run_actsize , 4
+GBK run_avlpriv , 8		;Available privlege mask for child
+GBK run_avlsize , 4
+GBK run_wslimit , 4		;Working set size limit
+GBK run_umlimit , 4		;Protected mode memory limit
+GBK run_omlimit , 4		;Overhead memory limit
+GBK run_wsallow , 4		;Working set size allowed
+GBK run_umallow , 4		;Protected mode memory allowed
+GBK run_omallow , 4		;Overhed memory allowed
+GBK run_devlist , 4		;Address of user's device list
+GBK run_devsize , 4		;Length of user's device list (bytes)
+GBK run_envlist , 4		;Address of environment string area
+GBK run_envsize , 4		;Length of environment string area
+GBK run_loadaddr, 4		;Load address for msect
+GBK run_loadsize, 4		;Load size for msect
+GBK run_relocval, 4
+
+GBK run_rlbaddr , 4		;Address of relocation data buffer
+GBK run_rlbsize , 4		;Size of relocation data buffer
+GBK run_rlbcnt  , 4		;Amount in relocation data buffer
+GBK run_rlbszpnt, 4		;Address of size word for relocation data buffer
+
+GBK run_prevrm  , 4
+GBK run_segpnt  , 4		;Pointer to current segment data block
+GBK run_mscpnt  , 4		;Pointer to current msect data block
+GBK run_relcnt  , 4		;Relocation item counter
+GBK run_option  , 4		;Option bits
+GBK run_relitem , 4		;Item number for relocation
+GBK run_segcnt  , 1		;Segment counter
+GBK run_msccnt  , 1		;Msect counter
+GBK run_temp    , 1		;Temporary
+GBK run_reltype , 1		;Relocation type byte
+GBK run_nummsc  , 4		;Number of msects in current segment
+GBK run_newpda  , 4		;Selector for PDA for new process
+GBK run_maxmem  , 4		;Maximum amount of memory to allocate
+GBK run_minmem  , 4		;Minimum amount of memory to allocate
+GBK run_loadamt , 4		;Amount to load
+GBK run_loadofs , 4		;Offset in file to load from
+GBK run_apply   , 4		;Offset at which to apply relocation
+GBK run_delta   , 4		;Current delta offset value for relocation
+GBK run_dosEAX  , 4		;Initial value for EAX for DOS images
+GBK run_dosenv  , 4		;Offset of DOS environment block
+GBK run_dospsp  , 4		;Offset of DOS PSP
+GBK run_dostbl  , 4		;Offset of DOS table area
+
+GBK run_dosdata , 0		;Start of argument block for svcMemDosSetup
+				;  call
+GBK run_dosbase , 4		;  dosd_base - Floor for DOS image
+GBK run_dossize , 4		;  dosd_size - DOS image size
+GBK run_dosfcbn , 4		;  dosd_fcbn - Number of DOS FCBs to allow
+GBK run_dosfcbp , 4		;  dosd_fcbp - Number of protected DOS FCBs
+
+GBK run_argaddr , 4
+GBK run_free    , 4		;First free byte for allocation
+GBK run_symtbl  , 4		;Offset of symbol table
+GBK run_symname , 32t		;Symbol name buffer
+GBK run_symsize , 4		;Length of symbol
+GBK run_dosrel  , 4		;Offset for DOS EXE file relocation
+
+GBK run_fcb1    , 16t		;Image for first DOS FCB
+GBK run_fcb2    , 16t		;Image for second DOS FCB
+GBK run_hdnltbl , 20t*4	;DOS handle table
+
+GBK run_codeseg , rs_SIZE
+GBK run_dataseg , rs_SIZE
+
+GBK run_segtbl  , {{MAXNUMSEG+1}*rs_SIZE}
+				;Segment data table
+GBK run_msctbl  , MAXNUMMSC*rm_SIZE
+				;Msect data table
+GBK run_top     , 0
+
+run_dospath==!run_temp		;Used as flag that name of path string stored
+				;  when loading DOS programs

@@ -1,0 +1,244 @@
+	.TITLE	$_control
+
+;*--------------------------------------------------------------------------*
+;* control.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+BPMAX=!32t
+
+	GTCODE
+
+;****************************************************************
+; Function: $_enter - Save user state and initialize GeckoT state
+; Returned: Nothing
+;****************************************************************
+
+;This function DOES NOT modify breakpoint instructions.
+
+	.ENTRY	$_enter
+$_enter:
+	CLI
+	PUSHL	DS
+	PUSHL	#GS_XDATA
+	POPL	DS
+	MOVL	$_uregEAX#, EAX
+	MOVL	$_uregEBX#, EBX
+	POPL	$_uregDS#
+	POPL	EBX			;Get our return address
+	POPL	$_uregEIP#
+	POPL	$_uregCS#
+	POPL	$_uregEFR#
+	BTZL	$_uregEFR#, #8		;Clear the trace flag
+	MOVL	$_uregESP#, ESP
+	MOVW	$_uregSS#, SS
+	MOVL	EAX, DS			;Switch to our stack
+	MOVW	SS, AX
+	MOVL	ESP, #$_dbstktop#
+	MOVL	$_uregECX#, ECX		;Save the rest of the general register
+	MOVL	$_uregEDX#, EDX
+	MOVL	$_uregEDI#, EDI
+	MOVL	$_uregESI#, ESI
+	MOVL	$_uregEBP#, EBP
+	MOVZWL	EAX, $_uregCS#		;Assume not a flat address
+	MOVL	$_uregCSflat#, EAX
+	TESTB	$_uregEFR#+2, #0x02	;From V86 mode?
+	JNE	10$			;Yes
+	MOVW	$_uregES#, ES		;No - save the remaining segment
+	MOVW	$_uregFS#, FS		;  registers
+	MOVW	$_uregGS#, GS
+	TESTB	AL, #0x04		;Local selectors are never flat
+	JNE	2$
+	ANDL	EAX, #0xFFFFFFF8
+	CMPW	gdtable+2[EAX], #0 	;Is this one flat?
+	JNE	2$			;No
+	TESTL	gdtable+4[EAX], #0xFF0000FF ;Maybe
+	JNE	2$			;No
+	MOVL	$_uregCSflat#, #0	;Yes
+2$:	TESTB	$_uregCS#, #0x03	;No - from user mode?
+	JE	4$			;No
+	MOVL	EDX, $_uregESP#		;Yes
+	MOVL	ES, $_uregSS#
+	MOVL	EAX, ES:[EDX]		;Get the correct SS:ESP value
+	MOVL	$_uregESP#, EAX
+	MOVZWL	EAX, ES:4[EDX]
+	MOVL	$_uregSS, EAX
+4$:	JMPIL	EBX
+
+;Here if entry is from V86 mode
+
+10$:	MOVL	EDX, $_uregESP#		;Yes
+	MOVL	ES, $_uregSS#
+	MOVZWL	EAX, ES:[EDX]		;Save the V86 mode SS:ESP value
+	MOVL	$_uregESP#, EAX
+	MOVZWL	EAX, ES:4[EDX]
+	MOVL	$_uregCS, EAX
+	MOVZWL	EAX, ES:8[EDX]		;Save the V86 mode selector values
+	MOVL	$_uregES, EAX
+	MOVZWL	EAX, ES:12t[EDX]
+	MOVL	$_uregDS, EAX
+	MOVZWL	EAX, ES:16t[EDX]
+	MOVL	$_uregFS, EAX
+	MOVZWL	EAX, ES:20t[EDX]
+	MOVL	$_uregGS, EAX
+	JMPIL	EBX
+.PAGE
+;**************************************************************
+; Function: $_restrbp - Restore all instructions at breakpoints
+; Returned: 0 if breakpoint was unexpected, address of
+;		breakpoint table entry if expected
+;**************************************************************
+
+$_takeoutbp::
+	PUSHL	EDI
+	PUSHL	ESI
+	CLRL	ESI
+	MOVL	EDI, #$_bptable#
+	MOVL	$_cnt#, #BPMAX
+4$:	CMPB	bpt_flags[EDI], #0	;Is this entry in use?
+	JE	10$			;No
+	MOVL	EAX, bpt_addr[EDI]	;Yes - are we there?
+	INCL	EAX
+	CMPL	EAX, $_uregEIP#
+	JNE	6$			;No
+	MOVL	ESI, EDI		;Yes - save address of the table entry
+6$:	PUSHL	bpt_inst[EDI]		;Replace the INT3 with the real
+	PUSHL	bpt_addr[EDI]		;  instruction
+	CALL	$_xchgmem#
+	TESTL	EAX, EAX
+	JS	8$
+	CMPB	AL, #0xCC		;Was this really a breakpoint?
+	JE	10$			;Yes
+	PUSHL	EAX			;No - put back the value we just read!
+	PUSHL	bpt_addr[EDI]
+	CALL	$_xchgmem#
+8$:	MOVL	bpt_addr[EDI], #0	;Remove the breakpoint
+10$:	ADDL	EDI, #bpt_SIZE
+	DECL	$_cnt#
+	JNE	4$
+	MOVL	EAX, ESI
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+
+;Enter here to restore all breakpoint (INT3) instructions and return to the
+;  system
+
+$_putinbpleave::
+
+;;;;	DISPCHR 0x20, 'I'
+
+	MOVL	EDI, #$_bptable#	;Put INT3 instructions in for each
+	MOVL	$_cnt, #BPMAX		;  breakpoint
+4$:	CMPB	bpt_flags[EDI], #0	;Is this entry in use?
+	JE	8$			;No
+
+;;;;	DISPCHR	0x20, +'+'
+
+	PUSHL	#0xCC			;Yes
+	PUSHL	bpt_addr[EDI]
+	CALL	$_xchgmem#
+	TESTL	EAX, EAX
+	JS	6$
+	MOVB	bpt_inst[EDI], AL
+	JMP	8$
+
+6$:	MOVL	bpt_addr[EDI], #0	;Remove the breakpoint if error storing
+					;  the INT3
+;;;;	DISPCHR	0x20, '-'
+
+8$:	ADDL	EDI, #bpt_SIZE
+	DECL	$_cnt#
+	JNE	4$
+	MOVL	ECX, CR3		;Clear the page cache
+	MOVL	CR3, ECX
+	WBINVD
+
+;Enter here to return to the debugee without restoring breakpoints
+
+$_leave::
+	MOVL	EAX, $_uregEAX#		;Restore the general registers
+	MOVL	EBX, $_uregEBX#
+	MOVL	ECX, $_uregECX#
+	MOVL	EDX, $_uregEDX#
+	MOVL	EDI, $_uregEDI#
+	MOVL	ESI, $_uregESI#
+	MOVL	EBP, $_uregEBP#
+	TESTB	$_uregEFR#+2, #0x02	;Returning to V86 mode?
+	JE	12$			;No
+	PUSHL	$_uregGS#		;Yes - put the segment registers on
+	PUSHL	$_uregFS#		;  the stack
+	PUSHL	$_uregDS#
+	PUSHL	$_uregES#
+	PUSHL	$_uregSS#		;Put SS:ESP on the stack
+	PUSHL	$_uregESP
+	PUSHL	$_uregEFR#		;Put CS:EIP on the stack
+	PUSHL	$_uregCS#
+	PUSHL	$_uregEIP#		;Put EFR on the stack
+	IRET
+
+;Here if not returning to V86 mode
+
+12$:	VERR	$_uregGS#		;Restore the segment registers
+	JE	14$
+	MOVW	$_uregGS#, #0
+14$:	MOVW	GS, $_uregGS#
+	VERR	$_uregFS#
+	JE	16$
+	MOVW	$_uregFS#, #0
+16$:	MOVW	FS, $_uregFS#
+	VERR	$_uregDS#
+	JE	18$
+	MOVW	$_uregDS#, #0
+18$:	MOVW	DS, $_uregDS#
+	VERR	$_uregES#
+	JE	20$
+	MOVW	$_uregES#, #0
+20$:	MOVW	ES, $_uregES#
+	TESTB	$_uregCS#, #0x03	;Returning to protected user mode?
+	JE	22$			;No
+	PUSHL	$_uregSS#		;Put SS:ESP on the stack
+	PUSHL	$_uregESP#
+	JMP	24$
+
+;Here if not returning to user mode
+
+22$:	MOVW	SS, $_uregSS#		;Switch to using the debugee's stack
+	MOVL	ESP, $_uregESP#
+24$:	PUSHL	$_uregEFR#		;Put EFR on the stack
+	PUSHL	$_uregCS#		;Put CS:EIP on the stack
+	PUSHL	$_uregEIP#
+	MOVW	DS, $_uregDS#		;Restore DS
+	IRET
+
+	END

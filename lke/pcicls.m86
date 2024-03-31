@@ -1,0 +1,1175 @@
+	.TITLE	pcicls - PCI bus controller driver
+
+;*--------------------------------------------------------------------------*
+;* PCICLS.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	PCICLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+;This device class implements the interface to PCI bus controllers which
+;  use configuratiaon mechanism #1. Mechanism #2 is NOT supported by this
+;  version.
+
+;This device does not support IO operations. It's only purpose is to provide
+;  information about and control of the PCI configuration via device
+;  characteristics and a kernel mode call interface.
+
+;This device is implemented using a single static DCB. The device is sharable,
+;  so it can be accessed by multiple processes. Since there is no state saved
+;  between accesses and since all accesses are atomic, this works.
+
+;This device does not use the addunit function. The single unit, which is
+;  always unit 0, is added when the class is installed. Also at this time
+;  a check is made for the existance of a type 1 PCI configuration interface
+;  and the loading of the lke fails if it is not present. Also a complete
+;  scan of all possible PCI devices is done and the internal database is
+;  constructed, including the data blocks which define the DEVbbddf device
+;  characteristics.
+
+	.EXPORT	xospciMsgBus
+	.EXPORT xospciMsgDev
+	.EXPORT xospciMsgFunc
+	.EXPORT xospciMsgRev
+	.EXPORT	xospciMsgSlot
+	.EXPORT xospciMsgSSDev
+	.EXPORT xospciMsgSSVen
+	.EXPORT xospciMsgVen
+	.EXPORT	xospciFindByAddr
+	.EXPORT	xospciFindByClass
+	.EXPORT xospciFindByVenDev
+	.EXPORT	xospciGetBlkSize
+	.EXPORT	xospciGetValue
+	.EXPORT	xospciReadCfgReg
+	.EXPORT	xospciSetData
+	.EXPORT	xospciWriteCfgReg
+	.EXPORT	xospciWriteCfgRegByte
+	.EXPORT	xospciWriteData
+
+;Define IO ports - The type 1 and type 2 registers overlap. 32-bit accesses
+;  access the type 1 registers, 8-bit accesses access the type 2 registers.
+
+P_PCI1ADDR=0x0CF8		;Type 1 configuration address register (32-bit)
+P_PCI1DATA=0x0CFC		;Type 1 configuration data register (32-bit)
+
+;Define offsets in the PCI DCB
+
+$$$=!dcb_devdep
+BLK dcb_xxx, 4t
+
+dcb_pciSIZE=!$$$
+XMBINDEX dcb_pciINDEX, dcb_pciSIZE
+.PAGE
+	.SBTTL	SVC dispatch table for PCI class devices
+
+;SVC dispatch table for PCI class devices
+
+	CODE
+
+pcidsp:	.LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	knlRtnZero##	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	pciopen		;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDev##	;sd_devparm  = 16 - Device parameters
+	.LONG	knlIFnDev##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename   = 24 - Rename file
+	.LONG	knlIFnDev##	;sd_inblock  = 28 - Input block
+	.LONG	knlIFnDev##	;sd_outblock = 32 - Output block
+	.LONG	knlRtnMOne##	;sd_getiosts = 36 - Get input/output status
+	.LONG	knlIFnDev##	;sd_special  = 40 - Special device function
+	.LONG	0		;sd_close    = 44 - Close file
+	.LONG	0		;sd_getlabel = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+PCIDSPSZ=!{$-pcidsp}/4
+
+;Class function dispatch table for PCI class devices
+
+	.LONG	CLSFMX
+pcicls:	.LONG	knlIFnDev##	;CF_ADDUNIT =  8 - Add unit
+	.LONG	pciunitinfo	;CF_PUNITS  =  9 - Get information about
+				;                    physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 10 - Get information about active
+				;                    units
+CLSFMX=!{$-pcicls}/4
+
+	.MOD	4
+pcicctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHAREND
+
+;PCI bus interface (configuration type 1) device characteristics table
+
+	.MOD	4
+pcidctbl:
+ CHARBGN 2, sysIoCharValues##
+ CHARENT CLASS   , TEXT,  , 8, knlDcMsgClass##, knlDcGetClass##, knlDcSetClass##, 0
+pcidcthead=!$
+ CHARIND 0
+ CHARENT CFGREG  , HEXV, H, 4, msgcfgreg      , getcfgreg      , setcfgreg      , 0
+ CHAREND
+
+msgconfig:     CHARINFO {Configuration type}
+msgdev:        CHARINFO {Device data}
+msgcfgreg:     CHARINFO {Config reg value}
+
+;Following text is provided for the use of various PCI devices for commonly
+;  used values.
+
+xospciMsgVen:  CHARINFO {PCI vendor}
+xospciMsgDev:  CHARINFO {PCI device}
+xospciMsgRev:  CHARINFO {PCI revision}
+xospciMsgSSVen:CHARINFO {PCI sub-system vendor}
+xospciMsgSSDev:CHARINFO {PCI sub-system device}
+xospciMsgBus:  CHARINFO {PCI bus number}
+xospciMsgSlot: CHARINFO {PCI slot (device) number}
+xospciMsgFunc: CHARINFO {PCI function number}
+.PAGE
+;Device parameter table for PCI0: opens
+
+	.MOD	4
+	.LONG	OPARMMAX	;Size of table
+pciopnparms:
+	.LONG	pciopngenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+OPARMMAX=!{$-pciopnparms}/4
+
+	.LONG	OPARMGENMAX	;Size of table
+pciopngenparms:
+	.LONG	0		;	        = 0000h
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN = 0001h
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS   = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM  = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID    = 0005h
+OPARMGENMAX=!{$-pciopngenparms}/4
+
+;Device parameter table for PCI0: IO operations
+
+	.LONG	PARMMAX		;Size of table
+pciioparms:
+	.LONG	pciiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+PARMMAX=!{$-pciioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+pciiogenparms:
+	.LONG	0		;	       = 0000h
+	.LONG	0		;IOPAR_FILOPTN = 0001h
+	.LONG	0		;IOPAR_FILSPEC = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS  = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID   = 0005h
+PARMGENMAX=!{$-pciioparms}/4-1
+.PAGE
+	.SBTTL	Initialization routine
+
+;The initialization routine does the best it can to find all PCI devices. It
+;  never returns an error that would cause the LKE to be unloaded. This is
+;  necessary since quite a few other LKEs call functions defined here and
+;  would not load if this LKE is not present. It is assumed that this will
+;  be one of the first LKEs loaded and that the basic routines for registering
+;  the class and allocating memory should not fail. If one of these does fail,
+;  the system is crashed.
+
+	INITSUB	pciinit
+
+$$$=!0
+FRM pcii_addr, 4
+pcii_SIZE=!$$$
+
+pciinit:ENTER	pcii_SIZE, 0
+	PUSHL	#pciccb
+	CALL	sysIoNewClass##		;Create the PCI class
+	TESTL	EAX, EAX
+	JS	22$			;If error
+	MOVL	ECX, #dcb_pciSIZE	;Create our single device unit
+	MOVL	EBX, #DS$MLTUSER
+	MOVL	EDI, #pcidsp
+	CALL	knlMakeDcb##
+	JC	24$
+	PUSHL	EDI
+	PUSHL	#pciccb
+	CALL	sysIoLinkDcb##
+	TESTL	EAX, EAX
+	JS	24$
+	MOVL	pcidcb, EDI
+	MOVL	dcb_name+0[EDI], #'PCI0' ;Setup device name
+	MOVL	dcb_devchar[EDI], #pcidctbl ;Store offset of devchar table
+	LEAL	EBX, dcb_name[EDI]
+
+;See if we have a type 1 PCI configuration interface. This is the only
+;  configuration interface supported by this version of XOS.
+
+	MOVL	EDX, #P_PCI1ADDR
+	MOVL	EAX, #0x80000004	;Write a long to the PCI addrses
+	OUTL	[DX]			;  register and read it back
+	IOPAUSE
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR ;Read the data register in between
+	INL	[DX]			    ;  to discharge the bus if the PCI
+	ADDL	EDX, #P_PCI1ADDR-P_PCI1DATA ;  controller is not there
+	IOPAUSE
+	INL	[DX]
+	CMPL	EAX, #0x80000004	;If different, we don't have a type
+	JNE	pciidn			;  1 controller - Just leave quietly!
+
+;Here when we have determined that we have a type 1 PCI configuration
+;  interface. Register the IO registers used to access this.
+
+	LEAL	EAX, dcb_name[EDI]
+	PUSHL	EAX
+	PUSHL	#P_PCI1ADDR
+	PUSHL	#P_PCI1ADDR+7
+	CALL	sysIoRegPorts##
+	JC	26$
+
+;Scan all possible PCI devices and construct our database. We make the
+;  following assumtions about the PCI configuration:
+;	1) All PCI bus numbers are allocated tightly
+;	2) PCI device 0 is always present on a bus and it will be the bus
+;	     controller
+;	3) All devices implement function 0
+;	4) Multifunction devices set bit 7 in the header type register (0E)
+;	     for function 0
+
+	MOVL	pcii_addr[EBP], #0
+pciilp:	PUSHL	pcii_addr[EBP]
+	CALL	chkdev
+	TESTL	EAX, EAX
+	JS	pciidn
+	JE	10$			;If device does not exist
+	DECL	EAX			;Multi-function device?
+	JE	10$			;No - go on to next device
+8$:	ADDL	pcii_addr[EBP], #0x0100	;Yes - bump the function
+	TESTB	pcii_addr+1[EBP], #0x07	;Done with this device?
+	JE	12$			;Yes
+	PUSHL	pcii_addr[EBP]		;No - check next function
+	CALL	chkdev
+	TESTL	EAX, EAX
+	JS	pciidn			;If error
+	JMP	8$			;Continue with this device even if this
+					;  function is not used - Some devices
+					;  do NOT assign functions thightly!
+
+;Here device does not exist or its not a multi-function device
+
+10$:	ADDL	pcii_addr[EBP], #0x0800	;Increment the device/bus number
+	ANDB	pcii_addr+1[EBP], #0xF8	;Clear the function number
+
+;Here when finished with a multi-function device
+
+12$:	TESTB	pcii_addr+3[EBP], #0x01	;More devices to check?
+	JE	pciilp			;Yes - continue
+
+;Here with all PCI devices located or with error
+
+pciidn:	MOVL	EBX, lkei_pctop[EBP]
+	MOVL	[EBX], #codetop
+	LEAVE
+	CLRL	EAX
+	RET	lkei_ADJ
+
+;Here if error creating the PCI device class
+
+22$:	CRASH	CNCC			;[Can Not Create Class]
+
+;Here if error creating the PCI DCB
+
+24$:	CRASH	CNCD			;[Can Not Create DCB]
+
+;Here if error registering the IO registers
+
+26$:	CRASH	CNRR			;[Can Not Register Registers]
+.PAGE
+;Function to check for a PCI device and create a DCT block if a device is found.
+;	long chkdev(
+;	    long addr);		// PCI bus address
+;  Value returned is 0 if there is no device at the address, 1 if a single unit
+;    device was found, 2 if a multi-unit device was found or a negative XOS
+;    error code if error.
+
+$$$=!0
+FRM ckdv_devid  , 8
+FRM ckdv_addrval, 4
+FRM ckdv_cmdval , 4
+FRM ckdv_temp   , 4
+ckdv_SIZE=!$$$
+
+ckdv_addr=!16t
+
+chkdev:	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	ckdv_SIZE, 0
+	MOVB	ckdv_addr+0[EBP], #0	;Read register 0
+	PUSHL	ckdv_addr[EBP]
+	CALL	readconfig
+	CMPL	EAX, #0xFFFFFFFF	;Does this device exist?
+	JE	26$			;No
+	MOVL	ckdv_devid[EBP], EAX	;Yes
+	MOVL	ECX, #dct_pciSIZE
+	CALL	knlGetXMem##		;Get memory for the DCT
+	JC	28$			;If error
+	MOVL	dct_label[EDI], #'CHAR'	;Store the block label
+	MOVL	dct_infopnt[EDI], #msgdev
+	MOVL	dct_name+0[EDI], #'DEV' ;Store the characteristic name
+	MOVZWL	EAX, ckdv_addr+2[EBP]	;Store the bus address as 2 hex digits
+	LEAL	EBX, dct_name+3[EDI]
+	CALL	put2hex
+	MOVZBL	EAX, ckdv_addr+1[EBP]	;Store the device number as 2 hex digits
+	SHRL	EAX, #3
+	CALL	put2hex
+	MOVZBL	EAX, ckdv_addr+1[EBP]	;Store the function as 1 hex digit
+	ANDL	EAX, #0x07
+	CALL	put1hex
+	MOVB	dct_desc[EDI], #REP_DATAS
+	MOVB	dct_flags[EDI], #0
+	MOVW	dct_length[EDI], #68t
+	MOVL	dct_getfunc[EDI], #pcigetdev
+	MOVL	dct_setfunc[EDI], #0
+	MOVL	dct_infopnt[EDI], #msgdev
+	MOVL	dct_data[EDI], #0
+	MOVL	EAX, ckdv_addr[EBP]	;Store the configuration address
+	MOVL	dct_pciaddr[EDI], EAX
+	MOVL	EAX, ckdv_devid[EBP]
+	MOVL	dct_pcidevid[EDI], EAX	;Store the device ID (dev/ven)
+	MOVB	ckdv_addr+0[EBP], #0x08	;Read the class registers
+	PUSHL	ckdv_addr[EBP]
+	CALL	readconfig
+	MOVL	dct_pciclass[EDI], EAX	;And store them
+	MOVB	ckdv_addr+0[EBP], #0x0C	;Get the header type
+	PUSHL	ckdv_addr[EBP]
+	CALL	readconfig
+	MOVL	dct_pciregC[EDI], EAX
+	TESTL	EAX, #0x7F0000		;Type 0 header?
+	JNE	22$			;No
+	MOVB	ckdv_addr+0[EBP], #0x3C	;Yes - read the IRQ register
+	PUSHL	ckdv_addr[EBP]
+	CALL	readconfig
+	MOVL	dct_pciint[EDI], EAX	;Store it
+	LEAL	ESI, dct_pciaddr0[EDI]
+	MOVB	ckdv_addr+0[EBP], #0x10
+addrlp:	PUSHL	ckdv_addr[EBP]		;Read the BAR register
+	CALL	readconfig
+
+	TESTB	AL, #0x01		;IO regsiter number?
+	JNE	2$			;Yes
+	TESTL	EAX, EAX		;No - memory address - it is in use?
+	JNE	6$			;Yes
+	JMP	4$			;No
+
+;Here if IO register number
+
+2$:	TESTL	EAX, #0xFFFE		;Is it in use?
+	JNE	6$			;Yes
+	TESTL	EAX, #0xFFFFFFFE	;Is this register in use?
+	JNE	6$			;Yes
+4$:	CLRL	EAX
+	MOVL	[ESI], EAX		;No
+	JMP	14$
+
+;Here if an address register is in use
+
+6$:	MOVL	[ESI], EAX		;Store it
+
+;;;	MOVL	EAX, #0x300
+;;;	JMP	14$
+
+	MOVL	ckdv_addrval[EBP], EAX	;Save the address value
+
+	PUSHL	ckdv_addr[EBP]		;Read the device's control register
+	MOVB	[ESP], #0x04
+	CALL	readconfig
+	MOVL	ckdv_cmdval[EBP], EAX
+
+	ANDL	EAX, #0xFFFC		;Clear the IO and memory enables
+	CLI				;No interrupts now!
+	PUSHL	EAX
+	PUSHL	ckdv_addr[EBP]		;Write it back
+	MOVB	[ESP], #0x04
+	CALL	writeconfig
+
+	PUSHL	#0xFFFFFFFF		;Write all 1s to the address register
+	PUSHL	ckdv_addr[EBP]
+	CALL	writeconfig
+
+	PUSHL	ckdv_addr[EBP]		;Read it back
+	CALL	readconfig
+	MOVL	ckdv_temp[EBP], EAX
+
+	PUSHL	ckdv_addrval[EBP]	;Restore the address register
+	PUSHL	ckdv_addr[EBP]
+	CALL	writeconfig
+	MOVZWL	EAX, ckdv_cmdval[EBP]	;Restore the command register
+	PUSHL	EAX
+	PUSHL	ckdv_addr[EBP]
+	MOVB	[ESP], #0x04
+	CALL	writeconfig
+	STI				;Interrupts are OK now!
+
+;Here with the size value obtained and the address register restored. Now
+;  figure out what the value means.
+
+	MOVL	EAX, ckdv_temp[EBP]
+	TESTB	AL, #0x01		;IO address?
+	JNE	12$			;Yes
+
+;Here if have a memory address
+
+	TESTB	AL, #0x04		;Is this a 64-bit address?
+	JE	10$			;No
+	ADDL	ckdv_addr[EBP], #0x04	;Yes - skip the next register
+10$:	NOTL	EAX			;Compliment it
+	ORL	EAX, #0x0F		;Make sure the low bits are set
+	INCL	EAX			;Get size
+	MOVL	4[ESI], EAX
+	JMP	14$
+
+;Here if have an IO address
+
+12$:	NOTL	EAX
+	ORL	EAX, #0x03
+	ANDL	EAX, #0xFFFF
+	INCL	EAX
+14$:	MOVL	4[ESI], EAX
+addrnxt:ADDL	ESI, #8
+	ADDL	ckdv_addr[EBP], #0x04	;Bump the register number
+	CMPB	ckdv_addr+0[EBP], #0x28	;Finished?
+	JB	addrlp			;No - continue
+	JMP	24$
+
+;Here if have a device with other than a type 0 configuration header
+
+22$:	PUSHL	EDI
+	ADDL	EDI, #dct_pciaddr0
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ECX, #12t
+	CLRL	EAX
+	STOSL	[EDI]
+	POPL	EDI
+24$:	CLRL	EAX
+	TESTB	dct_pciregC+2[EDI], #0x80
+	SETNE	AL
+	MOVL	EBX, dctpnt		;Link this block to the end of the list
+	MOVL	[EBX], EDI
+	ADDL	EDI, #dct_next	
+	MOVL	[EDI], #0
+	MOVL	dctpnt, EDI
+26$:	INCL	EAX			;Return 0 if no device, 1 if single
+28$:	LEAVE				;  function device, 2 if multi-function
+	POPL	ESI			;  device
+	POPL	EDI
+	RET	4
+
+
+put2hex:PUSHL	EAX
+	SHRB	AL, #4t
+	CALL	put1hex
+	POPL	EAX
+put1hex:ANDB	AL, #0x0F
+	CMPB	AL, #10t
+	JB	30$
+	ADDB	AL, #'A'-'0'-10t
+30$:	ADDB	AL, #'0'
+	MOVB	[EBX], AL
+	INCL	EBX
+	RET
+
+	CODE
+.PAGE
+	.SBTTL	getcfgreg - Here to get the value of the CFGREG device characteristic
+
+;Here to get the value of the CFGREG device characteristic
+
+getcfgreg:
+	MOVL	EBX, pcicfgreg
+	JMP	readconfig
+
+	.SBTTL	setcfgreg - Here to set the value of the CFGREG device characteristic
+
+;Here to set the value of the CFGREG device characteristic
+
+setcfgreg:
+	MOVL	pcicfgreg, EAX
+retclc:	CLC
+	RET
+;Here to get the value of one of the PCI device characteristics
+
+;;;;;;;;;;;;;; CHECK ESI ???????????
+
+pcigetdev:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, EBX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, dct_pciaddr[ESI]
+	IFFAULT	knlRtnAdrEr##
+	STOSL	[EDI]
+	MOVL	EAX, dct_pcidevid[ESI]
+	IFFAULT	knlRtnAdrEr##
+	STOSL	[EDI]
+	MOVL	EAX, dct_pciclass[ESI]
+	IFFAULT	knlRtnAdrEr##
+	STOSL	[EDI]
+	MOVL	EAX, dct_pciregC[ESI]
+	IFFAULT	knlRtnAdrEr##
+	STOSL	[EDI]
+	MOVL	EAX, dct_pciint[ESI]
+	IFFAULT	knlRtnAdrEr##
+	STOSL	[EDI]
+	ADDL	ESI, #dct_pciaddr0
+	MOVL	ECX, #12t
+	IFFAULT	knlRtnAdrEr##
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	MOVL	ECX, #68t
+	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	pciunitinfo - PCI class get phyical unit information function
+
+;Here for the get physical unit information class function (CL_PUNITS) for the
+;  PCI class
+;	c{EBX} = Offset of CCB
+;	c{ESI} = Offset of IORB
+;	CALL	pciunitinfo
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+;  A zero count (iorb_count) requests that the number of units only be returned
+;    in qab_amount.  A non-zero count indicates that a buffer is available for
+;    that many unit names (8 characters each, null padded).
+
+pciunitinfo:
+	MOVL	EAX, #ER_NIYT
+	CLRL	EAX
+	MOVL	EBX, #QSTS$DONE
+	RET
+.PAGE
+;Device check routine for PCI devices
+;	long pcidevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 0 if found a match, 1 if no match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+devc_name  =!12t
+devc_path  =!8
+devc_rtndcb=!4
+
+pcidevchk:
+	MOVL	EBX, devc_name[ESP]
+	CMPB	4[EBX], #0
+	JE	6$
+2$:	CLRL	EAX
+4$:	RET	12t
+
+6$:	MOVL	EDX, pcidcb
+	TESTL	EDX, EDX
+	JE	2$
+	MOVL	EAX, #1
+	CMPL	devc_rtndcb[ESP], #0
+	JE	4$
+	MOVL	knlTda+tdaDcb##, EDX
+	JMP	4$
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry (sd_open) - also used for the device parameters
+;  entry (sd_parm)
+;	c{EDI} = Offset of DCB
+
+pciopen:CMPL	knlTda+tdaParm##, #0
+	JE	4$
+	PUSHL	#pciopnparms		;Process device parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	8$
+4$:	CLRL	EAX
+8$:	RET	4
+.PAGE
+	.SBTTL	xospciFindVendor - Find a PCI device given the vendor ID
+
+;Subroutine to find a PCI device given the vendor ID
+
+;	c{EBX} = Starting device configuration address (0 to start at
+;		   beginning, otherwise starts at first address greater
+;		   than or equal to the address specified)
+;	c[CX]  = Vendor ID
+;	CALLI	knxPciFindVendor
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c[AX]  = Device ID
+;	  c{EBX} = Configuration address of device/function found
+;	  c{EDX} = Class code
+
+xospciFindVendor:
+	MOVB	BL, #0			;Fix up EBX for compares
+	BTSL	EBX, #31t
+	MOVL	EDX, pcidcthead+dct_table
+
+;Find the place in the list to start checking
+
+4$:	TESTL	EDX, EDX
+	JE	8$
+	CMPL	EBX, dct_pciaddr[EDX]
+	JBE	6$
+	MOVL	EDX, dct_next[EDX]
+	JMP	4$
+
+;Look for the specified vendor ID
+
+6$:	CMPW	dct_pcidevid[EDX], CX
+	JE	10$
+	MOVL	EDX, dct_next[EDX]
+	TESTL	EDX, EDX
+	JNE	6$
+8$:	MOVL	EAX, #ER_NTDEF
+	STC
+	RET
+
+;Here with a match on the vendor ID
+
+10$:	MOVZWL	EAX, dct_pcidevid+2[EDX] ;Get the device ID
+	MOVL	EBX, dct_pciaddr[EDX]	;Get the address
+	ANDL	EBX, #0x7FFFFFFF
+	MOVL	EDX, dct_pciclass[EDX]	;Get the class code
+	RET
+.PAGE
+	.SBTTL	xospciFindType - Find a PCI device given the device type
+
+;Subroutine to find a PCI device given the device type
+;	c{EBX} = Starting device configuration address (0 to start at
+;		   beginning, otherwise starts at first address greater
+;		   than the address specified)
+;	c(CL) = Device type
+;	CALLI	knxPciFindType
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Configuration address of device/function found
+;	  c{EAX} = Device ID,,vendor ID
+;	  c{EDX  = Class code
+
+xospciFindType:
+	MOVB	BL, #0			;Fix up EBX for compares
+	BTSL	EBX, #31t
+	MOVL	EDX, pcidcthead+dct_table
+
+;Find the place in the list to start checking
+
+4$:	TESTL	EDX, EDX
+	JE	8$
+	CMPL	EBX, dct_pciaddr[EDX]
+	JB	6$
+	MOVL	EDX, dct_next[EDX]
+	JMP	4$
+
+;Look for the specified device type (major class code)
+
+6$:	CMPB	dct_pciclass+3[EDX], CL
+	JE	10$
+	MOVL	EDX, dct_next[EDX]
+	TESTL	EDX, EDX
+	JNE	6$
+8$:	MOVL	EAX, #ER_NTDEF
+	STC
+	RET
+
+;Here with a match on the device type
+
+10$:	MOVL	EAX, dct_pcidevid[EDX]	;Get the device ID and vendor ID
+	MOVL	EBX, dct_pciaddr[EDX]	;Get the address
+	ANDL	EBX, #0x7FFFFFFF
+	MOVL	EDX, dct_pciclass[EDX]	;Get the full class code
+	RET
+.PAGE
+;New style function to locate PCI device data given vendor and device IDs
+;	long xospciFindByVenDev(
+;	    PCIB **ppcib,	// Address of pointer to starting PCIB for
+;				//   search (pointer should contain NULL to
+;				//   start search)
+;	    long   vendor,	// Vendor ID
+;	    long   device,	// Device ID (-1 if don't care)
+;	    long  *pdata);	// Pointer to location to receive device data
+;				//   value (may be NULL if don't need this)
+;  Value returned is the encoded configuration address if normal or a
+;    negative XOS error code if error.
+
+pcifbv_ppcib =!16t
+pcifbv_vendor=!12t
+pcifbv_device=!8
+pcifbv_pdata =!4
+
+xospciFindByVenDev:
+	MOVL	EBX, pcifbv_ppcib[ESP]
+	MOVL	EDX, [EBX]
+	TESTL	EDX, EDX
+	JNE	2$
+	MOVL	EDX, pcidcthead+dct_table
+	JMP	4$
+
+2$:	MOVL	EDX, dct_next[EDX]
+4$:	TESTL	EDX, EDX
+	JE	10$
+	MOVL	EAX, pcifbv_vendor[ESP]
+	CMPW	AX, dct_pcidevid+2[EDX]
+	JNE	2$
+	MOVL	EAX, pcifbv_device[ESP]
+	TESTL	EAX, EAX
+	JS	6$
+	CMPW	AX, dct_pcidevid+0[EDX]
+	JNE	2$
+
+;Here with a match
+
+6$:	MOVL	[EBX], EDX
+	CLRL	EAX
+	RET	16t
+
+;Here if not found
+
+10$:	MOVL	EAX, #ER_PDNAV
+	RET	24t
+.PAGE
+;New style function to locate PCI device data given class and sub-class codes
+;	long xospciFindByClass(
+;	    PCIB *ppcib,	// Address of pointer to starting PCIB for
+;				//   search (pointer should contain NULL to
+;				//   start search)
+;	    long  cls,		// PCI device class
+;	    long  subcls,	// PCI device sub-class (-1 if don't care)
+;	    long  progif,	// PCI device programming interface (-1 if
+;				//   don't care)
+;	    long *pdata);	// Pointer to location to receive device data
+;				//   value (may be NULL if don't need this)
+;  Value returned is the encoded configuration address if normal or a
+;    negative XOS error code if error.
+
+pcifbc_ppcib =!20t
+pcifbc_cls   =!16t
+pcifbc_subcls=!12t
+pcifbc_progif=!8
+pcifbc_pdata =!4
+
+xospciFindByClass:
+	MOVL	EBX, pcifbc_ppcib[ESP]
+	MOVL	EDX, [EBX]
+	TESTL	EDX, EDX
+	JNE	2$
+	MOVL	EDX, pcidcthead+dct_table
+	JMP	4$
+
+2$:	MOVL	EDX, dct_next[EDX]
+4$:	TESTL	EDX, EDX
+	JE	12$
+	MOVL	EAX, pcifbc_cls[ESP]
+	CMPB	AL, dct_pciclass+3[EDX]
+	JNE	2$
+	MOVL	EAX, pcifbc_subcls[ESP]
+	TESTL	EAX, EAX
+	JS	6$
+	CMPB	AL, dct_pciclass+2[EDX]
+	JNE	2$
+6$:	MOVL	EAX, pcifbc_progif[ESP]
+	TESTL	EAX, EAX
+	JS	8$
+	CMPB	AL, dct_pciclass+1[EDX]
+	JNE	2$
+
+;Here with a match
+
+8$:	MOVL	[EBX], EDX
+	CLRL	EAX
+10$:	RET	20t
+
+;Here if not found
+
+12$:	MOVL	EAX, #ER_PDNAV
+	JMP	10$
+.PAGE
+;New style function to locate PCI device data given device address
+;	long xospciFindByAddr(
+;	    PCIB **ppcib,	// Address of pointer to starting PICB for
+;				//   search (pointer should contain NULL to
+;				//   start search)
+;	    long   bus,		// Bus address
+;	    long   slot,	// Slot address
+;	    long   func,	// Function number
+;	    long  *pdata);	// Pointer to location to receive device data
+;				//   value (may be NULL if don't need this)
+;  Value returned is the encoded configuration address if normal or a
+;    negative XOS error code if error.
+
+pcifba_ppcib=!24t
+pcifba_bus  =!16t
+pcifba_slot =!12t
+pcifba_func =!8
+pcifba_pdata=!4t
+
+xospciFindByAddr:
+	MOVZBL	EAX, pcifba_bus[ESP]	;Get the bus number
+	SHLL	EAX, #16t
+	MOVL	EDX, pcifba_slot[ESP]	;Get the slot number
+	ANDL	EDX, #0x1F
+	SHLL	EDX, #11t
+	ORL	EAX, EDX
+	MOVL	EDX, pcifba_func[ESP]	;Get the function number
+	ANDL	EDX, #0x07
+	SHLL	EDX, #8t
+	ORL	EAX, EDX
+	BTSL	EAX, #31t		;Set bit 31
+	MOVL	EBX, pcifba_ppcib[ESP]	;Get starting PCIB
+	MOVL	EDX, [EBX]
+	TESTL	EDX, EDX		;Want to start at beginning?
+	JNE	2$			;No
+	MOVL	EDX, pcidcthead+dct_table ;Yes
+	JMP	4$
+
+2$:	MOVL	EDX, dct_next[EDX]	;Get next PCIB
+4$:	TESTL	EDX, EDX
+	JE	10$			;If no more
+	CMPL	EAX, dct_pciaddr[EDX]	;This one?
+	JNE	2$			;No - continue
+	MOVL	[EBX], EDX		;Yes - found it - give him the value
+	CLRL	EAX			;Return 0
+	RET	20t
+
+;Here if not found
+
+10$:	MOVL	EAX, #ER_PDNAV
+	RET	28t
+.PAGE
+;New style function to write PCI data value
+;	void xospciWriteData
+;	    PCIB *pcib,
+;	    long  data);
+
+pciwd_pcib=!8t
+pciwd_data=!4t
+
+xospciWriteData:
+	MOVL	EBX, pciwd_pcib[ESP]
+	MOVL	EAX, pciwd_data[ESP]
+	MOVL	dct_pcidata[EBX], EAX
+	RET	8t
+
+;New style function to set PCI data bits
+;	void xospciSetData
+;	    PCIB *pcib,
+;	    long  data);
+
+pcisd_pcib=!8t
+pcisd_data=!4t
+
+xospciSetData:
+	MOVL	EBX, pciwd_pcib[ESP]
+	MOVL	EAX, pciwd_data[ESP]
+	ORL	dct_pcidata[EBX], EAX
+	RET	8t
+.PAGE
+;New style function to get the size of a PCI register/memory block
+;	long xospciGetBlkSize(
+;	    PCIB *pcib,
+;	    long  reg)
+;  Value returned is the size of the block in bytes if normal or a
+;    negative XOS error code if error
+
+;NOTE: This function will store an invalid value in the address register and
+;      then restore it. All interrupts are disabled for the entire time the
+;      register is invalid!
+
+pcigr_pcib =!16t
+pcigr_reg  =!12t
+pcigr_value=!8t
+
+$$$=!0
+FRM pcigr_size, 4t
+picgr_SIZE=!$$$
+
+xospciGetBlkSize::
+	ENTER	picgr_SIZE
+	PUSHL	pcigr_pcib[EBP]		;Try to set the address register to
+	PUSHL	pcigr_reg[EBP]		;  0xFFFFFFFF
+	PUSHL	#0xFFFFFFFF
+	CLI				;Don't allow interrupts while the
+	CALL	xospciWriteCfgReg	;  value is messed up
+	TESTL	EAX, EAX
+	JS	10$			;Failed - this may be serious if the
+					;  register was modified, but there is
+					;  not much we can do about it!
+
+	PUSHL	pcigr_pcib[EBP]		;OK - read the actual value
+	PUSHL	pcigr_reg[EBP]
+	PUSHL	SS
+	LEAL	EAX, pcigr_size[EBP]
+	PUSHL	EAX
+	CALL	xospciReadCfgReg
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EAX, pcigr_size[EBP]
+	TESTB	AL, #0x01		;Memory block?
+	JNE	4$			;No
+	ANDL	EAX, #0xFFFFFFF0	;Yes - mask out low 4 bits
+4$:	ANDL	EAX, #0xFFFFFFFC	;In all cases mask out the low 2 bits
+	BSFL	ECX, EAX		;Find the first bit that is set
+	JNE	6$
+	CLRL	EAX			;No bits are set - return 0!
+	JMP	8$
+
+6$:	MOVL	EAX, #1			;Get the size
+	SHLL	EAX, CL
+8$:	MOVL	pcigr_size[EBP], EAX
+	PUSHL	pcigr_pcib[EBP]		;Restore the original value
+	PUSHL	pcigr_reg[EBP]
+	PUSHL	pcigr_value[EBP]
+	CALL	xospciWriteCfgReg
+10$:	STI				;Interrupts are OK now
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	EAX, pcigr_size[EBP]
+12$:	LEAVE
+	RET	12t
+.PAGE
+
+;New style function to read PCI configuration register
+;	long xospciReadCfgReg(
+;	    PCIB *pcib,
+;	    long  reg,
+;	    long *pval);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+pcircr_pcib=!12t
+pcircr_reg =!8
+pcircr_pval=!4
+
+xospciReadCfgReg:
+	MOVL	EBX, pcircr_pcib[ESP]
+	MOVL	EAX, dct_pciaddr[EBX]
+	MOVB	AL, pcircr_reg[ESP]
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	IOPAUSE
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR
+	INL	[DX]
+	MOVL	EBX, pcircr_pval[ESP]
+	MOVL	[EBX], EAX
+	CLRL	EAX
+	RET	12t
+.PAGE
+;New style function to write PCI configuration register
+;	long xospciWriteCfgReg(
+;	    PCIB *pcib,
+;	    long  reg,
+;	    long  data);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+pciwcr_pcib=!12t
+pciwcr_reg =!8
+pciwcr_data=!4
+
+xospciWriteCfgReg:
+	MOVL	EBX, pciwcr_pcib[ESP]
+	MOVL	EAX, dct_pciaddr[EBX]
+	MOVB	AL, pciwcr_reg[ESP]
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	IOPAUSE
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR
+	MOVL	EAX, pciwcr_data[ESP]
+	OUTL	[DX]
+	CLRL	EAX
+	RET	12t
+
+;New style function to write PCI configuration register byte
+;	long xospciWriteCfgRegByte(
+;	    PCIB *pcib,
+;	    long  reg,
+;	    long  data);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+pciwcb_pcib=!12
+pciwcb_reg =!8
+pciwcb_data=!4
+
+xospciWriteCfgRegByte:
+	MOVL	EBX, pciwcr_pcib[ESP]
+	MOVL	EAX, dct_pciaddr[EBX]
+	MOVB	AL, pciwcr_reg[ESP]
+	ANDL	EAX, #0xFFFFFFFC
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	MOVL	EAX, pciwcr_reg[ESP]
+	ANDL	EAX, #0x03
+	LEAL	EDX, P_PCI1DATA-P_PCI1ADDR[EDX+EAX]
+	MOVL	EAX, pciwcr_data[ESP]
+	OUTB	[DX]
+	CLRL	EAX
+	RET	12t
+.PAGE
+;New style function to get value
+;	long xospciGetValue(
+;	    PCIB *pcib,
+;	    long  index),
+;  Value returned is the value from the configuration register. There is no
+;    error indication, except that -1 is returned for an invalid index.
+
+;Note: If the index value is greater than 2, it directly specifies the offset
+;      to the value stored in the DCT block. See the PCIGV_ definitions in
+;      xosx.par.
+
+pcigv_pcib=!8
+pcigv_indx=!4
+
+xospciGetValue:
+	MOVL	EBX, pcigv_pcib[ESP]
+	MOVL	EDX, pcigv_indx[ESP]
+	CMPL	EDX, #PCIGV_DATA
+	JA	8$
+	CMPL	EDX, #PCIGV_ADDR
+	JAE	4$
+	MOVL	EAX, dct_pciaddr[EBX]
+	JMPIL	gvdisp[EDX*4]
+
+4$:	MOVL	EAX, dct_pciaddr-PCIGV_ADDR*4[EBX+EDX*4]
+6$:	RET	8
+
+8$:	MOVL	EAX, #-1
+	JMP	6$
+
+	.MOD	4
+gvdisp:	.LONG	gvfunc
+	.LONG	gvslot
+	.LONG	gvbus
+
+gvfunc:	SHRL	EAX, #8t
+	ANDL	EAX, #0x07
+	JMP	6$
+
+gvslot:	SHRL	EAX, #11t
+	ANDL	EAX, #0x1F
+	JMP	6$
+
+gvbus:	SHRL	EAX, #16t
+	MOVZBL	EAX, AL
+	JMP	6$
+.PAGE
+
+;Function to read a PCI configuration register
+;	long readconfig(
+;	    long addr);		// PCI configuration address
+;  Value returned is the 32-bit data value
+
+rdcfg_addr=!4
+
+readconfig:
+	MOVL	EAX, rdcfg_addr[ESP]
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	IOPAUSE
+	A2IOP	P_PCI1DATA-P_PCI1ADDR
+	INL	[DX]
+	RET	4
+
+;Functionto write a PCI configuration register
+;	void writeconfig(
+;	    long data,		// Data to write
+;	    long addr);		// PCI configuration address
+
+wrcfg_data=!8
+wrcfg_addr=!4
+
+writeconfig:
+	MOVL	EAX, wrcfg_addr[ESP]
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	IOPAUSE
+	ADDL	EDX, #4
+	MOVL	EAX, wrcfg_data[ESP]
+	OUTL	[DX]
+	RET	8
+.PAGE
+	.SBTTL	PCI class driver data
+
+	DATA
+
+pcicfgreg:
+	.LONG	0
+
+pciccb:	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'PCI', 0	;ccb_name    - Name of this class
+	.LONG	0xFFFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'PCI0'		;ccb_npfxval - Name prefix part value
+	.LONG	pcidevchk	;ccb_devchk  - Address of device check routine
+	.LONG	pcicls		;ccb_fdsp    - Address of class func disp table
+	.LONG	pcicctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+pcidcb:	.LONG	0
+dctpnt: .LONG	pcidcthead+dct_table
+
+	LKEEND

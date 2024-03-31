@@ -1,0 +1,1034 @@
+	.TITLE	export - Initial exported symbol table for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.NLBEX
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	svcdef.inc
+	.INCLUD	pdadef.inc
+
+	ONCE
+
+;The exported symbol table consists of a linked list of tables. Each table in
+;  the list specifies symbols that begin with a single 3 to 6 character prefix.
+;  All prefix characters are lower case. There are 6 tables for symbols defined
+;  in the kernel, using prefixes knl, knx, sys, pda, sda, and tda. Each lke
+;  loaded adds a new table with a unique prefix. By convention all lke defined
+;  symbols use a 6 character prefix with the first three characters specifying
+;  the creater of the LKE and the next 3 characters specifying the specific
+;  LKE. All LKE produced by the XOS project use "xos" as the first three prefix
+;  characters.
+
+;Each table starts with a 16 byte header as follows:
+;	typedef struct
+;	{   EXPORTTABLE *next;		// Address of next table, 0 if end
+;	    char         prefix[8];	// Prefix string
+;	    long         num;		// Number of entries
+;	    uchar        entry[];
+;	} EXPORTTABLE;
+;  There is one entry in each table of each symbol defined. It has the
+;  following format:
+;	typedef struct
+;	{   uchar length1;		// Total length of this entry, including
+;					//   this byte.
+;	    uchar length2;		// Length of the name string - 1
+;	    char  name[n];		// Name string (does not include the
+;					//   prefix bytes)
+;	    xxxx  value;		// Value (may be 1, 2, or 4 bytes)
+;	} EXPORTENTRY;
+;  Due to the variable structure of the symbol entry it is not possible to
+;  define a C structre that completely specifies it but the above should be
+;  clear enough even though it is not a valid C structure definition.
+
+;The table is place in the ONCE code segment. The code in initmem copy it
+;  to its final location at knlExportTable and compresses it as much as it
+;  can. The the loaded version is discared when the once-only code is given
+;  up.
+
+;Note that the macros used here store all symbol offset values as 2 or 4-byte
+;  values.  This is necessary since most of the symbols are external and there
+;  is no way to know their exact length at assembly time.  In cases where the
+;  values are known to be 2-byte values (such as pda, sda, and tda offsets),
+;  they are stored as 2-byte values.  Otherwise they are stored as 4-byte
+;  values.  The code in memory1 which copies this table to its final position
+;  compresses all values to the minimum possible length.
+
+;Define macro to determine length of a text string.  The value of the symbol
+;  specified as the first argument is set to the length of the string
+;  specified as the second argument
+
+	.MACRO	STRLEN symbol, string
+symbol=!0
+	.IRPC	q, {string}
+symbol=!symbol+1
+	.ENDR
+	.ENDM
+
+exporttable::!
+
+	.SBTTL	"svc" symbol table
+
+;The svc symbol table defines symbols for the kernel system call entries.
+;  These are all addresses.
+
+svctable:!
+	.LONG	pdatable
+	.ASCIZ	"svc"
+	.LONG	0
+	.LONG	NUMSVC
+
+NUMSVC=!0
+
+	.MACRO	SD  pcnt, pname, vcnt, vname
+.IF NB {pname}
+  .IF GE pcnt
+	STRLEN	$$$L, pname
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"pname"
+	.LONG	svc'pname#
+	.BYTE	$$$L+5
+	.BYTE	$$$L
+	.ASCII	"_'pname"
+	.WORD	svc_'pname#
+NUMSVC=!NUMSVC+2
+  .ENDC
+.ENDC
+	.ENDM
+
+	SVCDEFSYS
+
+	.MACRO	SD  pname, vname
+.IF NB {pname}
+	STRLEN	$$$L, pname
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"pname"
+	.LONG	svc'pname#
+NUMSVC=!NUMSVC+1
+.ENDC
+	.ENDM
+
+	SVCDEFUSER
+	.BYTE	0
+.PAGE
+	.SBTTL	"pda" symbol table
+
+;The pda symbol table defines symbols which are offsets in the process data
+;  area (PDA) for each process.  The values are all numbers (not addresses).
+
+	.MACRO	SET0 name, def
+	.ENDM
+
+	.MACRO	SET1 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	pda'name#
+NUMPDA=!NUMPDA+1
+	.ENDM
+
+	.MACRO	SET2 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	pda'name#
+NUMPDA=!NUMPDA+1
+	.ENDM
+
+	.MACRO	SKIP name
+	.ENDM
+
+	.MACRO	DEF name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	pda'name#
+NUMPDA=!NUMPDA+1
+	.ENDM
+
+pdatable:!
+	.LONG	tdatable
+	.ASCIZ	"pda"
+	.LONG	0
+	.LONG	NUMPDA
+
+NUMPDA=!0
+	pdadef
+.PAGE
+	.SBTTL	"tda" symbol table
+
+;The tda symbol table defines symbols which are offsets in the thread data
+;  area (TDA) for each thread. The values are all numbers (not addresses).
+
+	.MACRO	SET1 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	tda'name#
+NUMTDA=!NUMTDA+1
+	.ENDM
+
+	.MACRO	SET2 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	tda'name#
+NUMTDA=!NUMTDA+1
+	.ENDM
+
+	.MACRO	DEF name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	tda'name#
+NUMTDA=!NUMTDA+1
+	.ENDM
+
+tdatable:!
+	.LONG	sdatable
+	.ASCIZ	"tda"
+	.LONG	0
+	.LONG	NUMTDA
+
+NUMTDA=!0
+	tdadef
+.PAGE
+	.SBTTL	"sda" symbol table
+
+;The sda symbol table defines symbols which are offsets in the section data
+;  block (SDA) which stores data which specifies shared memory sections.
+;  All values are defined as numbers (not addresses)
+
+	.MACRO	SET1 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	sda'name#
+NUMSDA=!NUMSDA+1
+	.ENDM
+
+	.MACRO	SET2 name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	sda'name#
+NUMSDA=!NUMSDA+1
+	.ENDM
+
+	.MACRO	DEF name, def
+	STRLEN	$$$L, name
+	.BYTE	$$$L+4t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.WORD	sda'name#
+NUMSDA=!NUMSDA+1
+	.ENDM
+
+sdatable:!
+	.LONG	knxtable
+	.ASCIZ	"sda"
+	.LONG	0
+	.LONG	NUMSDA
+
+NUMSDA=!0
+	sdadef
+.PAGE
+	.SBTTL	"knx" symbol table
+
+;The knx symbol table defines symbols which are kernel code addresses which
+;  are links to standard kernal extension routines
+
+	.MACRO	GV  name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	knx'name#
+NUMKNX=!NUMKNX+1
+	.ENDM
+
+	.MOD	4
+knxtable:!
+	.LONG	knltable
+	.ASCIZ	'knx'
+	.LONG	0
+	.LONG	NUMKNX
+
+NUMKNX=!0
+
+ GV LogGiveAllPaths
+ GV PciFindVendor
+ GV PciFindType
+ GV PciReadConfig
+ GV PciWriteConfig
+ GV SpdSetActive
+ GV SpdSetIdle
+.PAGE
+	.SBTTL	"knl" symbol table
+
+;The knl symbol table defines symbols which are kernel code or data addresses
+;  or which are numeric values relating to the kernal
+
+	.MACRO	GV name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	knl'name#
+NUMKNL=!NUMKNL+1
+	.ENDM
+
+	.MACRO	LV name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6t
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	knl'name
+NUMKNL=!NUMKNL+1
+	.ENDM
+
+	.MOD	4
+knltable:!
+	.LONG	systable
+	.ASCIZ	'knl'
+	.LONG	0
+	.LONG	NUMKNL
+
+NUMKNL=!0
+
+ GV _DISMISS
+ GV _SSVC
+ GV _DSVC
+ GV AddParm4		;Add in 4 byte IO parameter value
+ GV AddParm8		;Add in 8 byte IO parameter value
+ GV BadCharF		;Illegal characteristic function error
+ GV BadCharV		;Illegal characteristic value error
+ GV BadCharS		;Illegal characteristic size error
+ GV BadParmI		;Illegal parameter index error
+ GV BadParmS		;Return ER_PARMS error
+ GV BadParmV		;Return ER_PARMV error
+ GV BadParmVLv		;Return ER_PARMV error
+ GV BadValue		;Return ER_VALUE error
+ GV BadValueLv		;Return ER_VALUE error
+ GV BootID		;Boot disk ID
+ GV Bdv2SysDate		;Convert broken down date to system date
+.IF NE $$BUGRING
+ GV BugLog		;Put entry into the debug log
+.ENDC
+ GV ChkIORegs		;Check for available IO register block
+ GV ChkVector		;Check for valid signal vector number
+ GV ChrMsgOpenCnt
+ GV ChrMsgAccess
+ GV ChrMsgManufctr
+ GV ChrMsgProduct
+ GV ChrMsgModel
+ GV ChrMsgSerialNm
+ GV ChrMsgRevision
+ GV ChrMsgUnit
+ GV ChrMsgUnitType
+ GV ChrMsgUnitDesp
+ GV ChrMsgClass
+ GV ChrMsgType
+ GV ChrMsgConDesp
+ GV ChrMsgIoReg
+ GV ChrMsgMemReg
+ GV ChrMsgInt
+ GV ChrMsgDma
+ GV ChrMsgIndex
+ GV ChrMsgTimeOut
+ GV ChrMsgByteOut
+ GV ChrMsgByteIn
+ GV ChrMsgWTMax
+ GV ChrMsgRAMax
+ GV ChrMsgDTHLimit
+ GV ChrMsgTDataErr
+ GV ChrMsgHDataErr
+ GV ChrMsgHungErr
+ GV ChrMsgTOvrnErr
+ GV ChrMsgHOvrnErr
+ GV ChrMsgTDevErr
+ GV ChrMsgHDevErr
+ GV ChrMsgPciSlot
+ GV ChrMsgPciBus
+ GV ComDPParms
+ GV ConDhdb		;DHDB for the console display
+ GV CpsPda
+ GV Crashed
+ GV CurSpeed
+ GV DcGetClass		;Get device class name
+ GV DcGetLong		;Get long device characteristic value
+ GV DcGetLongDcb	;Get long device characteristic value from DCB
+ GV DcGet1Byte		;Get 1 byte value from DCB
+ GV DcGet2Byte		;Get 2 byte value from DCB
+ GV DcGet4Byte		;Get 4 byte value from DCB
+ GV DcGet8Byte		;Get 8 byte value from DCB
+ GV DcGetBCDVer
+ GV DcGetNO
+ GV DcGetStr		;Get sting value from DCB
+ GV DcGetYES
+ GV DcMsgAccess
+ GV DcMsgByteIn
+ GV DcMsgByteOut
+ GV DcMsgClass
+ GV DcMsgConDesp
+ GV DcMsgDma
+ GV DcMsgHDataErr
+ GV DcMsgHDevErr
+ GV DcMsgHOvrnErr
+ GV DcMsgHungErr
+ GV DcMsgIndex
+ GV DcMsgInt
+ GV DcMsgIoReg
+ GV DcMsgManufctr
+ GV DcMsgMemReg
+ GV DcMsgModel
+ GV DcMsgOpenCnt
+ GV DcMsgProduct
+ GV DcMsgWTMax
+ GV DcMsgRAMax
+ GV DcMsgDTHLimit
+ GV DcMsgPciBus
+ GV DcMsgPciSlot
+ GV DcMsgRevision
+ GV DcMsgSerialNm
+ GV DcMsgTDataErr
+ GV DcMsgTDevErr
+ GV DcMsgTOvrnErr
+ GV DcMsgTimeOut
+ GV DcMsgType
+ GV DcMsgUnit
+ GV DcMsgUnitType
+ GV DcSet1Byte		;Set 1 byte value in DCB
+ GV DcSet2Byte		;Set 2 byte value in DCB
+ GV DcSet4Byte		;Set 4 byte value in DCB
+ GV DcSetClass		;"Set" (really check) device class name
+ GV DcSetLong		;Set value of long device characteristic
+ GV DcSetLongDcb	;Set value of long device characteristic in DCB
+ GV DcSetStr		;Set sting value in DCB
+ GV DelFactor		;Delay factor for CPU loops
+ GV Disc2SysTime	;Convert discrete time to system time
+ GV DismissInt		;Dismiss hardware interrupt (disabled)
+ GV DispMode		;Current console display mode
+ GV DispType		;Console display type
+ GV DsmFork		;Dismiss fork routine
+ GV DmaGetChn		;Get use of DMA channel
+ GV DmaGiveChn		;Give up use of DMA channel
+ GV DmaSetVir		;Set up for DMA transfer given virtual address
+ GV DmaSetPhy		;Set up for DMA transfer given physical address
+ GV DmaInput		;Start DMA input
+ GV DmaOutput		;Start DMA output
+ GV DmaDisable		;Disable DMA channel
+ GV DmaChkDone		;Check if DMA transfer is done
+ GV DmaGetCnt		;Get DMA transfer count
+ GV DmaGetAddr		;Get DMA transfer address
+ GV DmaAbort		;Abort DMA channel
+ GV DmaCascade		;Set up DMA channel for cascade mode
+ GV Dos2SysDate
+ GV Dos2SysTime
+ GV DosDate		;Current date in DOS format
+ GV EnableInt		;Enable interrupt
+ GV EncodeFileProt	;Encode file protection to string
+ GV EnsXMem		;Ensure exec data memory locations are in a single page
+ LV ExportTable
+ GV FirstCcb		;Contains offset of first CCB
+ GV FixPath1
+ GV FixPath3
+ GV Font9x14F
+ GV Font8x14H
+ GV Font8x14L
+ GV Font9x16F
+ GV Font8x16H
+ GV Font8x16L
+ GV Font9x8F
+ GV Font8x8H
+ GV Font8x8L
+ GV ForceLowMem
+ GV ForkLvl		;Current fork level
+ GV ForkTime
+;;;; GV GeckoMem		;Offset of the Gecko graphic display save buffer
+ GV GeckoSig
+ GV GeckotDev
+ GV GeckotPort
+ GV GetClkTotal		;Get current time
+ GV GetDcName		;Get device characteristic name using full table
+ GV GetDcNullS		;Get null string for device characteristic
+ GV GetDcVal1		;Get device characteristic value using tight table
+ GV GetDcVal2		;Get device characteristic value using full table
+ GV GetDfltUser
+ GV GetIndex		;Get exec memory buffer index value
+ GV GetParm		;Get device parameter value
+ GV GetPhyAddr		;Get physical address for DMA
+ GV GetQel		;Get queue element
+ GV GetQelClr		;Get queue element and clear it
+ GV GetRandom32		;Get 32-bit random number
+ GV GetSysStr		;Get system string
+ GV GetSysVal		;Get value of system class characteristic
+ GV GetXMem		;Allocate exec data memory
+ GV GetXRes		;Get exec memory resource
+ GV GetXmb		;Get exec memory buffer
+ GV GetXmbClr		;Get exec memory buffer and clear it
+ GV GetSysData
+ GV GetSysHRDtTm	;Get high res date and time in system format
+ GV GetYesNo		;Get YES or NO value for parameter
+ GV GiveQel		;Give up queue element
+ GV GiveXmb		;Give up exec memory buffer
+ GV GiveXMem		;Give up exec data memory
+ GV GiveXRes		;Give up exec memory resource
+ GV GiveXSpace		;Give up exec memory space
+ GV HdkDataC
+ GV HdkDataD
+ GV IdleCur
+ GV IdleAve
+ GV IFnDev		;Return ER_IFDEV
+ GV IFnDevP1		;Return ER_IFDEV
+ GV IllInp		;Illegal input
+ GV IllOut		;Illegal output
+
+
+.IF NE 0
+ GV IllInp		;Illegal input
+ GV IllInpTF		;Illegal input and raise to fork level
+ GV IllInpLv		;Illegal input (give up stack frame)
+ GV IllOutTF		;Illegal output and raise to fork level
+ GV IllOutLv		;Illegal output (give up stack frame)
+.ENDC
+ GV IntDoneHigh		;Interrupt done routine for high interrupts
+ GV IntDoneLow		;Interrupt done routine for low interrupts
+ GV IntDoneDiff		;Offset between done routine offsets
+ GV IopBufrLmt		;Common routine for IOPAR_BUFRLMT
+ GV IopDelay		;Process IOPAR_DELAY device parameter
+ GV IopDevSts		;Process IOPAR_DEVSTS device parameter
+ GV IoDfltFilParams
+ GV IoDfltTrmParams
+ GV IopDummyN		;Handle dummy numeric IO parameter
+ GV IopDummyS		;Handle dummy string IO parameter
+ GV IopDummyT		;Process dummy IO parameter/text value
+ GV IopFileOptn		;Process IOPAR_FILEOPTN device parameter
+ GV IopFileSpec		;Process IOPAR_FILESPEC device parameter
+ GV IopGlbId		;Process IOPAR_GLBID device parameter
+ GV IopIoSts		;Handle IOPAR_OUTSTS or IOPAR_INPSTS
+ GV IoMinDDParams
+ GV IoMinParams
+ GV IopNullS		;Handle null string IO parameter
+ GV IopNullN		;Handle null numeric IO parameter
+ GV IopNumOpen		;Process IOPAR_NUMOPEN device parameter
+ GV IopNullT		;Handle null time value IO parameter
+ GV IopOutQLmt		;Process IOPAR_OUTQLMT device parameter
+ GV IoStdGenParams
+ GV IopTimeOut		;Process IOPAR_TIMEOUT device parameter
+ GV IopUnitNum		;Process IOPAR_UNITNUM device parameter
+ GV IoparClass		;Handle IOPAR_CLASS parameter
+ GV IopInpQLmt		;Process IOPAR_INPQLMT device parameter
+ GV IsNull
+ GV LibIsTable
+ GV KeyTblXN
+ GV Lit10		;Literal 10t
+ GV Lit11		;Literal 11t
+ GV Lit16000		;Literal 16000t
+ GV Lit128		;Literal 128t
+ GV Lit256		;Literal 256t
+ GV Lit512		;Literal 512t
+ GV LitMSPERSP		;Literal MSPERSP (millseconds per scheduler period)
+ GV MachType		;Machine type
+ GV MakeDcb		;Create device DCB
+ GV MapPhyClr		;Clear temporary physical mapping
+ GV MapPhyTemp		;Map physical page temporarily
+ GV MemAvail		;Number of memory pages available
+ GV MemFree		;Head pointer for memory free list
+ GV MemGet1Byte
+ GV MemGet2Byte
+ GV MemGet4Byte
+ GV MemTable
+ GV MemTableS10
+ GV MemTableS20
+ GV MemTop
+ GV MemTotal
+ GV MemUser
+ GV Name		;System name
+ GV NonExMem		;Physical address for non-existant memory
+ GV NullCharStr		;Return null string value for characteristic
+ GV NullFilParms
+ GV NullLabel		;Null device label function
+ GV NullQio		;Null queued IO operation
+ GV NullTrmParms
+;;;;  GV OpnParms
+ LV PageZero
+ GV ParseFileProt	;Parse file protection string
+ LV Pda
+ GV PdaTable		;Process table
+ GV PgTable
+ GV PgTableS20
+ GV PhysReset		;Physical reset vector
+ GV Port61
+ GV PrivFail		;Return ER_PRIV error
+ GV ProcHigh
+ GV ProcInUse
+ GV ProcLimit
+ GV ProcMax
+ GV PutDebugChr		;Put debug character on screen (GeckoT)
+ GV PutDebugHex
+ GV PutDebugLong	;Put debug long value on screen (GeckoT)
+ GV PutDecNmbr		;Put decimal number into device name
+ GV PutHex2Nmbr		;Put 2 digit hex number into device name
+ GV PutHex4Nmbr		;Put 4 digit hex number into device name
+ GV PutHex8Nmbr		;Put 8 digit hex number into device name
+ GV QueNames
+ GV RamAccess
+ GV RamAccessPTE
+ GV Reboot
+ GV ReqFork		;Queue request for fork
+ GV RtnAdrEr		;Return ER_ADRER
+ GV RtnAdrErLv
+ GV RtnBusy
+ GV RtnLZero		;Return 64-bit zero (EDX,EAX)
+ GV RtnMOne		;Return minus one
+ GV RtnZero		;Return zero
+ GV RtnZeroP1		;Return zero
+ GV RtnZeroP2		;Return zero
+ GV SDelay		;Wait for a short time
+ GV SchCounts
+ GV SchedReq
+ GV Schedule
+ GV SchCounts
+ GV SchedTime
+ GV SchTtl
+ GV ScnTblX
+ GV SetAccess		;Set value of generic ACCESS characteristic
+ GV SetDfltUser
+ GV SetSysStr		;Set system string
+ GV SetSysVal		;Set value of system characteristics
+ GV SetupOAT		;Set up once-a-tick routine
+ GV SetupTTAS		;Set up ten-times-a-second routine
+ GV SetupTimer		;Set up direct timer routine
+ GV SignalChk
+ GV StoreHnd2		;Store DCB offset in handle table
+ GV StoreHndl
+ GV StrParm4		;Store 4 byte parameter value
+ GV StrParm8		;Store 8 byte parameter value
+ GV StrParmLng		;Store long string parameter value
+ GV SvCodePnt		;Saved code area pointer
+ GV SvDataPnt		;Saved data area pointer
+ GV SvSpacePnt		;Saved memory space area pointer
+ GV SysDate		;Current date in system format
+ GV SysDateTime
+ GV SysDescp		;System description bits
+ GV SysGroup		;Default group name for system
+ GV SysStrDefine	;Define system string
+ GV SysStrGet		;Get system string value
+ GV SysTime
+ GV SysTtl		;Total clock ticks since system loaded
+ GV SysUser		;Default user name for system
+ GV LitTICKPERSEC
+ GV LitTICKPERSP
+ LV Tda
+ GV TdaTable		;Process table
+ GV TRMIFLOWTBLDSZ
+ GV TRMIFLOWTBLSZ
+ GV TRMOFLOWTBLDSZ
+ GV TRMOFLOWTBLSZ
+ GV TrmDetach		;Detach terminal
+ GV TrmCarDet		;Process terminal carrier detect
+ GV TrmCarLoss		;Process terminal carrier loss
+ GV TrmCcb		;Terminal CCB
+ GV TrmCtsOff		;Process terminal CTS off
+ GV TrmCtsOn		;Process terminal CTS on
+ GV TrmDsrOff		;Process terminal DSR off
+ GV TrmDsrOn		;Process terminal DSR on
+ GV TrmIFlowTbl
+ GV TrmIFlowTblD
+ GV TrmGet1Byte		;Get 1 byte terminal parameter value
+ GV TrmGet2Byte		;Get 2 byte value from TDB
+ GV TrmGet4Byte		;Get 4 byte terminal parameter value
+ GV TrmGetIFlow		;Get terminal input flow control value
+ GV TrmGetModem		;Get MODEM or IMODEM characteristic
+ GV TrmGetOFlow		;Get terminal output flow control value
+ GV TrmGetSession	;Get session enabled for QNFC_DEVCHAR
+ GV TrmGetStr
+ GV TrmGetText		;Get terminal PASSWORD or PROGRAM char.
+ GV TrmHungUp		;Hang up terminal
+ GV TrmMakeTdb		;Create terminal TDB
+ GV TrmMCSignal
+ GV TrmMsgBFreq
+ GV TrmMsgBLen
+ GV TrmMsgCharIn
+ GV TrmMsgCharOut
+ GV TrmMsgIIFlow
+ GV TrmMsgIFlow
+ GV TrmMsgIOFlow
+ GV TrmMsgIModem
+ GV TrmMsgInLBS
+ GV TrmMsgInRBSL
+ GV TrmMsgInRBPL
+ GV TrmMsgInRBHeld
+ GV TrmMsgInRBLost
+ GV TrmMsgInRBS
+ GV TrmMsgKbChar
+ GV TrmMsgKbTChar
+ GV TrmMsgModem
+ GV TrmMsgMsgDst
+ GV TrmMsgOFlow
+ GV TrmMsgPWrd
+ GV TrmMsgProgram
+ GV TrmMsgSession
+ GV TrmMsgSrc
+ GV TrmOFlowTbl
+ GV TrmOFlowTblD
+ GV TrmOutDone		;Terminal output done
+ GV TrmRing		;Process terminal ring indicatation
+ GV TrmSetAccess	;Set terminal ACCESS characteristic
+ GV TrmSet2Byte		;Set 2 byte value in TDB
+ GV TrmSet4Byte		;Set terminal 4 byte characteristic
+ GV TrmSetModem		;Set MODEM or IMODEM characteristic
+ GV TrmSetSession	;Set session enabled for QFNC_DEVCHAR
+ GV TrmSetText		;Set terminal PASSWORD or PROGRAM characteristic
+ GV UnimOp		;Report unimplimented operation
+ GV UnlinkOAS
+ GV UserModeChk
+ LV V86CodeBase
+ GV XfDmaGetChn		;Get use of DMA channel at extended fork level
+ GV XmbSize		;Exec memory buffer size table
+ GV XSpacePnt
+ GV Sys2DosDate		;Convert system date to DOS time
+ GV Sys2DosTime		;Convert system time to DOS time
+ GV SysTimeOnly
+ GV XCodePnt
+ GV XResPda		;Selector of PDA of process which has exec memory
+			;  resource
+
+	.SBTTL	"sys" symbol table
+
+;The sys symbol table defines symbols which are kernel function which use the
+;  Pascal calling sequence.
+
+	.MACRO	GV  name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	sys'name#
+NUMSYS=!NUMSYS+1
+	.ENDM
+
+	.MACRO	LV  name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	sys'name
+NUMSYS=!NUMSYS+1
+	.ENDM
+
+	.MOD	4
+systable:!
+	.LONG	humtable
+	.ASCIZ	'sys'
+	.LONG	0
+	.LONG	NUMSYS
+
+NUMSYS=!0
+ GV ChrFixUp
+ GV ChrGetULong
+ GV ChrSetULong
+ Gv ChrValuesNew
+ GV ChrIgnore
+ GV ChrDevGetClass
+ GV ChrDevChkClass
+ GV ChrDevGetSChar
+ GV ChrDevGetUChar
+ GV ChrDevGetSShort
+ GV ChrDevGetUShort
+ GV ChrDevGetSLong
+ GV ChrDevGetULong
+ GV ChrDevSetULong
+ GV ChrDevGetSLLong
+ GV ChrDevGetULLong
+ GV ChrDevGetStr
+ GV ChrDevSetStr
+ GV ChrGetSChar
+ GV ChrGetUChar
+ GV ChrGetSShort
+ GV ChrGetUShort
+ GV ChrGetSLong
+ GV ChrGetULong
+ GV ChrSetULong
+ GV ChrGetULLong
+ GV ChrGetStr
+ GV ChrSetStr
+ GV ChrGetYesNo
+ GV ChrGetValTbl
+
+ GV EnvGetAll
+ GV EnvGet
+ GV EnvFind
+ GV EnvDefine
+
+ GV IoBeginThread	;Begin IO thread
+ GV IoChkInt		;Check for free IRQ number
+ GV IoChkPorts
+ GV IoCharValues
+ GV IoClose
+ GV IoDevParm
+ GV IoDriverAddUnit
+ GV IoDriverRegister	;Register low level device driver
+ GV IoDriverRemove	;Remove low level device driver
+ GV IoFindDevByName
+ GV IoFinishQueue	;Finish queued IO operation
+ GV IoFinishThread
+ GV IoEnableInt
+ GV IoGetDcbFromId	;Get DCB given the DCB ID
+ GV IoGetDymDcb		;Allocate dynamic DCB
+ GV IoGiveDymDcb	;Give up dynamic DCB
+ GV IoHoldDev
+ GV IoInBlock
+ GV IoInBlockP
+ GV IoInfoSimple	;Info routine for simple devices
+ GV IoInfoNone		;Return no device info
+ GV IoInSingle
+ GV IoInSingleP
+ GV IoLinkDcb		;Link DCB to device class
+ GV IoLockMem
+ GV IoMakeDcb
+ GV IoMinOpen
+ GV IoNewClass		;Create new device class
+ GV IoNextFile
+ GV IoOpen
+ GV IoOutBlock
+ GV IoOutBlockP
+ GV IoOutSingle
+ GV IoOutSingleP
+ GV IoOutString
+ GV IoOutStringP
+ GV IoProcDevParam	;Process device parameters
+
+ GV IopChkClass
+ GV IopGetClass
+
+ GV IoProcDevParamNew
+ GV IoRegPorts
+ GV IoRmvClass		;Remove device class
+ GV IoSetInt		;Set interrupt vector
+ GV IoQueueThread	;Queue IO request
+ GV IoRegPorts		;Register IO ports
+ GV IoResumeInput	;Resume IO thread input
+ GV IoResumeOutput	;Resume IO thread output
+ GV IoResumeThread	;Resume an IO thread
+ GV IoUnholdDev
+ GV IoUnholdDevProc
+ GV IoUnholdDevSys
+ GV IoUnlinkDcb		;Unlink DCB from device class
+ GV IoUnlockMem
+ GV IoWait		;Wait for IO
+ GV IoOpen		;Open file/device
+ GV IoClose		;Close file/device
+ GV IoDevParm		;Get IO parameter values
+ GV IoPath			;Set path
+ GV IoSpecial		;Special device functions
+ GV IoSetPos		;Set position for IO
+ GV IoDevChar		;Device characteristics functions
+ GV IoInSingle		;Input single byte
+ GV IoInSingleP		;Input single byte/parms
+ GV IoInBlock		;Input block
+ GV IoInBlockP		;Input block/parms
+ GV IoOutSingle		;Output single byte
+ GV IoOutSingleP	;Output single byte/parms
+ GV IoOutBlock		;Output block
+ GV IoOutBlockP		;Output block/parms
+ GV IoOutString		;Output string
+ GV IoOutStringP	;Output string/parms
+ GV IoDelete		;Delete file
+ GV IoRename		;Rename file
+ GV IoReqFork
+ GV IoCommit		;Commit output data
+ GV IoClsChar		;Class characteristics functions
+ GV IoGetDosDevice	;Get DOS device name
+ GV IoRun		;Run program
+ GV IoRunCmd		;Run command
+
+ GV IopChkClass
+ GV IopGetClass
+ GV IopGetBufrLmt
+ GV IopGetDelay
+ GV IopGetDevSts
+ GV IopGetFileOptn
+ GV IopGetFileSpec
+ GV IopGetGlbId
+ GV IopGetInpQLmt
+ GV IopGetInpSts
+ GV IopGetNull
+ GV IopGetNumOpen
+ GV IopGetOutQLmt
+ GV IopGetOutSts
+ GV IopGetTimeOut
+ GV IopGetUnitNum
+ GV IopSetBufrLmt
+ GV IopSetDelay
+ GV IopSetFileOptn
+ GV IopSetNull
+ GV IopSetInpQLmt
+ GV IopSetOutQLmt
+ GV IopSetTimeOut
+
+ GV IpmSendLogInMsg	;Send login message to login symbiont
+ GV IpmSendMsg		;Send IPM message to process
+
+ GV LibDec2Str
+ gV LibHex2Str
+ GV LibErrMsg
+ GV LibMemCpy
+ GV LibMemCmpLong
+ GV LibMemCpyLong
+ GV LibMemSet
+ GV LibMemSetLong
+ GV LibSPrintF
+ GV LibStr2Dec
+ GV LibStr8ToUpper
+ GV LibStrChr
+ GV LibStrCmp
+ GV LibStrICmp
+ GV LibStrLen
+ GV LibStrMov
+ GV LibStrNCmp
+ GV LibStrNICmp
+ GV LibStrNLen
+ GV LibStrNMov
+ GV LibStrNMovZ
+ GV LibStrNMovX
+ GV LibStrRChr
+ GV LibVSPrintF
+ GV LibWildCmp8
+
+ GV LogTransLogicalName
+ GV MemCacheCtlLA	;Enable or disable caching for a page
+ GV MemChngMsect	;Change size of msect
+ GV MemFindMsect	;Find msect
+ GV MemGetGSelector	;Allocate global selector
+ GV MemGetLargeBuffer	;Get large contiguous buffer
+ GV MemGetMTE		;Get memory table entry
+ GV MemGetNcXmb		;Get linear address
+ GV MemGetPages		;Allocate memory pages
+ GV MemGetPgTbl		;Allocate page table
+ GV MemGetPhyAddr	;Get physical address from linear address
+ GV MemGetXCode		;Allocate exec code memory
+ GV MemGetXmb		;Get exec memory buffer
+ GV MemGetXMem		;Get static exec memory
+ GV MemGetXRes		;Get exec memory resource
+ GV MemGetXSpace	;Allocate exec data address space
+ GV MemGiveGSelector	;Give up global selector
+ GV MemGivePages	;Give up memory pages
+ GV MemGiveXmb		;Give up exec memory buffer
+ GV MemGiveXRes
+ GV MemMapPhyPages	;Map physical pages
+ GV MemMapPhys		;Map physical memory
+ GV MemReadPhyAddr	;Read memory given physical address
+ GV MemSetGDesc		;Set up global descriptor table entry
+ GV MemXmbSize
+ GV SchEndWaitAll	;Wake up all processes which are waiting
+ GV SchEndWaitOne	;Wake up one process which is waiting
+ GV SchFlushResource
+ GV SchGetResource
+ GV SchGiveResource
+ GV SchIsResourceLocked
+ GV SchRaiseRun		;Raise run priority for process
+ GV SchReqSignal	;Request signal
+ GV SchReqXSig		;Request exec signal
+ GV SchRequeue		;Requeue process to specified queue
+ GV SchRunRequeue	;Requeue process to run
+ GV SchSetUpOAS		;Set up once-a-second routine
+ GV SchSetUpToWait	;Set up to wait
+ GV SchSetWaitIndex
+ GV SchSDelay
+ GV SchUnlockResource
+ GV SchTimeWait		;Wait for specified interval
+ GV SchTmrCancel	;Cancel timer request
+ GV SchTmrCreate	;Create timer reuuest
+
+ GV SysReadCmos		;Read byte from CMOS memory
+ GV SysWriteCmos	;Write byte to CMOS memory
+
+ GV TrmInput		;Process terminal input character
+ GV USAndByte
+ GV USOrByte
+ GV USGetLong
+ GV USGetUShort
+ GV USGetSShort
+ GV USGetUByte
+ GV USGetSByte
+ GV USPutLong
+ GV USPutShort
+ GV USPutByte
+ GV USGetULongV
+ GV USPutULongV
+ GV USGetULLongV
+ GV USPutULLongV
+.PAGE
+	.SBTTL	"hum" symbol table
+
+;The hum symbol table defines symbols in the high user memory area.
+
+	.MACRO	GV  name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	hum'name#
+NUMHUM=!NUMHUM+1
+	.ENDM
+
+	.MACRO	LV  name
+	STRLEN	$$$L, name
+	.BYTE	$$$L+6
+	.BYTE	$$$L-1
+	.ASCII	"name"
+	.LONG	hum'name
+NUMHUM=!NUMHUM+1
+	.ENDM
+
+	.MOD	4
+humtable:!
+	.LONG	0
+	.ASCIZ	'hum'
+	.LONG	0
+	.LONG	NUMHUM
+
+NUMHUM=!0
+ GV Area
+ GV Data
+ GV PerThrd
+ GV PTErrNo		;errno
+ GV PTLtn		;Local thread number
+ GV PTResvd		;Start of the reserved area
+ GV PTTid		;TID
+
+	.MOD	4
+EXPORTSIZE==!$-knlExportTable
+
+	END

@@ -1,0 +1,46 @@
+;Define offsets for the 16-bit registers (uses BAR2)
+
+MC16_HWSTS  =!00	;(r) Hardware status register
+MC16_INTENB =!00	;(w) Interrupt enable register
+MC16_HWCFG  =!02	;(w) Hardware configuration register
+MC16_P1READ =!04	;(r) PIPE1 read register
+MC16_MEMSZ  =!04	;(w) Memory size register
+MC16_EXTCS0 =!06	;(w) External control signal register 0
+MC16_ARPNT  =!08	;(r) ADC read pointer register
+MC16_EXTCS1 =!08	;(w) External control signal register 1
+MC16_AUXOUT =!0A	;(w) Auxiliary output register
+MC16_AWPNT  =!0C	;(r) ADC write pointer register
+MC16_DAQSYNC=!0C	;(w) DAQ sync register
+MC16_UXCLOW =!10	;(r) User XFER counter register (low)
+MC16_ACTL0  =!10	;(w) ADC control register 0
+MC16_ACTL1  =!12	;(w) ADC control register 1
+MC16_UXCHIGH=!14	;(r) User XFER counter register (high)
+MC16_CALCTL =!14	;(w) Calibration control register
+MC16_ASILOW =!16	;(w) ADC sample interval register (low)
+MC16_ASIHIGH=!18	;(w) ADC sample interval register (high)
+MC16_ADILOW =!1A	;(W) ADC delay interval register (low)
+MC16_ADIHIGH=!1C	;(W) ADC delay interval register (high)
+MC16_SSCLOW =!1E	;(w) ADC sample/scan count register (low)
+MC16_SSCHIGH=!20	;(w) ADC sample/scan count register (high)
+MC16_DAQSOFT=!22	;(w) DAQ soft start command
+MC16_DAQSNGL=!24	;(w) DAQ single converstion command
+MC16_QFPCLR =!26	;(w) QUEUE FIFO pointer clear command
+MC16_QLOAD  =!28	;(w) QUEUE load command
+MC16_AFPCLR =!2A	;(w) ADC FIFO pointer clear command
+MC16_QHIGH  =!2C	;(w) QUEUE high register
+
+;Define offsets for the 8-bit register (uses BAR3)
+
+MC8_8255_0 =!00
+MC8_8255_1 =!01
+MC8_8255_2 =!02
+MC8_8255_3 =!03
+MC8_8254_C0=!08
+MC8_8254_C1=!09
+MC8_8254_C2=!0A
+MC8_8254_CW=!0B
+MC8_DIODIR =!40		;(rw) Digital IO direction register
+MC8_DIODATA=!48		;(rw) Digital IO data register
+MC8_CNTRCFG=!50		;(w)  User counter configuration
+
+

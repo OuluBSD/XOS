@@ -1,0 +1,156 @@
+	.TITLE	$_reqxctrl
+
+;*--------------------------------------------------------------------------*
+;* reqxctrl.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+
+	.ENTRY	$_reqxctrl
+$_reqxctrl::
+	MOVZBL	EAX, $_dbbufr#+0
+	CMPL	EAX, #XCTRL_MAX
+	JAE	badfunc
+	JMPIL	dsp[EAX*4]
+
+	.MOD	4
+dsp:	.LONG	badfunc
+	.LONG	fromaddress	;XCTRL_START    = 1
+	.LONG	frombkpnt	;XCTRL_PROCEED  = 2
+	.LONG	singlestep	;XCTRL_SINGLE   = 3
+	.LONG	reboot		;XCTRL_BOOT     = 4
+XCTRL_MAX=!{$-dsp}/4
+
+;NOTE: XCTRL_SINGLE and XCTRL_SINGLEWD do the same thing here. They are
+;      defined seperately so the client can determine which one was requested
+;      from the response t ype.
+
+badfunc:ORB	$_dbbufr#+0, #0x80
+	PUSHL	#DBRQ_XCTRL
+	PUSHL	#1
+	CALL	$_sendresponse#
+	RET
+
+;Here to start (proceed) from an address
+;Request format:
+;  Offset Size Description
+;     0     1  Function = 1
+;     1     4  Address
+;     5     2  Selector
+;Response format:
+;  Offset Size Description
+;     0     1  Function = 1
+
+fromaddress:
+	MOVL	$_tracestate#, #TS_RUN
+	JMP	14$
+
+;Here to proceed from a breakpoint/watchpoint
+;Request format:
+;  Offset Size Description
+;     0     1  Function = 2
+;     1     4  Count (optional)
+;Response format:
+;  Offset Size Description
+;     0     1  Function = 2
+
+frombkpnt:	
+	MOVL	$_tracestate#, #TS_RUN	;Indicate proceeding
+	CMPL	$_reqlength#, #5	;Was a count specified?
+	JB	18$			;No
+	MOVL	EAX, $_dbbufr#+1
+	MOVL	ECX, #BPMAX
+	MOVL	EDX, #$_bptable#
+	MOVL	EBX, $_uregEIP
+2$:	CMPL	bpt_addr[EDI], #0
+	JE	4$
+	CMPL	EBX, bpt_addr[EDI]
+	JNE	4$
+	MOVL	bpt_count[EDI], EAX
+4$:	ADDL	EDI, #bpt_SIZE
+	LOOP	ECX, 2$
+	MOVL	ECX, #4
+	MOVL	EDX, #$_wptable#
+6$:	CMPL	wpt_addr[EDI], #0
+	JE	8$
+	CMPL	EBX, wpt_addr[EDI]
+	JNE	8$
+	MOVL	bpt_count[EDI], EAX
+8$:	ADDL	EDI, #wpt_SIZE
+	LOOP	ECX, 6$
+	JMP	18$
+
+;Here to execute one instruction
+;Request format:
+;  Offset Size Description
+;     0     1  Function = 3
+;     1     4  Address
+;     5     2  Selector
+;Response format:
+;  Offset Size Description
+;     0     1  Function = 3
+;     1     4  Address of next instruction
+;     5     2  Selector for next instruction
+
+singlestep:
+	MOVB	$_singleresp#, AL
+	MOVB	$_tracestate#, #TS_SINGLE ;Indicate executing single instruction
+14$:	CMPL	$_reqlength#, #7	;Was an address specified?
+	JB	18$			;No
+	MOVL	EAX, $_dbbufr#+1	;Yes - use it
+	MOVL	$_uregEIP#, EAX
+	MOVZWL	EAX, $_dbbufr#+5
+	MOVL	$_uregCS#, EAX
+	BTZL	$_uregEFR, #16t		;Clear the resume bit
+18$:	PUSHL	#DBRQ_XCTRL
+	PUSHL	#1
+	CALL	$_sendresponse#
+	MOVB	tracetrp#, #2		;Tell the kernel we what this trap
+	BTSL	$_uregEFR#, #8		;Set the T bit
+	JMP	$_leave#
+
+;Here to reboot the system
+;Request format:
+;  Offset Size Description
+;     0     1  Function = 5
+;Response format:
+;  Offset Size Description
+;     0     1  Function = 5
+
+reboot:	PUSHL	#DBRQ_XCTRL
+	PUSHL	#1
+	CALL	$_sendresponse#
+	JMP	knlReboot#
+
+	END

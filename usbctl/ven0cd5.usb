@@ -1,0 +1,9 @@
+DEV:0003
+FNC:generic
+DRV:bulkcls,usbbulkalnk
+CLS:bulk
+dtp:usba
+BI:1:2
+BO:1:2
+UNB:0
+UNB:1

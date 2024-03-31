@@ -1,0 +1,110 @@
+	.TITLE	$_reqcmd
+
+;*--------------------------------------------------------------------------*
+;* reqcmd.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+
+;************************************************
+; Function: $_reqstate - Handle the STATE request
+; Returned: Nothing
+;************************************************
+
+	.ENTRY	$_reqstate
+$_reqstate::
+	PUSHL	#DBRQ_STATE
+	CALL	$_sendstate
+	RET
+
+
+;**********************************************
+; Function: $_sendstate - Send a STATE response
+; Returned: Nothing
+;**********************************************
+
+sst_type=!4t
+
+$_sendstate::
+	MOVL	EAX, $_dbentry#
+	MOVL	$_dbbufr#+0, EAX
+	MOVL	$_dbbufr#+4, #$_VERSION#
+	CLRL	EAX			;Get number of last LKE in memory
+	MOVL	EBX, lastlke#
+	TESTL	EBX, EBX
+	JE	4$
+	MOVL	EAX, lke_number[EBX]
+4$:	MOVW	$_dbbufr#+8, AX
+	MOVL	EAX, lkenumber#		;Get number of last LKE loaded
+	DECL	EAX
+	MOVW	$_dbbufr#+10t, AX
+	MOVL	$_dbbufr#+12t, #0	;No PID for now
+	MOVL	EAX, $_uregEAX#
+	MOVL	$_dbbufr#+16t, EAX
+	MOVL	EAX, $_uregEBX#
+	MOVL	$_dbbufr#+20t, EAX
+	MOVL	EAX, $_uregECX#
+	MOVL	$_dbbufr#+24t, EAX
+	MOVL	EAX, $_uregEDX#
+	MOVL	$_dbbufr#+28t, EAX
+	MOVL	EAX, $_uregESP#
+	MOVL	$_dbbufr#+32t, EAX
+	MOVL	EAX, $_uregEBP#
+	MOVL	$_dbbufr#+36t, EAX
+	MOVL	EAX, $_uregEDI#
+	MOVL	$_dbbufr#+40t, EAX
+	MOVL	EAX, $_uregESI#
+	MOVL	$_dbbufr#+44t, EAX
+	MOVL	EAX, $_uregCS#
+	MOVW	$_dbbufr#+48t, AX
+	MOVL	EAX, $_uregSS#
+	MOVW	$_dbbufr#+50t, AX
+	MOVL	EAX, $_uregDS#
+	MOVW	$_dbbufr#+52t, AX
+	MOVL	EAX, $_uregES#
+	MOVW	$_dbbufr#+54t, AX
+	MOVL	EAX, $_uregFS#
+	MOVW	$_dbbufr#+56t, AX
+	MOVL	EAX, $_uregGS#
+	MOVW	$_dbbufr#+58t, AX
+	MOVL	EAX, $_uregEIP#
+	MOVL	$_dbbufr#+60t, EAX
+	MOVL	EAX, $_uregEFR#
+	MOVL	$_dbbufr#+64t, EAX
+	PUSHL	sst_type[ESP]
+	PUSHL	#68t
+	CALL	$_sendresponse#
+	RET	4t
+
+	END

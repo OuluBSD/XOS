@@ -1,0 +1,558 @@
+	.TITLE	spawn - System call to create process
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+
+	CODE
+
+	.SBTTL	svcSchSpawn - Supervisor call to create process
+
+;Here for the svcSchSpawn SVC - Create process
+;	struct sab sab;			// Spawn argument block
+;	value = svcSchSpawn(&sab);
+;Value returned is 0 if operation started succesfully or negative error code
+;  if error.  To verify complete success, caller must check both the returned
+;  value and the value stored in sab_error (which will be 0 if no errors).
+;  There are a number of steps involved in spawning a process and an error
+;  can occur after one or more of these steps are complete. In this case the
+;  partially constructed child process is discarded, along with any resources
+;  (open devices or memory) that have already been transfered to it. This is
+;  mainly a problem with memory, since devices are always copied rather than
+;  moved to the child process. Memory is moved, so on an error return it is up
+;  to the caller to determine if the msects specified in the memory list have
+;  been given up.
+;The new process is created with an event cluster named "BEGIN" containing one
+;  event. This is intended to provide an interlock between the new process and
+;  it's parent process when the new process is starting. The initial code for
+;  the new process should wait unit this event is set. The parent process will
+;  do whatever cleanup it needs to do before the child runs (at least closing
+;  devices given to the new process) and then set the event. It is necessary
+;  to create this event within this SVC so the parent is assured that it will
+;  always exist when this SVC returns. If it were created by the new process,
+;  the parent process would have no way of knowing when it had been created
+;  since there is no way to determine exactly when the new process will execute
+;  (or for how long) relative to the parent process. This interlock is mainly
+;  needed to prevent interference between the parent closing devices that were
+;  copied to the new process and the new process accessing these devices.
+;  Non-terminal device handles shared between two processes cannot be accessed
+;  by both processes at the same time when direct IO is used.
+ 
+;Format of the SAB:
+;  sab_func    (2)  Function
+;  sab_status  (2)  Returned status
+;  sab_error   (4)  Returned error code
+;  sab_pid     (4)  Returned PID
+;  sab_type    (1)  Returned process type
+;              (3)
+;  sab_vector  (1)  Vector number
+;              (3)
+;  sab_option  (4)  Option bits (low order 8 bits contain termination event
+;		      number)
+;  sab_name    (4)  Address of name for new process
+;  sab_EIP     (4)  Initial EIP value for new process
+;  sab_CS      (4)  Initial CS value for new process
+;  sab_ESP     (4)  Initial ESP value for new process
+;  sab_SS      (4)  Initial SS value for new process
+;  sab_parm    (4)  Address of parameter list
+
+$$$=!0
+FRM spwn_option  , 4t		;Bits from sab_option
+;;;FRM spwn_CS      , 4t		;Value from sab_CS
+;;;FRM spwn_SS      , 4t		;Value from sab_SS
+FRM spwn_newpda  , 4t		;Selector for PDA for new process
+FRM spwn_actpriv , 8t		;Active privilege mask for child
+FRM spwn_avlpriv , 8t		;Available privilege mask for child
+FRM spwn_wslimit , 4t		;Working set size limit value
+FRM spwn_wsallow , 4t		;Working set size allowed value
+FRM spwn_umlimit , 4t		;Protected mode memory limit value
+FRM spwn_umallow , 4t		;Protected mode memory allowed value
+FRM spwn_omlimit , 4t		;Overhead memory limit value
+FRM spwn_omallow , 4t		;Overhead memory allowed value
+FRM spwn_devlist1, 4t		;Address of first device list
+FRM spwn_devsize1, 4t
+FRM spwn_devlist2, 4t		;Address of second device list
+FRM spwn_devsize2, 4t
+FRM spwn_envsize , 4t
+FRM spwn_memlist , 4t		;Address of memory list
+FRM spwn_memsize , 4t
+spwn_SIZE=!$$$
+
+psvcSchSpawn::
+	ENTER	spwn_SIZE, 0		;Set up our stack frame
+	IFFAULT	knlRtnAdrErLv#
+	MOVL	EBX, knlTda+tdaArg1#
+	CMPL	EBX, #systembase
+	JAE	knlRtnAdrErLv#
+	CLRL	EAX			;Initialize the returned fields
+	IFFAULT	knlRtnAdrErLv#
+	MOVW	sab_status[EBX], AX
+	IFFAULT	knlRtnAdrErLv#
+	MOVL	sab_error[EBX], EAX
+	IFFAULT	knlRtnAdrErLv#
+	MOVL	sab_pid[EBX], EAX
+	IFFAULT	knlRtnAdrErLv#
+	MOVB	sab_type[EBX], AL
+	MOVL	spwn_devlist1[EBP], EAX ;Initialize our stack frame
+	MOVL	spwn_devlist2[EBP], EAX
+	MOVL	spwn_memsize[EBP], EAX
+	DECL	EAX
+	MOVL	spwn_wsallow[EBP], EAX
+	MOVL	spwn_umallow[EBP], EAX
+	MOVL	spwn_omallow[EBP], EAX
+	MOVL	EAX, knlPda+pdaWSLimit#
+	MOVL	spwn_wslimit[EBP], EAX
+	MOVL	EAX, knlPda+pdaUMLimit#
+	MOVL	spwn_umlimit[EBP], EAX
+	MOVL	EAX, knlPda+pdaOMLimit#
+	MOVL	spwn_omlimit[EBP], EAX
+	MOVL	EAX, knlPda+pdaActPriv#+0
+	MOVL	spwn_actpriv+0[EBP], EAX
+	MOVL	EAX, knlPda+pdaActPriv#+4
+	MOVL	spwn_actpriv+4[EBP], EAX
+	MOVL	EAX, knlPda+pdaAvlPriv#+0
+	MOVL	spwn_avlpriv+0[EBP], EAX
+	MOVL	EAX, knlPda+pdaAvlPriv#+4
+	MOVL	spwn_avlpriv+4[EBP], EAX
+	IFFAULT	knlRtnAdrErLv#
+	MOVL	EAX, sab_option[EBX] ;Copy the option bits
+	MOVL	spwn_option[EBP], EAX
+	IFFAULT	knlRtnAdrErLv#
+	CMPL	sab_parm[EBX], #0	;Have any device parameters?
+	JE	4$			;No
+	IFFAULT	knlRtnAdrErLv#		;Yes - process prameters
+	MOVL	EAX, sab_parm[EBX]
+	PUSHL	knlTda+tdaParm#
+	MOVL	knlTda+tdaParm#, EAX
+	PUSHL	#spawnparms
+	PUSHL	#knlComDPParms#
+	PUSHL	#0
+	CALL	sysIoProcDevParam#
+	POPL	knlTda+tdaParm#
+	TESTL	EAX, EAX
+	JS	6$			;If error
+4$:	LEAL	EAX, spwn_newpda[EBP]
+	PUSHL	EAX
+	CALL	newprocess#		;Create a new process
+	TESTL	EAX, EAX
+	JNS	spawnnp			;Go on if OK
+6$:	LEAVE
+	RET
+.PAGE
+;Here with the new process created
+
+spawnnp:MOVL	EBX, spwn_newpda[EBP]
+	MOVL	EDX, knlTda+tdaArg1#	;Get address of the SAB
+	MOVL	EAX, pdaPid#[EBX]	;Give him the PID for the new process
+	IFFAULT	spawnae
+	MOVL	sab_pid[EDX], EAX
+	MOVL	EDI, pdaSpy#[EBX]
+	IFFAULT	spawnae
+	CMPL	sab_name+0[EDX], #0	;Did he give a name?
+	JE	6$			;No
+	IFFAULT	spawnae
+	MOVL	ESI, sab_name[EDX]	;Maybe
+	IFFAULT	spawnae
+	CMPB	[ESI], #0
+	JE	6$			;No
+	MOVL	ECX, #32t		;Yes - use the name he gave us
+	CLD
+	IFFAULT	spawnae
+2$:	MOVZBL	EAX, [ESI]
+	CMPB	AL, #0
+	JE	4$
+	INCL	ESI
+	STOSB	[EDI]
+	LOOP	ECX, 2$
+4$:	MOVL	ECX, EDI
+	NEGL	ECX
+	ANDL	ECX, #0x1F
+	JE	6$
+	CLRL	EAX
+	RSTOSB	[EDI]
+6$:	MOVL	EAX, spwn_avlpriv+0[EBP]
+	MOVL	pdaAvlPriv#+0[EBX], EAX
+	MOVL	EAX, spwn_avlpriv+4[EBP]
+	MOVL	pdaAvlPriv#+4[EBX], EAX
+	MOVL	EAX, spwn_wsallow[EBP]
+	CMPL	EAX, knlPda+pdaWSAllow#
+	JBE	10$
+	MOVL	EAX, knlPda+pdaWSAllow#
+10$:	MOVL	pdaWSAllow#[EBX], EAX
+	MOVL	EAX, spwn_umallow[EBP]
+	CMPL	EAX, knlPda+pdaUMAllow#
+	JBE	12$
+	MOVL	EAX, knlPda+pdaUMAllow#
+12$:	MOVL	pdaUMAllow#[EBX], EAX
+	MOVL	EAX, spwn_omallow[EBP]
+	CMPL	EAX, knlPda+pdaOMAllow#
+	JBE	14$
+	MOVL	EAX, knlPda+pdaOMAllow#
+14$:	MOVL	pdaOMAllow#[EBX], EAX
+
+	MOVL	EAX, spwn_wslimit[EBP]
+	CMPL	EAX, knlPda+pdaWSAllow#
+	JBE	16$
+	MOVL	EAX, knlPda+pdaWSAllow#
+16$:	MOVL	pdaWSLimit#[EBX], EAX
+	MOVL	EAX, spwn_umlimit[EBP]
+	CMPL	EAX, knlPda+pdaUMAllow#
+	JBE	18$
+	MOVL	EAX, knlPda+pdaUMAllow#
+18$:	MOVL	pdaUMLimit#[EBX], EAX
+
+	MOVL	EAX, spwn_omlimit[EBP]
+	CMPL	EAX, knlPda+pdaOMAllow#
+	JBE	20$
+	MOVL	EAX, knlPda+pdaOMAllow#
+20$:	MOVL	pdaOMLimit#[EBX], EAX
+					     ;Should the process be in our
+	MOVZBL	EAX, knlPda+pdaPLevel#
+	MOVB	pdaPLevel#[EBX], AL
+
+	BTL	spwn_option[EBP], #S%SESSION ;  session?
+	JC	newsess			;No
+	MOVL	EAX, knlPda+pdaSesPda#	;Yes
+	MOVL	pdaSesPda#[EBX], EAX
+	INCB	pdaPLevel#[EBX]
+	JMP	sessok
+.PAGE
+;Here if should create new session for this process
+
+newsess:
+
+;;;;	MOVL	EBX, pdaFree#		;Create the session data block
+;;;;	MOVL	ES:pdaSesData#, EBX
+;;;;	MOVL	ES:[EBX], #{{ses_SIZE+3}&0FFFFFFFCh}+mb_data
+;;;;	MOVL	ES:mb_pnt1[EBX], #pdaSesData#
+;;;;	ADDL	ES:pdaFree#, #{{ses_SIZE+3}&0FFFFFFFCh}+mb_data
+
+	MOVL	EAX, pdaAddr#[EBX]	;Start new session
+	MOVL	pdaSesPda#[EBX], EAX
+sessok:	MOVL	ECX, pdaSpy#[EBX]
+	MOVL	EAX, pdaPid#[EAX]	;Get the session PID
+	MOVL	pspy_sespid[ECX], EAX	;Store it in the process spy area
+	MOVL	EAX, knlPda+pdaAddr#	;In any case, we are the parent
+	MOVL	pdaParPda#[EBX], EAX
+	MOVL	EAX, pdaPid#[EAX]
+	MOVL	pspy_parpid[ECX], EAX
+	MOVL	EAX, knlPda+pdaChildPda# ;Link into our list of children
+	MOVL	pdaSibPda#[EBX], EAX
+	MOVL	knlPda+pdaChildPda#, EBX
+
+;;;;;	CALL	copyenviron#		;Copy our environment
+;;;;;	JC	spawnfail
+
+	MOVL	EBX, spwn_newpda[EBP]
+	MOVL	EDX, pdaTdaHead#[EBX]
+	MOVL	EAX, spwn_actpriv+0[EBP] ;Set the privilege bits for the child
+	ANDL	EAX, spwn_avlpriv+0[EBP]
+	MOVL	pdaActPriv#+0[EBX], EAX
+	MOVL	EAX, spwn_actpriv+4[EBP]
+	ANDL	EAX, spwn_avlpriv+4[EBP]
+	MOVL	pdaActPriv#+4[EBX], EAX
+	MOVL	EBX, spwn_newpda[EBP]
+	MOVL	EDX, pdaTdaHead#[EBX]
+	MOVL	ECX, knlPda+pdaPid#
+	MOVL	EAX, spwn_option[EBP]	;Get option bits
+	BTL	EAX, #S%SETUP		;Want set up mode?
+	JNC	4$			;No
+	ORB	pdaStatus1#[EBX], #P1$SETUP ;Yes
+4$:	BTL	EAX, #S%NOPTS		;Want process termination signal?
+	JC	6$			;No
+	MOVL	tdaTermSigPid#[EDX], ECX ;Yes
+6$:	CMPB	AL, #0			;Want a termination event?
+	JE	8$			;No
+	DECL	EAX			;Yes
+	MOVB	tdaTermEvNum#[EDX], AL	;Store termination event number
+	MOVL	ECX, knlPda+pdaPid#
+	MOVL	tdaTermEvPid#[EDX], ECX	;And store the termination event PID
+8$:	MOVL	tdaURegEIP#[EDX], #idleproc#
+	MOVL	tdaURegCS#[EDX], #GS_UCODE|0x03
+	MOVL	tdaURegEFR#[EDX], #0x0200
+	MOVL	tdaURegESP#[EDX], #0
+	MOVL	tdaURegSS#[EDX], #GS_UDATA|0x03
+spawndev:
+	BTL	spwn_option[EBP], #S%ALLDEV ;Want to transfer all devices?
+	JNC	12$			;No
+	PUSHL	spwn_newpda[EBP]	;Yes
+	CALL	copyalldevs#
+	TESTL	EAX, EAX
+	JS	spawnfail		;If error
+	JMP	spawnmem		;OK - continue
+
+12$:	CMPL	spwn_devlist1[EBP], #0 ;Do we have a device list?
+	JE	spawnmem		;No
+	PUSHL	spwn_newpda[EBP]	;Yes
+	PUSHL	spwn_devlist1[EBP]
+	PUSHL	spwn_devsize1[EBP]
+	CALL	copydevs#		;Give devices to the new process
+	TESTL	EAX, EAX
+	JS	spawnfail		;If error
+	CMPL	spwn_devlist2[EBP], #0	;Do we have a 2nd device list?
+	JE	spawnmem		;No
+	PUSHL	spwn_newpda[EBP]	;Yes
+	PUSHL	spwn_devlist2[EBP]
+	PUSHL	spwn_devsize2[EBP]
+	CALL	copydevs#		;Give devices to new process
+	TESTL	EAX, EAX
+	JNS	spawnmem
+spawnfail:
+	PUSHL	EAX			;Save error code
+
+	CRASH	????
+
+	MOVL	EBX, spwn_newpda[EBP]	;Make sure the child's stack pointer
+					;  looks like the child is about to
+					;  return to user mode so it will be
+					;  killed immediately
+	MOVB	tdaTermEvNum#[EBX], #0xFF ;Don't generate termination event
+	MOVL	tdaTermEvPid#[EBX], #0
+
+	LEAL	EAX, tdaXStkBegin#[EBX]
+	MOVL	tdaSRegESP#[EBX], EAX
+	PUSHL	#TC_RUNFAIL<24t
+	PUSHL	EBX
+	PUSHL	#0
+	CALL	sysSchTerminate#	;Terminate the child process
+	POPL	EAX			;Restore error code
+	LEAVE
+	STC				;Indicate error
+	RET				;Return from runcontext
+
+;Here if address error
+
+	FAULTHDR
+spawnae:MOVL	EAX, #ER_ADRER
+	JMP	spawnfail
+.PAGE
+;Here with all devices transfered to the child - now transfer memory
+;  Memory to be transfered is specified in a memory list which contains a
+;    list of base addresses of existing simple private msects. Each msect
+;    is transfered to the child process at the same base address. A maximum
+;    of 4 msects can be transfered.
+
+spawnmem:
+	MOVL	EAX, spwn_memsize[EBP]
+	CMPL	EAX, #4
+	JB	spawnrdy		;If no memory to transfer!
+	PUSHL	spwn_newpda[EBP]	;Transfer memory
+	PUSHL	spwn_memlist[EBP]
+	PUSHL	EAX
+	CALL	xfermsects#
+	TESTL	EAX, EAX
+	JS	spawnfail		;If error
+spawnrdy:
+	PUSHL	spwn_newpda[EBP]	;Create the BEGIN event cluster
+	PUSHL	#bgnecname#
+	PUSHL	#1
+	PUSHL	#-1
+	CALL	makeevent#
+	TESTL	EAX, EAX
+	JS	spawnfail
+	MOVL	EBX, knlTda+tdaArg1#
+	MOVL	EDI, spwn_newpda[EBP]	;Get address of child's PDA
+	MOVL	EDI, pdaTdaHead#[EDI]	;Get address of child's base TDA
+	IFFAULT	spawnae
+	MOVL	EAX, sab_EIP[EBX]	;Get EIP value
+	MOVL	tdaURegEIP#[EDI], EAX
+	MOVL	tdaURegCS#[EDI], #GS_UCODE|0x03
+	MOVL	tdaURegEFR#[EDI], #0x0200
+	IFFAULT	spawnae
+	MOVL	EAX, sab_ESP[EBX]	;Get ESP value
+	MOVL	tdaURegESP#[EDI], EAX
+	MOVL	tdaURegDS#[EDI], #GS_UDATA|0x03
+	MOVL	tdaURegES#[EDI], #GS_UDATA|0x03
+	TOFORK
+	PUSHL	EDI
+	CALL	sysSchRunRequeue#	;Start the child process
+	FROMFORK
+	LEAVE
+	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	Routines to process parameters for svcSchSpawn
+
+;Routine for IOPAR_DEVLIST parameter - Device list
+
+	DPARMHDR SET, STR
+spwndevlist:
+	CMPL	spwn_devlist1[EBP], #0	;Already have a 1st device list?
+	JNE	2$			;Yes
+	MOVL	spwn_devlist1[EBP], EBX ;No
+	MOVL	spwn_devsize1[EBP], ECX
+	RET
+
+2$:	CMPL	spwn_devlist2[EBP], #0	;Already have a 2nd device list?
+	JNE	4$			;Yes
+	MOVL	spwn_devlist2[EBP], EBX ;No
+	MOVL	spwn_devsize2[EBP], ECX
+	RET
+
+4$:	MOVL	EAX, #ER_PARMF
+	STC
+	RET
+
+;Routine for IOPAR_SPNMEMLIST parameter - Specify msects to transfer to child
+
+	DPARMHDR SET, STR
+spwnmemlist:
+	MOVL	spwn_memlist[EBP], EBX
+	MOVL	spwn_memsize[EBP], ECX
+	RET
+
+;Routine for IOPAR_WSLIMIT parameter - Working set size limit value
+
+	DPARMHDR SET, DECV
+spwnwslimit:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_wslimit[EBP], EAX
+6$:	RET
+
+;Routine for IOPAR_WSALLOW parameter - Working set size allowed value
+
+	DPARMHDR SET, DECV
+spwnwsallow:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_wsallow[EBP], EAX
+	RET
+
+;Routine for IOPAR_UMLIMIT parameter - User mode memory limit value
+
+	DPARMHDR SET, DECV
+spwnumlimit:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_umlimit[EBP], EAX
+	RET
+
+;Routine for IOPAR_UMALLOW parameter - User mode memory allowed value
+
+	DPARMHDR SET, DECV
+spwnumallow:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_umallow[EBP], EAX
+	RET
+
+;Routine for IOPAR_OMLIMIT parameter - Overhead memory limit value
+
+	DPARMHDR SET, DECV
+spwnomlimit:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_omlimit[EBP], EAX
+	RET
+
+;Routine for IOPAR_OMALLOW parameter - Overhead memory allowed value
+
+	DPARMHDR SET, DECV
+spwnomallow:
+	CALL	knlGetParm#		;Get the value
+	JC	6$
+	MOVL	spwn_omallow[EBP], EAX
+	RET
+
+;Routine for IOPAR_ACTPRIV parameter - Active privileges
+
+	DPARMHDR SET, STR
+spwnactpriv:
+	MOVL	EAX, spwn_actpriv+0[EBP] ;Get current value
+	MOVL	EDX, spwn_actpriv+4[EBP]
+	CALL	parsepriv#		;Parse the list
+	JC	6$
+	MOVL	spwn_actpriv+0[EBP], EAX ;Store new value
+	MOVL	spwn_actpriv+4[EBP], EDX
+	RET
+
+;Routine for IOPAR_AVLPRIV parameter - Available privileges
+
+	DPARMHDR SET, STR
+spwnavlpriv:
+	MOVL	EAX, spwn_avlpriv+0[EBP] ;Get current value
+	MOVL	EDX, spwn_avlpriv+4[EBP]
+	CALL	parsepriv#		;Parse the list
+	JC	8$
+	MOVL	spwn_avlpriv+0[EBP], EAX ;Store new value
+	MOVL	spwn_avlpriv+4[EBP], EDX
+8$:	RET
+.PAGE
+	.SBTTL	Data
+
+	.MOD	4
+	.LONG	PARMMAX
+spawnparms:
+	.LONG	0		;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	0		;IOPAR_FILxxx = 01xx - File system IO parameters
+	.LONG	0		;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	0		;IOPAR_NETxxx = 05xx - Network IO parameters
+	.LONG	0		;IOPAR_IPMxxx = 06xx - IPM IO parameters
+	.LONG	0		;IOPAR_DGxxx  = 07xx - Datagram IO parameters
+	.LONG	0		;	      = 08xx
+	.LONG	0		;	      = 09xx
+	.LONG	0		;	      = 0Axx
+	.LONG	0		;	      = 0Bxx
+	.LONG	0		;	      = 0Cxx
+	.LONG	0		;	      = 0Dxx
+	.LONG	0		;	      = 0Exx
+	.LONG	0		;	      = 0Fxx
+	.LONG	spawnrunparms	;IOPAR_RUNxxx = 10xx - Run IO parameters
+	.LONG	spawnspnparms	;IOPAR_SPNxxx = 10xx - Spawn IO parameters
+PARMMAX=!{$-spawnparms}/4
+
+	.LONG	PARMRUNMAX
+spawnrunparms:
+	.LONG	0
+	.LONG	0		;IOPAR_RUNCMDTAIL  = 0x1001
+	.LONG	spwndevlist	;IOPAR_RUNDEVLIST  = 0x1002
+	.LONG	0		;                  = 0x1003
+	.LONG	0		;IOPAR_RUNDEBUGBFR = 0x1004
+	.LONG	0		;IOPAR_RUNADDRESS  = 0x1005
+	.LONG	spwnactpriv	;IOPAR_RUNPRIVMASK = 0x1006
+	.LONG	0		;IOPAR_RUNFCB1     = 0x1007
+	.LONG	0		;IOPAR_RUNFCB2     = 0x1008
+	.LONG	spwnactpriv	;IOPAR_RUNACTPRIV  = 0x1009
+	.LONG	spwnavlpriv	;IOPAR_RUNAVLPRIV  = 0x100A
+	.LONG	0		;		   = 0x100B
+	.LONG	spwnwslimit	;IOPAR_RUNWSLIMIT  = 0x100C
+	.LONG	spwnwsallow	;IOPAR_RUNWSALLOW  = 0x100D
+	.LONG	spwnumlimit	;IOPAR_RUNPMLIMIT  = 0x100E
+	.LONG	spwnumallow	;IOPAR_RUNPMALLOW  = 0x100F
+	.LONG	spwnomlimit	;IOPAR_RUNOMLIMIT  = 0x1010
+	.LONG	spwnomallow	;IOPAR_RUNOMALLOW  = 0x1011
+PARMRUNMAX=!{$-spawnrunparms}/4
+
+	.LONG	PARMSPNMAX
+spawnspnparms:
+	.LONG	0
+	.LONG	spwnmemlist	;IOPAR_SPNMEMLIST  = 0x1101
+PARMSPNMAX=!{$-spawnspnparms}/4
+
+	END

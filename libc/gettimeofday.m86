@@ -1,0 +1,38 @@
+	.TITLE	gettimeofday
+
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\STDIO.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	gettimeofday
+gettimeofday:
+	SUBL	ESP, #8t
+	MOVL	ECX, 12t[ESP]		;Get address of caller's structure
+	TESTL	ECX, ECX
+	JE	4$
+	MOVL	EAX, ESP
+	PUSHL	EAX
+	PUSHL	#1
+	CALL	svcSysDateTime##
+	MOVL	EAX, [ESP]		;Get time of day
+	MULL	lit8640			;Get seconds and fractional seconds
+	MOVL	[ECX], EDX		;Give him the seconds
+	MULL	lit1000			;Get microseconds
+	MOVL	4[ECX], EDX		;Give him the microseconds
+4$:	MOVL	ECX, 16t[ESP]
+	TESTL	ECX, ECX
+	JE	8$
+	MOVL	[ECX], #0
+	MOVL	4[ECX], #0
+8$:	CLRL	EAX
+	RET
+
+	.PSECT	_DATA_p
+
+lit8640:.LONG	8640t
+lit1000:.LONG	1000t
+
+	.END

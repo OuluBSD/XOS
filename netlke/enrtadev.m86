@@ -1,0 +1,3010 @@
+	.TITLE	enrtadev - Network device driver for RealTek 8100 series for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXNET.PAR
+	.INCLUD XOSINC:\XMAC\XOSXEN.PAR
+	.INCLUD XOSINC:\XMAC\PCAT.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+;This device driver supports the RealTek 8100 series chips, This includes
+;  the 10/100 chips:
+;	8129, 8139 (8100), and 8139C+
+;  and the 10/100/1000 chips:
+;	8169 (8110)
+
+;These chips have differing sets of characteristics in common
+
+;  Chip:              8129     8139    8139C+    8169
+;                  +--------+--------+--------+--------+
+;  Desciptor IO:   |        No       |       Yes       |
+;                  +--------+--------+--------+--------+
+;  Direct MMI acc: |   No   |       Yes       |   No   |
+;                  +--------+--------+--------+--------+
+
+; The 8139C+ supports up to 64 descriptors, the 8169 supports up to 1024
+;   descriptors.
+
+OUTDESCP=!16t			;Size of output descriptor ring when using
+				;  descriptors (must be between 4 and 64t).
+
+;Define our type value for each supported chip type. These are internal
+;  values. They are never visible outside of this driver.
+
+RTT_8169         =!1t
+RTT_8169S_8110S_1=!2t
+RTT_8169S_8110S_2=!3t
+RTT_8169SB_8110SB=!4t
+RTT_8118SC       =!5t
+RTT_8168B_8110B_1=!6t
+RTT_8168B_8110B_2=!7t
+RTT_8101E        =!8t
+RTT_8100E_1      =!9t
+RTT_8100E_2      =!10t
+RTT_8129         =!11t
+RTT_8139         =!12t
+RTT_8139A        =!13t
+RTT_8139AG       =!14t
+RTT_8139B        =!15t
+RTT_8130         =!16t
+RTT_8139C        =!17t
+RTT_8139CP       =!18t
+RTT_MAX          =!18t
+
+;Define registers and bits for the interface
+
+;Define register offsets relative to the start of our 256 byte register block -
+;  these offsets can be used for both IO and memory mapped register access
+
+;The prefix is used as follows:
+;  RTR_ - All chips
+;  RTO_ - 8129 only
+;  RTF_ - "Fast Ethernet" chips (8129, 8139, 8139C+)
+;  RTA_ - "Fast Ethernet" chips except 8139C+ (8129, 8139)
+;  RTC_ - 8139C only
+;  RTD_ - Chips which use descriptors (8139C+, 8169)
+;  RTG_ - "Gigabit Ethernet" chips (8169)
+
+RTR_NETADDR =!0x00		;( 6) Network address
+				;( 2) Reserved
+RTR_MULTIMAP=!0x08		;( 8) Multicast map
+
+RTD_DTCCMD  =!0x10		;( 8) Dump tally counter command
+
+RTF_TSD0    =!0x10		;( 4) Transmit status of descriptor 0
+RTF_TSD1    =!0x14		;( 4) Transmit status of descriptor 1
+RTF_TSD2    =!0x18		;( 4) Transmit status of descriptor 2
+RTF_TSD3    =!0x1C		;( 4) Transmit status of descriptor 3
+
+RTD_NPTXD   =!0x20		;( 8) Normal priority transmit descriptor table
+
+RTF_TSAD0   =!0x20		;( 4) Transmit start address of descriptor 0
+RTF_TSAD1   =!0x24		;( 4) Transmit start address of descriptor 1
+RTF_TSAD2   =!0x28		;( 4) Transmit start address of descriptor 2
+
+RTD_HPTXD   =!0x28		;( 8) High priority transmit descriptor table
+
+RTF_TSAD3   =!0x2C		;( 4) Transmit start address of descriptor 3
+RTF_RBADDR  =!0x30		;( 4) Receive buffer address
+RTF_ERBC    =!0x34		;( 2) Early receive byte count register
+
+RTR_ERS     =!0x36		;( 1) Early receive status register
+RTR_CMD     =!0x37		;( 1) Command register
+
+RTG_TXREQ   =!0x38		;( 1) Transmit request register
+
+RTF_RBTAKE  =!0x38		;( 2) Receive buffer taker pointer
+RTF_RBPUT   =!0x3A		;( 2) Receive buffer putter pointer
+RTR_INTMASK =!0x3C		;( 2) Interrupt mask register
+RTR_INTSTS  =!0x3E		;( 2) Interrupt status register
+RTR_TXCFG   =!0x40		;( 4) Transmit configuration register
+RTR_RXCFG   =!0x44		;( 4) Receive configuration register
+RTR_TIMECNT =!0x48		;( 4) Timer count register
+RTR_MPC     =!0x4C		;( 4) Missed packet count register
+RTR_EEPCFG  =!0x50		;( 1) EEPROM command register
+RTR_CONFIG0 =!0x51		;( 1) Configuration register 0
+RTR_CONFIG1 =!0x52		;( 1) Configuration register 1
+
+RTG_CONFIG2 =!0x53		;( 1) Configuration register 2
+RTG_CONFIG3 =!0x54		;( 1) Configuration register 3
+RTG_CONFIG4 =!0x55		;( 1) Configuration register 4
+RTG_CONFIG5 =!0x56		;( 1) Configuration register 5
+
+RTF_TIMEINT =!0x54		;( 4) Timer interrupt register
+RTF_MEDIASTS=!0x58		;( 1) Media status register
+RTF_CONFIG3 =!0x59		;( 1) Configuration register 3
+RTF_CONFIG4 =!0x5A		;( 1) Configuration register 4
+RTR_MULTINT =!0x5C		;( 2) Multiple interupt select
+RTF_PCIREV  =!0x5E		;( 1) PCI revision ID
+				;( 1) Reserved
+RTA_TSAD    =!0x60		;( 2) Transmit status of all descriptors
+RTF_BMCTL   =!0x62		;( 2) Basic mode control register
+RTF_BMSTS   =!0x64		;( 2) Basic mode status register
+RTF_ANADV   =!0x66		;( 2) Auto-negotiation advertisement register
+RTF_ANLPAR  =!0x68		;( 2) Auto-negotiation link partner register
+RTF_ANEXP   =!0x6A		;( 2) Auto-negotiation expansion register
+RTF_DISCNT  =!0x6C		;( 2) Discount count register
+RTF_FSCCNT  =!0x6E		;( 2) False carrier sense count register
+RTF_NWAYTST =!0x70		;( 2) N-way test register
+RTF_RXERCNT =!0x72		;( 2) RX_ER count register
+RTF_CSCFG   =!0x74		;( 2) CS configuration register
+
+RTF_PHY1PARM=!0x78		;( 4) PHY parameter 1 register
+RTF_TWISTER =!0x7C		;( 4) Twister parameter register
+RTF_PHY2PARM=!0x80		;( 4) PHY parameter 2 register
+
+RTG_PHYAR   =!0x60		;( 4) PHY access register
+RTG_TBICSR  =!0x64		;( 4) TBI control and status regisrer
+RTG_TBIANAR =!0x68		;( 4) TBI advertisement register
+RTG_TBILPAR =!0x6A		;( 4) TBI link partner ability register
+RTG_PHYSTS  =!0x6C		;( 1) PHY (GMII, MII, or TBI) status register
+
+RTF_PMCRC0  =!0x84		;( 1) Power management CRC for wakeup frame 0
+RTF_PMCRC1  =!0x85		;( 1) Power management CRC for wakeup frame 1
+RTF_PMCRC2  =!0x86		;( 1) Power management CRC for wakeup frame 2
+RTF_PMCRC3  =!0x87		;( 1) Power management CRC for wakeup frame 3
+RTF_PMCRC4  =!0x88		;( 1) Power management CRC for wakeup frame 4
+RTF_PMCRC5  =!0x89		;( 1) Power management CRC for wakeup frame 5
+RTF_PMCRC7  =!0x8A		;( 1) Power management CRC for wakeup frame 6
+RTF_PMCRC7  =!0x8B		;( 1) Power management CRC for wakeup frame 7
+RTF_PMWAKE0 =!0x8C		;( 8) Power management wakeup frame 0
+RTF_PMWAKE1 =!0x94		;( 8) Power management wakeup frame 1
+RTF_PMWAKE2 =!0x9C		;( 8) Power management wakeup frame 2
+RTF_PMWAKE3 =!0xA4		;( 8) Power management wakeup frame 3
+RTF_PMWAKE4 =!0xAC		;( 8) Power management wakeup frame 4
+RTF_PMWAKE5 =!0xB4		;( 8) Power management wakeup frame 5
+RTF_PMWAKE6 =!0xBC		;( 8) Power management wakeup frame 6
+RTF_PMWAKE7 =!0xC4		;( 8) Power management wakeup frame 7
+RTF_PMLSB0  =!0xCC		;( 1) Power management LSB of mask in frame 0
+RTF_PMLSB1  =!0xCD		;( 1) Power management LSB of mask in frame 1
+RTF_PMLSB2  =!0xCE		;( 1) Power management LSB of mask in frame 2
+RTF_PMLSB3  =!0xCF		;( 1) Power management LSB of mask in frame 3
+RTF_PMLSB4  =!0xD0		;( 1) Power management LSB of mask in frame 4
+RTF_PMLSB5  =!0xD1		;( 1) Power management LSB of mask in frame 5
+RTF_PMLSB6  =!0xD2		;( 1) Power management LSB of mask in frame 6
+RTF_PMLSB7  =!0xD3		;( 1) Power management LSB of mask in frame 7
+
+RTG_PMWAKE0 =!0x84		;( 8) Power management wakeup frame 0
+RTG_PMWAKE1 =!0x8C		;( 8) Power management wakeup frame 1
+RTG_PMWAKE2 =!0x94		;(16) Power management wakeup frame 2
+RTG_PMWAKE3 =!0xA4		;(16) Power management wakeup frame 3
+RTG_PMWAKE4 =!0xB4		;(16) Power management wakeup frame 4
+
+RTG_PMCRC0  =!0xC4		;( 1) Power management CRC for wakeup frame 0
+RTG_PMCRC1  =!0xC6		;( 1) Power management CRC for wakeup frame 1
+RTG_PMCRC2  =!0xC8		;( 1) Power management CRC for wakeup frame 2
+RTG_PMCRC3  =!0xCA		;( 1) Power management CRC for wakeup frame 3
+RTG_PMCRC4  =!0xCD		;( 1) Power management CRC for wakeup frame 4
+
+RTF_FLASH   =!0xD4		;( 4) Flash memory read/write register
+RTF_CONFIG5 =!0xD8		;( 1) Configuration register 5
+
+RTC_TXREQ   =!0xD9		;( 1) Transmit request register
+
+RTG_RXMXPKT =!0xDA		;( 2) Maximum received packet size
+
+RTD_CPCMD   =!0xE0		;( 2) C+ command register
+RTD_RXD     =!0xE4		;( 8) Address of receive descriptor table
+RTD_ETTH    =!0xEC		;( 1) Early transmit threshold
+
+RTR_CBFE    =!0xF0		;( 4) Cardbus function event register
+RTR_CBEM    =!0xF4		;( 4) Cardbus event mask register
+RTR_CBPS    =!0xF8		;( 4) Cardbus present state register
+RTR_CBFE    =!0xFC		;( 4) Cardbus force event register
+
+;Define bits in the receive status register in the received packet header
+
+RTR_RSR$MAR =!8000h		;Multicase address received
+RTR_RSR$PAM =!4000h		;Physical address received
+RTR_RSR$BAR =!2000h		;Broadcast address received
+RTR_RSR$ISE =!0020h		;Invalid symbol error
+RTR_RSR$RUNT=!0010h		;Runt packet
+RTR_RSR$LONG=!0008h		;Long packet
+RTR_RSR$CRC =!0004h		;CRC error in packet
+RTR_RSR$FAE =!0002h		;Frame alignment error
+RTR_RSR$ROK =!0001h		;Receive OK
+
+;Define bits for RTR_CMD
+
+RTR_CMD$RESET=!10h		;Reset
+RTR_CMD$RXE  =!08h		;Receiver enable
+RTR_CMD$TXE  =!04h		;Transfer enable
+RTR_CMD$BFRE =!01h		;Receive buffer empty
+
+;Define bits in the transmit descriptor status registers
+
+RTF_TSD$CRS   =!0x80000000	;Carrier sense lost
+  RTF_TSD%CRS   =!31t
+RTF_TSD$TABT  =!0x40000000	;Transmit abort
+  RTF_TSD%TABT  =!30t
+RTF_TSD$OWC   =!0x20000000	;Out of window collision
+  RTF_TSD%OWC   =!29t
+RTF_TSD$CDH   =!0x10000000	;CD heart beat
+  RTF_TSD%CDH   =!28t
+RTF_TSD$NCC   =!0x0F000000	;Number of collisions count
+RTF_TSD$ERTXTH=!0x003F0000	;Early transmit threshold
+RTF_TSD$TOK   =!0x00008000	;Transmit OK
+RTF_TSD$TUN   =!0x00004000	;Transmit FIFO underrun
+  RTF_TSD%TUN   =!14t
+RTF_TSD$OWN   =!0x00002000	;Driver owns descriptor
+RTF_TSD$SIZE  =!0x00001FFF	;Buffer size
+
+;Define bits for RTR_INTMASK and RTR_INTSTS
+
+RTR_INT$SER=!8000		;System error interrupt
+RTR_INT$TO =!4000		;Time-out interrupt
+RTR_INT$CLC=!2000		;Cable length change interrupt
+RTR_INT$RFO=!0040		;Receive FIFO overflow interrupt
+RTR_INT$ULC=!0020		;Packet underrun/link change interrupt
+RTR_INT$RBO=!0010		;Receive buffer overflow interrupt
+RTR_INT$TER=!0008		;Transmit error interrupt
+RTR_INT$TOK=!0004		;Transmit OK interrupt
+RTR_INT$RER=!0002		;Receive error interrupt
+RTR_INT$ROK=!0001		;Receive OK interrupt
+
+;Define bits for RTR_RXCFG
+
+RTR_RXC$ERTH    =!0F0000000h	;Early Rx threshold bits
+RTR_RXC$MULERINT=!000020000h	;Mutilple early interrupt select
+RTR_RXC$RER8    =!000010000h	;????
+RTR_RXC$RXFTH   =!00000E000h	;Receive FIFO threshold
+RTR_RXC$RBLEN   =!000001800h	;Receive buffer length
+RTR_RXC$MXDMA   =!000000700h	;Maximum DMA burst size
+RTR_RXC$WRAP    =!000000080h	;Disable packet wrap in buffer
+RTR_RXC$EEPTYPE =!000000040h	;EEPROM type
+RTR_RXC$AER     =!000000020h	;Accept error packets
+RTR_RXC$AR      =!000000010h	;Accept runt packets
+RTR_RXC$AB      =!000000008h	;Accept broadcast packets
+RTR_RXC$AM      =!000000004h	;Accept multicast packets
+RTR_RXC$APM     =!000000002h	;Accept physical address match packets
+RTR_RXC$AAP     =!000000001h	;Accept all packets (promiscuous mode)
+
+;Define bits for RTF_MEDIASTS
+
+RTF_MEDIASTS$TXFCE  =!80h	;Tx flow control enable
+RTF_MEDIASTS$RXFCE  =!40h	;Rx flow control enable
+RTF_MEDIASTS$AUXSTS =!10h	;Aux. power present status
+RTF_MEDIASTS$SPEED10=!08h	;Speed is 10MHz
+RTF_MEDIASTS$LINKDWN=!04h	;Link is down
+RTF_MEDIASTS$TXPF   =!02h	;Pause packet sent (input is paused)
+RTF_MEDIASTS$RXPF   =!01h	;Pause packet received (output is paused)
+
+;Define bits for RTF_BMCTL
+
+RTF_BMCTL$RESET  =!8000h	;Reset PHY
+RTF_BMCTL$SPEED  =!2000h	;Speed set (1 = 100MHz, 0 = 10MHz)
+RTF_BMCTL$AUTO   =!1000h	;Auto negotiation enable
+RTF_BMCTL$RESTART=!0200h	;Restart auto-negotiation
+RTF_BMCTL$DUPLEX =!0100h	;Duplex mode (1 = FD, 0 = HD)
+
+;Define bits for RTF_BMSTS
+
+RTF_BMSTS$AUTOCMP=!0020h	;Auto-negotiation is complete
+RTF_BMSTS$RMTFLT =!0010h	;Remote fault
+RTF_BMSTS$LINK   =!0004h	;Link status
+RTF_BMSTS$JABBER =!0002h	;Jabber condition detected
+
+;Define bits for RTG_TBICSR
+
+RTG_TBICSR$RESET =!0x80000000	;Reset
+RTG_TBICSR$LB    =!0x40000000	;Loop-back enable
+RTG_TBICSR$AUTO  =!0x20000000	;Auto-negotiation enable
+RTG_TBICSR$RAUTO =!0x10000000	;Restart auto-negotiation
+RTG_TBICSR$LINKOK=!0x02000000	;Link connected
+RTG_TBICSR$COMP  =!0x01000000	;Auto-negotiation complete
+
+;Define bits in RTG_PHYSTS
+
+RTG_PHYSTS$TBIEN=!0x80		;TBI enable
+RTG_PHYSTS$TXFC =!0x40		;Transmit flow control enabled
+RTG_PHYSTS$RXFC =!0x20		;Receive flow control enabled
+RTG_PHYSTS$1000 =!0x10		;1000MBS
+RTG_PHYSTS$100  =!0x08		;100MBS
+RTG_PHYSTS$10   =!0x04		;10MBS
+RTG_PHYSTS$LINK =!0x02		;Link status
+RTG_PHYSTS$FULL =!0x01		;Full duplex
+
+
+;Define bits in RTD_CPCMD
+
+RTD_CPCMD$MSBFEN=!0x0200	;Most signficant byte first enable
+RTD_CPCMD$VLANEN=!0x0040	;Receive VLAN detagging enable
+RTD_CPCMD$RCSEN =!0x0020	;Receive checksum offload enable
+RTD_CPCMD$DACEN =!0x0010	;PCI dual address cycle enable
+RTD_CPCMD$MRWEN =!0x0008	;PCI multiple read/write enable
+
+;Define bits in RTG_TXREQ and RTC_TXREG
+
+RTX_TXREQ$HPQ =!0x80		;Start high priority queue
+RTX_TXREQ$NPQ =!0x40		;Start normal priority queue
+RTX_TXREQ$FSWI=!0x01		;Forced software interrupt
+
+;Define the Gigabit PHY registers (these are accessed through RTG_PHYAR)
+
+GPHY_CTR  =!0			;Control register
+GPHY_STS  =!1			;Status register
+GPHY_ID1  =!2			;ID register 1
+GPHY_ID2  =!3			;ID register 2
+GPHY_AUTO =!4			;Auto-negociate register
+GPHY_GBCTR=!9			;Gigabit control register
+
+;Define bits in GPHY_CTR
+
+PHY_CTR$RESET =!0x8000		;Reset
+PHY_CTR$LB    =!0x4000		;Loop-back enable
+PHY_CTR$SPDLSB=!0x2000		;Speed selection LSB
+PHY_CTR$AUTOEN=!0x1000		;Auto-negotiation enable
+PHY_CTR$PWRDWN=!0x0800		;Power down
+PHY_CTR$ISOL  =!0x0400		;Isolate
+PHY_CTR$RAUTO =!0x0200		;Restart auto-negotiation
+PHY_CTR$FULL  =!0x0100		;Full duplex
+PHY_CTR$SPDMSB=!0x0040		;Speed selection MSB
+
+;Define bits in GPHY_STS
+
+GPHY_STS$100T4 =!0x8000		;100base-T4
+GPHY_STS$100XF =!0x4000		;100base-X full duplex
+GPHY_STS$100XH =!0x2000		;100base-X half duplex
+GPHY_STS$10F   =!0x1000		;10MBS full duplex
+GPHY_STS$10H   =!0x0800		;10MBS half duplex
+GPHY_STS$100T2F=!0x0400		;100base-T2 full duplex
+GPHY_STS$100T2H=!0x0200		;100base-T2 half duplex
+GPHY_STS$XSTS  =!0x0100		;Extended status available
+GPHY_STS$PRESUP=!0x0040		;Preamble cuppression capable
+GPHY_STS$COMP  =!0x0020		;Auot-negotiation complete
+GPHY_STS$RMTFLT=!0x0010		;Remote fault
+GPHY_STS$AUTO  =!0x0008		;Auto-negotiation capability
+GPHY_STS$OK    =!0x0004		;Link connected
+GPHY_STS$JAB   =!0x0002		;Jabber detect
+GPHY_STS$XCAP  =!0x0001		;Extended capability
+
+;Define bits in GPHY_AUTO 
+
+PHY_AUTO$100FULL=!0x0100
+PHY_AUTO$100HALF=!0x0080
+PHY_AUTO$10FULL =!0x0040
+PHY_AUTO$10HALF =!0x0020
+
+;Define bits in GPHY_GBCTR
+
+PHY_GBCTR$ASPAUSE =!0x0800
+PHY_GBCTR$PAUSE   =!0x0400
+PHY_GBCTR$1000FULL=!0x0200
+PHY_GBCTR$1000HALF=!0x0100
+
+
+TX_DMA_BURST  =!4
+RX_DMA_BURST  =!4
+RX_FIFO_THRESH=!7
+
+
+
+;Define offsets in the input descriptors
+
+$$$=!0
+BLK ID_STS , 4t
+BLK ID_VLAN, 4t
+BLK ID_BUFR, 8t
+
+;Define bits in ID_STS for descriptor mode
+
+ID_STS$OWN =!0x80000000		;Buffer owned by controller if set
+ID_STS$EOR =!0x40000000		;Eof of ring
+ID_STS$FS  =!0x20000000		;First segment
+ID_STS$LS  =!0x10000000		;Last segment
+ID_STS$MAR =!0x08000000		;Multicast address received
+ID_STS$PAM =!0x04000000		;Physical address matched
+ID_STS$BAR =!0x02000000		;Broadcast address received
+ID_STS$BOVF=!0x01000000		;Buffer overflow (Its unclear what this bit
+				;  means since it is in a descriptor but
+				;  seems to mean that no descriptors are
+				;  available!)
+ID_STS$FOVF=!0x00800000		;FIFO overflow (This bit appears to be always
+				;  set and does not indicate an error!)
+ID_STS$RWT =!0x00400000		;Receive watchdog timer expired (Have no
+				;  idea what this means!)
+ID_STS$RES =!0x00200000		;Receive error summary
+ID_STS$RUNT=!0x00100000		;Runt packet
+ID_STS$CRC =!0x00080000		;CRC error
+ID_STS$PID =!0x00060000		;Protocol ID:
+  				;  0 = Non-IP
+				;  1 = TCP/IP
+				;  2 = UDP/IP
+				;  3 = IP
+ID_STS$IPF =!0x00010000		;IP checksum failure
+ID_STS$UDPR=!0x00008000		;UDP checksum faiiure
+ID_STS$TCPF=!0x00004000		;TCP checksum failure
+ID_STS$LEN =!0x00003FFF		;Received packet length
+
+;Define offsets in the output descriptors
+
+$$$=!0
+BLK OD_STS , 4t
+BLK OD_VLAN, 4t
+BLK OD_BUFR, 8t
+
+;Define bits in OD_STS for descriptor mode
+
+OD_STS$OWN  =!0x80000000	;Buffer owned by controller if set
+OD_STS$EOR  =!0x40000000	;Eof of ring
+OD_STS$FS   =!0x20000000	;First segment
+OD_STS$LS   =!0x10000000	;Last segment
+OD_STS$LRG  =!0x08000000	;Large send (cmd)
+OD_STS$FUNR =!0x02000000	;Fifo underrun (status)
+OD_STS$TES  =!0x00800000	;Transmit error summary (status)
+OD_STS$OWC  =!0x00400000	;Out of window collision (status)
+OD_STS$LNKF =!0x00200000	;Link failure (status)
+OD_STS$EXC  =!0x00100000	;Excessive collisions (status)
+OD_STS$CCNT =!0x000F0000	;Collision count
+OD_STS$IPCS =!0x00040000	;Calculate IP checksum (cmd)
+OD_STS$TCPCS=!0x00020000	;Calculate TCP checksum (cmd)
+OD_STS$UDPCS=!0x00010000	;Calculate UDP checksum (cmd)
+OD_STS$LEN  =!0x0000FFFF	;Buffer length
+
+$$DEBUG=!0
+.PAGE
+MAJV   =!2t
+MINV   =!0t
+EDITNUM=!1t
+
+;1.0.0 - 29-Jan-02
+;	Initial version, created loosely from ENNEADRV 1.2.0
+;1.0.1 - 19-Jul-02
+;	Changed transmit done to check TOK and TUN instead of OWN - seems to
+;	fix problem with output hanging at 10MHz.
+;2.0.0 - TCP output rewrite; fixed problem when mapped registers not at 4KB
+;	boundry.
+;2.0.1 - 21-Jan-03
+;	Changed to make input ring buffer not cachable - fixed input race
+;	problem.
+
+	LKEHEAD	ENRTADEV, MAJV, MINV, EDITNUM, LKETYPE_DEVICE
+
+;Define offsets in the device dependent part of the IDB for the enrta interface
+
+$$$=!idb_SIZE
+BLK idb_enrtaintreq  , 1t	;Interrupt request number
+BLK idb_enrtactype   , 1t	;Chip type
+BLK idb_enrtaflowctl , 1t
+BLK idb_enrtacattr   , 1t	;Chip attribute bits
+BLK idb_enrtabufrszx , 1t	;Non-descriptor receive buffer size index
+BLK idb_enrtaxmtmax  , 1t	;Maximum number of buffered output packets
+BLK                  , 2t
+BLK idb_enrtabus     , 2t	;PCI bus bus number
+BLK idb_enrtaslot    , 2t	;PCI bus slot number
+BLK idb_enrtafunc    , 2t	;PCI bus function number
+BLK idb_enrtarevsn   , 1t	;PCI version ID
+BLK                  , 1t
+BLK idb_enrtadevice  , 4t	;PCI vendor ID and device ID
+BLK idb_enrtapcib    , 4t	;Address of the PCIB (needed for calls to
+				;  xospciReadCfgReg and xospciWriteCfgReg)
+BLK idb_enrtamapreg  , 4t	;Base address of the memory mapped IO registers
+BLK idb_enrtartxrreg , 4t	;Address of the RTX_TXREQ register (its
+				;  different on the 8139C+ and the gigabit
+				;  chips)
+BLK idb_enrtaintsts  , 4t	;Used to transfer interrupt status to fork level
+BLK idb_enrtabmctl   , 4t	;Current value for RTF_BMCTL
+BLK idb_enrtaiphyrng , 4t	;Address of beginning of the physical input
+				;  header ring if using descriptors or ???
+BLK idb_enrtaivirrng , 4t	;Address of beginning of the input ring
+				;  (the virutal input header ring if using
+				;  descriptors or the input ring buffer)
+BLK idb_enrtairngend , 4t	;Byte offset of end of the input ring
+BLK idb_enrtairngphy , 4t	;Physical address of the physical input
+				;  descriptor ring if using descriptors or
+				;  physical address of the input ring buffer
+BLK idb_enrtaitaker  , 4t	;Input buffer taker pointer (byte offset into
+				;  the virtual input header ring if using
+				;  descriptors or into data ring buffer
+BLK idb_enrtaphyreg  , 4t
+BLK idb_enrtabufrsz  , 4t	;Total receive buffer size in KB
+
+BLK idb_enrtaocnt    , 4t	;Output buffer count
+BLK idb_enrtaophyrng , 4t	;Address of beginning of the physical input
+				;  descriptor ring (if not using descriptors
+				;  this points to the RTF_TSD0 device register)
+BLK idb_enrtaovirrng , 4t	;Address of beginning of the virtual ouput
+				;  header ring
+BLK idb_enrtaorngend , 4t	;Byte offset of end of the output ring
+BLK idb_enrtaorngphy , 4t	;Physical address of physical descriptor ring
+				;  if using descriptors or physcial address of
+				;  first output buffer
+BLK idb_enrtaoputter , 4t	;Output buffer ring putter pointer (byte offset
+				;  in the virutal output header ring)
+BLK idb_enrtaotaker  , 4t
+BLK idb_enrtacnts    , 4t	;Address of counts XMB
+BLK idb_enrtacntspa  , 4t
+idb_enrtaSIZE=!$$$
+
+;Define values for the chip attribute table bytes stored in idb_enrtacattr.
+;  These are initialized from attrtbl when a unit is added.
+
+CA$DESCP  =!0x80		;Chip uses descriptors
+CA$GIGABIT=!0x40		;Chip supports 1000MBS speed - This also implies
+				;  support for large descriptor tables (up
+				;  to 1024 descriptors each) and for 64 bit
+				;  physical address.
+CA$8169S  =!0x20		;Chip is an 8169S
+CA$AUTO   =!0x01		;Auto-negotiation is enabled
+
+.PAGE
+;Device characteristics for ENRTA NET devices
+
+	.MOD	4
+enrtadctbl:
+ CHARBGN  1, knlDCharValCom##
+ CHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##    , knlDcGetClass##, knlDcSetClass##, 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##     , knlDcGet4Byte##, 0              , dcb_typename
+ CHARENT  BOARD   , STR , , 32, msgboard           , dcgetboard     , 0              , 0
+ CHARENT  PCIBUS  , HEXV, ,  2, xospciMsgBus##     , dcgetdata2     , 0              , idb_enrtabus
+ CHARENT  PCISLOT , HEXV, ,  2, xospciMsgSlot##    , dcgetdata2     , 0              , idb_enrtaslot
+ CHARENT  PCIFUNC , HEXV, ,  2, xospciMsgFunc##    , dcgetdata2     , 0              , idb_enrtafunc
+ CHARENT  PCIVENID, HEXV, ,  2, xospciMsgVendor##  , dcgetdata2     , 0              , idb_enrtadevice
+ CHARENT  PCIDEVID, HEXV, ,  2, xospciMsgDevice##  , dcgetdata2     , 0              , idb_enrtadevice+2
+ CHARENT  PCIREV  , HEXV, ,  1, xospciMsgRevision##, dcgetdata1     , 0              , idb_enrtarevsn
+ CHARENT  IOREG   , HEXV, ,  4, knlDcMsgIoReg##    , dcgetdata4     , 0              , idb_bioreg
+ CHARENT  MEMREG  , HEXV, ,  4, knlDcMsgMemReg##   , dcgetdata4     , 0              , idb_enrtaphyreg
+ CHARENT  INT     , DECV, ,  1, knlDcMsgInt##      , dcgetdata1     , 0              , idb_intlvl
+ CHARENT  BUFRSIZE, DECV, ,  4, msgbufrsize        , dcgetdata4     , 0              , idb_enrtabufrsz
+ CHARENT  LINK    , TEXT, , 12, msglink            , dcgetlink      , 0              , 0
+ CHARENT  MODE    , TEXT, , 12, msgmode            , dcgetmode      , dcsetmode      , 0
+ CHARENT  TXFLOW  , TEXT, , 12, msgtxflow          , dcgettxflow    , dcsettxflow    , 0
+ CHARENT  RXFLOW  , TEXT, , 12, msgrxflow          , dcgetrxflow    , dcsetrxflow    , 0
+ CHARENT  NETADDR , HEXB, ,  6, msgnetaddr         , dcgetnetaddr   , 0              , 0
+ CHARENT  PKTIN   , DECV, ,  4, xosnetMsgPktIn##   , dcgetdata4     , dcseterror     , idb_cntpktin
+ CHARENT  BYTEIN  , DECV, ,  4, knlDcMsgByteIn##   , dcgetdata4     , dcseterror     , idb_cntbytein
+ CHARENT  PKTOUT  , DECV, ,  4, xosnetMsgPktOut##  , dcgetdata4     , dcseterror     , idb_cntpktout
+ CHARENT  BYTEOUT , DECV, ,  4, knlDcMsgByteOut##  , dcgetdata4     , dcseterror     , idb_cntbyteout
+ CHARENT  BCPKTIN , DECV, ,  4, xosnetMsgBcPktIn## , dcgetdata4     , dcseterror     , idb_cntbcpktin
+ CHARENT  NOSAP   , DECV, ,  4, xosnetMsgNoSap##   , dcgetdata4     , dcseterror     , idb_cntnosap
+ CHARENT  BADSIZE , DECV, ,  4, xosnetMsgBadSize## , dcgetdata4     , dcseterror     , idb_cntbadsize
+ CHARENT  TOOBIG  , DECV, ,  4, xosnetMsgTooBig##  , dcgetdata4     , dcseterror     , idb_cnttoobig
+ CHARENT  BADPNT  , DECV, ,  4, msgbadpnt          , dcgetdata4     , dcseterror     , idb_cntbadpnt
+ CHARENT  FIXEDCNT, DECV, ,  4, xosnetMsgFixedCnt##, dcgetdata4     , dcseterror     , idb_cntfixedcnt
+ CHARENT  NOSBFR  , DECV, ,  4, xosnetMsgNoSBfr##  , dcgetdata4     , dcseterror     , idb_cntnosbfr
+ CHARENT  NOIBFR  , DECV, ,  4, msgnoibfr          , dcgetnoibfr    , dcseterror     , idb_cntnoibfr
+ CHARENT  IFRAME  , DECV, ,  4, msgfrmerr          , dcgetfrmerr    , dcseterror     , idb_cntfa
+ CHARENT  ICRC    , DECV, ,  4, xosnetMsgCrcErr##  , dcgetcrcerr    , dcseterror     , idb_cntcrc
+ CHARENT  IRUNT   , DECV, ,  4, xosnetMsgCrcErr##  , dcgetdata4     , dcseterror     , idb_cntrunt
+ CHARENT  IOVRRN  , DECV, ,  4, xosnetMsgOvrErr##  , dcgetdata4     , dcseterror     , idb_cntrover
+ CHARENT  OCSEN   , DECV, ,  4, msgxcsenerr        , dcgetdata4     , dcseterror     , idb_cntcsense
+ CHARENT  OUNDRN  , DECV, ,  4, msgxunderr         , dcgetdata4     , dcseterror     , idb_cntxunder
+ CHARENT  OHUNG   , DECV, ,  4, xosnetMsgXHung##   , dcgetdata4     , dcseterror     , idb_cntxhung
+ CHARENT  OHTBT   , DECV, ,  4, msgxhtbterr        , dcgetdata4     , dcseterror     , idb_cnthrtbt
+ CHARENT  OOWC    , DECV, ,  4, msgxowcerr         , dcgetdata4     , dcseterror     , idb_cntowcol
+ CHARENT  OCOL    , DECV, ,  4, msgxcolerr         , dcgetdata4     , dcseterror     , idb_cntnumcol
+ CHARENT  OXCOL   , DECV, ,  4, msgxxcolerr        , dcgetdata4     , dcseterror     , idb_cntjabber
+ CHARENT  ABORT   , DECV, ,  4, xosnetMsgOAbort##  , dcgetdata4     , dcseterror     , idb_cntabort
+ CHAREND
+
+msgboard:   CHARINFO  {Board type}
+msglink:    CHARINFO  {Link status}
+msgmode:    CHARINFO  {Mode (speed and duplex)}
+msgtxflow:  CHARINFO  {Transmit flow control}
+msgrxflow:  CHARINFO  {Receive flow control}
+msgnetaddr: CHARINFO  {Physical network address}
+msgbufraddr:CHARINFO  {Buffer address}
+msgbufrsize:CHARINFO  {Buffer size (KB)}
+msgbadpnt:  CHARINFO  {Discarded - bad ring pointer}
+msgnoibfr:  CHARINFO  {Discarded - no interface buffer available}
+msgfrmerr:  CHARINFO  {Number of input framing errors}
+msgxcsenerr:CHARINFO  {Number of output carrier lost errors}
+msgxunderr: CHARINFO  {Number of output underrun errors}
+msgxhtbterr:CHARINFO  {Number of output heartbeat errors}
+msgxowcerr: CHARINFO  {Number of output out of window collisions}
+msgxcolerr: CHARINFO  {Number of output collisions}
+msgxxcolerr:CHARINFO  {Number of excessive output collisions}
+.PAGE
+;Protocol translation table which converts from standard internal protocol
+;  values to device protocol values
+
+	.MOD	4
+etypetbl:
+	.LONG	-1		;	  =80000000 - Illegal
+	.BYTE	81, 0BA, 0, 0	;PROT_SSL1=80000001 - SSL 1st Ethernet protocol
+	.BYTE	81, 0BB, 0, 0	;PROT_SSL2=80000002 - SSL 2nd Ethernet protocol
+	.BYTE	81, 0BC, 0, 0	;PROT_SSL3=80000003 - SSL 3rd Ethernet protocol
+	.BYTE	81, 0BD, 0, 0	;PROT_SSL4=80000004 - SSL 4th Ethernet protocol
+	.BYTE	81, 0BE, 0, 0	;PROT_SSL5=80000005 - SSL 5th Ethernet protocol
+	.BYTE	81, 0BF, 0, 0	;PROT_SSL6=80000006 - SSL 6th Ethernet protocol
+	.BYTE	81, 0C0, 0, 0	;PROT_SSL7=80000007 - SSL 7th Ethernet protocol
+	.BYTE	81, 0C1, 0, 0	;PROT_SSL8=80000008 - SSL 8th Ethernet protocol
+	.LONG	-1		;	  =80000009 - Illegal
+	.LONG	-1		;	  =8000000A - Illegal
+	.LONG	-1		;	  =8000000B - Illegal
+	.LONG	-1		;	  =8000000C - Illegal
+	.LONG	-1		;	  =8000000D - Illegal
+	.LONG	-1		;	  =8000000E - Illegal
+	.LONG	-1		;	  =8000000F - Illegal
+	.BYTE	8 , 0  , 0, 0	;PROT_IP  =80000010 - Internet IP protocol
+	.BYTE	8 , 6  , 0, 0	;PROT_ARP =80000011 - Internet ARP protocol
+	.BYTE	80, 35 , 0, 0	;PROT_RARP=80000012 - Internet RARP protocol
+ETYPEMAX=!{$-etypetbl}/4-1
+.PAGE
+	.MOD	4
+enrtadisp:
+	.LONG	xossnpMakeDcb##		;ndf_makedcb  = 00
+	.LONG	xossnpNetIopSapAddr##	;ndf_protocol = 04
+	.LONG	xossnpNetClose1##	;ndf_close1   = 08
+	.LONG	setpkt			;ndb_setpkt   = 0C
+	.LONG	setecho			;ndb_setecho  = 10
+	.LONG	sendpkt			;ndb_sendpkt  = 14
+	.LONG	rcvpkt			;ndb_rcvpkt   = 18
+	.LONG	getetype		;ndb_getetype = 1C
+	.LONG	sethwa			;ndb_sethwa   = 20
+	.LONG	gethwa			;ndb_gethwa   = 24
+	.LONG	knlIFnDev##		;ndb_lnkctl   = 28
+	.LONG	ret002			;ndb_icmpecho = 2C
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	initenrta
+
+initenrta:
+	PUSHL	#ertaname
+	PUSHL	#ertaaddunit
+	PUSHL	#netccb##
+	CALL	sysIoDriverRegister##
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	EBX, lkei_pctop-4[ESP]	;OK
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+ertaname:.ASCIZ "ERTA"
+
+	CODE
+.PAGE
+	.SBTTL	enrtaaddunit - Subroutine to add Ethernet interface unit
+
+;Subroutine to add Ethernet interface unit
+;	c(AL) = Unit number
+;	CALL	enrtaaddunit
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+$$$=!0
+FRM eau_unit   , 4t	;Unit number
+FRM eau_irout  , 4t	;Interrupt routine offset
+FRM eau_ioreg  , 4t	;Base IO register number
+FRM eau_int    , 4t	;Interrupt level
+FRM eau_prm    , 4t	;Promiscuous receive mode request
+FRM eau_bus    , 4t	;PCI bus number
+FRM eau_slot   , 4t	;PCI slot number
+FRM eau_func   , 4t	;PCI function number
+FRM eau_bufrsz , 4t	;Specified total input buffer size
+FRM eau_bufrszx, 4t
+FRM eau_pcibus , 4t
+FRM eau_pcislot, 4t
+FRM eau_pcifunc, 4t
+FRM eau_pcirvsn, 4t
+FRM eau_pcidev , 4t
+FRM eau_config , 1t	;Value for idb_config
+FRM eau_txflow , 1t
+FRM eau_rxflow , 1t
+FRM eau_hvxmres, 1t
+FRM eau_cattr  , 1t
+FRM            , 3t
+FRM eau_pciaddr, 4t
+
+FRM eau_mapreg , 4t
+FRM eau_phyreg , 4t
+FRM eau_bmctl  , 4t
+FRM eau_pcib   , 4t
+FRM eau_ctype  , 4t
+FRM eau_iphyrng, 4t	;Address of input physical header ring
+FRM eau_ivirrng, 4t	;Address of input virtural header ring or input
+			;  ring buffer if not using descriptors
+FRM eau_irngphy, 4t	;Physical address of the physical input
+			;  descriptor ring if using descriptors or
+			;  physical address of the input ring buffer
+FRM eau_ophyrng, 4t	;Address of output virtual header ring
+FRM eau_ovirrng, 4t	;Address of output physical header ring
+FRM eau_orngphy, 4t	;Physical address of physical descriptor ring
+			;  if using descriptors or physcial address of
+			;  first output buffer
+FRM eau_rpntr  , 4t	;Pointer to the input ring while setting it up
+FRM eau_bpntr  , 4t	;Pointer to the input buffer while setting it up
+FRM eau_cnts   , 4t	;Address of the counts buffer
+FRM eau_cnt    , 4t
+
+eau_SIZE=!$$$
+
+	.MOD	4
+enrtaaublk:				;Parameter block for addunitchar
+ CHARBGN  2, knlDCharValCom##
+ CHARENT  UNIT    , DECV, ,  1, knlDcMsgUnit##, 0, retclc          , 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##, 0, retclc          , 0
+ CHARENT  BUS     , DECV, ,  4, 0             , 0, enrtaaubus      , 0
+ CHARENT  SLOT    , DECV, ,  4, 0             , 0, enrtaauslot     , 0
+ CHARENT  FUNC    , DECV, ,  4, 0             , 0, enrtaaufunc     , 0
+ CHARENT  BUFRSIZE, DECV, ,  4, 0             , 0, enrtaaubufrsz   , 0
+ CHARENT  MODE    , TEXT, , 12, 0             , 0, enrtaausetmode  , 0
+ CHARENT  TXFLOW  , TEXT, , 12, 0             , 0, enrtaausettxflow, 0
+ CHARENT  RXFLOW  , TEXT, , 12, 0             , 0, enrtaausetrxflow, 0
+ CHAREND
+
+eau_unit=!16t		;Unit number
+
+enrtaaddunit::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	eau_SIZE, 0		;Allocate our stack frame
+	MOVL	eau_unit[EBP], EAX	;Store unit number
+	CLRL	EAX
+	MOVB	eau_hvxmres[EBP], AL
+	MOVL	eau_bufrsz[EBP], EAX
+	MOVL	eau_bufrszx[EBP], EAX
+	MOVL	eau_iphyrng[EBP], EAX	;Clear memory pointers here in case we
+	MOVL	eau_ivirrng[EBP], EAX	;  get an error before memory is
+	MOVL	eau_ophyrng[EBP], EAX	;  allocated
+	MOVL	eau_cnts[EBP], EAX
+	MOVL	eau_prm[EBP], EAX
+	MOVB	eau_config[EBP], AL
+	MOVL	eau_bus[EBP], EAX
+	MOVL	eau_func[EBP], EAX
+	DECL	EAX
+	MOVL	eau_slot[EBP], EAX	;Store illegal value for slot
+	MOVL	eau_bmctl[EBP], #RTF_BMCTL$AUTO ;Store default mode (auto)
+	MOVB	eau_txflow[EBP], #RTF_MEDIASTS$TXFCE ;Store default flow
+	MOVB	eau_rxflow[EBP], #RTF_MEDIASTS$RXFCE ;  control status
+	MOVL	EBX, #enrtaaublk	;Process the characteristics
+	MOVB	AL, #0			;Fail if have a bad name
+	CALL	knlAddUnitChar##
+	JC	eauerr			;If error
+	CMPL	eau_slot[EBP], #0xFFFFFFFF ;Did we get a PCI slot number?
+	JE	eaucharm		;No - fail
+	MOVL	eau_pcib[EBP], #0
+	PUSHL	SS
+	LEAL	EAX, eau_pcib[EBP]
+	PUSHL	EAX
+	PUSHL	eau_bus[EBP]		;Find the device
+	PUSHL	eau_slot[EBP]
+	PUSHL	eau_func[EBP]
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xospciFindByAddr##
+	TESTL	EAX, EAX
+	JS	eauerr
+	MOVL	EDI, eau_pcib[EBP]
+	CMPB	dct_pciclass+3[EDI], #2	;Is this a network card?
+	JNE	eaupdtyp		;No
+	MOVL	EAX, dct_pcidevid[EDI]	;Get the vendor and device IDs
+	MOVL	ECX, #PCITBLSZ		;Search our table
+2$:	CMPL	EAX, pcitbl-8[ECX*4]
+	LOOPNE	ECX, 2$
+	JNE	eaupdtyp		;If not one of our cards
+	MOVL	EAX, dct_pciaddr0[EDI]	;Found it - get the IO address
+	TESTB	AL, #01			;Is bit 0 set?
+	JE	eaupdtyp		;No - fail
+	MOVB	AL, #0			;Yes - clear extra bits
+	MOVL	eau_ioreg[EBP], EAX	;Store IO address
+	MOVL	EAX, dct_pciaddr1[EDI]	;Get the register memory address
+	TESTB	AL, #01			;Is bit 0 set?
+	JNE	eaupdtyp		;Yes - fail
+	MOVB	AL, #0			;No - clear extra bits
+	MOVL	eau_phyreg[EBP], EAX	;Store register memory address
+
+	MOVZBL	EAX, dct_pciclass+0[EBP]
+	MOVL	eau_pcirvsn[EBP], EAX
+	MOVL	EAX, dct_pcidevid[EDI]
+	MOVL	eau_pcidev[EBP], EAX
+	MOVZBL	EAX, dct_pciint[EDI]	;Get the interrupt number
+	TESTL	EAX, EAX		;There must be one
+	JE	eaupdtyp
+	MOVL	eau_int[EBP], EAX
+	CALL	knlGetXRes##
+	MOVZBL	ECX, eau_int[EBP]	;Yes - get interrupt number
+	ORL	ECX, #0x80		;Indicate sharable
+	CALL	knlChkIRqAvl##		;Is it available?
+	JC	eauerr			;No - fail
+	MOVL	EDX, eau_ioreg[EBP]
+	LEAL	ECX, 255t[EDX]
+	CALL	knlChkIORegs##
+	JC	eauerr
+	MOVL	ECX, #ENRTAINTSZ	;Yes - get space for interrupt code
+	CALL	knlGetXCode##
+	JC	eauerr
+	MOVL	eau_irout[EBP], EDI	;Remember where code is going
+$$$$int::MOVL	ESI, #enrtaint		;Copy prototype
+	SHRL	ECX, #2
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, #256		;We need 256 bytes of address space
+	CALL	knlGetXSpace##
+	JC	eauerr			;If can't get it
+	MOVL	EDX, eau_phyreg[EBP]
+	MOVL	EAX, EDX
+	ANDL	EAX, #0F00h
+	ADDL	EDI, EAX
+	MOVL	eau_mapreg[EBP], EDI	;Save address of the register area
+	PUSHL	EDI			;Map the register area into the space
+	SHRL	ECX, #12t		;  we just got
+	PUSHL	ECX
+	PUSHL	#MT_SYS
+	PUSHL	#0x3F
+	ANDL	EDX, #0xFFFFF000
+	PUSHL	EDX
+	PUSHL	#-1
+	CALL	sysMemMapPhyPages##
+	TESTL	EAX, EAX
+	JS	eauerr			;If error
+	MOVL	EDX, eau_mapreg[EBP]
+	MOVL	EAX, RTR_TXCFG[EDX]	;Get the configuration bits
+	ANDL	EAX, #0x7C800000
+	MOVL	ECX, #RTT_MAX-1
+16$:	CMPL	EAX, chiptbl[ECX*4]
+	LOOPNE	ECX, 16$
+	JE	20$			;If found it
+	TESTL	EAX, #0x40000000	;Not there - is the high bit set
+	JE	18$			;No
+	MOVL	ECX, #RTT_8139		;Yes - assume its a plain 8139
+	JMP	22$
+
+18$:	MOVL	ECX, #RTT_8169-2	;No - assume its some kind of
+					;  descriptor based chip
+20$:	ADDL	ECX, #2
+22$:	MOVL	eau_ctype[EBP], ECX
+	MOVZBL	EAX, attrtbl-1[ECX]
+	MOVB	eau_cattr[EBP], AL
+	TESTB	RTR_CMD[EDX], #RTR_CMD$RESET ;Is the reset bit set now?
+	JNE	eaupdtyp		;No -  something is very wrong
+	MOVB	RTR_CMD[EDX], #RTR_CMD$RESET ;Reset the interface
+					;Fall into eausetb on next page
+.PAGE
+;Now allocate memory for the chip's buffers.
+
+eausetb:MOVL	ESI, inrngtbl-4[ECX *4]
+	TESTL	ESI, ESI
+	JNS	10$			;If chip uses descriptors
+
+;Here if chip does not use descriptors - In this case we allocate a single
+;  large contiguous buffer used as follows:
+
+;   Description                              Size
+; Input ring buffer                          8192, 16384, 32768, or 65536 bytes
+; Unused                                     256 bytes
+; Ouput buffers (output virtual header ring  16 bytes
+
+;   The input ring buffer is first, followed by an unused area followed by the
+;   output virtual descriptor ring. The unused area provides a "nice" address
+;   for the ring to make debugging a little easier. The default size for the
+;   input ring buffer is 65552. The other sizes can be specified when the unit
+;   is added if desired.
+
+; NOTE: The Realtek datasheets all indicate that the input ring buffer is 16
+;       bytes larger than the indicated power of 2. Thus instead of 65536 the
+;       size would be 65552. None of the chips we have seen behave this way.
+;       They all use the exact power of 2. Just to be safe, we allocate an
+;       extra page after the receive ring and leave the first 256 bytes of this
+;       page unused just in case the chip decides to modify some of them. If
+;       the chip does actually use the extra 16 bytes this will cause a serious
+;       error which will reset the chip every 100 or so packets input (since
+;       the buffer wrapping logic will not work right), but at least it will
+;       not randomly write on someone else's memory!
+
+	NEGL	ESI
+	MOVL	ECX, #3
+	CMPL	eau_bufrsz[EBP], #0	;Was a buffer size specified?
+	JE	6$			;No - use the default
+	CLRL	ECX
+	MOVL	ESI, eau_bufrsz[EBP]	;Yes - get the size
+	CMPL	ESI, #8t		;Find the nearest usable size
+	JLE	4$			;No
+	INCL	ECX
+	CMPL	ESI, #16t
+	JLE	4$
+	INCL	ECX
+	CMPL	ESI, #32t
+	JLE	4$
+	INCL	ECX
+4$:	MOVL	ESI, #8t
+	SHLL	ESI, CL
+6$:	MOVL	eau_bufrsz[EBP], ESI	;Save actual size used
+	MOVL	eau_bufrszx[EBP], ECX	;Also save the index
+	SHLL	ESI, #10t
+	LEAL	ECX, 272t[ESI]		;Get size in bytes
+	MOVB	AL, #0			;Indicate not cachable
+	CALL	knlGetLargeBuffer##	;Get a large buffer
+	JC	eauerr
+	MOVL	eau_iphyrng[EBP], ESI
+
+	PUSHL	ESI
+	PUSHL	#0x99
+	PUSHL	#11000
+	CALL	sysMemSet##
+
+	PUSHL	ESI
+	CALL	sysMemGetPhyAddr##
+	MOVL	eau_irngphy[EBP], EAX
+	MOVL	EAX, eau_bufrsz[EBP]
+	SHLL	EAX, #10t
+	ADDL	ESI, EAX
+	ADDL	ESI, #256t
+	MOVL	eau_ovirrng[EBP], ESI
+	MOVL	EAX, eau_mapreg[EBP]	;Get the address of the output physical
+	ADDL	EAX, #RTF_TSD0		;  "descriptor" ring, which in this
+	MOVL	eau_ophyrng[EBP], EAX	;  case point to the chip's first output
+	JMP	eaubfrs			;  status register. The group of 4
+					;  status registers and 4 buffer
+					;  address registers is treated as a
+					;  funny "descriptor ring", allowing
+					;  some common code for descriptor and
+					;  non-descriptor chips.
+
+;Here if chip uses descriptors - We allocate buffers as follows:
+
+;   Description                         Size                 Location
+; Output physical buffer header ring  up to 1024 bytes     XMB
+; Output virtual buffer header ring   up to 256 bytes      Static memory
+; Input physical buffer header ring   up to 4096 bytes     XMB
+; Input virtual buffer header ring    up to 1024 bytes     Static memory
+; Input buffers                       up to 256 KB         XMB
+; Counts buffer                       64 bytes             XMB
+
+; This output rings sizes set between 4 and 64 at assembly time. The input
+;   buffer size can be specified when the unit is added. We always use 1KB
+;   input buffers. Inorder to allow us to use an XMB for the input descriptor
+;   ring we restrict the maximum number of input buffers to 256, allowing up
+;   to a total of 256KB of total input buffer space. (Hopefully this is enough!)
+;   The total input buffer size can be specified in the range of 16KB to 512KB
+;   (except for the 8139E which has a maximum total buffer size of 64KB since
+;   it only supports 64 descriptors). The input ring size is the buffer size
+;   (in bytes) divided by 64.
+
+; The physical buffer descriptor rings are defined in the RealTek documentation
+;   (such as it is). The virtual buffer descriptor rings simply contain the
+;   virtual address of each buffer in the ring. All input buffers are
+;   allocated here and are a fixed size (1024 bytes). To minimize fragmentation
+;   we use the smallest number of XMBs we can, combining as many buffers as
+;   possible in each XMB (up to 64). No output buffers are allocated since
+;   output is done direct from the packet buffers.
+
+10$:	CMPL	eau_bufrsz[EBP], #0	;Was a buffer size specified?
+	JE	12$			;No - use the default
+	MOVL	ESI, #128t		;Assume gigabit chip
+	TESTB	eau_cattr[EBP], #CA$GIGABIT ;Right?
+	JNE	11$			;Yes
+	MOVL	ESI, 64t		;No
+11$:	CMPL	ESI, eau_bufrsz[EBP]	;Is his value too large?
+	JB	12			;Yes
+	MOVL	ESI, eau_bufrsz[EBP]	;No - use it
+	CMPL	ESI, #8t		;Is it too small?
+	JA	12			;No
+	MOVL	ESI, #8t		;Yes - use minimum
+12$:	MOVL	eau_bufrsz[EBP], ESI	;Store actual size used
+	LEAL	ECX, OUTDESCP*4[ESI*4]	;Get space needed for both virtual
+					;  descriptor rings (the output ring
+	PUSHL	ESI			;  size is fixed at assembly time)
+	CALL	knlGetXMem##		;Get the memory
+	POPL	ESI
+	JC	eauerr
+	MOVB	eau_hvxmres[EBP], #1
+	PUSHL	EDI			;Clear the memory
+	PUSHL	#0
+	LEAL	EAX, [ESI*4]
+	PUSHL	EAX
+	CALL	sysMemSet##
+	MOVL	eau_ovirrng[EBP], EDI	;Store address of the output ring
+	ADDL	EDI, #OUTDESCP*4	;Point to the input ring
+	MOVL	eau_ivirrng[EBP], EDI
+	PUSHL	#OUTDESCP*16t		;Get memory for the output descriptor
+	PUSHL	SS			;  ring
+	LEAL	EAX, eau_ophyrng[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	eauerr
+
+	PUSHL	eau_ophyrng[EBP]	;Get the physical address
+	CALL	sysMemGetPhyAddr##
+	MOVL	eau_orngphy[EBP], EAX
+
+	MOVL	EAX, ESI		;Get space needed for the input
+	SHLL	EAX, #4			;  physical descriptor ring
+	PUSHL	EAX
+	PUSHL	SS
+	LEAL	EAX, eau_iphyrng[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	eauerr
+
+	MOVL	EAX, eau_iphyrng[EBP]	;Get the physical address
+	MOVL	eau_rpntr[EBP], EAX
+	PUSHL	EAX
+	CALL	sysMemGetPhyAddr##
+	MOVL	eau_irngphy[EBP], EAX
+
+14$:	MOVL	EAX, ESI		;Get number of buffers to get
+	CMPL	EAX, #64t		;Too many for one XMB
+	JLE	16$			;No
+	MOVL	EAX, #64t		;Yes - get get the maximum this time
+16$:	SUBL	ESI, EAX		;Reduce amount left to get
+	MOVL	eau_cnt[EBP], EAX
+	SHLL	EAX, #10t		;Get the XMB
+	PUSHL	EAX
+	PUSHL	SS
+	LEAL	EAX, eau_bpntr[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	eauerr
+
+;Here with an XMB - Divide it up into 1024 byte buffers. Note that we do not
+;  set the OWN bit here. It will be set when input is reset.
+
+18$:	MOVL	EAX, eau_bpntr[EBP]	;Store virtual address in the virtual
+	MOVL	[EDI], EAX		;  ring
+	PUSHL	EAX			;Get physical address
+	CALL	sysMemGetPhyAddr##
+	MOVL	EDX, eau_rpntr[EBP]
+	MOVL	8[EDX], EAX		;Store it
+	MOVL	12t[EDX], #0
+	MOVL	[EDX], #1024t		;Store buffer size, clear the OWN bit
+	MOVL	4[EDX], #0		;Clear the remaining bits
+	ADDL	EDI, #4			;Advance pointers
+	ADDL	eau_rpntr[EBP], #16t
+	ADDL	eau_bpntr[EBP], #1024t
+	DECL	eau_cnt[EBP]		;More to do here?
+	JNE	18$			;Yes - continue
+	TESTL	ESI, ESI		;Need more buffers?
+	JNE	14$			;Yes - continue
+
+;Allocate the counts buffer
+
+	PUSHL	#-XMBX_64
+	PUSHL	SS
+	LEAL	EAX, eau_cnts[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	eauerr
+
+;Here with the buffers allocated and set up.
+
+eaubfrs:MOVL	EDX, eau_mapreg[EBP]
+	TESTB	RTR_CMD[EDX], #RTR_CMD$RESET ;Has the chip reset finished?
+	JNE	eaudever		;No - fail
+	MOVW	RTR_INTSTS[EDX], #0xFFFF ;Reset all interrupt requests
+	MOVL	ECX, #5
+	CALL	knlSDelay##
+	TESTW	RTR_INTSTS[EDX], #0xFFFF ;Did it work?
+	JNE	eaudever		;No - fail
+	MOVL	ECX, #idb_enrtaSIZE	;Get size for our IDB
+	MOVL	EDX, #enrtadctbl	;Get offset of device characteristics
+	MOVL	EAX, eau_unit[EBP]	;Get unit number
+	CALL	xosnetMakeIdb##		;Make our IDB
+	JC	eauerr			;If error
+
+;Here with the IDB allocated
+
+	MOVL	idb_typname[ESI], #'ERTA';Store type name
+	MOVB	idb_iftype[ESI], #IFT_MULTI ;Store interface type
+	MOVB	idb_hwhdrsz[ESI], #14t ;Store hardware header size
+	MOVL	idb_hwpktsz[ESI], #1500t ;Store maximum packet size
+	MOVB	idb_hlen[ESI], #6t	;Store hardware address size
+	MOVB	idb_hwtype+1[ESI], #01h ;Store hardware type value for APR
+	MOVB	idb_cntoffset[ESI], #en_count ;Store offset of count field
+	MOVL	idb_disp[ESI], #enrtadisp
+	MOVB	idb_state[ESI], #LNKS_ESTAB
+	MOVL	idb_fdisp[ESI], #enrtafork ;Store offset of fork routine
+	MOVL	EAX, eau_ioreg[EBP]
+	MOVL	idb_bioreg[ESI], EAX
+	MOVL	EDX, eau_mapreg[EBP]
+	MOVL	idb_enrtamapreg[ESI], EDX
+	LEAL	EAX, RTC_TXREQ[EDX]	;Assume an 8139C+
+	CMPB	eau_ctype[EBP], #RTT_8139CP ;Right?
+	JE	22$			;Yes
+	ADDL	EAX, #RTG_TXREQ-RTC_TXREQ ;No
+22$:	MOVL	idb_enrtartxrreg[ESI], EAX
+	MOVL	EAX, eau_phyreg[EBP]
+	MOVL	idb_enrtaphyreg[ESI], EAX
+	MOVL	EAX, eau_ophyrng[EBP]
+	MOVL	idb_enrtaophyrng[ESI], EAX
+	MOVL	EAX, eau_ovirrng[EBP]
+	MOVL	idb_enrtaovirrng[ESI], EAX
+	MOVL	EAX, eau_orngphy[EBP]
+	MOVL	idb_enrtaorngphy[ESI], EAX
+	MOVL	EAX, eau_iphyrng[EBP]
+	MOVL	idb_enrtaiphyrng[ESI], EAX
+	MOVL	EAX, eau_ivirrng[EBP]
+	MOVL	idb_enrtaivirrng[ESI], EAX
+	MOVL	EAX, eau_irngphy[EBP]
+	MOVL	idb_enrtairngphy[ESI], EAX
+	MOVL	EAX, eau_cnts[EBP]
+	MOVL	idb_enrtacnts[ESI], EAX
+	TESTL	EAX, EAX
+	JE	26$
+	PUSHL	EAX
+	CALL	sysMemGetPhyAddr##
+26$:	MOVL	idb_enrtacntspa[ESI], EAX
+	MOVL	EAX, eau_pcib[EBP]
+	MOVL	idb_enrtapcib[ESI], EAX
+	MOVL	EAX, eau_bufrszx[EBP]
+	MOVB	idb_enrtabufrszx[ESI], AL
+	MOVL	EAX, eau_bufrsz[EBP]
+	MOVL	idb_enrtabufrsz[ESI], EAX
+	MOVL	ECX, eau_ctype[EBP]
+	MOVB	idb_enrtactype[ESI], CL
+	MOVZBL	EAX, attrtbl-1[ECX]
+	MOVB	idb_enrtacattr[ESI], AL
+	MOVL	EAX, #4t*4t		;Assume not using descriptors
+	MOVL	ECX, #3
+	MOVL	EDX, eau_bufrsz[EBP]
+	SHLL	EDX, #10t
+	TESTB	eau_cattr[EBP], #CA$DESCP ;Right?
+	JE	28$			;Yes
+	MOVL	EAX, #OUTDESCP*4	;No - using descriptors
+	ADDL	ECX, #OUTDESCP-4
+	SHRL	EDX, #8t
+28$:	MOVL	idb_enrtaorngend[ESI], EAX
+	MOVL	idb_enrtairngend[ESI], EDX
+	MOVB	idb_enrtaxmtmax[ESI], CL
+	MOVL	EAX, eau_bmctl[EBP]
+	MOVL	idb_enrtabmctl[ESI], EAX
+	MOVB	AL, eau_txflow[EBP]
+	ORB	AL, eau_rxflow[EBP]
+	MOVB	idb_enrtaflowctl[ESI], AL
+	MOVL	EDX, eau_mapreg[EBP]
+	MOVL	EAX, RTR_NETADDR+0[EDX] ;Store MAC address in the IDB
+	MOVL	idb_hwaddr+0[ESI], EAX
+	MOVZWL	EAX, RTR_NETADDR+4[EDX]
+	MOVL	idb_hwaddr+4[ESI], EAX
+	MOVL	EDI, eau_pcib[EBP]	;Store the PCI bus information in
+	PUSHL	EDI			;  the IDB
+	CALL	xospciGetBus##
+	MOVW	idb_enrtabus[ESI], AX
+	PUSHL	EDI
+	CALL	xospciGetSlot##
+	MOVW	idb_enrtaslot[ESI], AX
+	PUSHL	EDI
+	CALL	xospciGetBus##
+	MOVW	idb_enrtafunc[ESI], AX
+	MOVL	EAX, dct_pcidevid[EDI]
+	MOVL	idb_enrtadevice[ESI], EAX
+	MOVL	EAX, dct_pciclass[EDI]
+	MOVB	idb_enrtarevsn[ESI], AL
+	MOVL	EAX, enrtalidb		;Link into our list of IDBs
+	MOVL	enrtalidb, ESI
+	TESTL	EAX, EAX
+	JE	40$
+	MOVL	idb_nextd[EAX], ESI
+	JMP	42$
+
+40$:	MOVL	enrtafidb, ESI
+	MOVL	EBX, #enrtaoas		;Set up our once-a-second routine the
+	CALL	knlSetupOAS##		;  first time though here
+42$:	MOVL	EDI, eau_irout[EBP]	;Fix up the interrupt code
+	MOVL	{fix1-enrtaint}+1[EDI], ESI
+	MOVL	EAX, EDI
+	SUBL	EAX, #enrtaint
+	SUBL	{fix2-enrtaint}+1[EDI], EAX
+	SUBL	{enrtaexit-enrtaint}+1[EDI], EAX
+	CMPB	eau_int[EBP], #9t
+	JGE	44$
+	ADDL	{enrtaexit-enrtaint}+1[EDI], #knlIntDoneDiff##
+44$:	MOVL	EBX, #temp+3		;Build name for interrupt table
+	CLRL	EAX
+	MOVL	1[EBX], EAX
+	MOVL	EAX, eau_unit[EBP]
+	CALL	knlPutDecNmbr##
+	MOVL	EBX, #temp		;Register our IO registers (this cannot
+	MOVL	EDX, eau_ioreg[EBP]	;  fail since we already verified that
+	LEAL	ECX, 255t[EDX]		;  they are available!)
+	CALL	knlRegIORegs##
+	MOVL	EDX, #temp
+	MOVL	EBX, eau_irout[EBP]	;Get address of interrupt routine
+	MOVB	CL, eau_int[EBP]	;Get interrupt number
+	MOVB	idb_intlvl[ESI], CL	;Remember it
+	ORB	CL, #80h		;Indicate sharable interrupt
+	MOVB	CH, #DT_TRAP+PL_0	;Set up our interrupt vector
+	LEAL	EAX, enrtaexit-enrtaint[EBX]
+	CALL	knlSetIRq##
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+	CALL	enrtareset		;Now reset the interface
+	MOVL	ECX, eau_int[EBP]	;Enable our interrupt
+	CALL	knlEnableInt##
+	CLRL	EAX			;Get our return value
+50$:
+
+oncedone::
+	LEAVE
+	CLRL	ECX
+	MOVL	EBX, #QSTS$DONE
+	TOFORK
+	BTL	EAX, #31t
+	SETNC	CL
+ret002:	RET
+
+;Here if have an error
+
+eauerr:	PUSHL	EAX
+
+	;;;;; NEED TO GIVE UP MEMORY HERE !!!!!
+
+	CMPB	eau_hvxmres[EBP], #0
+	JE	52$
+	CALL	knlGiveXRes##
+52$:	POPL	EAX
+	JMP	50$
+
+;Here if a required characteristic is missing
+
+eaucharm:
+	MOVL	EAX, #ER_CHARM
+	JMP	eauerr
+
+;Here if device does not respond correctly
+
+eaupdtyp:
+	MOVL	EAX, #ER_PDTYP
+	JMP	eauerr
+
+;Here if reset didn't work - report device error
+
+eaudever:
+	MOVL	EAX, #ER_DEVER
+	JMP	eauerr
+.PAGE
+;Subroutine called by addunitchar for the "BUFRSIZE" parameter
+
+enrtaaubufrsz:
+	MOVL	eau_bufrsz[EBP], EAX
+	CLC
+	RET
+
+;Subroutine called by addunitchar for the "BUS" parameter
+
+enrtaaubus:
+	TESTL	EAX, #0xFFFFFF00
+	JNE	4$
+	MOVL	eau_bus[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the "SLOT" parameter
+
+enrtaauslot:
+	TESTL	EAX, #0xFFFFFFE0
+	JNE	4$
+	MOVL	eau_slot[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the "FUNC" parameter
+
+enrtaaufunc:
+	TESTL	EAX, #0xFFFFFFF8
+	JNE	4$
+	MOVL	eau_func[EBP], EAX
+	RET
+
+;Here if bad characteristic value
+
+4$:	MOVL	EAX, #ER_CHARV		;Get error code
+	STC				;Fail
+	RET
+.PAGE
+;PHY initialization data for 8169SC (method 4)
+
+initm4:	.WORD	0x1F, 0x0002
+	.WORD	0x01, 0x90D0
+	.WORD	0x1F, 0x0000
+	.LONG	-1
+
+;PHY initialization data for 8169S/8110S
+
+initm23:.WORD	0x1F, 0x0001
+	.WORD	0x06, 0x006E
+	.WORD	0x08, 0x0708
+	.WORD	0x15, 0x4000
+	.WORD	0x18, 0x65C7
+
+	.WORD	0x1F, 0x0001
+	.WORD	0x03, 0x00A1
+	.WORD	0x02, 0x0008
+	.WORD	0x01, 0x0120
+	.WORD	0x00, 0x1000
+	.WORD	0x04, 0x0800
+	.WORD	0x04, 0x0000
+
+	.WORD	0x03, 0xFF41
+	.WORD	0x02, 0xDF60
+	.WORD	0x01, 0x0140
+	.WORD	0x00, 0x0077
+	.WORD	0x04, 0x7800
+	.WORD	0x04, 0x7000
+
+	.WORD	0x03, 0x802F
+	.WORD	0x02, 0x4F02
+	.WORD	0x01, 0x0409
+	.WORD	0x00, 0xF0F9
+	.WORD	0x04, 0x9800
+	.WORD	0x04, 0x9000
+
+	.WORD	0x03, 0xDF01
+	.WORD	0x02, 0xDF20
+	.WORD	0x01, 0xFF95
+	.WORD	0x00, 0xBA00
+	.WORD	0x04, 0xA800
+	.WORD	0x04, 0xA000
+
+	.WORD	0x03, 0xFF41
+	.WORD	0x02, 0xDF20
+	.WORD	0x01, 0x0140
+	.WORD	0x00, 0x00bb
+	.WORD	0x04, 0xB800
+	.WORD	0x04, 0xB000
+
+	.WORD	0x03, 0xDF41
+	.WORD	0x02, 0xDC60
+	.WORD	0x01, 0x6340
+	.WORD	0x00, 0x007d
+	.WORD	0x04, 0xD800
+	.WORD	0x04, 0xD000
+
+	.WORD	0x03, 0xDF01
+	.WORD	0x02, 0xDF20
+	.WORD	0x01, 0x100a
+	.WORD	0x00, 0xA0FF
+	.WORD	0x04, 0xF800
+	.WORD	0x04, 0xF000
+
+	.WORD	0x1F, 0x0000
+	.WORD	0x0B, 0x0000
+	.WORD	0x00, 0x9200
+	.LONG	-1
+
+phytbl:	.LONG	0			;RTT_8169          = 1t
+	.LONG	initm23			;RTT_8169S_8110S_1 = 2t
+	.LONG	initm23			;RTT_8169S_8110S_2 = 3t
+	.LONG	initm4			;RTT_8169SB_8110SB = 4t
+	.LONG	0			;RTT_8118SC        = 5t
+	.LONG	0			;RTT_8168B_8110B_1 = 6t
+	.LONG	0			;RTT_8168B_8110B_2 = 7t
+	.LONG	0			;RTT_8101E         = 8t
+	.LONG	0			;RTT_8100E_1       = 9t
+	.LONG	0			;RTT_8100E_2       = 9t
+	.LONG	0			;RTT_8129          = 11t
+	.LONG	0			;RTT_8139          = 12t
+	.LONG	0			;RTT_8139A         = 13t
+	.LONG	0			;RTT_8139AG        = 14t
+	.LONG	0			;RTT_8139B         = 15t
+	.LONG	0			;RTT_8130          = 16t
+	.LONG	0			;RTT_8139C         = 17t
+	.LONG	0			;RTT_8139CP        = 18t
+
+;Function to initialize the PHY - this is magic taken from the Linux driver!
+
+
+phyi_ctype=!16t
+phyi_reg  =!12t
+
+phyinit:PUSHL	ESI
+	ENTER	0, 0
+	MOVL	EAX, phyi_ctype[EBP]
+	MOVL	ESI, phytbl[EAX*4]
+	TESTL	ESI, EBX
+	JE	8$
+4$:	PUSHL	phyi_reg[EBP]
+	PUSHL	[ESI]
+	CALL	phywrite
+	TESTL	EAX, EAX
+	JS	8$
+	ADDL	ESI, #4
+	CMPL	[ESI], #-1
+	JNE	4$
+	CLRL	EAX
+8$:	LEAVE
+	POPL	ESI
+	RET	8t
+.PAGE
+enrtaausetmode:
+	MOVL	EBX, #modetbl
+	MOVL	ECX, #MODETBLSZ
+	CALL	knlGetDcVal2##		;Get new value
+	JC	4$			;If error
+	MOVL	eau_bmctl[EBP], EAX
+4$:	RET
+
+enrtaausettxflow:
+
+	CRASH	GIGA
+
+enrtaausetrxflow:
+
+	CRASH	GIGA
+.PAGE
+;Here to get the value of the BOARD characteristic
+
+dcgetboard:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVZBL	EAX, idb_enrtactype[ESI]
+	MOVL	EDX, descriptbl-4[EAX*4]
+	JMP	knlGetSysStr##
+.PAGE
+;Here to get the value of the LINK characteristic
+
+dcgetlink:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	4$			;Yes
+
+;Here if not a gigabit chip
+
+	TESTW	RTF_BMSTS[EDX], #RTF_BMSTS$LINK ;Right?
+	JMP	6$
+
+;Here if this is a gigabit chip
+
+4$:	TESTB	RTG_PHYSTS[EDX], #RTG_PHYSTS$LINK
+6$:	MOVL	EAX, #linkstr		;Assume link is up
+	JNE	10$			;Right? - "Link"
+	MOVL	EAX, #nolnkstr		;No - "NoLink"
+10$:	RET
+.PAGE
+;Here to get the value of the MODE characteristic
+
+dcgetmode:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	6$			;Yes
+
+;Here if not a gigabit chip
+
+	MOVZWL	ECX, RTF_BMCTL[EDX]	;Get the current mode bits
+	MOVL	EAX, #RTG_PHYSTS$10	;Map them to the gigabit mode bits
+
+	TESTB	CH, #RTF_BMCTL$SPEED>8	;100MBS?
+	JE	2$			;No
+	XORL	EAX, #RTG_PHYSTS$10|RTG_PHYSTS$100 ;Yes
+2$:	ANDB	CH, #0x01
+	ANDB	AL, CH
+
+	TESTB	idb_enrtacattr[ESI], #CA$AUTO ;Auto negotiation enabled?
+	JE	4$			;No
+	TESTB	CH, #RTF_BMSTS$AUTOCMP	;Yes - is the negotiation complete?
+	JNE	4$			;Yes
+	ANDL	EAX, #RTG_PHYSTS$10|RTG_PHYSTS$100 ;No - clear the speed bits
+4$:	TESTW	RTF_BMSTS[EDX], #RTF_BMSTS$LINK ;Is the link up?
+	JE	8$			;No
+	ORL	EAX, #RTG_PHYSTS$LINK	;Yes
+	JMP	8$
+
+;Here this is a gigabit chip
+
+6$:	MOVZBL	EAX, RTG_PHYSTS[EDX]	;Get the PHY status bits	
+8$:	TESTB	idb_enrtacattr[ESI], #CA$AUTO ;Auto negotiation enabled?
+	JE	22$			;No
+	TESTB	AL, #RTG_PHYSTS$LINK	;Yes - is the link up?
+	JNE	10$			;Yes
+	MOVL	EAX, #anolnkstr		;No - "Auto-NoLink"
+	RET
+
+;Here if auto and have link
+
+10$:	TESTB	AL, #RTG_PHYSTS$10|RTG_PHYSTS$100|RTG_PHYSTS$1000
+					;Is negotiation complete?
+	JNE	12$			;Yes
+	MOVL	EAX, #unkwnstr		;No - "Auto-???"
+	RET
+
+;Here if negotiation is complete
+
+12$:	TESTB	AL, #RTG_PHYSTS$1000
+	JE	14$
+
+;Here if auto and speed is 1000MBS (which is always full-duplex)
+
+	MOVL	EAX, #a1000fdstr	;"Auto-1000FD"
+	RET
+
+;Here if auto and speed is not 1000MBS
+
+14$:	TESTB	AL, #RTG_PHYSTS$100	;Is it 100MBS?
+	JE	18$			;No - must be 10MBS
+
+;Here if auto and speed is 100MBS
+
+	TESTB	AL, #RTG_PHYSTS$FULL	;Full duplex?
+	JE	16$			;No
+
+;Here if auto, speed is 100MBS, full duplex
+
+	MOVL	EAX, #a100fdstr		;"Auto-100FD"
+	RET
+
+;Here if auto, speed is 100MBS, half duplex
+
+16$:	MOVL	EAX, #a100hdstr		;"Auto-100HD"
+	RET
+
+;Here if auto and speed is 10MBS
+
+18$:	TESTB	AL, #RTG_PHYSTS$FULL	;Full duplex?
+	JE	20$			;No
+
+;Here if auto, speed is 10MBS, full duplex
+
+	MOVL	EAX, #a10fdstr		;"Auto-10FD"
+	RET
+
+;Here if auto, speed is 10MBS, half duplex
+
+20$:	MOVL	EAX, #a10hdstr		;"Auto-10HD"
+	RET
+
+;Here if not auto-negotiation
+
+22$:	TESTB	AL, #RTG_PHYSTS$1000	;Is it 1000MBS?
+	JE	24$
+
+;Here if not auto and speed is 1000MbS (which is always full-duplex
+
+	MOVL	EAX, #m1000fdstr	;"1000FD"
+	RET
+
+;Here if not auto and speed is not 1000MBS
+
+24$:	TESTB	AL, #RTG_PHYSTS$100	;Is it 100MBS?
+	JE	28$			;No - must be 10MBS
+
+;Here if not auto, speed is 100MBS
+
+	TESTB	AL, #RTG_PHYSTS$FULL	;Full duplex?
+	JE	26$			;No
+
+;Here if not auto, speed is 100MBS, full duplex
+
+	MOVL	EAX, #m100fdstr		;"100FD"
+	RET
+
+;Here if not auto, speed is 100MBS, half duplex
+
+26$:	MOVL	EAX, #m100hdstr		;"100HD"
+	RET
+
+;Here if not auto and speed is 10MBS
+
+28$:	TESTB	AL, #RTG_PHYSTS$FULL	;Full duplex?
+	JE	30$			;No
+
+;Here if not auto, speed is 10MBS, full duplex
+
+	MOVL	EAX, #m10fdstr		;"10FD"
+	RET
+
+;Here if not auto, speed is 10MHBS, half duplex
+
+30$:	MOVL	EAX, #m10hdstr		;"10HD"
+	RET
+.PAGE
+;Here to set the value of the MODE characteristic
+
+dcsetmode:
+	MOVL	EBX, #modetbl
+	MOVL	ECX, #MODETBLSZ
+	CALL	knlGetDcVal2##		;Get new value
+	JC	4$			;If error
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	6$
+
+;Here if not a gigabit chip
+
+	MOVL	idb_enrtabmctl[ESI], EAX
+	MOVW	RTF_BMCTL[EDX], AX
+4$:	RET
+
+;Here if this is a gigibit chip
+
+6$:	CRASH	GIGA
+
+.PAGE
+;Here to get the value of the TXFLOW characteristic
+
+dcgettxflow:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	2$
+
+;Here if not a gigabit chip
+
+	TESTB	RTF_MEDIASTS[EDX], #RTF_MEDIASTS$TXFCE
+	JMP	6$
+
+;Here if this is a gigabit chip
+
+2$:	TESTB	RTG_PHYSTS[EDX], #RTG_PHYSTS$TXFC
+	JMP	6$
+
+;Here to get the value of the RXFLOW characteristic
+
+dcgetrxflow:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	4$
+
+;Here if not a gigabit chip
+
+	TESTB	RTF_MEDIASTS[EDX], #RTF_MEDIASTS$RXFCE
+	JMP	6$
+
+;Here if this is a gigabit chip
+
+4$:	TESTB	RTG_PHYSTS[EDX], #RTG_PHYSTS$RXFC
+6$:	MOVL	EAX, #enstr		;Assume enabled - "Enabled"
+	JNE	8$			;Yes
+	MOVL	EAX, #disstr		;No - "Disabled"
+8$:	RET
+.PAGE
+;Here to set the value of the TXFLOW characteristic
+
+dcsettxflow:
+	MOVL	EBX, #endistbl
+	MOVL	ECX, #ENDISTBLSZ
+	CALL	knlGetDcVal2##		;Get new value
+	JC	4$			;If error
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	8$
+
+;Here if not a gigabit chip
+
+	MOVB	AH, RTF_MEDIASTS[EDX]
+	ANDB	AH, #{~RTF_MEDIASTS$TXFCE&0FFh}
+	ORB	AH, AL
+	ANDB	idb_enrtaflowctl[ESI], #{~RTF_MEDIASTS$TXFCE&0FFh}
+	ORB	idb_enrtaflowctl[ESI], AL
+	MOVB	RTF_MEDIASTS[EDX], AH
+4$:	RET
+
+;Here if this is a gigabit chip
+
+8$:	CRASH	GIGA
+
+
+;Here to set the value of the RXFLOW characteristic
+
+dcsetrxflow:
+	MOVL	EBX, #endistbl
+	MOVL	ECX, #ENDISTBLSZ
+	CALL	knlGetDcVal2##		;Get new value
+	JC	12$			;If error
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	10$
+
+;Here if not a gigabit chip
+
+10$:
+	MOVB	AL, RTF_MEDIASTS[EDX]
+	ANDB	AL, #~RTF_MEDIASTS$RXFCE
+	ORB	AL, AH
+	ANDB	idb_enrtaflowctl[ESI], #{~RTF_MEDIASTS$RXFCE&0FFh}
+	ORB	idb_enrtaflowctl[ESI], AH
+	MOVB	RTF_MEDIASTS[EDX], AL
+	RET
+
+;Here if this ia a gigabit chip
+
+12$:	CRASH	GIGA
+.PAGE
+;Here to get the value of the NETADDR characteristic
+
+dcgetnetaddr:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EAX, idb_hwaddr+0[ESI]
+	MOVL	EDX, idb_hwaddr+4[ESI]
+	RET
+
+;Here to get the value of the PRM characteristic
+
+dcgetprm:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EAX, #'YES'		;Assume YES
+	TESTB	idb_config[ESI], #IC$PRM
+	JNE	10$
+	MOVL	EAX, #'NO'
+10$:	CLRL	EDX
+	RET
+.PAGE
+;Here to get the value of the IFRAME characteristic
+
+dcgetfrmerr:
+	CLRL	EAX
+	RET
+
+;Here to get the value of the ICRC characteristic
+
+dcgetcrcerr:
+	CLRL	EAX
+	RET
+
+;Here to get the value of the NOIBFR characteristic
+
+dcgetnoibfr:
+	CLRL	EAX
+	RET
+
+dcgetdata1:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the count value
+	MOVZBL	EAX, [EBX]		;Get it
+	CLRL	EDX			;Only 32 bits
+	RET
+
+;Here to get the value of a 2 byte data item does not require special handling
+
+dcgetdata2:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the count value
+	MOVZWL	EAX, [EBX]		;Get it
+	CLRL	EDX			;Only 32 bits
+	RET
+
+;Here to get the value of a 4 byte data item does not require special handling
+
+dcgetdata4:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the count value
+	MOVL	EAX, [EBX]		;Get it
+	CLRL	EDX			;Only 32 bits
+	RET
+
+;Here to set the value of an error counter
+
+dcseterror:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the count value
+	MOVL	[EBX], EAX		;Set it
+	RET				;Thats all
+.PAGE
+	.SBTTL	getetype - Subroutine to get Ethertype value for device
+
+;Subroutine to get Ethertype value for device
+;	c{EAX} = Standard Ethertype value
+;	CALL	getetype
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Device Ethertype value
+
+getetype:
+	CMPL	EAX, #-1		;Is this the default Ethertype?
+	JE	6$			;Yes - pass it through
+	BTZL	EAX, #31t		;No - is this an internal Ethertype ID?
+	JNC	2$			;No
+	CMPL	EAX, #ETYPEMAX		;Yes - legal Ethertype value?
+	JA	4$			;No - fail
+	MOVL	EAX, CS:etypetbl[EAX*4]	;Yes - get corresponding Ethertype value
+	CMPL	EAX, #-1		;Valid value?
+	JE	4$			;No - fail
+2$:	XCHGB	AL, AH			;Must be above 1500 so as not to
+	CMPL	EAX, #1500t		;  conflict with 802.3 format packets
+	JBE	4$
+	XCHGB	AL, AH
+	TESTL	EAX, #0FFFF0000h	;Must be a 16 bit value
+	JE	6$			;OK
+4$:	MOVL	EAX, #ER_NILPC		;If bad protocol value
+	STC
+6$:	RET
+.PAGE
+	.SBTTL	sethwa - Subroutine to store remote hardware address in packet
+
+;Subroutine to store remote hardware address in packet
+;	c{EDX,EAX} = Remote hardware address
+;	c{EBX}     = Offset of packet buffer
+;	CALL	sethwa
+
+sethwa:	MOVL	[EBX], EAX
+	MOVW	4[EBX], DX
+	RET
+
+	.SBTTL	gethwa - Subroutine to get source hardware address from packet
+
+;Subroutine to get remote hardware address from packet
+;	c{EBX} = Offset of packet buffer
+;	CALL	sethwa
+;	c{EDX,EAX} = Source hardware address
+
+gethwa:	MOVL	EAX, 6[EBX]
+	MOVZWL	EDX, 10t[EBX]
+	RET
+.PAGE
+;Subroutine to reset the Ethernet interface
+;	c{ESI} = Offset of IDB
+;	CALL	enrtareset
+
+enrtareset:
+	MOVL	ECX, #0x10000		;Reset the controller
+2$:	TESTB	RTR_CMD[EDX], #RTR_CMD$RESET ;Wait until reset is complete
+	LOOPNE	ECX, 2$			     ;  (this is fast!)
+
+;First clean up anything that might be going on now
+
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	MOVW	RTR_INTMASK[EDX], #0	;Ensure no more interrupts (This is not
+					;  really needed, but it does not hurt.)
+	MOVL	idb_enrtaintsts[ESI], #0
+	MOVB	RTR_CMD[EDX], #RTR_CMD$RESET ;Reset the chip
+	CMPL	idb_enrtaocnt[ESI], #0	;Have any pending output?
+	JE	10$			;No - go on
+4$:	MOVL	EAX, idb_enrtaotaker[ESI] ;Yes
+	MOVL	EDX, idb_enrtaovirrng[ESI]
+	MOVL	EBX, [EDX+EAX*4] 	;Get address of packet being output
+	MOVL	[EDX+EAX*4], #0
+	MOVL	EAX, #ER_DEVER		;Indicate device error
+	CALL	xosnetFinXmit##		;Do output done processing
+	ADDL	idb_enrtaotaker[ESI], #4t
+	ADDL	EAX, idb_enrtaotaker[ESI]
+	CMPL	EAX, idb_enrtaorngend[ESI]
+	JL	6$
+	MOVL	idb_enrtaotaker[ESI], #0
+6$:	DECL	idb_enrtaocnt[ESI]
+	JNE	4$
+	MOVL	EDX, idb_enrtamapreg[ESI]
+
+;Here with all pending output handled
+
+10$:	MOVZBL	EAX, idb_enrtaxmtmax[ESI]
+	MOVL	idb_xmtavail[ESI], EAX
+
+	CLRL	EAX			;Clear our ring pointers
+	MOVL	idb_enrtaoputter[ESI], EAX
+	MOVL	idb_enrtaotaker[ESI], EAX
+	MOVL	idb_enrtaitaker[ESI], EAX
+
+;Now set up the buffer rings
+
+	TESTB	idb_enrtacattr[ESI], #CA$DESCP ;Using descriptors?
+	JNE	rstdesc			;Yes
+
+;Here if not using descriptors
+
+	MOVL	RTF_TSD0[EDX], #RTF_TSD$OWN ;Make sure driver owns the transmit
+	MOVL	ECX, #2t
+	CALL	knlSDelay##
+	MOVL	RTF_TSD1[EDX], #RTF_TSD$OWN ;  descriptors (reset should have
+	MOVL	ECX, #2t
+	CALL	knlSDelay##
+	MOVL	RTF_TSD2[EDX], #RTF_TSD$OWN ;  done this, this just makes sure)
+	MOVL	ECX, #2t
+	CALL	knlSDelay##
+	MOVL	RTF_TSD3[EDX], #RTF_TSD$OWN
+	MOVL	ECX, #2t
+	CALL	knlSDelay##
+	MOVL	EAX, idb_enrtairngphy[ESI] ;Set the receive buffer address
+	MOVL	RTF_RBADDR[EDX], EAX
+	JMP	rsthwr
+.PAGE
+;Here if using descriptors to set up the descriptor rings
+
+rstdesc:CLRL	ECX			;Initialize the input descriptors
+	MOVL	EBX, idb_enrtaiphyrng[ESI]
+2$:	MOVL	ID_STS[EBX+ECX*4], #ID_STS$OWN+1024t
+	MOVL	ID_VLAN[EBX+ECX*4], #0
+	ADDL	ECX, #4t
+	CMPL	ECX, idb_enrtairngend[ESI]
+	JL	2$
+	MOVL	ID_STS-16t[EBX+ECX*4], #ID_STS$OWN+ID_STS$EOR+1024t
+
+	CLRL	ECX			;Initialize the output descriptors
+	MOVL	EBX, idb_enrtaophyrng[ESI]
+	CLRL	EAX
+4$:	MOVL	OD_STS[EBX+ECX*4], EAX
+	MOVL	OD_VLAN[EBX+ECX*4], EAX
+	MOVL	OD_BUFR+0[EBX+ECX*4], EAX
+	MOVL	OD_BUFR+4[EBX+ECX*4], EAX
+	ADDL	ECX, #4
+	CMPL	ECX, idb_enrtaorngend[ESI]
+	JL	4$
+	MOVL	OD_STS-16t[EBX+ECX*4], #OD_STS$EOR
+	MOVL	EAX, idb_enrtairngphy[ESI] ;Give the header ring addresses
+	MOVL	RTD_RXD+0[EDX], EAX	   ;  to the controller
+	MOVL	RTD_RXD+4[EDX], #0
+	MOVL	EAX, idb_enrtaorngphy[ESI]
+	MOVL	RTD_NPTXD+0[EDX], EAX
+	MOVL	RTD_NPTXD+4[EDX], #0
+
+;Now set up the hardware - there are 4 cases:
+;	Non-descriptor based 100MBS chips
+;	Descriptor based 100MBS chips (8139C+)
+;	8169/8169S(B) gigabit chips
+;	Other gibabit chips
+;  There are significant differences due to the use or non-use of descriptors
+;  and to the type of PHY used by the gigabit chips. There is some duplication
+;  of code in the 4 cases but it has been left that way to make it easier to
+;  follow.
+
+rsthwr:	MOVB	RTR_EEPCFG[EDX], #0xC0 ;Enable writing configuration registers
+	TESTB	idb_enrtacattr[ESI], #CA$GIGABIT ;Is this a gigabit chip?
+	JNE	rstgiga			;Yes
+					;No - fall into rst100 on next page
+.PAGE
+;Here to reset the chip if not a gigabit chip
+
+rst100:	TESTB	idb_enrtacattr[ESI], #CA$DESCP ;Using descriptors?
+	JNE	10$			;Yes
+
+;Here if not using descriptors
+
+	MOVL	idb_xmtavail[ESI], #3	;We can handle 3 output packets at once
+
+;Note:	The Linux driver says you must enable Tx/Rx before setting transfer
+;	thresholds!
+
+	MOVB	RTR_CMD[EDX], #RTR_CMD$RXE|RTR_CMD$TXE
+	MOVZBL	EAX, idb_enrtabufrszx[ESI]
+	SHLL	EAX, #11t
+	ORL	EAX, #{RX_FIFO_THRESH<13t}|{RX_DMA_BURST<8t}|RTR_RXC$APM|RTR_RXC$AB
+	MOVL	RTR_RXCFG[EDX], EAX
+	MOVL	RTR_TXCFG[EDX], #{TX_DMA_BURST<8t}|03000000
+	MOVB	RTR_EEPCFG[EDX], #0C0h ;Enable configuration registers
+
+;;;; SET SOME CONFIG1 BITS HERE???
+
+	MOVL	EAX, idb_enrtabmctl[ESI] ;Set the mode
+	MOVW	RTF_BMCTL[EDX], AX
+	MOVB	AL, idb_enrtaflowctl[ESI] ;Set flow control enables
+	MOVB	RTF_MEDIASTS[EDX], AL
+	MOVB	RTR_EEPCFG[EDX], #0	;Lock the configuration registers
+	MOVL	ECX, #2
+	CALL	knlSDelay##
+	JMP	rstfin
+
+;Here if using descriptors (8139C+)
+
+10$:	CRASH	CPLS
+
+.PAGE
+;Here to reset a gigabit chip
+
+rstgiga:CMPB	idb_enrtactype[ESI], #RTT_8118SC ;Is this an 8169/8169S(B)?
+	JGE	rstother		;No
+
+;Here to reset an 8169 or 8169S(B)
+
+	MOVB	RTR_CMD[EDX], #RTR_CMD$RXE|RTR_CMD$TXE
+	MOVB	RTD_ETTH[EDX], #0x3F	;No early transmit
+	MOVZWL	EAX, RTD_CPCMD[EDX]	;Set up the DMA configuration
+	ORL	EAX, #RTD_CPCMD$MRWEN
+	MOVW	RTD_CPCMD[EDX], AX
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	idb_enrtapcib[ESI]
+	PUSHL	#0x0C
+	PUSHL	SS
+	PUSHL	EAX
+	CALL	xospciReadCfgReg##
+	POPL	EAX
+	MOVB	AL, #8
+	PUSHL	idb_enrtapcib[ESI]
+	PUSHL	#0x0C
+	PUSHL	EAX
+	CALL	xospciWriteCfgReg##
+	MOVL	EDX, idb_enrtamapreg[ESI]
+	MOVW	RTG_RXMXPKT[EDX], #1522t ;Set maximum packet size (Is this
+					 ;  right?)
+	MOVL	EAX, RTR_RXCFG[EDX]
+	ANDL	EAX, #0xFE7E1880
+	ORL	EAX, #0x0000E70A	;Should look at the DMA thresholds!!
+	MOVL	RTR_RXCFG[EDX], EAX
+	MOVL	RTR_TXCFG[EDX], #0x03000700 ;Set DMA burst size and interframe
+					    ;  gap
+	MOVZWL	EAX, RTD_CPCMD[EDX]	;More magic!
+	MOVW	RTD_CPCMD[EDX], AX
+	TESTB	idb_enrtacattr[ESI], #CA$8169S
+	JE	4$
+	MOVL	RTD_CPCMD[EDX], #0x4008
+	JMP	6$
+
+4$:	MOVL	RTD_CPCMD[EDX], #0x0008
+6$:	MOVW	0xE2[EDX], #0		;Undocumented register!!
+	MOVB	RTR_EEPCFG[EDX], #0	;Lock the configuration registers
+	MOVL	ECX, #2
+	CALL	knlSDelay##
+	MOVZWL	EAX, RTR_MULTINT[EDX]	;No early interrupt (Don't know why
+	ANDL	EAX, #0xF000		;  the high 4 bits are preserved!)
+	MOVW	RTR_MULTINT[EDX], AX
+	JMP	rstfin
+.PAGE
+;Here to reset a gigabit chip other than an 8169 or 8169S(B)
+
+
+rstother:
+
+	CRASH	GIGA
+
+.PAGE
+
+
+;Note:	The Linux driver says you must enable Tx/Rx before setting transfer
+;	thresholds!
+
+	MOVB	RTR_CMD[EDX], #RTR_CMD$RXE|RTR_CMD$TXE
+	MOVZBL	EAX, idb_enrtabufrszx[ESI]
+	SHLL	EAX, #11t
+	ORL	EAX, #{RX_FIFO_THRESH<13t}|{RX_DMA_BURST<8t}|RTR_RXC$APM|RTR_RXC$AB
+	MOVL	RTR_RXCFG[EDX], EAX
+	MOVL	RTR_TXCFG[EDX], #{TX_DMA_BURST<8t}|03000000
+
+
+;;;;;;	MOVL	EAX, idb_enrtaphybufr[ESI] ;Set receive ring buffer address
+	MOVL	RTF_RBADDR[EDX], EAX
+	MOVL	EAX, idb_enrtabmctl[ESI] ;Set the mode
+	MOVW	RTF_BMCTL[EDX], AX
+
+	MOVB	AL, idb_enrtaflowctl[ESI] ;Set flow control enables
+	MOVB	RTF_MEDIASTS[EDX], AL
+
+
+
+rstfin:	MOVW	RTR_INTMASK[EDX], #RTR_INT$SER|RTR_INT$RFO|RTR_INT$ULC|RTR_INT$RBO|RTR_INT$TER|RTR_INT$TOK|RTR_INT$RER|RTR_INT$ROK
+					;Enable interrupts
+	RET				;Finished
+.PAGE
+	.SBTTL	setecho - Subroutine to set up echo packet header
+
+;Subroutine to set up hardware level packet header for echoed packet - the
+;  packet is set up to be an echo for the current receive packet
+;	c{EBX} = Offset of packet buffer
+;	CALL	setecho
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Offset of start of software part of received packet
+;	  c{EDX} = Offset of start of software part of echo packet
+
+setecho:MOVL	EAX, en_srchwadr+0[EBX] ;Copy source to destination
+	MOVL	en_dsthwadr+0[EBX], EAX
+	MOVW	DX, en_srchwadr+4[EBX]
+	MOVW	en_dsthwadr+4[EBX], DX
+	JMP	4$
+
+	.SBTTL	setpkt - Subroutine to set up packet header
+
+;Subroutine to set up hardware level packet header
+;	c[AX]  = Ethertype value
+;	c{EBX} = Offset of packet buffer
+;	CALL	setpkt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX} = Offset of start of software part of packet
+
+setpkt:	MOVW	en_ethertype[EBX], AX	;Store Ethertype value
+4$:	MOVL	EAX, idb_hwaddr+0[ESI]  ;Store our address in the packet
+	MOVL	en_srchwadr+0[EBX], EAX ;  as the source address
+	MOVL	EAX, idb_hwaddr+4[ESI]
+	MOVW	en_srchwadr+4[EBX], AX
+	MOVB	npb_lpofs[EBX], #en_data ;Store offset of next level
+	MOVL	npb_count[EBX], #en_data ;Store initial total size
+	LEAL	EDX, en_data[EBX]	;Get pointer to next header
+	CLC
+ret008:	RET
+.PAGE
+	.SBTTL	sendpkt - Subroutine to send a packet over the network
+
+;Subroutine to send a packet over the network - must be called from fork level,
+;  does not wait for completion
+;	c{EAX} = Ethertype or count value
+;	c{EBX} = Offset of packet to send
+;	c{ESI} = Offset of IDB
+;	CALL	sendpkt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  EBX is preserved
+
+;Without descriptors output packets must be contigous in memory, but since
+;  all of the higher level routines always generate contiguous packets that
+;  do not cross memory page boundries, this is not a problem.  It also
+;  requires that the output buffers be long-aligned, which is also not a
+;  probelm since all packets generated by the higher level routines are
+;  long aligned. With descriptors these restrictions are relaxed considerably
+;  so there is not problem there either
+
+;xosnetSendPkt handles scheduling and queueing.  We will not be called here
+;  unless there is an output buffer slot available.  All we have to do is
+;  keep track of which slot to use next.
+
+$$$=!0
+FRM snd_length, 4t
+snd_SIZE=!$$$
+
+sendpkt:PUSHL	EDI
+	ENTER	snd_SIZE, 0
+	ORB	npb_sts[EBX], #NPS$XMITING
+	MOVL	ECX, npb_count[EBX]	;Get amount to output
+	CMPL	ECX, #1514t		;Is the packet too big?
+	JB	2$			;No
+	MOVL	ECX, #1514t		;Yes - just use as much as we can!
+2$:	MOVL	snd_length[EBP], ECX
+	INCL	idb_enrtaocnt[ESI]
+	TESTB	idb_enrtacattr[ESI], #CA$DESCP ;Using descriptors?
+	JNE	snddesc
+
+;Here if not using dscriptors
+
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	CMPL	ECX, #60t		;Is it too short?
+	JAE	4$			;No - go on
+	LEAL	EDI, [EBX+ECX]		;Yes - pad it with zeros (this code
+	SUBL	ECX, #60t		;  counts on the fact that we never
+	NEGL	ECX			;  allocate a packet buffer of less
+	CLD
+	CLRL	EAX			;  than 128 bytes, which always has
+	RSTOSB	[EDI]			;  room for a 60 byte packet
+	MOVL	snd_length[EBP], #60t
+4$:	MOVL	EDI, idb_enrtaovirrng[ESI]
+	MOVL	EDX, idb_enrtaoputter[ESI] ;Store packet address in the
+	MOVL	[EDI+EDX], EBX		   ;  virtual ring
+	LEAL	EAX, npb_data[EBX]	;Get physical address of the data
+	PUSHL	EAX
+	CALL	sysMemGetPhyAddr##
+	POPL	EBX
+	MOVL	EDI, idb_enrtaophyrng[ESI] ;Store physcial address for the chip
+	MOVL	EDX, idb_enrtaoputter[ESI]
+	MOVL	RTF_TSAD0-RTF_TSD0[EDI + EDX], EAX
+	MOVL	EAX, snd_length[EBP]
+	ORL	EAX, #0x0300000		;Set threshold to buffer full packet
+	MOVL	[EDI+EDX], EAX		;Store length (this starts output)
+	JMP	snddone
+.PAGE
+;Here if using descriptors - We do not need to pad short packets since the
+;  chip does this.
+
+snddesc:MOVL	EDI, idb_enrtaovirrng[ESI] ;Store address of packet int the
+	MOVL	EDX, idb_enrtaoputter[ESI] ;  virtual ring
+	MOVL	[EDI+EDX], EBX
+	LEAL	EAX, npb_data[EBX]	;Get physical address of the data
+	PUSHL	EAX
+	CALL	sysMemGetPhyAddr#
+	MOVL	EDI, idb_enrtaophyrng[ESI] ;Store it in the physical ring
+	MOVL	EDX, idb_enrtaoputter[ESI]
+	MOVL	OD_BUFR+0[EDI+EDX*4], EAX
+	MOVL	EAX, OD_STS[EDI+EDX*4]	;Store length and set the OWN bit
+	ANDL	EAX, #OD_STS$EOR	;  (Must preserve the EOR bit.) - This
+	ORL	EAX, snd_length[EBP]	;  will make the packet visible to the
+					;  chip if output is active.
+	ORL	EAX, #OD_STS$OWN|OD_STS$FS|OD_STS$LS
+	MOVL	OD_STS[EDI+EDX*4], EAX
+	MOVL	EAX, idb_enrtartxrreg[ESI]
+	MOVB	[EAX], #RTX_TXREQ$NPQ	;Start output if its not active
+snddone:ADDL	EDX, #4t		;Advance the putter
+	CMPL	EDX, idb_enrtaorngend[ESI]
+	JL	6$
+	CLRL	EDX
+6$:	MOVL	idb_enrtaoputter[ESI], EDX
+	LEAVE
+	POPL	EDI
+retclc:	CLC				;Clear C
+	RET				;And return
+.PAGE
+	.SBTTL	Network interface interrupt routines
+
+;The following is a prototype for the interrupt service routine entry code
+;  - this code is copied for each unit by enrtaaddunit
+
+enrtaint:
+	PUSHAL				;Save registers
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EAX, #GS_XDATA		;Make our data addressable
+	MOVL	DS, EAX
+entraentry:
+fix1:	MOVL	EDI, #0			;Get offset of IDB for this interface
+fix2:	CALL	enrtaintcom		;Go to the common interrupt routine
+enrtaexit:
+	JMP	knlIntDoneHigh##
+
+ENRTAINTSZ=!$-enrtaint
+
+;Common interrupt routine
+
+enrtaintcom:
+
+;;;;	CMPL	xxxxxx, #0
+;;;;	JE	2$
+;;;;	INT3
+2$:
+;;;;	INCL	intcnt1;
+;;;;	INCL	intcnt2;
+
+	MOVL	EDX, idb_enrtamapreg[EDI]
+	MOVZWL	EAX, RTR_INTSTS[EDX]	;Get the interrupt status
+	TESTL	EAX, EAX
+	JE	ret012			;If nothing to do here
+	MOVW	RTR_INTSTS[EDX], AX	;Clear the bits we got
+	ORL	idb_enrtaintsts[EDI], EAX ;Save the bits for fork level
+	MOVW	RTR_INTMASK[EDX], #0	;Disable all interrupts - This is
+					;  neessary because not all of the
+					;  request bits can be cleared here.
+					;  We know that the input over-run
+					;  bit is sticky, there may be others!
+					;  Interrupts are re-enabled when the
+					;  fork level routine exits.
+	JMP	knlReqFork##		;Request fork and dismiss interrupt
+.PAGE
+	.SBTTL	enrtafork - Fork routine
+
+;Get here at fork level after interrupt from the Ethernet interface card
+
+$$$=!0
+FRM frk_findx , 4t
+FRM frk_lindx , 4t
+FRM frk_length, 4t
+FRM frk_cnt   , 4t
+FRM frk_sts   , 4t
+frk_SIZE=!$$$
+
+enrtafork:
+
+;;;;;	INT3
+
+	ENTER	frk_SIZE, 0
+	MOVL	ESI, EDI		;Get offset of the IDB in right register
+	INCL	idb_cntint[ESI]		;Count the interrupt
+fkloop:	MOVL	EDX, idb_enrtamapreg[ESI]
+
+.IF NE 0
+	CLRL	ECX
+	MOVL	EBX, idb_enrtacnts[ESI]
+	MOVL	EAX, idb_enrtacntspa[ESI]
+	ORL	EAX, #0x08
+	MOVL	RTD_DTCCMD[EDX], EAX
+
+2$:	TESTL	RTD_DTCCMD[EDX], #0x08
+	LOOPNE	ECX, 2$
+	MOVL	EAX, 8[EBX]
+.ENDC
+
+
+	MOVL	EAX, idb_enrtaintsts[ESI]
+	TESTL	EAX, #RTR_INT$RFO|RTR_INT$RBO|RTR_INT$SER
+	JNE	deverror
+	TESTL	EAX, #RTR_INT$ROK|RTR_INT$RER
+	JNE	receive
+	TESTL	EAX, #RTR_INT$ULC|RTR_INT$TOK|RTR_INT$TER
+	JNE	transmit
+
+;;;;;	INT3
+
+	MOVW	RTR_INTMASK[EDX], #RTR_INT$SER|RTR_INT$RFO|RTR_INT$ULC|RTR_INT$RBO|RTR_INT$TER|RTR_INT$TOK|RTR_INT$RER|RTR_INT$ROK
+	LEAVE				;Enable interrupts
+ret012:	RET
+.PAGE
+;Here on receive interrupt
+
+receive:ANDL	idb_enrtaintsts[ESI], #~{RTR_INT$ROK|RTR_INT$RER}
+	TESTB	idb_enrtacattr[ESI], #CA$DESCP ;Using descriptors?
+	JNE	rcvdescp		;Yes
+
+;Here if not using descriptors
+
+2$:	MOVL	EDI, idb_enrtaitaker[ESI] ;Is there anything in the buffer?
+	CMPW	DI, RTF_RBPUT[EDX]
+	JE	fkloop			;No
+	ADDL	EDI, idb_enrtaiphyrng[ESI] ;Yes - point to the current data
+	MOVZWL	EAX, [EDI]		;Get the status bits
+	MOVZWL	ECX, 2[EDI]		;Get length of the packet
+	SUBL	ECX, #4t		;Exclude the CRC bytes
+	JLE	rcvbbptr			;Make sure possible count
+	CMPL	ECX, #1600t
+	JG	rcvbbptr
+	TESTB	AL, #RTR_RSR$ROK	;Good packet?
+	JE	rcvbbpkt		;No - go handle the bad packet
+	CMPL	ECX, #60t		;Yes - is it too small?
+	JL	rcvbrnt			;Yes
+	INCL	idb_cntpktin[ESI]	;OK - count the received packet
+	ADDL	idb_cntbytein[ESI], ECX
+	TESTB	AH, #{RTR_RSR$MAR|RTR_RSR$BAR}>8t ;Broadcast or multicast?
+	JE	10$			;No
+	TESTB	AH, #RTR_RSR$MAR>8t	;Yes - Multicast?
+	JE	8$			;No
+	INCL	idb_cntmcpktin[ESI]	;Yes
+	JMP	10$
+
+8$:	INCL	idb_cntbcpktin[ESI]
+10$:	MOVL	frk_length[EBP], ECX
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	ESI
+	PUSHL	#0
+	PUSHL	ECX
+	PUSHL	EAX
+	CALL	xosnetGetBuffer##	;Get a network buffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JC	30$			;If can't get a buffer
+	ADDL	EDI, #4t		;Point to first data byte
+	MOVL	EAX, idb_enrtaiphyrng[ESI] ;Get number of bytes to end of
+	ADDL	EAX, idb_enrtairngend[ESI] ;  buffer
+	SUBL	EAX, EDI
+	PUSHL	DS
+	POPL	ES
+	CLD
+	PUSHL	EDI
+	PUSHL	ESI
+	CMPL	ECX, EAX		;Is it wrapped?
+	JLE	14$			;No
+	PUSHL	idb_enrtaiphyrng[ESI]	;Yes - just transfer as much as we have
+	SUBL	ECX, EAX		;  here
+	PUSHL	ECX			;Save amount that wrapped to start of
+	LEAL	ECX, 3t[EAX]		;  buffer
+	SHRL	ECX, #2t
+	MOVL	ESI, EDI
+	MOVL	EDI, EBX
+	RMOVSL	[EDI], [ESI]
+	POPL	ECX
+	POPL	ESI
+	JMP	16$			;Transfer the rest
+
+;Here if packet is not wrapped
+
+14$:	MOVL	ESI, EDI
+	MOVL	EDI, EBX
+16$:	ADDL	ECX, #3t
+	SHRL	ECX, #2t
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	MOVL	ECX, frk_length[EBP]
+	MOVL	npb_count[EBX], ECX	;Store total count in packet
+	MOVB	npb_lpofs[EBX], #en_data ;Store header offsets
+	MOVB	npb_npofs[EBX], #en_data
+	LEAL	EDX, en_data[EBX]	;Point to start of data
+	MOVZWL	EAX, en_ethertype[EBX]	;Get protocol value from the packet
+	PUSHL	ESI
+	CALL	xossnpRcv##		;Process the received packet
+	POPL	ESI
+	MOVL	ECX, frk_length[EBP]
+
+;Advance the pointers
+
+rcvbdn:	ADDL	ECX, #11t		;Allow for the header and the CRC
+	ANDL	ECX, #0xFFFFFFFFC	;  bytes, round up
+	ADDL	ECX, idb_enrtaitaker[ESI] ;Calculate new taker value
+	CMPL	ECX, idb_enrtairngend[ESI] ;Did it wrap?
+	JL	22$			;No
+	SUBL	ECX, idb_enrtairngend[ESI] ;Yes - fix it up
+22$:	MOVL	idb_enrtaitaker[ESI], ECX
+	SUBL	ECX, #0x10		;Get value for the chip's pointer
+	JGE	24$
+	ADDL	ECX, idb_enrtairngend[ESI]
+24$:	MOVL	EDX, idb_enrtamapreg[ESI]
+	MOVW	RTF_RBTAKE[EDX], CX
+	JMP	2$
+
+;Here if can't allocate a buffer
+
+30$:	INCL	idb_cntnosbfr[ESI]	;Count the error
+	JMP	rcvbdn			;Discard the packet
+.PAGE
+;Here if don't have a good packet
+
+rcvbbpkt:
+	MOVZWL	EBP, RTF_RBPUT[EDX]
+	TESTB	AL, #RTR_RSR$ISE|RTR_RSR$CRC
+	JE	4$
+	INCL	idb_cntcrc[ESI]
+	JMP	rcvbdn
+
+4$:	TESTB	AL, #RTR_RSR$RUNT
+	JE	6$
+rcvbrnt:INCL	idb_cntrunt[ESI]	;Count the error
+	JMP	rcvbdn			;Discard the packet
+
+6$:	TESTB	AL, #RTR_RSR$LONG
+	JE	8$
+	INCL	idb_cnttoobig[ESI]
+	JMP	rcvbdn
+
+8$:	TESTB	AL, #RTR_RSR$FAE
+	JE	rcvbbptr
+	INCL	idb_cntfa[ESI]
+	JMP	rcvbdn
+
+;Here if none of the expected packet status bits are set - call it a bad
+;  pointer and reset the interface!
+
+rcvbbptr:
+	INCL	idb_cntbadpnt[ESI]
+	CALL	enrtareset
+	JMP	fkloop
+.PAGE
+;Here with received packet if using descriptors
+
+rcvdescp:
+	MOVL	EDI, idb_enrtaiphyrng[ESI]
+	MOVL	EBX, idb_enrtaitaker[ESI] ;Get the taker pointer
+	TESTB	ID_STS+3[EDI+EBX*4], #ID_STS$OWN>24t ;Is this buffer full?
+	JNE	fkloop			;No - finished
+	MOVL	frk_findx[EBP], EBX	;Yes
+	MOVL	frk_lindx[EBP], EBX
+	TESTB	ID_STS+3[EDI+EBX*4], #ID_STS$FS>24t ;Start of a packet?
+	JE	26$			;Strange - skip this buffer
+	TESTB	ID_STS+3[EDI+EBX*4], #ID_STS$LS>24t ;End of the packet?
+	JNE	6$			;Yes
+	ADDL	EBX, #4			;No - advance the pointer
+	CMPL	EBX, idb_enrtairngend[ESI]
+	JL	4$
+	CLRL	EBX
+4$:	MOVL	frk_lindx[EBP], EBX
+	TESTB	ID_STS+3[EDI+EBX*4], #ID_STS$LS>24t ;Is this end of the packet?
+	JE	26$			;No - should not be possible!
+
+;Here with a complete packet
+
+6$:	TESTL	ID_STS[EDI+EBX*4], #ID_STS$RES|ID_STS$RUNT|ID_STS$CRC
+	JNE	30$			;If error
+	MOVL	ECX, ID_STS[EDI+EBX*4]	;Good packet - get length
+	ANDL	ECX, #ID_STS$LEN
+	CMPL	ECX, #1600t		;Valid length
+	JG	26$			;No - discard the packet
+	SUBL	ECX, #4			;Yes - discard the CRC
+	MOVL	frk_length[EBP], ECX
+	LEAL	EAX, 3[ECX]		;Get longs to copy (round up)
+	SHRL	EAX, #2
+	MOVL	frk_cnt[EBP], EAX
+	CMPL	ECX, #1024t		;Does it fit in one buffer?
+	JLE	8$			;Yes
+	CMPL	EBX, frk_findx[EBP]	;No - do we have 2 buffers?
+	JE	26$			;No - discard the funny packet
+8$:	PUSHL	#0			;Yes
+	MOVL	EAX, ESP
+	PUSHL	ESI
+	PUSHL	#0
+	PUSHL	EAX
+	CALL	xosnetGetBuffer##	;Get a network buffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	28$			;If can't get a buffer
+	MOVL	ECX, frk_cnt[EBP]	;Get amount to copy
+	CMPL	ECX, #256t		;Does it fit in one device buffer?
+	JL	10$			;Yes
+	MOVL	ECX, #256t		;No - just copy the one buffer this time
+10$:	SUBL	frk_cnt[EBP], ECX
+	PUSHL	ESI
+	MOVL	EDI, EBX
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	MOVL	EAX, frk_findx[EBP]
+	MOVL	ESI, idb_enrtaivirrng[ESI]
+	MOVL	ESI, [ESI+EAX]
+	CLD
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+	MOVL	ECX, frk_cnt[EBP]	;Did we copy it all?
+	TESTL	ECX, ECX
+	JE	12$			;Yes
+	PUSHL	ESI			;No - copy the rest
+	MOVL	EAX, frk_lindx[EBP]
+	MOVL	ESI, idb_enrtaivirrng[ESI]
+	MOVL	ESI, [ESI+EAX]
+	CLD
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+12$:	MOVL	ECX, frk_length[EBP]
+	MOVL	npb_count[EBX], ECX	;Store total count in packet
+	MOVB	npb_lpofs[EBX], #en_data ;Store header offsets
+	MOVB	npb_npofs[EBX], #en_data
+	LEAL	EDX, en_data[EBX]	;Point to start of data
+	MOVZWL	EAX, en_ethertype[EBX]	;Get protocol value from the packet
+	PUSHL	ESI
+	CALL	xossnpRcv##		;Process the received packet
+	POPL	ESI
+
+;Here when finished with a packet - advance the ring
+
+20$:	MOVL	EDX, idb_enrtaiphyrng[ESI]
+	MOVL	EBX, frk_findx[EBP]
+
+	MOVL	EAX, ID_STS[EDX+EBX*4]	;Free up the first buffer (Must
+	ANDL	EAX, #ID_STS$EOR	;  preserve the EOR bit.)
+	ORL	EAX, #ID_STS$OWN+1024t
+	MOVL	ID_STS[EDX+EBX*4], EAX
+
+	CMPL	EBX, frk_lindx[EBP]	;Did we use 2 descriptors?
+	JE	22$			;No
+	MOVL	EBX, frk_lindx[EBP]	;Yes
+	MOVL	EAX, ID_STS[EDX+EBX*4]	;Free up the second one
+	ANDL	EAX, #ID_STS$EOR
+	ORL	EAX, #ID_STS$OWN+1024t
+	MOVL	ID_STS[EDX+EBX*4], EAX
+22$:	ADDL	EBX, #4			;Advance the pointer
+	CMPL	EBX, idb_enrtairngend[ESI]
+	JB	24$
+	CLRL	EBX
+24$:	MOVL	idb_enrtaitaker[ESI], EBX ;Update our taker pointer
+	JMP	rcvdescp		;Go see if more to do
+
+;Here if the packet is invalid for some reason (Does not have ID_STS$FS set
+;  for first buffer, does not have ID_STS$LS set for first or second buffer,
+;  count is greater than 1600, or count is greater than 1024 and there is
+;  only one buffer for the packet.) We simply count this and advance the
+;  buffer
+
+26$:	INCL	idb_cntbadpnt[ESI]
+	JMP	20$
+
+;Here if can't allocate a network buffer
+
+28$:	INCL	idb_cntnosbfr[ESI]
+	JMP	20$
+
+;Here with error indicated on the packet
+
+30$:	TESTL	ID_STS[EDX+EBX*4], #ID_STS$CRC
+	JNE	32$
+	INCL	idb_cntcrc[ESI]
+	JMP	20$
+
+32$:	TESTL	ID_STS[EDX+EBX*4], #ID_STS$RUNT
+	JNE	26$
+	INCL	idb_cntrunt[ESI]
+	JMP	20$
+.PAGE
+;Here on device error interrupt - this includes FIFO overflow, receive ring
+;  buffer overflow, and "system error".  We just count the overflow errors,
+;  the chip should continue as soon as we have processed some packets. We
+;  reset the system if a "system error" is reported.
+
+deverror:
+	ANDL	idb_enrtaintsts[ESI], #~{RTR_INT$RFO|RTR_INT$RBO|RTR_INT$SER}
+	TESTB	AH, #RTR_INT$SER>8t
+	JE	4$
+	INCL	idb_cntsyserr[ESI]
+4$:	TESTB	AL, #RTR_INT$RFO
+	JE	6$
+	INCL	idb_cntnoibfr[ESI]
+6$:	TESTB	AL, #RTR_INT$RBO:
+	JE	8$
+	INCL	idb_cntrover[ESI]
+8$:	CALL	enrtareset
+	JMP	fkloop
+.PAGE
+;Here with transmit done indication
+
+transmit:
+	ANDL	idb_enrtaintsts[ESI], #~{RTR_INT$ULC|RTR_INT$TOK|RTR_INT$TER}
+	TESTB	idb_enrtacattr[ESI], #CA$DESCP ;Using descriptors?
+	JNE	trndesc			;Yes
+
+;Here if not using descriptors
+
+2$:	CMPL	idb_enrtaocnt[ESI], #0	;Have any output to process?
+	JE	trndone			;No - finished here
+	MOVL	EDI, idb_enrtaophyrng[ESI] ;Yes
+	MOVL	EDX, idb_enrtaotaker[ESI]
+	MOVL	EAX, [EDI+EDX]		;Get the status bits
+	TESTB	AH, #RTF_TSD$OWN>8t	;Has this packet been output yet?
+	JE	trndone			;No - finished for now
+	MOVL	frk_sts[EBP], EAX	;Yes - save the status bits
+	DECL	idb_enrtaocnt[ESI]
+	MOVL	EDI, idb_enrtaovirrng[ESI]
+	MOVL	EBX, [EDI+EDX]		;Get address of the packet that was
+					;  just output
+	ORL	[EDI+EDX], #0x80000000	;For debugging only!
+	ADDL	EDX, #4t		;Advance the taker pointer
+	CMPL	EDX, idb_enrtaorngend[ESI]
+	JL	4$
+	CLRL	EDX
+4$:	MOVL	idb_enrtaotaker[ESI], EDX
+	CLRL	EAX			;Assume no error
+	MOVL	EDX, frk_sts[EBP]	;Get the status bits
+	MOVL	ECX, frk_sts[EBP]
+	MOVL	EAX, ECX
+	SHRL	EAX, #24t	
+	ANDL	EAX, #RTF_TSD$NCC>24t
+	ADDL	idb_cntnumcol[ESI], EAX
+	BTL	ECX, #RTF_TSD%CRS
+	ADCL	idb_cntcsense[ESI], #0
+	BTL	ECX, #RTF_TSD%TABT
+	ADCL	idb_cntjabber[ESI], #0
+	BTL	ECX, #RTF_TSD%OWC
+	ADCL	idb_cntowcol[ESI], #0
+	BTL	ECX, #RTF_TSD%CDH
+	ADCL	idb_cnthrtbt[ESI], #0
+	BTL	ECX, #RTF_TSD%TUN
+	ADCL	idb_cntxunder[ESI], #0
+	CLRL	EAX			;Assume no fatal errors
+	TESTB	CH, #RTF_TSD$TOK>8t	;Right?
+	JNE	6$			;Yes	
+	MOVL	EAX, #ER_DATER		;No - indicate data error
+6$:	CALL	xosnetFinXmit##		;Do output done processing
+	JMP	2$			;See if need more here
+.PAGE
+;Here for transmit done if using descriptors
+
+trndesc:CMPL	idb_enrtaocnt[ESI], #0	;Have any output to process?
+	JE	trndone			;No - finished here
+	MOVL	EDI, idb_enrtaophyrng[ESI]
+	MOVL	EDX, idb_enrtaotaker[ESI]
+	MOVL	EAX, OD_STS[EDI+EDX*4]	;Get the status bits
+	TESTL	EAX, EAX		;Has this buffer been output?
+	JS	trndone			;No - finished for now
+	MOVL	frk_sts[EBP], EAX	;Yes - save the status bits
+	DECL	idb_enrtaocnt[ESI]
+	ANDL	EAX, #OD_STS$EOR	;Free up the descriptor (must preserve
+	MOVL	OD_STS[EDI+EDX*4], EAX	;  the EOR bit)
+	MOVL	EDI, idb_enrtaovirrng[ESI]
+	MOVL	EBX, [EDI+EDX]		;Get address of the packet that was
+					;  just output
+	MOVL	[EDI+EDX], #0		;Clear it to make debugging easier
+	TESTL	EBX, EBX		;Make sure we have a packet
+	JNE	2$
+	CRASH	NPKT
+
+2$:	ADDL	EDX, #4t		;Advance the taker
+	CMPL	EDX, idb_enrtaorngend[ESI]
+	JL	4$
+	CLRL	EDX
+4$:	MOVL	idb_enrtaotaker[ESI], EDX
+	CLRL	EAX			;Assume no errors
+	MOVL	EDX, frk_sts[EBP]	;Get the status bits
+	TESTL	EDX, #OD_STS$FUNR|OD_STS$TES|OD_STS$OWC|OD_STS$LNKF|OD_STS$EXC
+					;Was there an error?
+	JE	8$			;No
+	MOVL	EAX, #ER_DATER		;Yes - indicate data error
+8$:	CALL	xosnetFinXmit##		;Do output done processing
+	JMP	trndesc			;See if have more to do here
+.PAGE
+;Here with all output done processing complete - see if we need to start
+;  output
+
+trndone:CMPL	idb_xmtavail[ESI], #0
+	JLE	fkloop
+	MOVL	EBX, idb_outhead[ESI]
+	TESTL	EBX, EBX
+	JE	fkloop
+	MOVL	EAX, npb_nextsnd[EBX]
+	MOVL	idb_outhead[ESI], EAX
+	TESTL	EAX, EAX
+	JNE	12$
+	MOVL	idb_outtail[ESI], EAX
+12$:	DECL	idb_xmtavail[ESI]	;Reduce output availability
+	CLRL	EAX			;Set link to 0 to indicate packet is
+	MOVL	npb_nextsnd[EBX], EAX	;  being output
+	MOVL	npb_holdrt[EBX], EAX	;Also make sure hold list back pointer
+	CALL	sendpkt			;  is clear
+	JMP	trndone
+.PAGE
+	.SBTTL	rcvpkt - Subroutine to process received packet
+
+;Subroutine to process received packet
+;	c{EBX} = Offset of packet
+;	c{ECX} = Size of packet
+;	c{ESI} = Offset of IDB
+;	CALL	rcvpkt
+
+rcvpkt:	MOVL	npb_count[EBX], ECX	;Store total count in packet
+	MOVB	npb_lpofs[EBX], #en_data ;Store header offsets
+	MOVB	npb_npofs[EBX], #en_data
+	SUBL	ECX, #en_data		;Adjust count
+	LEAL	EDX, en_data[EBX]	;Point to start of data
+	MOVZWL	EAX, en_ethertype[EBX] ;Get protocol value from the packet
+	PUSHL	ESI
+	CALL	xossnpRcv##		;Process the received packet
+	POPL	ESI
+	RET
+.PAGE
+enrtaoas:
+	MOVL	ESI, enrtafidb		;Get offset of first IDB
+4$:	TESTL	ESI, ESI		;More to check?
+	JE	10$			;No
+	CMPB	idb_outtimer[ESI], #0	;Yes - need to time output?
+	JE	6$			;No
+	DECB	idb_outtimer[ESI]	;Yes - has it timed out?
+	JNE	6$			;No
+	INCL	idb_cntxhung[ESI]	;Yes - count it
+	TOFORK				;Raise to fork level
+
+;;;;; THIS IS WRONG!!!!!
+
+	MOVL	EAX, #ER_DEVER		;Report this as a device error
+	STC
+	CALL	xosnetFinXmit##		;Do output done processing
+	FROMFORK			;Back to main program level
+6$:	MOVL	ESI, idb_nextd[ESI]	;Advance to next IDB
+	JMP	4$			;Continue
+
+10$:	RET
+.PAGE
+;Function to write value to a PHY register
+;	int phywrite(
+;	    long iobase,	// IO register block address
+;	    long value);	// 0(8) Register number(8) Value(16)
+;  Value returned is 0 if OK or a negative XOS error code if error
+
+phyw_iobase=!12t
+phyw_value =!8t
+
+phywrite:
+	PUSHL	ESI
+	MOVL	EDX, phyw_iobase[ESP]
+	MOVL	EAX, phyw_value[ESP]
+	ORL	EAX, #0x80000000
+	MOVL	RTG_PHYAR[EDX], EAX
+	MOVL	ESI, #1000t
+4$:	MOVL	ECX, #20t
+	CALL	knlSDelay##
+	CLRL	EAX
+	BTL	RTG_PHYAR[EDX], #31t
+	JNC	8$
+	LOOP	ECX, 4$
+	MOVL	EAX, #ER_NORSP
+8$:	POPL	ESI
+	RET	8t
+
+;Function to read value from a PHY register
+;	int phyread(
+;	    long iobase,	// IO register block address
+;	    long regnum);	// Register number
+;  Value returned is the 16-bit register value (bits 16-31 are 0) if OK or
+;    a negative XOS error code if error
+
+phyr_iobase=!12t
+phyr_regnum=!8t
+
+phyread:PUSHL	ESI
+	MOVL	EDX, phyr_iobase[ESP]
+	MOVL	EAX, phyr_regnum[ESP]
+	SHLL	EAX, #16t
+	MOVL	RTG_PHYAR[EDX], EAX
+	MOVL	ESI, #1000t
+10$:	MOVL	ECX, #20t
+	CALL	knlSDelay##
+	CLRL	EAX
+	MOVL	EAX, RTG_PHYAR[EDX]
+	ANDL	EAX, 0x8000FFFF
+	BTCL	EAX, #31t
+	JNC	14$
+	LOOP	ECX, 10$
+	MOVL	EAX, #ER_NORSP
+14$:	POPL	ESI
+	RET	8t
+.PAGE
+	.SBTTL	Data
+
+modetbl:.LONG	'AUTO', 0  , RTF_BMCTL$AUTO
+	.LONG	'10HD', 0  , 0
+	.LONG	'10FD', 0  , RTF_BMCTL$DUPLEX
+	.LONG	'100H', 'D', RTF_BMCTL$SPEED
+	.LONG	'100F', 'D', RTF_BMCTL$SPEED|RTF_BMCTL$DUPLEX
+MODETBLSZ=!{$-modetbl}/12t
+
+endistbl:.LONG	'ENAB', 'LED' , {RTF_MEDIASTS$RXFCE<8t}+RTF_MEDIASTS$TXFCE
+	 .LONG  'DISA', 'BLED', 0
+ENDISTBLSZ=!-{$-endistbl}/12t
+
+	DATA
+
+	.MOD	4
+
+enrtafidb:.LONG	0		;Offset of first IDB for this type of interface
+enrtalidb:.LONG	0		;Offset of last IDB for this type of interface
+
+badpcnt::.LONG 0
+
+xxxtranscnt::.LONG 0
+xxxoutcnt::.LONG 0
+xxxidb:.LONG 0
+
+temp:	  .LONG 'NET', 0
+
+;Generate the PCI device id table. This table is only used to determine if
+;  the device is a valid type. The determination of the device sub-type is
+;  done based on the value of the havedare version ID from the TXCFG register.
+
+pcitbl:	.LONG	0x812910EC	;RTL 8129
+	.LONG	0x813910EC	;RTL 8139
+	.LONG	0x816910EC	;RTL 8169/RTL8169SB
+	.LONG	0x816710EC	;RTL 8169SC
+	.LONG	0x816810EC	;RTL 8168B
+	.LONG	0x810110EC	;RTL 8101E
+	.LONG	0x816810EC	;RTL 8168SB
+	.LONG	0x12111113	;Accton 5030
+	.LONG	0x13601500	;Delta 8139
+	.LONG	0x13604033	;Addtron 8139
+	.LONG	0x13001186	;D-Link DFE-530TX+
+PCITBLSZ=!{$-pcitbl}/8
+
+;Generate the table used to identify chips. Value is the expected value
+;  for the hardware version id from the chip. Index is the chip type
+;  minus 1.
+
+chiptbl:.LONG	0x00000000	;RTT_8169          = 1  (Method 1)
+	.LONG	0x00800000	;RTT_8169S_8110S_1 = 2  (Method 2)
+	.LONG	0x04000000	;RTT_8169S_9110S_2 = 3  (Method 3)
+	.LONG	0x10000000	;RTT_8169SB_8110SB = 4  (Method 4)
+	.LONG	0x18000000	;RTT_8110SC        = 5  (Method 5)
+	.LONG	0x30000000	;RTT_8168B_8111B_1 = 6  (Method 11)
+	.LONG	0x38000000	;RTT_8168B_8111B_2 = 7  (Method 12)
+	.LONG	0x34000000	;RTT_8101E         = 8  (Method 13)
+	.LONG	0x30800000	;RTT_8100E_1       = 9  (Method 14)
+	.LONG	0x38800000	;RTT_8100E_2       = 10 (Method 15)
+	.LONG	0x60000000	;RTT_8129          = 11
+	.LONG	0x70000000	;RTT_8139          = 12
+	.LONG	0x70000000	;RTT_8139A         = 13
+	.LONG	0x70800000	;RTT_8139AG        = 14
+	.LONG	0x78000000	;RTT_8139B         = 15
+	.LONG	0x7C000000	;RTT_8130          = 16
+	.LONG	0x74000000	;RTT_8139C         = 17
+	.LONG	0x74800000	;RTT_8139C         = 18
+
+;Generate table which maps from the chip type to a descriptive text string
+
+descriptbl:
+	.LONG	str8169		;RTT_8169          = 1t
+	.LONG	str8169S1	;RTT_8169S_8110S_1 = 2t
+	.LONG	str8169S2	;RTT_8169S_8110S_2 = 3t
+	.LONG	str8169SB	;RTT_8169SB_8110SB = 4t
+	.LONG	str8169SC	;RTT_8118SC        = 5t
+	.LONG	str8110B1	;RTT_8168B_8110B_1 = 6t
+	.LONG	str8110B2	;RTT_8168B_8110B_2 = 7t
+	.LONG	str8101E	;RTT_8101E         = 8t
+	.LONG	str8100E1	;RTT_8100E_1       = 9t
+	.LONG	str8100E2	;RTT_8100E_2       = 10t
+	.LONG	str8129		;RTT_8129          = 11t
+	.LONG	str8139		;RTT_8139          = 12t
+	.LONG	str8139A	;RTT_8139A         = 13t
+	.LONG	str8139AG	;RTT_8139AG        = 14t
+	.LONG	str8139B	;RTT_8139B         = 15t
+	.LONG	str8130		;RTT_8130          = 16t
+	.LONG	str8139C	;RTT_8139C         = 17t
+	.LONG	str8139CP	;RTT_8139CP        = 18t
+
+;;xxxxxx::.LONG	0
+;;forkESP::.LONG	0
+;;forkcnt::.LONG	0
+;;intcnt1::.LONG	0
+;;intcnt2::.LONG	0
+
+;Chip attribute table - Indexed by the chip type. This value is copied into
+;  idb_enrtacattr when a unit is added.
+
+attrtbl:.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8169          = 1t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT|CA$8169S
+				;RTT_8169S_8110S_1 = 2t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT|CA$8169S
+				;RTT_8169S_8110S_2 = 3t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8169SB_8110SB = 4t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8118SC        = 5t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8168B_8110B_1 = 6t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8168B_8110B_2 = 7t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8101E         = 8t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8100E_1       = 9t
+	.BYTE	CA$AUTO|CA$DESCP|CA$GIGABIT
+				;RTT_8100E_2       = 9t
+	.BYTE	CA$AUTO		;RTT_8129          = 11t
+	.BYTE	CA$AUTO		;RTT_8139          = 12t
+	.BYTE	CA$AUTO		;RTT_8139A         = 13t
+	.BYTE	CA$AUTO		;RTT_8139AG        = 14t
+	.BYTE	CA$AUTO		;RTT_8139B         = 15t
+	.BYTE	CA$AUTO		;RTT_8130          = 16t
+	.BYTE	CA$AUTO		;RTT_8139C         = 17t
+	.BYTE	CA$AUTO|CA$DESCP;RTT_8139CP        = 18t
+
+;Input input ring size table - A positive value indicates that descriptors are
+;  used and specifies the number of descriptors in the input ring. A negative
+;  indicates that descriptors are not used and specifies the length of the
+;  input ring buffer.
+
+inrngtbl:
+	.LONG	128t		;RTT_8169          = 1t
+	.LONG	128t		;RTT_8169S_8110S_1 = 2t
+	.LONG	128t		;RTT_8169S_8110S_2 = 3t
+	.LONG	128t		;RTT_8169SB_8110SB = 4t
+	.LONG	128t		;RTT_8118SC        = 5t
+	.LONG	128t		;RTT_8168B_8110B_1 = 6t
+	.LONG	128t		;RTT_8168B_8110B_2 = 7t
+	.LONG	64t		;RTT_8101E         = 8t
+	.LONG	64t		;RTT_8100E_1       = 9t
+	.LONG	64t		;RTT_8100E_2       = 9t
+	.LONG	-64t		;RTT_8129          = 11t
+	.LONG	-64t		;RTT_8139          = 12t
+	.LONG	-64t		;RTT_8139A         = 13t
+	.LONG	-64t		;RTT_8139AG        = 14t
+	.LONG	-64t		;RTT_8139B         = 15t
+	.LONG	-64t		;RTT_8130          = 16t
+	.LONG	-64t		;RTT_8139C         = 17t
+	.LONG	64t		;RTT_8139CP        = 18t
+
+ddddd::	.LONG	100t
+
+a10hdstr:  .ASCII  "Auto-"
+m10hdstr:  .ASCIZ  "10HD"
+a10fdstr:  .ASCII  "Auto-"
+m10fdstr:  .ASCIZ  "10FD"
+
+a100hdstr: .ASCII  "Auto-"
+m100hdstr: .ASCIZ  "100HD"
+a100fdstr: .ASCII  "Auto-"
+m100fdstr: .ASCIZ  "100FD"
+
+a1000fdstr:.ASCII  "Auto-"
+m1000fdstr:.ASCIZ  "1000FD"
+
+anolnkstr: .ASCIZ  "Auto-NoLink"
+unkwnstr:  .ASCIZ  "Auto-???"
+
+nolnkstr:  .ASCII  "No"
+linkstr:   .ASCIZ  "Link"
+
+enstr:	   .ASCIZ  "Enabled"
+disstr:    .ASCIZ  "Disabled"
+
+str8129:   .ASCIZ  "RTL 8129 (Fast)"
+str8139:   .ASCIZ  "RTL 8139 (Fast)"
+str8139A:  .ASCIZ  "RTL 8139A (Fast)"
+str8139AG: .ASCIZ  "RTL 8139AG (Fast)"
+str8139B:  .ASCIZ  "RTL 8139B (Fast)"
+str8130:   .ASCIZ  "RTL 8130 (Fast)"
+str8139C:  .ASCIZ  "RTL 8139C (Fast)"
+str8139CP: .ASCIZ  "RTL 8139CP (Fast)"
+str8169:   .ASCIZ  "RTL 8169 (Gigabit)"
+str8169S1: .ASCIZ  "RTL 8169S/8110S-1 (Gigabit)"
+str8169S2: .ASCIZ  "RTL 8169S/8110S-2 (Gigabit)"
+str8169SB: .ASCIZ  "RTL 8169B (Gigabit)"
+str8169SC: .ASCIZ  "RTL 8169SC (Gigabit)"
+str8168B1: .ASCIZ  "RTL 8168B-1 (Gigabit)"
+str8168B2: .ASCIZ  "RTL 8168B-2 (Gigabit)"
+str8110B1: .ASCIZ  "RTL 8110B-1 (Gigabit)"
+str8110B2: .ASCIZ  "RTL 8110B-2 (Gigabit);"
+str8101E:  .ASCIZ  "RTL 8101E (Fast/PCIX)"
+str8100E1: .ASCIZ  "RTL 8100E-1 (Fast/PCIX)"
+str8100E2: .ASCIZ  "RTL 8100E-2 (FAST/PCIX)"
+
+
+
+
+.IF NE $$DEBUG
+	.MOD	4
+xxxpnt::.LONG	xxxrng
+xxxrng::.BLKL 	2048t
+xxxend::.LONG 	50505050
+.ENDC
+
+	LKEEND
+

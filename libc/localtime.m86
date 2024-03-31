@@ -1,0 +1,59 @@
+	.INCLUD	XOSINC:XMAC\STDIO.PAR
+	.INCLUD	XOSINC:XMAC\XOS.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	localtime
+localtime:
+	SUBL	ESP, #32t
+	MOVL	EAX, 36t[ESP]
+	MOVL	EAX, [EAX]
+	MULL	tckpsec			;Convert to system ticks since
+	ADDL	EAX, #0xF7B58000	;  1-Jan-1970
+	ADCL	EDX, #0x089F7FF5	;Change to ticks since 1-Jan-1
+	MOVL	[ESP], EAX
+	MOVL	4[ESP], EDX
+	MOVL	EAX, ESP		;Get broken down date (This seems like
+	PUSHL	#10t			;  extra work, but its the easiest way
+	PUSHL	EAX			;  to do the leap-year stuff!)
+	CALL	svcSysDateTime##
+	MOVL	ECX, #tmdata	
+
+	MOVZWL	EAX, 10t[ESP]		;Seconds
+	MOVL	[ECX], EAX
+
+	MOVZWL	EAX, 12t[ESP]		;Minutes
+	MOVL	4[ECX], EAX
+
+	MOVZWL	EAX, 14t[ESP]		;Hours
+	MOVL	8[ECX], EAX
+
+	MOVZWL	EAX, 16t[ESP]		;Get day of month
+	MOVL	12t[ECX], EAX
+
+	MOVZWL	EAX, 18t[ESP]		;Get month
+	DECL	EAX			;Unix wants 0 -11 insteat of 1 - 12!
+	MOVL	16t[ECX], EAX
+
+	MOVZWL	EAX, 20t[ESP]		;Get year
+	SUBL	EAX, #1900t		;Adjust to give the C value
+	MOVL	20t[ECX], EAX
+
+	MOVZWL	EAX, 22t[ESP]		;Get day of week
+	MOVL	24t[ECX], EAX
+
+	MOVZWL	EAX, 24t[ESP]		;Get day in year
+	MOVL	28t[ECX], EAX
+	CLRL	EAX			;No daylight saving stuff for now
+	MOVL	32t[ECX], EAX
+	MOVL	EAX, ECX
+	ADDL	ESP, #32t
+	RET
+
+	.MOD	4
+tckpsec:.LONG	10000000t
+tmdata:	.BLKL	9
+
+	.END

@@ -1,0 +1,397 @@
+	.TITLE	bitmap
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	bmp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;This modlue contains routines for loading and displaying BITMAP objects
+
+;Subroutine to display a BITMAP object in a window
+;	void xwsDrawBitmap(
+;	    WIN    *win,	// Window object
+;	    BITMAP *bitmap,	// Bitmap object
+;	    long    xpos,	// X position of upper left hand corner
+;	    long    ypos,	// Y position of upper left hand corner
+;	    long    xrept,	// Horizontal repeat count
+;	    long    yrept,	// Vertical repeat count
+;	    long    func);	// Function bits (reserved for future use)
+
+;This function uses the Pascal calling sequence
+
+db_win   =!44t
+db_bitmap=!40t
+db_xpos  =!36t
+db_ypos  =!32t
+db_xrept =!28t
+db_yrept =!24t
+db_func  =!20t
+
+$$$=!0
+FRM db_curxpos, 4
+FRM db_curxcnt, 4
+db_SIZE=!$$$
+
+	.ENTRY	xwsDrawBitmap
+xwsDrawBitmap:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, db_win[EBP]	;Get the WIN
+	MOVL	EAX, win_basdrw[EDI]	;Is it disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	26$			;Yes - don't need to do this at all!
+	MOVL	ESI, db_bitmap[EBP]	;No - get the BITMAP
+	TESTL	ESI, ESI
+	JE	26$
+	SUBL	ESP, #db_SIZE		;Allocate our stack frame
+	MOVL	EAX, db_xpos[EBP]
+	CMPL	EAX, #0
+	JGE	4$
+	NEGL	EAX
+	CLQ
+	IDIVL	bm_drw+drw_width[ESI]
+	SUBL	db_xrept[EBP], EAX
+	JLE	26$
+	IMULL	EAX, bm_drw+drw_width[ESI]
+	ADDL	db_xpos[EBP], EAX
+4$:	MOVL	EAX, db_xrept[EBP]	   ;Are we drawing to the right of
+	IMULL	EAX, bm_drw+drw_width[ESI] ;  the window?
+	ADDL	EAX, db_xpos[EBP]
+	SUBL	EAX, win_baswidth[EDI]
+	JLE	6$			;No
+	CLQ				;Yes - reduce the X repeat count
+	IDIVL	bm_drw+drw_width[ESI]
+	SUBL	db_xrept[EBP], EAX
+	JLE	26$
+6$:	MOVL	EAX, db_ypos[EBP]
+	CMPL	EAX, #0
+	JGE	8$
+	NEGL	EAX
+	CLQ
+	IDIVL	bm_drw+drw_height[ESI]
+	SUBL	db_yrept[EBP], EAX
+	JLE	26$
+	IMULL	EAX, bm_drw+drw_height[ESI]
+	ADDL	db_ypos[EBP], EAX
+8$:	MOVL	EAX, db_yrept[EBP]	     ;Are we drawing below the window?
+	IMULL	EAX, bm_drw+drw_height[ESI]
+	ADDL	EAX, db_ypos[EBP]
+	SUBL	EAX, win_basheight[EDI]
+	JLE	10$			;No
+	CLQ				;Yes - reduce the Y repeat count
+	IDIVL	bm_drw+drw_height[ESI]
+	SUBL	db_yrept[EBP], EAX
+	JLE	26$
+
+;If get here, we really have something to display
+
+10$:	TESTB	bm_status[ESI], #BMS$DONE ;Is the bitmap completely loaded?
+	JNE	16$			;Yes
+
+;Here if the bitmap is not completely loaded - we need to add the bitmap to
+;  the window's notify list if its not already there
+
+.IF NE 0
+	MOVL	EBX, bm_fnot[ESI]
+12$:	TESTL	EBX, EBX
+	JE	14$
+	CMPL	not_win[EBX], EDI	;For this window
+	JE	16$			;Yes - its already in the list
+	MOVL	EBX, not_nextnot[EBX]
+	JMP	12$
+
+;Here if we need to add to the notify list
+
+14$:	PUSHL	ESI
+	LEAL	EAX, bm_fnot[ESI]
+	PUSHL	EAX
+	PUSHL	EDI
+	CALL	xwsmakenotify#
+.ENDC
+
+16$:	MOVL	EAX, db_xpos[EBP]
+	MOVL	db_curxpos[EBP], EAX
+	MOVL	EAX, db_xrept[EBP]
+	MOVL	db_curxcnt[EBP], EAX
+18$:	PUSHL	db_curxpos[EBP]		;Create a rectangular region for the
+	PUSHL	db_ypos[EBP]		;  bitmap image
+	PUSHL	bm_drw+drw_width[ESI]
+	PUSHL	bm_drw+drw_height[ESI]
+	CALL	xwsrgncreaterectns#	
+	PUSHL	EAX
+	PUSHL	EAX			;Get its intersection with the
+	PUSHL	win_bascliprgn[EDI]	;  window's clipping region
+	CALL	xwsRgnIntersect#
+
+;;;	INT3
+
+	CMPB	rgn_type[EAX], #RGNTYPE_NULL
+	JE	22$
+	XCHGL	EAX, [ESP]
+	PUSHL	EAX			;Give up the rectangular region
+	CALL	xwsRgnDestroy#
+	MOVL	EBX, [ESP]
+	CMPB	rgn_type[EBX], #RGNTYPE_NULL ;Null region?
+	JE	22$			;Yes - nothing needed here
+					;No - copy the bitmap image to the
+					;  window
+	MOVL	EDX, win_basdrw[EDI]	;Destination DRW
+	CMPB	drw_disable[EDX], #0	;Is it disabled?
+	JNE	22$			;Yes
+	LEAL	ECX, bm_drw[ESI]	;Source DRW
+	PUSHL	ECX
+	PUSHL	EDX			;Destination DRW
+	PUSHL	EBX			;Region RGN
+	MOVL	EAX, db_curxpos[EBP]	;Source X position
+	NEGL	EAX
+	PUSHL	EAX
+	MOVL	EAX, db_ypos[EBP]	;Source Y position
+	NEGL	EAX
+	PUSHL	EAX
+	PUSHL	win_basscnxpos[EDI]	;Destination X position
+	PUSHL	win_basscnypos[EDI]	;Destination Y position
+	MOVL	EAX, drw_funcdsp[EDX]
+	CMPL	EDX, ECX		;Are source and destination the same?
+	JNE	20$			;No
+	CALLI	gfx_rgncopysame[EAX]	;Yes
+	JMP	22$
+
+20$:	CALLI	gfx_rgncopydiff[EAX]
+22$:	CALL	xwsRgnDestroy#		;Give up the region we used
+	MOVL	EAX, bm_drw+drw_width[ESI]
+	ADDL	db_curxpos[EBP], EAX
+	SUBL	db_curxcnt[EBP], #1
+	JG	18$
+	MOVL	EAX, db_xpos[EBP]
+	MOVL	db_curxpos[EBP], EAX
+	MOVL	EAX, db_xrept[EBP]
+	MOVL	db_curxcnt[EBP], EAX
+	MOVL	EAX, bm_drw+drw_height[ESI]
+	ADDL	db_ypos[EBP], EAX
+	SUBL	db_yrept[EBP], #1
+	JG	18$
+26$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	28t
+.PAGE
+;Function to destroy a BITMAP object
+;	void xwsBitmapDestroy(
+;	    BITMAP *bitmap);
+
+;This function uses the Pascal calling sequence
+
+bf_bitmap=!4t
+
+	.ENTRY	xwsBitmapDestroy
+xwsBitmapDestroy:
+	MOVL	EAX, bf_bitmap[ESP]
+	SUBL	bm_usecnt[EAX], #1
+	JG	4$
+	PUSHL	EAX
+	CALL	xwsFree#
+4$:	RET	4
+.PAGE
+;Function to get the dimensions of a BITMAP object
+;	void xwsBitMapGetDim(
+;	    XWSWIN *win,
+;	    BITMAP *bitmap,
+;	    COORD *coord);
+
+bmgd_win   =!16t
+bmgd_bitmap=!12t
+bmgd_coord =!8
+
+	.ENTRY	xwsBitmapGetDim
+xwsBitmapGetDim::
+	PUSHL	EBX
+	MOVL	EBX, bmgd_bitmap[ESP]
+	MOVL	EDX, bmgd_coord[ESP]
+	MOVL	ECX, bmgd_win[ESP]
+	MOVL	EAX, bm_drw+drw_width[EBX]
+	IMULL	EAX, win_basxsfd[ECX]
+	MOVL	coord_xval[EDX], EAX
+	MOVL	EAX, bm_drw+drw_height[EBX]
+	IMULL	EAX, win_basysfd[ECX]
+	MOVL	coord_yval[EDX], EAX
+	POPL	EBX
+	RET	12t
+.PAGE
+;Fucntion to save a memory window to a BMP file
+;	long xwsWinSaveAsBMP(
+;	    WIN  *win,
+;	    char *spec);
+
+;  Value returned is 0 if normal or a negative error code if error
+
+;  This function uses the Pascal calling sequence
+
+$$$=!0
+FRM wsbmp_hndl , 4
+FRM wsbmp_bufr , 4
+FRM wsbmp_lines, 4
+FRM wsbmp_lleft, 4
+FRM wsbmp_lcnt , 4
+FRM wsbmp_pcnt , 4
+FRM wsbmp_decr , 4
+FRM wsbmp_hdr , bmf_SIZE
+$$$={$$$+3}&0xFFFFFFFC
+wsbmp_SIZE=!$$$
+
+wsbmp_win =!24t
+wsbmp_spec=!20t
+
+	.ENTRY	xwsWinSaveAsBMP
+xwsWinSaveAsBMP::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	wsbmp_SIZE, 0
+	PUSHL	#XO$OUT|XO$CREATE|XO$TRUNCA
+	PUSHL	wsbmp_spec[EBP]
+	PUSHL	#0
+	CALL	thdIoOpen#
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	wsbmp_hndl[EBP], EAX
+	MOVL	EDI, wsbmp_win[EBP]
+	MOVL	ESI, win_basdrw[EDI]
+
+	MOVW	wsbmp_hdr+bmf_ftype[EBP], #'BM' ;Set up the BMP header block
+	MOVL	EAX, drw_width[ESI]
+	IMULL	EAX, drw_height[ESI]
+	SHLL	EAX, #2
+	MOVL	wsbmp_hdr+bmf_isize[EBP], EAX
+	ADDL	EAX, #bmf_SIZE
+	MOVL	wsbmp_hdr+bmf_fsize[EBP], EAX
+	MOVL	wsbmp_hdr+bmf_res1[EBP], #0
+	MOVL	wsbmp_hdr+bmf_offbits[EBP], #bmf_SIZE
+	MOVL	wsbmp_hdr+bmf_hsize[EBP], #bmf_SIZE-bmf_hsize
+	MOVL	EAX, drw_width[ESI]
+	MOVL	wsbmp_hdr+bmf_width[EBP], EAX
+	MOVL	EAX, drw_height[ESI]
+	MOVL	wsbmp_hdr+bmf_height[EBP], EAX
+	MOVL	wsbmp_hdr+bmf_planes[EBP], #1
+	MOVL	wsbmp_hdr+bmf_bitcnt[EBP], #32t
+	MOVL	wsbmp_hdr+bmf_comp[EBP], #0
+	MOVL	wsbmp_hdr+bmf_xres[EBP], #0
+	MOVL	wsbmp_hdr+bmf_yres[EBP], #0
+	MOVL	wsbmp_hdr+bmf_clrused[EBP], #0
+	MOVL	wsbmp_hdr+bmf_clrimp[EBP], #0
+	PUSHL	wsbmp_hndl[EBP]		;Write the BMP header block
+	LEAL	EAX, wsbmp_hdr[EBP]
+	PUSHL	EAX
+	PUSHL	#bmf_SIZE
+	CALL	thdIoOutBlock#
+	TESTL	EAX, EAX
+	JS	26$
+	MOVL	EAX, wsbmp_hdr+bmf_height[EBP]
+	CMPL	EAX, #50t
+	JB	4$
+	MOVL	EAX, #50t
+4$:	MOVL	wsbmp_lines[EBP], EAX	;Store number of lines in our buffer
+	IMULL	EAX, wsbmp_hdr+bmf_width[EBP]
+	SHLL	EAX, #2
+	PUSHL	EAX
+	CALL	malloc#			;Allocate the buffer
+	ADDL	ESP, #4t
+	TESTL	EAX, EAX
+	JE	24$
+	MOVL	wsbmp_bufr[EBP], EAX
+	MOVL	EAX, wsbmp_hdr+bmf_width[EBP]
+	SHLL	EAX, #2
+	MOVL	wsbmp_decr[EBP], EAX
+
+	MOVL	ESI, drw_buffer[ESI]
+
+	MOVL	EAX, wsbmp_hdr+bmf_height[EBP] ;Get address of last line
+	MOVL	wsbmp_lleft[EBP], EAX	       ;  in image
+	DECL	EAX
+	IMULL	EAX, wsbmp_hdr+bmf_width[EBP]
+	LEAL	ESI, [ESI+EAX*2]
+
+10$:	MOVL	EBX, wsbmp_bufr[EBP]	;Point to start of our buffer
+	MOVL	EAX, wsbmp_lines[EBP]
+	CMPL	EAX, wsbmp_lleft[EBP]
+	JL	12$
+	MOVL	EAX, wsbmp_lleft[EBP]
+12$:	MOVL	wsbmp_lcnt[EBP], EAX
+	SUBL	wsbmp_lleft[EBP], EAX
+
+;Copy one line of the image to the buffer, converting to 0-8-8-8 format.
+
+14$:	MOVL	EAX, wsbmp_hdr+bmf_width[EBP]
+	MOVL	wsbmp_pcnt[EBP], EAX
+16$:	MOVZWL	EAX, [ESI]
+	MOVL	EDX, EAX
+
+	ANDL	EDX, #0x1F
+	SHLL	EDX, #3
+
+	MOVL	ECX, EAX
+	SHLL	ECX, #5
+	ANDL	ECX, #0x00FC00
+
+	SHLL	EAX, #8
+	ANDL	EAX, #0xF80000
+
+	ORL	EAX, EDX
+	ORL	EAX, ECX
+
+	CMPL	EAX, #0xF8FCF8
+	JNE	18$
+	MOVL	EAX, #0xFFFFFF
+18$:	MOVL	[EBX], EAX
+	ADDL	EBX, #4			;Bump the pointers
+	ADDL	ESI, #2
+	DECL	wsbmp_pcnt[EBP]		;More to do for this line?
+	JNE	16$			;Yes - continue
+	SUBL	ESI, wsbmp_decr[EBP]	;No - advance to "next" line
+	DECL	wsbmp_lcnt[EBP]		;Room for another line?w
+	JNE	14$			;Yes
+	PUSHL	wsbmp_hndl[EBP]		;No - write out the buffer
+	PUSHL	wsbmp_bufr[EBP]
+	SUBL	EBX, wsbmp_bufr[EBP]
+	PUSHL	EBX
+	CALL	thdIoOutBlock#
+	TESTL	EAX, EAX
+	JS	26$
+	CMPL	wsbmp_lleft[EBP], #0	;More to do?
+	JNE	10$			;Yes
+	PUSHL	wsbmp_hndl[EBP]		;No - finished - close the file
+	PUSHL	#0
+	CALL	thdIoClose#
+20$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if error with error code in errno
+
+24$:	MOVL	EAX, errno#
+	NEGL	EAX
+
+;Here if error with error code in EAX with the file open
+
+26$:	PUSHL	EAX
+	PUSHL	wsbmp_hndl[EBP]
+	PUSHL	#0
+	CALL	thdIoClose#
+	POPL	EAX
+	JMP	20$
+
+	.END

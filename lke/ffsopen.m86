@@ -1,0 +1,795 @@
+	.TITLE	ffsopen - FFS routines that deal with opening files
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+;NOTES:
+
+;This code creates a data structure in memory for each open directory or
+;  file that emulates a file pointer table (as oppossed to directly using
+;  the FAT tables). The FAT tables are used to construct the file pointers
+;  when the file is opened. When additional space is allocated for a file,
+;  both the file pointer table and the FAT chain for the file are updated,
+;  although updating of the FAT chain is generally defered until the file
+;  is closed. Closing some other open file may force updating of FATs for
+;  a file before it is closed. In all cases, every effort is made to do this
+;  in a "safe" order so that system failures will result in lost space, not
+;  in multiply allocated space or crossed FAT chains. The data structure
+;  containing the file pointers is referred to as a "fake FIB" (file
+;  information block). It is stored in one or more disk cache blocks. If
+;  more than one block is request, the blocks used are simply linked in a
+;  simple single level list. The fake FIBs remain in the cache after being
+;  used pretty much as do any real disk blocks, allowing files to be reopened
+;  without having to reread the FAT chain.
+
+;When a file or directory is opened all parent directories are also opened
+;  and stay open as long as the file or directory is open. This means that
+;  there is a fake FIB for each directory which has a non-zero open count.
+;  It does not necessarily mean there is a DCB associated with each directory.
+;  Obviously, each directory may be open many times, simply meaning that the
+;  open count is greater than 1. When a final file or directory is opened
+;  by following the directory tree from the root, each directory is opened
+;  as it is searched. When the final file or directory is opened by searching
+;  an open directory, the open counts of the parent directories are simply
+;  incremented going from the open directory to the root. While files opened
+;  by searching an open directory are closed before returning to user mode,
+;  they are fully open for a short time. The final file or directory opened
+;  will always have a DCB associated with it. There are no links from the
+;  parent FIB to open child FIBs. All links are from the child FIBs to their
+;  parents. If it is necessary to find all open directores for a device (such
+;  as to force a dismount) this can be done by following the list of open
+;  DCBs. Closing all open DCBs will close all open directores at all levels.
+
+;Each cache buffer has a scheduled resource associated with it. This resource
+;  is used to interlock disk transfers which modify the contents of the buffer.
+;  The resource for the first FIB block for the file is used to lock the file.
+;  This lock does not affect reading or writing data to the file's blocks. It
+;  does affect any changes to the allocation of space to the file or to any
+;  attribute value (anything stored in the directory entry). Modification to
+;  the contents of a directory are controlled by the directory's resource.
+;  This is implimented by always locking the directory's root FIB before
+;  making any changes to it. A child directory or file can be locked when the
+;  parent directory is locked. To pervent deadlocks, a parent directory must
+;  NEVER be locked when any of it children are locked. When this is necessary
+;  the lock on the child directory must be given up, the parent directory
+;  locked, and the child directory or file locked again. It must then be
+;  verified that the state of the child has not changed significantly while
+;  it was not locked.
+
+
+$$CHKCHAIN=!0
+
+	CODE
+
+;Here for the open device additional entry - this is called whenever an
+;  additional DCB is opened for a file - called by movedevproc and duphandle
+;	c{EDI} = Offset of disk DCB
+;	CALL	ffsopena
+
+ffsopena::
+	MOVL	EBX, dcb_dkbasefib[EDI] ;Point to base FIB for file
+	TESTB	ff_attrib[EBX], #XA$DIRECT|XA$LABEL ;Directory or label?
+	JE	2$			;No
+	ANDB	knlTda+tdaCmd##, #~XO$OUT ;Yes - don't allow output
+	TESTL	knlTda+tdaCmd##, #XO$TRUNCA|XO$TRUNCW ;Trying to truncate file?
+	JNE	knlIllOut##		;Yes - fail
+2$:	TESTL	knlTda+tdaCmd##, #XO$OUT|XO$CREATE|XO$TRUNCA|XO$TRUNCW
+					;Does he want to do output?
+	JE	4$			;No
+	INCL	bfr_writecnt[EBX]	;Yes - bump write count
+4$:	RET				;All done
+.PAGE
+;Here for the open device entry
+;	c{EDI} = Offset of disk DCB
+;	c{EDX} = Address of expanded file path and name
+;	CALL	ffsopen
+
+;	long ffsopen(
+;	    char *spec);
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return the target file or directory is open on the DCB and all
+;    underlying directories are open. If this called for a QFNC_OPEN function
+;    no blocks associated with the DCB are locked. Otherwise the target
+;    file or directory and its directory are locked. On an error return,
+;    nothing associated with the DCB is open or locked. In all cases, no
+;    directory or file data buffers are in use.
+
+$$$=!0
+FRM ffso_odb, odb_SIZE
+FRM ffso_xdb, xdb_SIZE
+FRM ffso_cnt, 4
+ffso_SIZE=!$$$
+
+ffso_spec=!20t
+
+ffsopen::
+	MOVL	knlTda+tdaSrcAttr##, #XA$FILE ;Set default search attributes
+	CMPL	knlTda+tdaParm##, #0	;Yes - have any device parameters?
+	JE	8$			;No
+	PUSHL	#ffsioparms#		;Yes - process parameters
+	PUSHL	#xosdskDpParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JNS	8$
+	RET	4			;If error
+
+8$:	TESTL	knlTda+tdaCmd##, #XO$PHYS|XO$RAW ;Want non-file IO?
+	JNE	xosdskForceDsk##	;Yes
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	ffso_SIZE, 0		;No - set up our stack
+	PUSHL	EDI
+	LEAL	EDI, ffso_odb+4[EBP]	;Clear the ODB
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ECX, #{odb_name+3}/4
+	CLRL	EAX
+	RSTOSL	[EDI]
+	POPL	EDI
+	MOVL	ffso_odb+odb_label[EBP], #'ODB+' ;Store label (only used for
+	MOVL	EAX, ffso_spec[EBP]		 ;  debugging)
+	MOVL	ffso_odb+odb_ppath[EBP], EAX
+
+	TESTB	knlTda+tdaSrcAttr##, #XA$LABEL ;Looking for a label?
+	JE	10$			;No
+	MOVB	knlTda+tdaSrcAttr##, #XA$LABEL ;Yes - make sure that's all
+10$:	TESTL	knlTda+tdaOption##, #XO$ODFS
+	JE	12$
+	MOVB	knlTda+tdaSrcAttr##, #XA$DIRECT
+12$:	LEAL	EAX, ffso_odb[EBP]
+	PUSHL	EAX			;Find the target item if it's there
+	CALL	ffsfindondisk#		;  or where it goes if not
+	TESTL	EAX, EAX
+	JE	filfnd			;If found the target
+	JS	ffsodn			;If error
+	TESTL	knlTda+tdaOption##, #XO$CREATE ;Not found - want to create it?
+	JNE	create			;Yes
+	MOVL	EAX, #ER_FILNF
+	JMP	ffsodn
+.PAGE
+;Here with final file or directory found - File or final directory is open
+;  on the DCB and is locked. The last directory searched is open and locked.
+;  If we are trying to create a file or directory (XO$CREATE is set) we need
+;  to check and see if we found a directory. An attempt to create an existing
+;  directory or a directory with the same name as an existing file is always
+;  an error. An attempt to create an existing file is ignored, the action
+;  taken is determined by the other open bits. If XO$CREATE is not set, the
+;  search was done using the specified attributes so we don't need to check
+;  attributes here in that case.
+
+filfnd:
+.IF NE $$CHKCHAIN
+	CALL	checkchain#
+.ENDC
+	MOVL	EBX, dcb_dkbasefib[EDI] ;Point to base FIB for file
+	TESTL	knlTda+tdaOption##, #XO$CREATE ;Trying to create something?
+	JE	4$			;No - go
+	MOVZBL	EAX, ff_attrib[EBX]	;Did we find a directory?
+	TESTB	AL, #XA$DIRECT
+	JNE	26$			;Yes - fail
+	TESTL	knlTda+tdaOption##, #XO$ODFS ;Are we trying to create a
+					     ;  directory?
+	JNE	26$			;Yes - fail
+	MOVZBL	ECX, knlTda+tdaSrcAttr## ;If this is a hidden or system file
+	NOTL	ECX			 ;  see if we want that
+	ANDL	ECX, #XA$HIDDEN|XA$SYSTEM
+	ANDL	ECX, EAX
+	JNE	28$			;No - say not found
+4$:	MOVL	EAX, knlTda+tdaOption##	;Yes
+	CMPL	bfr_exrddcb[EBX], #0	;Is file open for exclusive read
+					;  access
+	JE	6$			;No - go on
+	TESTB	AL, #XO$IN		;Yes - does it matter?
+	JNE	8$			;Yes - fail
+
+;Here if file not currently open for exclusive read or if this doesn't matter
+
+6$:	CMPL	bfr_exwrtdcb[EBX], #0	;Is file open for exclusive write?
+	JE	10$			;No
+	TESTL	EAX, #XO$OUT|XO$TRUNCA|XO$TRUNCW ;Yes - does it matter?
+8$:	JNE	errfbsy			;Yes
+
+;Here if file not currently open for exclusive write or if this doesn't matter
+
+10$:	BTL	EAX, #XO%EXWRITE	;Want exclusive write?
+	JNC	12$			;No
+	CMPL	bfr_writecnt[EBX], #0	;Yes - can we have it?
+	JNE	8$			;No
+12$:	BTL	EAX, #XO%EXREAD		;Want exclusive read?
+	JNC	14$			;No
+	CMPL	bfr_readcnt[EBX], #0	;Yes - can we have it?
+	JNE	8$			;No
+14$:	TESTB	ff_attrib[EBX], #XA$DIRECT ;Are we opening a directory?
+	JE	16$			;No
+	ANDB	knlTda+tdaCmd##, #~XO$OUT ;Yes - make sure not trying to do
+	ANDB	AL, #~XO$OUT		  ;  output
+	TESTL	EAX, #XO$TRUNCA|XO$TRUNCW ;Want to truncate file?
+	JNE	errex			;Yes - can't do that!
+16$:	TESTB	ff_attrib[EBX], #XA$LABEL ;No - is it a label?
+	JE	18$			;No
+	ANDL	knlTda+tdaCmd##, #~{XO$IN|XO$TRUNCA|XO$TRUNCW}
+	ANDL	knlTda+tdaOption##, #~{XO$IN|XO$TRUNCA|XO$TRUNCW}
+	MOVL	EAX, knlTda+tdaOption##	;Yes
+18$:	TESTB	ff_attrib[EBX], #XA$RDONLY ;Is it a read-only file?
+	JE	20$			;No - go on
+	TESTL	EAX, #XO$TRUNCA|XO$TRUNCW|XO$OUT ;Want to change file?
+	JNE	errro			;Yes - fail
+20$:	TESTL	EAX, #XO$TRUNCA|XO$TRUNCW ;Want to truncate file?
+	JE	filfn2			;No
+	MOVL	ESI, dcb_dkucb[EDI]	;Yes - is the disk write protected?
+	TESTL	ESI, ESI
+	JE	errnu
+	TESTB	ucb_sts1[ESI], #U1$WPROT
+	JE	filfn2			;OK
+filwpe:	MOVL	EAX, #ER_WPRER
+	JMP	errcf
+
+26$:	MOVL	EAX, #ER_DIREX
+	JMP	errcf
+
+28$:	MOVL	EAX, #ER_ACSDN
+	JMP	errcf
+.PAGE
+;Here if requested access is OK
+
+filfn2:	TESTB	ff_attrib[EBX], #XA$ARCH ;Is the archive bit already set?
+	JNE	2$			;Yes - go on
+	TESTL	EAX, #XO$OUT|XO$TRUNCA|XO$TRUNCW ;No - are we writing to this
+						 ;  file?
+	JE	2$			;No
+	ORB	ff_attrib[EBX], #XA$ARCH ;Yes - set the archive bit now
+	ORB	knlTda+tdaCurAttr##, #XA$ARCH
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+2$:	BTL	knlTda+tdaHvValue1##, #IOV1%FILEATTR ;Attribute byte given?
+	JNC	10$			;No
+	MOVB	DL, knlTda+tdaFileAttr## ;Yes - get it
+	TESTB	DL, #XA$LABEL		;Is this a label?
+	JE	4$			;No
+	MOVB	DL, #XA$LABEL		;Yes - make sure no other bits
+	ANDB	knlTda+tdaCmd##, #~{XO$IN|XO$OUT} ;Cannot read or write it
+4$:	MOVB	DH, DL			;Trying to change FILE, DIR, or LABEL
+	XORB	DH, ff_attrib[EBX]	;  bits?
+	ANDB	DH, #XA$FILE|XA$DIRECT|XA$LABEL
+	JE	8$			;No
+	ANDB	DH, DL			;Yes - trying to set one?
+	JNE	errifa			;Yes - fail
+	MOVB	DH, ff_attrib[EBX]	;No - don't clear it (but don't fail!)
+	ANDB	DH, #XA$FILE|XA$DIRECT|XA$LABEL
+	ORB	DL, DH
+8$:	CMPB	ff_attrib[EBX], DL	;Are we changing it at all?
+	JE	10$			;No
+	MOVB	ff_attrib[EBX], DL	;Yes
+	MOVB	knlTda+tdaCurAttr##, DL
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+10$:	BTL	knlTda+tdaHvValue1##, #IOV1%GRPSIZE ;Was the group size
+						    ;  specified?
+	JNC	filfn4			;No
+	MOVL	EAX, knlTda+tdaGrpSize## ;Yes - get its value
+	TESTL	EAX, EAX		;Is it 0?
+	JE	filfn4			;Yes
+	MOVL	ff_grpsize[EBX], EAX	;No - store it
+.PAGE
+filfn4:
+	PUSHL	EBX			;Update file parameters if necessary
+	CALL	ffsupdateparm#
+
+	TESTL	knlTda+tdaOption##, #XO$TRUNCA ;Want to truncate allocated file
+					       ;  length?
+	JE	4$			;No
+	PUSHL	#0			;Yes - do that
+	CALL	ffsreduce#
+	TESTL	EAX, EAX
+	JNS	opendone
+	JMP	ffsodn
+
+;Here if not truncating allocation for file
+
+4$:	TESTL	knlTda+tdaOption##, #XO$TRUNCW ;Want to truncate written file
+					       ;  length?
+	JE	opendone		;No
+	CLRL	EAX			;Set length of file to 0
+	CMPL	ff_length[EBX], EAX	;Is the file length already 0?
+	JE	opendone		;Yes - nothing needed here
+	MOVL	ff_length[EBX], EAX	;No - set it to 0 now
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+	JMP	opendone
+
+;Here if trying to change a read-only file
+
+errro:	MOVL	EAX, #ER_FILAD
+	JMP	errcf
+
+;Here if should give "Illegal attribute change" error
+
+errifa:	MOVL	EAX, #ER_IATTR
+	JMP	errcf
+
+;Here if should give "file busy" error
+
+errfbsy:MOVL	EAX, #ER_BUSY
+	JMP	errcf
+
+;Here if should give "disk changed" error
+
+errnu:	MOVL	EAX, #ER_MDCHG
+	JMP	errcf
+
+;Here if should give "file exists" error
+
+errex:	MOVL	EAX, #ER_ISDIR		;Error = file IS a DIRectory
+errcf:	PUSHL	EAX			;Save error code
+	CALL	ffsclosefib#		;Close the file
+	POPL	EAX
+	JMP	ffsodn
+.PAGE
+;Here if file not found and want to create a file - When get here the
+;  directory is open and locked.
+
+create:	
+.IF NE $$CHKCHAIN
+	CALL	checkchain#
+.ENDC
+
+;;;;;;	MOVW	AX, of_namlong[EBP]	;Have a null file name?
+;;;;;;	CMPW	AX, #0
+;;;;;;	JE	6$			;Yes - fail
+
+	MOVL	EAX, dcb_dkucb[EDI]	;No - is the disk write protected?
+	TESTL	EAX, EAX
+	JE	2$
+	TESTB	ucb_sts1[EAX], #U1$WPROT
+	JNE	4$			;Yes - fail
+	BTL	knlTda+tdaCmd##, #XO%ODFS ;No - creating directory?
+	JNC	newfile			;No
+	MOVB	AL, #XA$DIRECT		;Get attribute byte
+	JMP	12$			;Continue
+
+;Here if disk has been changed
+
+2$:	MOVL	EAX, #ER_MDCHG
+	JMP	14$
+
+;Here if disk is write protected
+
+4$:	MOVL	EAX, #ER_WPRER
+	JMP	14$
+
+;Here if have wild-card character in name of file to create - fail
+
+;;;;6$:	MOVL	EAX, #ER_BDSPC		;Get error code
+;;;;	JMP	14$			;Go close directory and exit
+
+;Here if should create new file
+
+newfile:MOVB	AL, #XA$FILE|XA$ARCH	;Assume want default attributes
+	BTL	knlTda+tdaHvValue1##, #IOV1%FILEATTR ;Attribute byte given?
+	JNC	10$			;No
+	MOVB	AL, knlTda+tdaFileAttr## ;Yes - get it
+	TESTB	AL, #XA$LABEL		;Is this a label?
+	JE	10$			;No
+	MOVB	AL, #XA$LABEL		;Yes - make sure no other bits
+	ANDB	knlTda+tdaCmd##, #~{XO$IN|XO$OUT} ;Cannot read or write it
+10$:	ANDB	AL, #~XA$DIRECT		;Make sure directory bit not set
+	MOVL	ESI, dcb_dkucb[EDI]	;Get offset of UCB
+	TESTL	ESI, ESI
+	JE	2$
+12$:	LEAL	EAX, ffso_odb[EBP]
+	PUSHL	EAX
+	PUSHL	#0
+	CALL	ffsmakefib#		;Create a FIB for the new file
+	TESTL	EAX, EAX
+	JNS	16$			;OK - go on
+14$:	MOVB	knlTda+tdaCurAttr##, #0	;Error - clear current attribute bits
+15$:	PUSHL	EAX
+	CALL	ffsclosefib#		;Close the directory
+	POPL	EAX			;Restore error code
+	JMP	ffsodn
+
+;Here with a new FIB created and the directory entry updated
+
+16$:	MOVL	EBX, dcb_dkbasefib[EDI]
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Did we just create a directory?
+	JE	40$			;No
+
+;Here if we have just created a directory - we must create the . and .. entires
+
+	CALL	xosdskGetDiskRes##	;Get the disk resource
+	TESTL	EAX, EAX
+	JS	15$			;If error (must have lost the disk!)
+	PUSHL	#1			;Allocate 1 cluster to the directory
+	LEAL	EAX, ffso_xdb[EBP]
+	PUSHL	EAX
+	CALL	ffsextend#
+	TESTL	EAX, EAX
+	JC	34$			;If error
+	MOVL	EAX, ffso_xdb+xdb_first[EBP] ;Get cluster allocated
+	MOVL	ESI, dcb_dkucb[EDI]	;Change to block number
+	MOVZBL	ECX, ucb_clusshft[ESI]
+	SHLL	EAX, CL
+	CLRL	EDX
+	ADDL	EAX, ucb_fcblk+0[ESI]
+	ADCL	EDX, ucb_fcblk+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#0			;Get a zeroed buffer
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	EAX
+	CALL	xosdskNewBlock##
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	34$
+	MOVL	ECX, dcb_dkbasefib[EDI]
+	MOVL	EAX, #'    '		;Setup . and .. file names
+	LEAL	EDX, bfr_data[EBX]
+	MOVL	[EDX], EAX
+	MOVB	[EDX], #'.'
+	MOVL	4[EDX], EAX
+	MOVL	32t+0[EDX], EAX
+	MOVW	32t+0[EDX], #'..'
+	MOVL	32t+4[EDX], EAX
+	MOVL	EAX, #'   '+XA$DIRECT*0x1000000
+	MOVL	8[EDX], EAX
+	MOVL	32t+8[EDX], EAX
+	MOVL	EAX, ff_cdttm[ECX]	;Get date and time for directory
+	MOVL	de_cdttm[EDX], EAX	;Store it for both . and ..
+	MOVL	32t+de_mdttm[EDX], EAX
+	MOVL	EAX, ff_mdttm[ECX]
+	MOVL	de_mdttm[EDX], EAX
+	MOVL	32t+de_mdttm[EDX], EAX
+	MOVZWL	EAX, ff_adate[ECX]
+	MOVW	de_adate[EDX], AX
+	MOVW	32t+de_adate[EDX], AX
+	MOVL	EAX, ffso_xdb+xdb_first[EBP] ;Get directory cluster
+	MOVW	de_pntr[EDX], AX	;Store as cluster for .
+	TESTB	ucb_sts3[ESI], #U3$FAT32 ;Have 32 bit FATs?
+	JE	20$			;No
+	SHRL	EAX, #16t		;Yes - store high 16 bits of cluster
+	MOVW	de_pntrhi[EDX], AX	;  number
+20$:	MOVL	ECX, bfr_dirfiba[ECX]	;Get parent directory FIB
+	MOVL	EAX, ff_f1pnt+1[ECX]	;Get first cluster for parent directory
+	CMPL	bfr_dirfiba[ECX], #0	;Is the parent directory the root?
+	JNE	22$			;No
+	CLRL	EAX			;Yes - store 0 (even for FAT32!)
+22$:	MOVW	32t+de_pntr[EDX], AX	;Store as cluster for ..
+	TESTB	ucb_sts3[ESI], #U3$FAT32 ;Have 32 bit FATs?
+	JE	24$			;No
+	SHRL	EAX, #16t		;Yes - store high 16 bits of cluster
+	MOVW	32t+de_pntrhi[EDX], AX	;  number
+24$:	PUSHL	EBX
+	CALL	xosdskWriteBufr##	;Write out the buffer
+	TESTL	EAX, EAX
+	JS	32$			;If error
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##	;Release the buffer
+	MOVL	EAX, ucb_clussize[ESI]	;Get cluster size
+	MOVL	ffso_cnt[EBP], EAX
+28$:	DECL	ffso_cnt[EBP]		;Need to zero another block?
+	JE	36$			;No
+	ADDL	dcb_dkdskblk+0[EDI], #1	;Yes - bump block number
+	ADCL	dcb_dkdskblk+4[EDI], #0
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	EAX
+	CALL	xosdskNewBlock##
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	34$			;If error
+	PUSHL	EBX
+	CALL	xosdskWriteBufr##	;Write it out
+	TESTL	EAX, EAX
+	JS	32$			;If error
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##	;Release the buffer
+	JMP	28$			;Continue
+
+;Here if error while creating "empty" directory
+
+32$:	PUSHL	EAX
+	CALL	xosdskGiveBufr##
+	POPL	EAX
+34$:	PUSHL	EAX
+	CALL	xosdskGiveDiskRes##	;Give up the disk resource
+	CALL	ffsclosefib#
+	POPL	EAX
+	JMP	ffsodn
+
+;Here with entire new directory zeroed
+
+36$:	LEAL	EAX, ffso_xdb[EBP]	;Finish extending the new directory
+	PUSHL	EAX
+	CALL	ffsextfin#
+	TESTL	EAX, EAX
+	JS	34$			;If error
+	PUSHL	EBX
+	CALL	xosdskGiveDiskRes##
+	POPL	EBX
+	MOVL	ESI, dcb_dkucb[EDI]	;OK
+	MOVL	EAX, ucb_clussize[ESI]	;Get cluster size
+	SHLL	EAX, #9			;Change to bytes
+	MOVL	ff_length[EBX], EAX	;Store initial file size
+40$:	MOVL	EBX, dcb_dkbasefib[EDI]	;Unlock the file
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	PUSHL	bfr_dirfiba[EBX]		;Unlock the directory
+	CALL	xosdskRelsBufr##
+					;Fall into opendone on next page
+.PAGE
+;Here when open is mostly finished - Once we have set the various counts
+;  and exclustive access data we cannot abort this by calling ffsclosefib. ????
+
+opendone:
+	BTL	knlTda+tdaCmd##, #XO%OUT ;Increment write count for file if
+	ADCL	bfr_writecnt[EBX], #0	 ;  doing output to file
+	BTL	knlTda+tdaCmd##, #XO%IN	;Increment read count for file if
+	ADCL	bfr_readcnt[EBX], #0	;  doing input from file
+	TESTL	knlTda+tdaCmd##, #XO$EXWRITE ;Want exclusive write?
+	JE	4$			;No
+	MOVL	bfr_exwrtdcb[EBX], EDI	;Yes
+4$:	TESTL	knlTda+tdaCmd##, #XO$EXREAD ;Want exclusive read?
+	JE	6$			;No
+	MOVL	bfr_exrddcb[EBX], EDI	;Yes
+6$:
+
+;;;; NEED TO CHECK AND SEE IF SHOULD UPDATE DIRECTORY ENTRY HERE!!!!
+
+	MOVL	EBX, dcb_dkbasefib[EDI] ;Restore address of file FIB
+	CLRL	EAX			;Set to beginning of file
+	TESTL	knlTda+tdaOption##, #XO$APPEND|XO$FAPPEND ;Want to append to
+						          ;  the file?
+	JE	10$			;No
+	MOVL	EAX, ff_length[EBX]	;Yes - set to end of file
+10$:	MOVL	dcb_dkfilepos[EDI], EAX
+	TESTB	ff_attrib[EBX], #XA$DIRECT|XA$LABEL ;Directory or label?
+	JE	12$			;No
+	ANDB	knlTda+tdaCmd##, #~XO$OUT ;Yes - don't allow output
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is it a directory?
+	JE	12$			;No
+	ORB	dcb_sts2[EDI], #D2$DIRECT ;Yes - remember this
+12$:	CLRL	EAX
+
+;Here when finished
+
+ffsodn:	TESTL	EAX, EAX
+	JNS	16$
+	CMPL	dcb_dkbasefib[EDI], #0	;Error - is something open on the DCB?
+	JE	18$			;No
+	PUSHL	EAX
+	CALL	ffsclosefib#		;Yes - close it (but keep the DCB)
+	POPL	EAX
+	JMP	18$
+
+;Here if no errors - process parameters again
+
+16$:	CMPL	knlTda+tdaParm##, #0	;Have any parameters?
+	JE	18$			;No
+	PUSHL	#ffsioparms#		;Process parameters again to give him
+	PUSHL	#xosdskDpParms##	;  any values he needs (Ignore errors
+	PUSHL	#0			;  here for now! - Since we have already
+	CALL	sysIoProcDevParam##	;  processed the parameter list and
+					;  determined that all of the parameters
+					;  are valid, the only errors should be
+					;  ER_ADRER in which case the user
+					;  program will probably fail when it
+					;  tries to access the bad address! If
+					;  the user program is playing games
+					;  and modifying the parameters while
+					;  this is active, it will pretty
+					;  much get what it deserves, which is
+					;  meaningless results!!)
+18$:
+
+;;;;;qqqqqqqqqqqqqqqqqqqqqqqqq
+
+	CMPL	knlTda+tdaCLockCnt##, #0 ;Have any cache buffers locked?
+	JNE	24$
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+24$:	CRASH	HCBL			;[Have Cache Block Locked]
+.PAGE
+;Here for the QFNC_NEXTFILE function. When get here we are executing with
+;  an output frame set up and the "open" values in the TDA have been cleared.
+;  The file specification has not been processed. IO parameters have not
+;  been processed.
+
+;This version simply ignores everything before the last : or \ in the file
+;  specification. It might be useful to check this and verify that it is
+;  consistand with the open directory, but that does not seem worth the
+;  effort. We do verify that we really have a directory.
+
+$$$=!0
+FRM nxtf_odb  , odb_SIZE
+nxtf_SIZE=!$$$
+
+ffsnextfile::
+	ENTER	nxtf_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	TESTB	ff_attrib[EBX], #XA$DIRECT
+	JNE	2$
+	MOVL	EAX, #ER_NTDIR
+	JMP	20$
+
+2$:	LEAL	EDI, nxtf_odb+4[EBP]	;Clear the ODB
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ECX, #{odb_name+3}/4
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	nxtf_odb+odb_label[EBP], #'ODB+' ;Store label (only used for
+						 ;  debugging)
+;Scan the file spec and discard everything before the last : or \. We copy
+;  the remainder to the name buffer in the ODB for ffsfindinopndir.
+
+	MOVL	ESI, knlTda+tdaBuffer1##
+	MOVL	EBX, ESI
+	IFFAULT	40$
+4$:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JE	10$
+	CMPB	AL, #'\'
+	JE	6$
+	CMPB	AL, #':'
+	JNE	4$
+6$:	MOVL	EBX, ESI
+	JMP	4$
+
+10$:	MOVL	ECX, #FILENAME_MAX
+	LEAL	ESI, nxtf_odb+odb_name[EBP]
+	CLRL	EDX
+	IFFAULT	40$
+12$:	MOVZBL	EAX, [EBX]
+	INCL	EBX
+	MOVB	[ESI], AL
+	INCL	ESI
+	CMPB	AL, #'.'
+	JNE	14$
+	INCL	EDX
+14$:	CMPB	AL, #0
+	JNE	12$
+	TESTL	EDX, EDX		;Was there a period in the name?
+	JNE	16$			;Yes
+	MOVB	-1[ESI], #'.'		;No - add one
+	MOVB	[ESI], #0
+	INCL	ESI
+16$:	SUBL	ESI, EBP
+	SUBL	ESI, #nxtf_odb+odb_name+1
+	MOVL	nxtf_odb+odb_namelen[EBP], ESI
+
+;Here with the name set up
+
+	CMPB	nxtf_odb+odb_name[EBP], #0 ;Null name?
+	JE	26$			;Yes - fail
+	MOVB	knlTda+tdaSrcAttr##, #XA$FILE ;Set default search attribute
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	18$			;No (strange but not an error)
+	PUSHL	knlTda+tdaDcb##		;Clear the DCB address so parameters
+	MOVL	knlTda+tdaDcb##, #0	;  will be handled correctly for this
+	PUSHL	#ffsioparms#		;Yes - process parameters
+	PUSHL	#xosdskDpParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	POPL	knlTda+tdaDcb##
+	TESTL	EAX, EAX
+	JS	20$
+18$:	MOVL	EDI, knlTda+tdaDcb##	;Lock the directory
+	PUSHL	dcb_dkbasefib[EDI]
+	CALL	xosdskLockBufrW##
+	LEAL	EAX, nxtf_odb[EBP]	;Look for the file in the open
+	PUSHL	EAX			;  directory
+	MOVZBL	EAX, knlTda+tdaSrcAttr##
+	PUSHL	EAX
+	PUSHL	#0
+	CALL	ffsfindinopndir#
+	TESTL	EAX, EAX
+	JE	found			;If found it
+	JS	20$
+	PUSHL	dcb_dkbasefib[EDI]	;Not found - unlock the directory FIB
+	CALL	xosdskRelsBufr##	;  but keep it open on the DCB
+	MOVL	EAX, #ER_FILNF
+20$:	MOVL	knlTda+tdaError##, EAX
+22$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+ 	CLRL	EAX
+	LEAVE
+	RET
+
+;Here if bad (null) file spec
+
+26$:	MOVL	EAX, #ER_BDSPC
+	JMP	20$
+
+;Here if the file was found
+
+found:	PUSHL	dcb_dkbasefib[EDI]	;Save the state of the directory
+	PUSHL	dcb_dkcurfib[EDI]
+	PUSHL	dcb_dkfilepos[EDI]
+	LEAL	EAX, nxtf_odb[EBP]	;Get the FIB for the file
+	PUSHL	EAX
+	CALL	ffsreadfib#
+	TESTL	EAX, EAX
+	JS	44$
+	MOVL	EBX, dcb_dkbasefib[EDI]	;Unlock the directory FIB
+	MOVL	EBX, bfr_dirfiba[EBX]
+28$:	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	CLRL	EAX
+	CMPL	knlTda+tdaParm##, #0	;Have any parameters?
+	JE	30$			;No
+	PUSHL	#ffsioparms#		;Process parameters again to give him
+	PUSHL	#xosdskDpParms##	;  any values he needs
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+30$:	PUSHL	EAX
+	CMPL	knlTda+tdaError##, #0
+	MOVL	EAX, dcb_dkbasefib[EDI]	;Close the file without closing the
+	DECW	bfr_usecnt[EAX]		;  underlying directories
+
+;;;;????????????????????
+	PUSHL	EAX
+	CALL	ffsrelsfib#		;Release the FIB
+	POPL	EAX
+34$:	POPL	dcb_dkfilepos[EDI]	;Restore the directory state
+	POPL	dcb_dkcurfib[EDI]
+	POPL	dcb_dkbasefib[EDI]
+	ADDL	dcb_dkfilepos[EDI], #32t ;Advance to next directory entry
+	TESTL	EAX, EAX
+	JNS	22$
+	JMP	20$
+
+;Here if memory fault copying the file name
+
+	FAULTHDR
+40$:	MOVL	EAX, #ER_ADRER
+	JMP	20$
+
+;Here if error getting the file FIB - the directory is still open on the
+;  DCB and is locked
+
+44$:	PUSHL	EAX
+	MOVL	EBX, dcb_dkbasefib[EDI]	;Unlock the directory FIB
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	POPL	EAX
+	JMP	20$
+
+	LKEEND

@@ -1,0 +1,908 @@
+	.TITLE	line
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Subroutine to draw a line
+;	void xwsDrawLine(
+;	    WIN *win;
+;	    long x1,		// X position of beginning of line
+;	    long y1,		// Y position of beginning of line
+;	    long x2,		// X position of end of line
+;	    long y2,		// Y position of end of line
+;	    long width,		// Line width (The high order bits specify how
+;				//   the line is positioned.)
+;	    long color);	// Color
+
+;This function uses the Pascal calling sequence
+
+dl_win  =!44t
+dl_x1   =!40t
+dl_y1   =!36t
+dl_x2   =!32t
+dl_y2   =!28t
+dl_width=!24t
+dl_color=!20t
+
+$$$=!0
+FRM dl_dx       , 4
+FRM dl_dy       , 4
+FRM dl_inc1     , 4
+FRM dl_inc2     , 4
+FRM dl_rgn      , 4
+FRM dl_offset   , 4
+FRM dl_bytespan , 4
+FRM dl_pixelspan, 4
+dl_SIZE=!$$$
+
+	.ENTRY	xwsDrawLine
+xwsDrawLine::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	dl_SIZE
+	MOVL	EDI, dl_win[EBP]
+	MOVL	EAX, dl_x1[EBP]
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	MOVL	dl_x1[EBP], EAX
+	MOVL	EAX, dl_y1[EBP]
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVL	dl_y1[EBP], EAX
+	MOVL	EAX, dl_x2[EBP]
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	MOVL	dl_x2[EBP], EAX
+	MOVL	EAX, dl_y2[EBP]
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVL	dl_y2[EBP], EAX
+	MOVZWL	EAX, dl_width[EBP]
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVW	dl_width[EBP], AX
+	JMP	1$
+
+;Subroutine to draw a line without scaling
+;	void xwsdrawlinens(
+;	    WIN *win;
+;	    long x1,		// X position of beginning of line
+;	    long y1,		// Y position of beginning of line
+;	    long x2,		// X position of end of line
+;	    long y2,		// Y position of end of line
+;	    long width,		// Line width (The high order bits specify how
+;				//   the line is positioned.)
+;	    long color);	// Color
+
+;This function uses the Pascal calling sequence
+
+	.ENTRY	xwsdrawlinens
+xwsdrawlinens::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	dl_SIZE
+	MOVL	EDI, dl_win[EBP]
+1$:	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	linedn			;Yes
+	CMPW	dl_width[EBP], #0
+	JG	2$
+	MOVW	dl_width[EBP], #1
+2$:	MOVL	ESI, win_bascliprgn[EDI]
+	MOVL	EAX, win_basxorg[EDI]
+	ADDL	dl_x1[EBP], EAX
+	ADDL	dl_x2[EBP], EAX
+	MOVL	EAX, win_basyorg[EDI]
+	ADDL	dl_y1[EBP], EAX
+	ADDL	dl_y2[EBP], EAX
+
+;First do a quick check to determine if the line is definately totally outside
+;  of the clipping region. This is conservative and may not detect a line that
+;  is very close to the clipping region. It still seems worth doing since there
+;  will be many times when a line well outside of the clipping region will be
+;  drawn.
+
+	MOVZWL	EDX, dl_width[EBP]
+	MOVL	EAX, dl_x1[EBP]
+	ADDL	EAX, EDX
+	CMPL	EAX, rgn_left[ESI]	;Completely left?
+	JGE	4$			;No
+	MOVL	EAX, dl_x2[EBP]
+	ADDL	EAX, EDX
+	CMPL	EAX, rgn_left[ESI]	;Maybe
+	JL	linedn			;Yes
+4$:	MOVL	EAX, dl_x1[EBP]
+	SUBL	EAX, EDX
+	CMPL	EAX, rgn_right[ESI]	;Completely right?
+	JLE	6$			;No
+	MOVL	EAX, dl_x2[EBP]
+	SUBL	EAX, EDX
+	CMPL	EAX, rgn_right[ESI]	;Maybe
+	JG	linedn			;Yes
+6$:	MOVL	EAX, dl_y1[EBP]
+	ADDL	EAX, EDX
+	CMPL	EAX, rgn_top[ESI]	;Completely above?
+	JGE	8$			;No
+	MOVL	EAX, dl_y2[EBP]
+	ADDL	EAX, EDX	
+	CMPL	EAX, rgn_top[ESI]	;Maybe
+	JL	linedn			;Yes
+8$:	MOVL	EAX, dl_y1[EBP]
+	SUBL	EAX, EDX	
+	CMPL	EAX, rgn_bottom[ESI]	;Completely below?
+	JLE	10$			;No
+	MOVL	EAX, dl_y2[EBP]
+	SUBL	EAX, EDX	
+	CMPL	EAX, rgn_bottom[ESI]	;Maybe
+	JG	linedn			;Yes
+
+;Here if we probably have to draw at least part of the line - see if we have
+;  one of the special cases
+
+10$:	MOVL	EAX, dl_color[EBP]	;Convert the color to internal format
+	MOVL	EDX, win_basdrw[EDI]
+	MOVL	EDX, drw_funcdsp[EDX]
+	CALLI	gfx_getcolor[EDX]
+	MOVL	dl_color[EBP], EAX
+	MOVL	EAX, dl_x1[EBP]
+	SUBL	EAX, dl_x2[EBP]		;Vertical line?
+	JE	vertical		;Yes
+	MOVL	EBX, dl_y1[EBP]
+	SUBL	EBX, dl_y2[EBP]		;No - horizontal line?
+	JE	horizontal		;Yes
+	MOVL	EDX, win_basdrw[EDI]	;Save some values we will need in our
+	MOVL	ECX, drw_bytespan[EDX]  ;  stack frame (This is necessary
+	MOVL	dl_bytespan[EBP], ECX	;  since we don't have enough
+	MOVL	ECX, drw_pixelspan[EDX] ;  registers keep pointer to the WIN
+	MOVL	dl_pixelspan[EBP], ECX	;  or DRW in what follows!)
+	MOVL	ECX, win_basoffset[EDI]
+	MOVL	dl_offset[EBP], ECX
+	MOVL	dl_dx[EBP], EAX		;Not horizontal
+	MOVL	dl_dy[EBP], EBX
+	CLQ				;Get absolute value of dx
+	XORL	EAX, EDX
+	ANDL	EDX, #0x01
+	ADDL	EAX, EDX
+	XCHGL	EAX, EBX
+	CLQ				;Get absolute value of dy
+	XORL	EAX, EDX
+	ANDL	EDX, #0x01
+	ADDL	EAX, EDX
+	CMPL	EAX, EBX		;See which is the independent axis
+	JE	diagonal		;If line is exactly diagonal
+
+;Here if were do not have a vertical, horizontal, or exactly diagonal line
+
+	JG	ymajor			;If dy is greater, then its the major
+					;  axis
+					;Fall into xmajor on next page
+.PAGE
+;Here if the X axis is the independent axis
+
+xmajor:	MOVL	EAX, dl_x1[EBP]		;Is it going the right way?
+	CMPL	EAX, dl_x2[EBP]
+	JL	4$			;Yes
+	XCHGL	dl_x2[EBP], EAX		;No - reverse the line
+	MOVL	dl_x1[EBP], EAX
+	MOVL	ECX, dl_y1[EBP]
+	XCHGL	dl_y2[EBP], ECX
+	MOVL	dl_y1[EBP], ECX
+4$:	MOVL	EAX, dl_dy[EBP]		;Initialize the parameters
+	ADDL	EAX, EAX
+	MOVL	dl_inc1[EBP], EAX
+	SUBL	EAX, dl_dx[EBP]
+	MOVL	EBX, EAX
+	SUBL	EAX, dl_dx[EBP]
+	MOVL	dl_inc2[EBP], EAX
+	MOVL	EAX, dl_y1[EBP]		;Get position of first pixel
+	MOVL	EDI, EAX
+;;;;;	IMULL	EDI, scnxsize#
+	ADDL	EDI, dl_x1[EBP]
+	ADDL	EDI, EDI
+;;;;;	ADDL	EDI, #dspbufr
+	MOVL	ECX, dl_dx[EBP]		;Get number of X pixels to draw
+	MOVL	EDX, rgn_right[ESI]	;Drawing past right of clipping region?
+	SUBL	EDX, dl_x2[EBP]
+	JG	6$
+	INCL	EDX
+	ADDL	ECX, EDX		;Yes - adjust the count
+6$:	CMPL	EAX, dl_y2[EBP]		;Are we moving up or down?
+	JG	lineup			;Up
+.PAGE
+;Here when ready to start drawing the line moving down - we first check to see
+;  if we are starting to the left of the clipping region and if so, we advance
+;  along the line without drawing until we are past the left edge of the
+;  clipping region
+
+linedown:
+	MOVL	EDX, dl_x1[EBP]
+2$:	CMPL	EDX, rgn_left[ESI]	;To left of clipping region now?
+	JGE	6$			;No - go on
+	ADDL	EDI, #2t		;Yes - advance one X pixel
+	INCL	EDX
+	TESTL	EBX, EBX
+	JNS	4$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 2$
+	JMP	6$
+
+4$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	ADDL	EDI, scnbytespan#
+	INCL	EAX
+	LOOP	ECX, 2$
+
+;Here at or past the left edge of the clipping region
+
+6$:	CMPL	EAX, rgn_top[ESI]	;Above clipping region now?
+	JGE	12$			;No - ready to draw
+8$:	ADDL	EDI, #2t
+	TESTL	EBX, EBX
+	JNS	10$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 8$
+	JMP	12$
+
+10$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	ADDL	EDI, scnbytespan#
+	INCL	EAX
+	LOOP	ECX, 6$
+
+;Here when we are fully within the clipping region - now we are ready to draw!
+
+12$:	MOVL	EDX, dl_y2[EBP]
+	CMPL	EDX, rgn_bottom[ESI]
+;;;;;;	MOVL	EDX, dl_color[EBP]
+	MOVW	[EDI], DX
+	JGE	18$			;If need to check for leaving the
+					;  clipping region
+
+;Here if the line ends within the clipping region - we do this in a seperate
+;  loop to eliminate the test
+
+14$:	ADDL	EDI, #2
+	TESTL	EBX, EBX
+	JNS	16$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+16$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	ADDL	EDI, scnbytespan#
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+;Here if we need to check for leaving the clipping region while drawing
+
+18$:	CMPL	EAX, rgn_bottom[ESI]
+	JGE	linedn
+20$:	ADDL	EDI, #2
+	TESTL	EBX, EBX
+	JNS	22$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 20$
+	JMP	linedn
+
+22$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	ADDL	EDI, scnbytespan#
+	INCL	EAX
+	MOVW	[EDI], DX
+	LOOP	ECX, 18$
+linedn:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	28t
+.PAGE
+;Here when ready to start drawing the line moving up - we first check to see
+;  if we are starting to the left of the clipping region and if so, we advance
+;  along the line without drawing until we are past the left edge of the
+;  clipping region
+
+lineup:	MOVL	EDX, dl_x1[EBP]
+2$:	CMPL	EDX, rgn_left[ESI]	;To left of clipping region now?
+	JGE	6$			;No - go on
+	ADDL	EDI, #2t		;Yes - advance one X pixel
+	INCL	EDX
+	TESTL	EBX, EBX
+	JNS	4$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 2$
+	JMP	6$
+
+4$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	SUBL	EDI, scnbytespan#
+	DECL	EAX
+	LOOP	ECX, 2$
+
+;Here at or past the left edge of the clipping region
+
+6$:	CMPL	EAX, rgn_bottom[ESI]	;Below clipping region now?
+	JL	12$			;No - ready to draw
+8$:	ADDL	EDI, #2t
+	TESTL	EBX, EBX
+	JNS	10$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 8$
+	JMP	12$
+
+10$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;;	SUBL	EDI, scnbytespan#
+	DECL	EAX
+	LOOP	ECX, 6$
+
+;Here when we are fully within the clipping region - now we are ready to draw!
+
+12$:	MOVL	EDX, dl_y2[EBP]
+	CMPL	EDX, rgn_top[ESI]
+;;;;;	MOVL	EDX, dl_color[EBP]
+	MOVW	[EDI], DX
+	JL	18$			;If need to check for leaving the
+					;  clipping region
+
+;Here if the line ends within the clipping region - we do this in a seperate
+;  loop to eliminate the test
+
+14$:	ADDL	EDI, #2t
+	TESTL	EBX, EBX
+	JNS	16$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+16$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	SUBL	EDI, scnbytespan#
+	MOVW	[EDI], DX
+	LOOP	ECX, 12$
+	JMP	linedn
+
+;Here if we need to check for leaving the clipping region while drawing
+
+18$:	CMPL	EAX, rgn_top[ESI]
+	JL	linedn
+20$:	ADDL	EDI, #2t
+	TESTL	EBX, EBX
+	JNS	22$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 20$
+	JMP	linedn
+
+22$:	ADDL	EBX, dl_inc2[EBP]
+;;;;;	SUBL	EDI, scnbytespan#
+	DECL	EAX
+	MOVW	[EDI], DX
+	LOOP	ECX, 18$
+	JMP	linedn
+.PAGE
+;Here if the Y axis is the major (independent) axis
+
+ymajor:	MOVL	EAX, dl_y1[EBP]		;Is it going the right way?
+	CMPL	EAX, dl_y2[EBP]
+	JL	4$			;Yes
+	XCHGL	dl_y2[EBP], EAX		;No - reverse the line
+	MOVL	dl_y1[EBP], EAX
+	MOVL	ECX, dl_x1[EBP]
+	XCHGL	dl_x2[EBP], ECX
+	MOVL	dl_x1[EBP], ECX
+4$:	MOVL	EAX, dl_dx[EBP]		;Initialize the parameters
+	ADDL	EAX, EAX
+	MOVL	dl_inc1[EBP], EAX
+	SUBL	EAX, dl_dy[EBP]
+	MOVL	EBX, EAX
+	SUBL	EAX, dl_dy[EBP]
+	MOVL	dl_inc2[EBP], EAX
+	MOVL	EDI, dl_y1[EBP]		;Get position of first pixel
+;;;;;	IMULL	EDI, scnpixelspan#
+	MOVL	EAX, dl_x1[EBP]
+	ADDL	EDI, EAX
+	ADDL	EDI, EDI
+;;;;;	ADDL	EDI, #dspbufr
+	MOVL	ECX, dl_dy[EBP]		;Get number of Y pixels to draw
+	MOVL	EDX, rgn_bottom[ESI]	;Drawing past bottom of clipping region?
+	SUBL	EDX, dl_y2[EBP]
+	JG	6$
+	INCL	EDX
+	ADDL	ECX, EDX		;Yes - adjust the count
+6$:	CMPL	EAX, dl_x2[EBP]		;Are we moving left or right?
+	JG	lineleft		;Up
+.PAGE
+;Here when ready to start drawing the line moving right - we first check to see
+;  if we are starting to the top of the clipping region and if so, we advance
+;  along the line without drawing until we are past the top edge of the
+;  clipping region
+
+lineright:
+	MOVL	EDX, dl_y1[EBP]
+2$:	CMPL	EDX, rgn_top[ESI]	;Above the clipping region now?
+	JGE	6$			;No - go on
+;;;;;;	ADDL	EDI, scnbytespan#	;Yes - advance one Y pixel
+	INCL	EDX
+	TESTL	EBX, EBX
+	JNS	4$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 2$
+	JMP	6$
+
+4$:	ADDL	EBX, dl_inc2[EBP]
+	ADDL	EDI, #2t
+	INCL	EAX
+	LOOP	ECX, 2$
+
+;Here at or past the top edge of the clipping region
+
+6$:	CMPL	EAX, rgn_left[ESI]	;To left of the clipping region now?
+	JGE	12$			;No - ready to draw
+8$:
+;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	10$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 8$
+	JMP	12$
+
+10$:	ADDL	EBX, dl_inc2[EBP]
+	ADDL	EDI, #2t
+	INCL	EAX
+	LOOP	ECX, 6$
+
+;Here when we are fully within the clipping region - now we are ready to draw!
+
+12$:	MOVL	EDX, dl_x2[EBP]
+	CMPL	EDX, rgn_right[ESI]
+;;;;;	MOVL	EDX, dl_color[EBP]
+	MOVW	[EDI], DX
+	JGE	18$			;If need to check for leaving the
+					;  clipping region
+
+;Here if the line ends within the clipping region - we do this in a seperate
+;  loop to eliminate the test
+
+14$:
+;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	16$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+16$:	ADDL	EBX, dl_inc2[EBP]
+	ADDL	EDI, #2t
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+;Here if we need to check for leaving the clipping region while drawing
+
+18$:	CMPL	EAX, rgn_right[ESI]
+	JGE	linedn
+20$:
+;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	22$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 20$
+	JMP	linedn
+
+22$:	ADDL	EBX, dl_inc2[EBP]
+	ADDL	EDI, #2t
+	INCL	EAX
+	MOVW	[EDI], DX
+	LOOP	ECX, 18$
+	JMP	linedn
+.PAGE
+;Here when ready to start drawing the line moving left - we first check to see
+;  if we are starting above the clipping region and if so, we advance along
+;  the line without drawing until we are past the top of the clipping region
+
+lineleft:
+	MOVL	EDX, dl_y1[EBP]
+2$:	CMPL	EDX, rgn_top[ESI]	;Above the clipping region now?
+	JGE	6$			;No - go on
+;;;;;	ADDL	EDI, scnbytespan#	;Yes - advance one Y pixel
+	INCL	EDX
+	TESTL	EBX, EBX
+	JNS	4$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 2$
+	JMP	6$
+
+4$:	ADDL	EBX, dl_inc2[EBP]
+	SUBL	EDI, #2t
+	DECL	EAX
+	LOOP	ECX, 2$
+
+;Here at or past the top edge of the clipping region
+
+6$:	CMPL	EAX, rgn_right[ESI]	;To right of the clipping region now?
+	JL	12$			;No - ready to draw
+8$:
+;;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	10$
+	ADDL	EBX, dl_inc1[EBP]
+	LOOP	ECX, 8$
+	JMP	12$
+
+10$:	ADDL	EBX, dl_inc2[EBP]
+	SUBL	EDI, #2t
+	DECL	EAX
+	LOOP	ECX, 6$
+
+;Here when we are fully within the clipping region - now we are ready to draw!
+
+12$:	MOVL	EDX, dl_x2[EBP]
+	CMPL	EDX, rgn_left[ESI]
+;;;;;	MOVL	EDX, dl_color[EBP]
+	MOVW	[EDI], DX
+	JL	18$			;If need to check for leaving the
+					;  clipping region
+
+;Here if the line ends within the clipping region - we do this in a seperate
+;  loop to eliminate the test
+
+14$:
+;;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	16$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+16$:	ADDL	EBX, dl_inc2[EBP]
+	SUBL	EDI, #2t
+	MOVW	[EDI], DX
+	LOOP	ECX, 14$
+	JMP	linedn
+
+;Here if we need to check for leaving the clipping region while drawing
+
+18$:	CMPL	EAX, rgn_left[ESI]
+	JL	linedn
+20$:
+;;;;;;	ADDL	EDI, scnbytespan#
+	TESTL	EBX, EBX
+	JNS	22$
+	ADDL	EBX, dl_inc1[EBP]
+	MOVW	[EDI], DX
+	LOOP	ECX, 20$
+	JMP	linedn
+
+22$:	ADDL	EBX, dl_inc2[EBP]
+	SUBL	EDI, #2t
+	DECL	EAX
+	MOVW	[EDI], DX
+	LOOP	ECX, 18$
+	JMP	linedn
+.PAGE
+;Here if drawing a vertical line
+
+vertical:
+	MOVL	EBX, dl_y1[EBP]
+	CMPL	EBX, dl_y2[EBP]		;Going in right direction?
+	JLE	10$			;Yes
+	XCHGL	EBX, dl_y2[EBP]		;No - reverse it
+	MOVL	dl_y1[EBP], EBX
+10$:	CMPL	EBX, rgn_top[ESI]	;Above top of clipping region?
+	JGE	12$			;No
+	MOVL	EBX, rgn_top[ESI]	;Yes
+	MOVL	dl_y1[EBP], EBX
+12$:	MOVL	ECX, dl_y2[EBP]
+	CMPL	ECX, rgn_bottom[ESI]	;Below bottom of clipping region?
+	JLE	14$			;No
+	MOVL	ECX, rgn_bottom[ESI]	;Yes
+	MOVL	dl_y2[EBP], ECX
+14$:	SUBL	ECX, EBX		;Get length - 1
+	JS	linedn			;If length is 0
+	MOVL	EDX, win_basdrw[EDI]
+	CMPW	dl_width[EBP], #1	;Single pixel wide?
+	JG	vertwide		;No
+	IMULL	EBX, drw_pixelspan[EDX] ;Yes - get position of first pixel
+	ADDL	EBX, dl_x1[EBP]
+	ADDL	EBX, EBX
+	ADDL	EBX, win_basoffset[EDI]
+	MOVL	EAX, dl_color[EBP]
+	MOVL	EDX, drw_bytespan[EDX]
+	INCL	ECX
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE
+	JG	vertcmplx
+18$:	MOVW	[EBX], AX
+	ADDL	EBX, EDX
+	LOOP	ECX, 18$
+	JMP	linedn
+.PAGE
+;Here if drawing a vertical line which is wider than 1 pixel. In this case we
+;  do this by drawing a rectangle.
+
+vertwide:
+	PUSHL	EDI
+	MOVL	EAX, dl_x1[EBP]
+	ADDL	EAX, win_basxorg[EDI]
+	TESTB	dl_width+3[EBP], #{LINE$TOLEFT|LINE$TORIGHT}>24t
+					;Center about position?
+	JNE	2$			;No
+	MOVZWL	EDX, dl_width[EBP]	;Yes
+	SHRL	EDX, #1
+	SUBL	EAX, EDX
+	JMP	4$
+
+;Here if not centered about the X position
+
+2$:	TESTB	dl_width+3[EBP], #LINE$TOLEFT>24t ;Draw to left of position?
+	JE	4$			;No
+	MOVZWL	EDX, dl_width[EBP]	;Yes
+	DECL	EDX
+	SUBL	EAX, EDX
+4$:	PUSHL	EAX
+	MOVL	EAX, dl_y1[EBP]
+	ADDL	EAX, win_basyorg[EDI]
+	PUSHL	EAX
+	MOVZWL	EAX, dl_width[EBP]
+	PUSHL	EAX
+	INCL	ECX
+	PUSHL	ECX
+	PUSHL	dl_color[EBP]
+	CALL	xwsfillrectns#
+	JMP	linedn
+.PAGE
+;Here if drawing a vertical line with a complex clipping region
+
+vertcmplx:
+	MOVL	dl_inc2[EBP], ECX
+	MOVL	dl_dy[EBP], EDX
+	MOVL	dl_rgn[EBP], ESI
+	MOVL	ECX, dl_y1[EBP]		;Point to y-table entry for first pixel
+	SUBL	ECX, rgn_top[ESI]
+	LEAL	ESI, rgn_ytable[ESI+ECX*4]
+	MOVL	EDX, dl_x1[EBP]		;Get X position of line
+4$:	MOVL	EDI, [ESI]		;Get segment table pointer
+	ADDL	ESI, #4t
+	TESTL	EDI, EDI		;Null line?
+	JE	12$			;Yes
+	ADDL	EDI, dl_rgn[EBP]	;No
+	MOVL	ECX, [EDI]		;Get number of segments in line
+	MOVL	dl_inc1[EBP], ECX
+	ADDL	EDI, #4t
+6$:	CMPL	EDX, [EDI]		;Before this segment?
+	JL	12$			;Yes- go on to next line
+	CMPL	EDX, 4t[EDI]		;No - in this segment?
+	JLE	10$			;Yes - go draw the pixel
+	ADDL	EDI, #8t		;No - advance to next segment
+	DECL	dl_inc1[EBP]		;More segments?
+	JNE	6$			;Yes
+	JMP	12$			;No
+
+10$:	MOVW	[EBX], AX		;Draw the pixel
+12$:	ADDL	EBX, dl_dy[EBP]		;Advance to next line
+	DECL	dl_inc2[EBP]		;More lines?
+	JNE	4$			;Yes - continue
+	JMP	linedn
+.PAGE
+;Here if drawing a horizontal line
+
+horizontal:
+	CLD
+	MOVL	EDX, dl_x1[EBP]		;Get start of line
+	CMPL	EDX, dl_x2[EBP]		;Going in right direction?
+	JLE	4$			;Yes
+	XCHGL	EDX, dl_x2[EBP]		;No - reverse it
+	MOVL	dl_x1[EBP], EDX
+4$:	CMPL	EDX, rgn_left[ESI]	;Off left of clipping region?
+	JGE	6$			;No
+	MOVL	EDX, rgn_left[ESI]	;Yes
+	MOVL	dl_x1[EBP], EDX
+6$:	MOVL	ECX, dl_x2[EBP]		;Off right of clipping region?
+	CMPL	ECX, rgn_right[ESI]
+	JL	8$			;No
+	MOVL	ECX, rgn_right[ESI]	;Yes
+	MOVL	dl_x2[EBP], ECX
+8$:	SUBL	ECX, EDX		;Get length - 1
+	JS	linedn			;Nothing to do if length is 0
+	TESTB	dl_width+3[EBP], #{LINE$ABOVE|LINE$BELOW}>24t
+					;Want to center line about positon?
+	JNE	10$			;No
+	MOVZWL	EAX, dl_width[EBP]	;Yes - adjust the Y position
+	SHRL	EAX, #1			;c{EDX} = width/2 (rounded down)
+	JMP	12$
+
+10$:	TESTB	dl_width+3[EBP], #LINE$BELOW>24t
+	JNE	horizlp
+	MOVZWL	EAX, dl_width[EBP]
+	DECL	EAX
+12$:	SUBL	dl_y1[EBP], EAX
+horizlp:MOVL	EDI, dl_win[EBP]
+	MOVL	EBX, win_basdrw[EDI]
+	MOVL	EAX, EDI
+	MOVL	EDI, dl_y1[EBP]
+	IMULL	EDI, drw_pixelspan[EBX] ;Get position of first pixel
+	ADDL	EDI, EDI
+	ADDL	EDI, win_basoffset[EAX]
+	MOVL	EAX, dl_color[EBP]
+	MOVL	EBX, EAX
+	SHLL	EAX, #16t
+	MOVW	AX, BX
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Simple clipping region?
+	JG	horzcmplx		;No
+	PUSHL	ECX
+	LEAL	EDI, [EDI+EDX*2]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	SHRL	ECX, #1t
+	JNC	20$			;If line length is odd
+
+;Here if length of the line is even
+
+	TESTL	EDI, #02h		;Starting on long boundry?
+	JNE	18$			;No
+
+;Here if length is even and line starts on long boundry
+
+	INCL	ECX
+	JMP	28$
+
+;Here if length is even and line does not start on long boundry
+
+18$:	STOSW	[EDI]
+	JMP	22$
+
+;Here if length is odd
+
+20$:	JE	24$			;If width is 1
+
+;Here if length is odd and greater than 1
+
+	TESTL	EDI, #02h		;Starting on long boundry?
+	JNE	26$			;No
+
+;Here if width is even and line starts on long boundry
+
+22$:	RSTOSL	[EDI]
+24$:	STOSW	[EDI]
+	POPL	ECX
+	JMP	horizdn
+
+;Here if width is even and line does not start on long boundry
+
+26$:	STOSW	[EDI]
+28$:	RSTOSL	[EDI]
+	POPL	ECX
+	JMP	horizdn
+.PAGE
+;Here if drawing a horizontal line with a complex clipping region
+
+horzcmplx:
+	MOVL	dl_dx[EBP], EDI
+	MOVL	ECX, dl_y1[EBP]		;Get offset of first y-table entry
+	SUBL	ECX, rgn_top[ESI]	;  to use
+	CMPL	ECX, rgn_ycount[ESI]	;Below region now? (This is possible
+					;  since our initial check is only
+					;  approximate!)
+	JAE	linedn			;Yes - finished
+	LEAL	EBX, rgn_ytable[ESI+ECX*4]
+
+;;;;	TESTB	BL, #0x03
+;;;;	JE	4$
+;;;;	INT3
+;;;;4$:
+	MOVL	EBX, [EBX]
+	TESTL	EBX, EBX
+	JE	horizdn
+	ADDL	EBX, ESI
+	MOVL	ECX, [EBX]		;Get number of segments in line
+
+;;;;	CMPL	ECX, #600t
+;;;;	JB	6$
+;;;;	INT3
+;;;;6$:
+	MOVL	dl_inc1[EBP], ECX
+	ADDL	EBX, #4t
+8$:	MOVL	ECX, 4[EBX]		;This segment completely left?
+	CMPL	ECX, dl_x1[EBP]
+	JGE	10$			;No
+	ADDL	EBX, #8t		;Yes
+	DECL	dl_inc1[EBP]		;More segments?
+	JNE	8$			;Yes - continue
+	JMP	horizdn			;No - finished
+
+;Here with first segment that is not completely left of the line
+
+10$:	MOVL	EDX, [EBX]		;Does segment start to left of the
+	CMPL	EDX, dl_x1[EBP]		;  line?
+	JGE	14$			;No
+	MOVL	EDX, dl_x1[EBP]		;Yes - get correct left edge position
+	JMP	14$			;Continue
+
+;Here for additional segments after the first
+
+12$:	MOVL	EDX, [EBX]		;Get left edge of segment
+	MOVL	ECX, 4[EBX]		;Get right edge of segment
+14$:	CMPL	EDX, dl_x2[EBP]		;Is segment completely right of the
+					;  line?
+	JG	horizdn			;Yes - finished
+	CMPL	ECX, dl_x2[EBP]		;No - does segment extend to right of
+					;  the line?
+	JLE	18$			;No
+	MOVL	ECX, dl_x2[EBP]		;Yes - get cororect right edge position
+18$:	MOVL	EDI, dl_dx[EBP]
+	SUBL	ECX, EDX		;Get lenght of line to draw - 1
+	JG	22$			;Is segment is more than 1 pixel long
+
+;Here if segment is 1 pixel long
+
+;;;;;;;	SUBL	EDX, dl_x1[EBP]
+	MOVW	[EDI+EDX*2], AX
+	JMP	32$
+
+;Here if segment is more than 1 pixel long
+
+22$:
+;;;;;;;	SUBL	EDX, dl_x1[EBP]
+	LEAL	EDI, [EDI+EDX*2]
+	SHRL	ECX, #1
+	JNC	26$			;If odd number of pixels in segment
+
+;Here if have an even number of pixels in the segment
+
+	TESTL	EDI, #02h		;Does it start on a long boundry?
+	JNE	24$			;No
+	INCL	ECX
+	JMP	30$			;Yes
+
+;Here if have an even number of pixels and the segment does not start on a
+;  long boundry
+
+24$:	STOSW	[EDI]
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	JMP	32$
+
+;Here if have an odd number of pixels
+
+26$:	TESTL	EDI, #02h		;Does it start on a long boundry?
+	JNE	28$			;No
+	RSTOSL	[EDI]			;Yes
+	STOSW	[EDI]
+	JMP	32$
+
+;Here if have an odd number of pixels and the segment does not start on a
+;  long boundry
+
+28$:	STOSW	[EDI]
+30$:	RSTOSL	[EDI]
+32$:	ADDL	EBX, #8t		;Advance to next segment
+	DECL	dl_inc1[EBP]		;More segments?
+	JNE	12$			;Yes - continue
+horizdn:INCL	dl_y1[EBP]
+	DECW	dl_width[EBP]
+	JNE	horizlp
+	JMP	linedn
+.PAGE
+;Here if drawing an exactly diagonal line
+
+diagonal:
+	HLT

@@ -1,0 +1,202 @@
+	.TITLE	ffsclose - FFS close function
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+
+$$CHKCHAIN=!0
+
+	CODE
+
+;Here for the close device entry
+;	long fatclose(void);
+;  Value returned is always 0. tdaError is set if error. File is always
+;    closed as fully as is possible, considering any errors that occur.
+
+ffsclose::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+.IF NE $$CHKCHAIN
+	CALL	checkchain#
+.ENDC
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	4$			;No
+	PUSHL	#ffsioparms#		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JNS	4$
+	MOVL	knlTda+tdaError##, EAX
+4$:	CMPL	dcb_dkbasefib[EDI], #0	;Really have a file open?
+	JE	close4			;No
+	CMPL	dcb_opencnt[EDI], #1	;Yes - anyone else have this open?
+	JNE	close4			;Yes - nothing really needed here!
+	TESTB	knlTda+tdaCmd##, #XO$OUT ;Open for output?
+	JE	8$			;No
+	CALL	ffsundefer		;Yes - finish pending output
+	TESTL	EAX, EAX
+	JNS	8$
+	MOVL	knlTda+tdaError##, EAX	;Always report this error
+8$:	MOVL	EBX, dcb_dkbasefib[EDI] ;Get address of base FIB
+	PUSHL	EBX
+	CALL	xosdskLockBufrW##	;Lock the file
+	TESTL	knlTda+tdaCmd##, #XO$EXREAD ;Open for exclusive read access?
+	JE	12$			;No
+	CMPL	bfr_exrddcb[EBX], EDI	;Really?
+	JE	10$			;Yes
+	CRASH	BXRD			;[Bad eXclusive Read DCB]
+
+10$:	MOVL	bfr_exrddcb[EBX], #0
+12$:	TESTL	knlTda+tdaCmd##, #XO$EXWRITE ;Open for exclusive write?
+	JE	16$
+	CMPL	bfr_exwrtdcb[EBX], EDI	;Really?
+	JE	14$			;Yes
+	CRASH	BXWD			;[Bad eXclusive Write DCB]
+
+14$:	MOVL	bfr_exwrtdcb[EBX], #0
+16$:	BTL	knlTda+tdaCmd##, #XO%IN	;Decrement read count if open for input
+	SBBL	bfr_readcnt[EBX], #0
+	CMPL	bfr_readcnt[EBX], #0	;Is the count OK?
+	JNS	18$			;Yes
+	CRASH	BFRC			;[Bad File Read Count]
+
+18$:	BTL	knlTda+tdaCmd##, #XO%OUT ;Decrement write count if open for
+	SBBL	bfr_writecnt[EBX], #0	 ;  output
+	CMPL	bfr_writecnt[EBX], #0	;Is the count OK?
+	JNS	close2			;No
+	CRASH	BFWC			;[Bad File Write Count]
+.PAGE
+;Here with read/write counts handled if necessary
+
+close2:	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is this a directory?
+	JNE	10$			;Yes - don't change modificatin date/
+					;  time and don't reduce allocation
+	TESTB	ff_status[EBX], #FS$MODIFIED ; Has the file been modified?
+	JE	4$			;No
+	TESTB	ff_status[EBX], #FS$MDTTMSET ;Yes - has the modified date/time
+					     ;  been set?
+	JNE	4$			;Yes - leave it alone
+	CALL	getcurffsdttm#		;No - use current date and time
+	MOVL	ff_mdttm[EBX], EAX
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate base FIB has been changed
+4$:	CMPL	dcb_clsslb[EDI], #0	;Do we have a close SLB?
+	JE	6$			;No
+					;Yes - put the file's date/time in
+	MOVL	EDX, dcb_dkbasefib[EDI]	;  the SLB
+	PUSHL	ff_cdttm[EDX]		;Get file's creation date/time
+	CALL	conv2sysdttm#		;Change to system format
+	MOVL	ECX, dcb_clsslb[EDI]
+	MOVL	slb_data+8[ECX], EAX
+	MOVL	slb_data+12t[ECX], EDX
+
+;Here to deallocate extra blocks allocated to the file if need to
+
+6$:	TESTB	knlTda+tdaOption##, #XC$NODEAL ;Want to suppress deallocation?
+	JNE	10$			;Yes
+	BTL	knlTda+tdaCmd##, #XO%OUT ;No - is file open for output?
+	JNC	10$			;No
+	PUSHL	ff_length[EBX]		;Yes - reduce length if need to
+	CALL	ffsreduce#		;Reduce size of the file (this will
+	TESTL	EAX, EAX		;  update the directory on disk)
+	JNS	10$
+	MOVL	knlTda+tdaError##, EAX	;Always report this error
+
+;Here with file size reduced if necessary
+
+10$:	TESTB	dcb_sts3[EDI], #D3$FATCHG ;Have we changed any FATs?
+	JE	12$			;No
+	CALL	ffswritefats#		;Yes - update any changed FATs
+	TESTL	EAX, EAX
+	JNS	12$
+	MOVL	knlTda+tdaError##, EAX
+12$:	MOVL	EDX, dcb_dkbasefib[EDI]
+	MOVB	ff_status[EDX], #0	;File now not modified and date/time
+					;  not set
+	TESTB	bfr_status[EDX], #BS$CHNGD ;Has the FIB been changed?
+	JE	14$			;No
+	PUSHL	EDX			;Yes
+	CALL	ffswritefib#		;Update file data on disk first
+	TESTL	EAX, EAX
+	JNS	14$
+	MOVL	knlTda+tdaError##, EAX	;Always report this error
+
+;Here with everything on disk updated
+
+14$:	CALL	ffsclosefib#		;Release the FIB and all of its
+					;  ancestors
+close4:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+;Function to write out a pending write block
+;	long ffsundefer(void);
+
+ffsundefer::
+	PUSHL	EBX
+	CLRL	EAX
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	EBX, dcb_dkpwblk[EDX]	;Get address of the pending write
+	TESTL	EBX, EBX		;  buffer
+	JE	8$			;Nothing to do here if none
+	MOVL	dcb_dkpwblk[EDI], #0
+	PUSHL	EBX			;Lock the buffer
+	CALL	xosdskLockBufrW##
+	TESTL	EAX, EAX
+	JS	8$
+	DECW	bfr_usecnt[EBX]
+	JNS	4$
+	CRASH	BBUC			;[Bad cache Buffer Use Count]
+
+4$:	PUSHL	EBX
+	CALL	xosdskWriteBufr##
+ 	TESTL	EAX, EAX		;Error?
+	JS	10$			;Yes
+	PUSHL	EBX			;No - release the buffer
+	CALL	xosdskRelsBufr##
+	CLRL	EAX
+8$:	POPL	EBX
+	RET
+
+;Here if error writing the buffer
+
+10$:	PUSHL	EAX
+	PUSHL	EBX			;Give up the buffer
+	CALL	xosdskGiveBufr##
+	POPL	EAX
+	JMP	8$
+
+	LKEEND

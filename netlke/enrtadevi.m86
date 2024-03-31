@@ -1,0 +1,69 @@
+	.TITLE	enrtadevi - Interrupt prototype for ENRTADEV.XC
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This assembly file is needed because we must have a fixed entry sequence
+;  which is quite different from what OWC insists on generating. It's also
+;  much easier to specify the fix-up addresses this way.
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD XOSINC:\xmac\xosxlke.par
+
+	CODE
+
+;The following is a prototype for the interrupt service routine entry code
+;  - this code is copied for each unit by enrtaaddunit.
+
+;NOTE: Since this is pretty short it is all here. It does not call any
+;      common code.
+
+;XOS interrupt routines must begin with exactly the sequence defined in
+;  INTENTR. They must end with a JMP to knlIntDoneLow or knlIntDoneHigh.
+;  ALL paths through the code must end with same JMP instruction.
+
+;There is a small problem in that XMAC cannot use .h files so we don't have
+;  symbols for the offsets in the IDB or the device registers available here.
+;  Since we only reference 2 device registers and their offsets are absolutely
+;  fixed, we just use the known numeric values. The IDB offsets are potenially
+;  variable with different versions, so we use the once-only C code to insert
+;  the values into the prototype using the ofx pointers.
+
+enrtaint::
+	INTENTR				;Save registers
+fix1==!$+3-enrtaint
+	MOVZWL	EAX, 0x1234		;Get the status bits
+	TESTL	EAX, EAX
+	JE	4$
+fix2==!$+2-enrtaint
+	MOVW	0x1234, AX		;Clear the bits we got
+fix3==!$+2-enrtaint
+	ORL	0x1234, EAX		;Save the bits for fork level
+fix4==!$+3-enrtaint
+	MOVW	0x1234, #0		;Disable all interrupts
+fix5==!$+1-enrtaint
+	PUSHL	#0x1234			;Request a device fork
+fix6==!$+1-enrtaint
+	CALL	$+0x0FFF
+enrtaexit==!$-enrtaint
+4$:	JMP	$+0x0FFF		;Dismiss interrupt (force a long value)
+
+ENRTAINTSZ==!{$-enrtaint+3}/4

@@ -1,0 +1,293 @@
+	.TITLE	debug
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.paR
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	xwschkrgn
+xwschkrgn::
+	PUSHAL
+	MOVL	EDI, 36t[ESP]
+	CMPL	[EDI], #'RGN#'
+	JE	2$
+	INT3
+	JMP	chkdone
+
+2$:	CMPL	rgn_usecnt[EDI], #0
+	JG	4$
+	CMPL	rgn_usecnt[EDI], #-1
+	JE	4$
+	INT3
+	JMP	chkdone
+
+4$:	CMPB	rgn_type[EDI], #RGNTYPE_NULL
+	JNE	14$
+	CMPL	EDI, #xwsnullrgn#
+	JE	chkdone
+	INT3
+	JMP	chkdone
+
+;Here if not the null region
+
+6$:
+.IF NE 0
+
+	MOVL	EAX, rgn_left[EDI]
+	CMPL	EAX, #-10000t
+	JL	8$
+	CMPL	EAX, #10000t
+	JG	8$
+	CMPL	EAX, rgn_right[EDI]
+	JG	8$
+	CMPL	rgn_right[EDI], #10000t
+	JL	10$
+8$:	INT3
+	JMP	chkdone
+
+10$:	MOVL	EAX, rgn_top[EDI]
+	CMPL	EAX, #-10000t
+	JL	12$
+	CMPL	EAX, #10000t
+	JG	12$
+	CMPL	EAX, rgn_bottom[EDI]
+	JG	12$
+	CMPL	rgn_bottom[EDI], #10000t
+	JL	14$
+12$:	INT3
+	JMP	chkdone
+
+.ENDC
+
+
+14$:	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE
+	JNE	20$
+	CMPL	rgn_size[EDI], #rgn_ytable
+	JNE	18$
+	CMPL	rgn_ycount[EDI], #0
+	JE	chkdone
+16$:	INT3
+	JMP	chkdone
+
+18$:	CMPB	rgn_type[EDI], #RGNTYPE_COMPLEX
+	JE	20$
+	INT3
+	JMP	chkdone
+
+;Here if have a complex region
+
+20$:	MOVL	EAX, rgn_size[EDI]	;Get length of the RGN
+	MOVL	rgnsize, EAX
+	MOVL	EAX, rgn_ycount[EDI]	;Get number of lines
+	MOVL	linecnt, EAX
+	TESTL	EAX, EAX
+	JLE	22$
+	CMPL	EAX, #10000t
+	JLE	24$
+22$:	INT3
+	JMP	chkdone
+
+24$:	LEAL	EAX, rgn_ytable[EAX*4]	;See how much space we need for the
+					;  header and the Y table
+	CMPL	EAX, rgnsize		;Is it at least this big?
+	JLE	26$
+	INT3
+	JMP	chkdone
+
+26$:	MOVL	minpnt, EAX		;Remember minimum pointer value
+	LEAL	ESI, rgn_ytable[EDI]	;Point to the first pointer
+28$:	MOVL	EAX, [ESI]		;Get first pointer
+	TESTL	EAX, EAX
+	JNE	30$
+	ADDL	ESI, #4
+	DECL	linecnt
+	JNE	28$
+30$:	CMPL	EAX, minpnt		;Is it right?
+	JE	32$			;Yes
+	INT3
+	JMP	chkdone
+
+32$:	MOVL	EDX, [ESI]		;Get pointer to a segment table
+	ADDL	ESI, #4
+	TESTL	EDX, EDX		;Null line?
+	JE	48$			;Yes
+	CMPL	EDX, minpnt
+	JL	34$
+	CMPL	EDX, rgnsize
+	JL	36$
+34$:	INT3
+	JMP	chkdone
+
+36$:	MOVL	ECX, [EDI+EDX]		;Get number of segments in the line
+	ADDL	EDX, #4t
+	TESTL	ECX, ECX
+	JLE	38$
+	CMPL	ECX, #20t
+	JLE	40$
+38$:	INT3
+	JMP	chkdone
+
+40$:	LEAL	EAX, [EDX+ECX*8]
+	CMPL	EAX, rgnsize
+	JLE	42$
+	INT3
+	JMP	chkdone
+
+42$:	MOVL	EAX, [EDI+EDX]
+	CMPL	EAX, #-10000t
+	JL	44$
+	CMPL	EAX, #10000t
+	JG	44$
+	CMPL	EAX, 4[EDI+EDX]
+	JG	44$
+	CMPL	4[EDI+EDX], #10000t
+	JL	46$
+44$:	INT3
+	JMP	chkdone
+
+46$:	ADDL	EDX, #8
+	LOOP	ECX, 42$
+48$:	DECL	linecnt
+	JNE	32$
+	CMPL	EDX, rgnsize
+	JE	chkdone
+	INT3
+
+chkdone:POPAL
+	RET	4t
+.PAGE
+
+.IF NE 0
+
+$$$=!0
+FRM pr_rgn , 4t
+FRM pr_cnt1, 4t
+FRM pr_cnt2, 4t
+FRM pr_yval, 4t
+pr_SIZE=!$$$
+
+	.ENTRY	xwsprintregion
+xwsprintregion::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	pr_SIZE, 0
+	MOVL	EDI, 16t[EBP]
+	PUSHL	rgn_ycount[EDI]
+	PUSHL	rgn_bottoEDI]
+	PUSHL	rgn_right[EDI]
+	PUSHL	rgn_left[EDI]
+	PUSHL	rgn_top[EDI]
+	MOVZBL	EAX, [EDI]
+	PUSHL	EAX
+	PUSHL	#fmt1
+	CALL	printf#
+	ADDL	ESP, #28t
+	MOVL	EAX, rgn_ycount[EDI]
+	MOVL	pr_cnt1[EBP], EAX
+	MOVL	pr_rgn[EBP], EDI
+	MOVL	EAX, rgn_top[EDI]
+	MOVL	pr_yval[EBP], EAX
+	ADDL	EDI, #rgn_ytable
+4$:	DECL	pr_cnt1[EBP]
+	JS	14$
+	MOVL	ESI, [EDI]
+	ADDL	EDI, #4
+	PUSHL	pr_yval[EBP]
+	INCL	pr_yval[EBP]
+	PUSHL	#fmt2
+	CALL	printf#
+	ADDL	ESP, #8
+	TESTL	ESI, ESI
+	JE	10$
+	ADDL	ESI, pr_rgn[EBP]
+	MOVL	EAX, [ESI]
+	ADDL	ESI, #4
+	MOVL	pr_cnt2[EBP], EAX
+8$:	PUSHL	4[ESI]
+	PUSHL	[ESI]
+	PUSHL	#fmt3
+	CALL	printf#
+	ADDL	ESP, #12t
+	ADDL	ESI, #8
+	DECL	pr_cnt2[EBP]
+	JE	10$
+	PUSHL	#fmt4
+	CALL	printf#
+	ADDL	ESP, #4
+	JMP	8$
+
+10$:	PUSHL	#nl
+	CALL	printf#
+	ADDL	ESP, #4
+	JMP	4$
+
+14$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET
+
+
+fmt1:	.ASCII	"Dump of region"{LF}
+	.ASCII	"  Type = 0x%2.2X"{LF}
+	.ASCII	"        %d"{LF}
+	.ASCII	"%8d   %d"{LF}
+	.ASCII	"        %d"{LF}
+	.ASCII	"  Ycnt = %d"
+nl:	.BYTE	LF, 0
+fmt2:	.ASCIZ	" %5d: "
+fmt3:	.ASCIZ	"%d-%d"
+fmt4:	.ASCIZ	", "
+.PAGE
+
+	.ENTRY	xwsprintregion2
+xwsprintregion2::
+	PUSHL	EDI
+	MOVL	EDI, 8.B[ESP]
+	PUSHL	rgn_top.B[EDI]
+	PUSHL	rgn_left.B[EDI]
+	MOVL	EAX, rgn_bottom.B[EDI]
+	SUBL	EAX, rgn_top.B[EDI]
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EAX, rgn_right.B[EDI]
+	SUBL	EAX, rgn_left.B[EDI]
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EAX, #'S'
+	CMPB	rgn_type.B[EDI], #RGNTYPE_SIMPLE
+	JE	6$
+	MOVB	AL, #'C'
+	CMPB	rgn_type.B[EDI], #RGNTYPE_COMPLEX
+	JE	6$
+	MOVB	AL, #'N'
+	CMPB	rgn_type.B[EDI], #RGNTYPE_NULL
+	JE	6$
+	MOVB	AL, #'?'
+6$:	PUSHL	EAX
+	PUSHL	#fmt10
+	CALL	printf#
+	ADDL	ESP, #24t.B
+	POPL	EDI
+	RET
+
+fmt10:	.ASCIZ	"Region: (%c) (%d, %d) at (%d, %d)"{LF}
+.PAGE
+
+.ENDC
+	.PSECT	_DATA_p
+
+linecnt:.LONG	0
+minpnt:	.LONG	0
+rgnsize:.LONG	0
+
+	.END

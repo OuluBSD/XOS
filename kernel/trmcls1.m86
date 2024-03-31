@@ -1,0 +1,1221 @@
+	.TITLE	trmcls1 - General terminal class driver for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xostrm.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+
+;This is a general terminal driver for user terminals.  This driver must be
+;  linked with the kernel, it cannot be loaded.
+
+	CODE
+
+	.SBTTL	SVC dispatch table for terminal class devices
+
+;SVC dispatch table for terminal class devices
+
+trmdsp:	.LONG	knlRtnZero#	;sd_mount    =  0 - Mount
+	.LONG	trmcleardcb#	;sd_cleardcb =  4 - Clear DCB
+	.LONG	trmopena#	;sd_opena    =  8 - Open additional
+	.LONG	trmopen1#	;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDev#	;sd_nextfile = 16 - Find next file
+	.LONG	0		;sd_delete   = 20 - Delete file
+	.LONG	0		;sd_rename   = 24 - Rename file
+	.LONG	trminpblk#	;sd_inblock  = 28 - Input block
+	.LONG	trmoutblk#	;sd_outblock = 32 - Output block
+	.LONG	trmiosts#	;sd_getiosts = 36 - Get input/output status
+	.LONG	knlIFnDev#	;sd_special  = 40 - Special device function
+	.LONG	trmclose#	;sd_close    = 44 - Close file
+	.LONG	0		;sd_getlabel = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone#	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero#	;sd_vfychg   = 60 - Verify disk changed
+
+;Class function dispatch table for TRM class devices
+
+	.LONG	CLSFMX
+trmcls::.LONG	trmaddunit	;CF_ADDUNIT = 1. - Add unit
+CLSFMX=!{$-trmcls}/4
+.PAGE
+;Class characteristics tables for the TRM device class
+
+	DATA
+
+	.MOD	4
+trmdctbl:
+ CHARBGN  1, sysIoCharValues#
+ CHARENT  NUMBER , DECV, , 4, msgnumber , knlGetSysVal#, 0            , trmdcbnum
+ CHARENT  MAXIMUM, DECV, , 4, msgmaximum, knlGetSysVal#, knlSetSysVal#, trmdcbmax
+ CHARENT  LIMIT  , DECV, , 4, msglimit  , knlGetSysVal#, knlSetSysVal#, trmdcblmt
+ CHAREND
+
+	CODE
+
+msgnumber: CHARINFO  {Number of in use terminal devices}
+msgmaximum:CHARINFO  {Maximum number of in use terminal devices}
+msglimit:  CHARINFO  {Maximum number of terminal devices allowed}
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	trminit
+
+trminit:PUSHL	#knlTrmCcb		;Install the terminal class
+	CALL	sysIoNewClass#
+	TESTL	EAX, EAX
+	JS	4$			;This should not fail!
+	MOVL	EBX, #trmttas		;Set up our ten-times-a-second routine
+	CALL	knlSetupTTAS#
+	JC	4$
+	CLRL	EAX
+	RET
+
+4$:	CRASH	CITC
+
+	CODE
+.PAGE
+;Subroutine to make a terminal TDB
+;	c{EAX} = Length of input ring buffer + 10000h * length of input
+;		   line buffer
+;	c{EBX} = Device type name
+;	c{ECX} = Size of the TDB
+;	c(DL)  = Primary unit number
+;	c(DH)  = Secondary unit number
+;	CALL	knlTrmMakeTdb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Offset of TDB
+
+knlTrmMakeTdb::
+	PUSHL	EBX
+	SHLL	EAX, #2			;Change buffer lengths to bytes
+	PUSHL	EAX			;Save length of input buffers
+	PUSHL	ECX			;Save size of the TDB
+	PUSHL	EDX
+	ADDW	CX, AX			;Calculate total amount needed
+	ADDW	CX, 10t[ESP]
+	PUSHL	#0			;Get an XMB for the TDB
+	MOVL	EAX, ESP
+	PUSHL	ECX
+	PUSHL	EAX
+	CALL	sysMemGetXmb#
+	POPL	ESI
+	TESTL	EAX, EAX
+	JNS	2$
+	POPL	EDX
+	POPL	ECX			;If error - fix up the stack
+	POPL	EBX
+	POPL	EBX
+	STC
+	RET				;And give error return
+
+;Here with an XMB allocated
+
+2$:	POPL	EDX
+	MOVL	ECX, [ESP]
+	SHRL	ECX, #2
+	PUSHL	EDI
+	MOVL	EDI, ESI
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+	POPL	EDI
+	MOVL	tdb_label[ESI], #'TDB*'
+	MOVB	tdb_pnum[ESI], DL	;Put primary unit number in the TDB
+	MOVB	tdb_snum[ESI], DH	;Store secondary unit number
+	CLRL	EAX
+	MOVL	tdb_name+0[ESI], EAX
+	MOVL	tdb_name+4[ESI], EAX
+	MOVL	tdb_name+8[ESI], EAX
+	MOVL	tdb_name+12t[ESI], EAX
+	MOVL	tdb_next[ESI], EAX
+	MOVL	EAX, knlTrmCcb+ccb_blktail ;Link into our chain of TDBs
+	MOVL	knlTrmCcb+ccb_blktail, ESI
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	tdb_next[EAX], ESI
+	JMP	6$
+
+4$:	MOVL	knlTrmCcb+ccb_blkhead, ESI
+6$:	MOVL	tdb_name+0[ESI], #'TRM' ;Put name in the TDB
+	MOVZBL	EAX, DL
+	LEAL	EBX, tdb_name+3[ESI]
+	CALL	knlPutDecNmbr#
+	MOVZBL	EAX, tdb_snum[ESI]	;Get secondary unit number
+	CMPB	AL, #-1			;Is there one?
+	JE	8$			;No
+	MOVB	[EBX], #'S'		;Yes - finish the name
+	INCL	EBX
+	CALL	knlPutDecNmbr#
+8$:	POPL	ECX			;Store offset of ring buffer in TDB
+	ADDL	ECX, ESI
+	MOVL	tdb_iring[ESI], ECX
+	MOVL	tdb_irput[ESI], ECX
+	MOVL	tdb_irtak[ESI], ECX
+	POPL	EBX			;Get length of buffers
+	SHRL	EBX, #2
+	MOVZWL	EAX, BX			;Get length of ring buffer
+	MOVL	tdb_irsize[ESI], EAX	;Store it
+	SHLL	EAX, #2
+	ADDL	ECX, EAX		;Store offset of line buffer (also end
+	MOVL	tdb_ibufr[ESI], ECX	;  of ring buffer)
+	SHRL	EBX, #16t		;Get length of line buffer
+	MOVL	tdb_ibsize[ESI], EBX	;Store that too
+	MOVB	tdb_closval[ESI], #0	;Store default carrier loss time-out
+					;  time
+	POPL	tdb_typename[ESI]	;Store device type name
+	MOVL	tdb_program+0[ESI], #'xshe' ;Assume don't want login
+	MOVL	tdb_program+4[ESI], #'ll'
+	BTL	knlSysDescp#, #SYSD%LOGIN ;Right?
+	JNC	10$			;Yes
+	MOVL	tdb_program+0[ESI], #'logi' ;No
+	MOVB	tdb_program+4[ESI], #'n'
+	CLC
+10$:	MOVL	tdb_msgdst+0[ESI], #'INIT'
+	DECL	tdb_fnext[ESI]		;Indicate fork request not queued
+	RET				;Finished
+.PAGE
+;Device check routine for terminal devices
+;	long trmdevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 0 if found a match, 1 if no match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+devc_name  =!12t
+devc_path  =!8
+devc_rtndcb=!4
+
+trmdevchk:
+	MOVL	EBX, devc_name[ESP]
+	MOVL	EAX, [EBX]
+	ANDL	EAX, #0xFFFFFF
+	CMPL	EAX, #'TRM'		;Is this TRM*?
+	JNE	6$			;No
+	CMPL	[EBX], #'TRM'		;Yes - is it TRM:?
+	JNE	10$			;No
+	MOVL	EDX, knlPda+pdaHndlTbl#+DH_STDTRM*8 ;Yes - get DCB of console
+						    ;  device
+	TESTL	EDX, EDX		;Do we have one?
+	JNE	24$			;Yes
+4$:	MOVL	EAX, #ER_NSDEV
+	JMP	8$
+
+;Here if not a terminal device name
+
+6$:	CLRL	EAX
+8$:	RET	12t
+
+;Here if have name which starts with TRM but is not TRM:
+
+10$:	CMPB	3[EBX], #'0'		;Is the next character a digit?
+	JB	6$			;No
+	CMPB	3[EBX], #'9'		;Maybe
+	JA	6$			;No
+	MOVL	EDX, #knlTrmCcb		;First check to see if already have a
+	MOVL	EDX, ccb_dcbhead[EDX]	;  DCB for this terminal
+12$:	TESTL	EDX, EDX		;Have another to check?
+	JE	16$			;No
+	MOVL	EAX, dcb_name+0[EDX]	;Yes - this one?
+	CMPL	[EBX], EAX
+	JNE	14$			;No
+	MOVL	EAX, dcb_name+4[EDX]
+	CMPL	4[EBX], EAX
+	JNE	14$			;No
+	MOVL	EAX, dcb_name+8[EDX]
+	CMPL	8[EBX], EAX
+	JNE	14$			;No
+	MOVL	EAX, dcb_name+12t[EDX]
+	CMPL	12t[EBX], EAX
+	JE	24$			;Yes
+14$:	MOVL	EDX, dcb_next[EDX]	;Advance to next
+	JMP	12$
+
+;Here if do not have a DCB set up for this terminal
+
+16$:	MOVL	ECX, knlTrmCcb+ccb_blkhead ;Point to first TDB
+	TESTL	ECX, ECX
+	JE	4$
+18$:	MOVL	EAX, tdb_name+0[ECX]	;Does name match?
+	CMPL	[EBX], EAX
+	JNE	20$			;No
+	MOVL	EAX, tdb_name+4[ECX]
+	CMPL	4[EBX], EAX
+	JNE	20$			;No
+	MOVL	EAX, tdb_name+8[ECX]
+	CMPL	8[EBX], EAX
+	JNE	20$			;No
+	MOVL	EAX, tdb_name+12t[ECX]
+	CMPL	12t[EBX], EAX
+	JE	30$			;Yes - this is it!
+20$:	MOVL	ECX, tdb_next[ECX]	;Not this one - try next
+	TESTL	ECX, ECX
+	JNE	18$			;Continue if another
+	JMP	4$			;No more
+
+;Here with a matching terminal DCB to return
+
+24$:	CMPL	devc_rtndcb[ESP], #0
+	JE	26$
+	MOVL	knlTda+tdaDcb#, EDX
+26$:	MOVL	EAX, #1
+	JMP	8$
+
+;Here if have too many terminals
+
+28$:	MOVL	EAX, #ER_TMDVC		;No more - error = Too Many DeVices
+	JMP	8$
+
+;Here with match on a TDB
+
+DSSERIAL=!DS$PHYS|DS$UNBFRD|DS$CONTROL|DS$DUPLEX|
+DSSERIAL=!DSSERIAL|DS$QIN|DS$QOUT|DS$DINDFT|DS$DOUTDFT|DS$DIN|DS$DOUT
+
+30$:	CMPL	devc_rtndcb[ESP], #0	;Do we want a DCB?
+	JE	26$			;No - this is all we need
+	PUSHL	EDI			;Yes - need to create a DCB
+	PUSHL	ESI
+	MOVL	ESI, ECX
+	MOVL	EDI, trmdcbnum
+	CMPL	EDI, trmdcblmt
+	JAE	18$
+
+	MOVL	EAX, #DSSERIAL		;Assume serial terminal
+	CMPL	tdb_disptype[ESI], #DISP_SERIAL ;Right?
+	JE	32$			;Yes
+	BTZL	EAX, #DS%QOUT		;No - its a memory mapped display
+					;  (which cannot do queued output)
+32$:	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	EBX
+	PUSHL	EAX
+	PUSHL	#-dcb_trINDEX
+	PUSHL	EDX
+	CALL	sysIoGetDymDcb#
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	36$
+	MOVB	AL, tdb_pnum[ESI]	;Store primary unit number
+	MOVB	dcb_punit[EDI], AL
+	MOVZBL	EAX, tdb_snum[ESI]	;Store secondary unit number
+	MOVW	dcb_sunit[EDI], AX
+	PUSHL	EDI
+	PUSHL	#knlTrmCcb
+	CALL	sysIoLinkDcb#
+	INCL	trmdcbnum		;Count it
+	MOVL	EAX, trmdcbnum
+	CMPL	EAX, trmdcbmax
+	JB	34$
+	MOVL	trmdcbmax, EAX
+34$:	MOVL	dcb_sdisp[EDI], #trmdsp
+	MOVL	dcb_trtdb[EDI], ESI	;Attach TDB to DCB
+	MOVL	tdb_dcb[ESI], EDI
+	MOVL	EAX, tdb_typename[ESI]	;Copy type name
+	MOVL	dcb_typename[EDI], EAX
+	MOVL	EAX, tdb_devchar[ESI]	;Copy offset of device characteristics
+	MOVL	dcb_devchar[EDI], EAX	;  table
+	CLRL	EAX
+	INCL	EAX
+	MOVL	EBX, tdb_ddisp[ESI]	;Report status change to screen
+	CALLI	tfx_ssstatus[EBX]	;  symbient if need to
+	MOVL	EDX, EDI
+	POPL	ESI
+	POPL	EDI
+	JMP	24$
+
+;Here if error allocating DCB
+
+36$:	POPL	ESI
+	POPL	EDI
+	JMP	8$
+.PAGE
+	.SBTTL	trmaddunit - Class function to add unit
+
+;Here for the CL_ADDUNIT class function
+;	CALL	trmaddunit
+;	c{EAX} = 0
+
+;Description block for sysIoCharValues::
+
+	DATA
+
+	.MOD	4
+trmaublk:
+ CHARBGN  2, sysIoCharValues
+ CHARENT  UNIT  , DECV, , 1, 0, 0, tauunit  , 0
+ CHARENT  TYPE  , TEXT, , 4, 0, 0, tautype  , 0
+ CHARENT  SCREEN, DECV, , 1, 0, 0, tauscreen, 0
+ CHAREND
+
+	CODE
+
+$$$=!0
+FRM tau_unit    , 4		;Unit number
+FRM tau_screen  , 4		;Screen number
+FRM tau_typename, 8		;Controller type
+tau_SIZE=!$$$
+
+trmaddunit::
+	ENTER	tau_SIZE, 0		;Set up and initialize our stack frame
+	CLRL	EAX
+	MOVL	tau_screen[EBP], EAX
+	DECL	EAX
+	MOVL	tau_unit[EBP], EAX
+	MOVL	tau_typename+0[EBP], EAX
+	CMPL	knlTda+tdaBuffer2#, #0
+	JE	10$
+	PUSHL	#1			;Ignore bad names here
+	PUSHL	#trmaublk		;Process the characteristics
+	CALL	sysIoCharValues#
+	TESTL	EAX, EAX
+	JS	12$			;If error
+
+;Here with all parameters processed - make sure we got everything we need
+
+	MOVL	EAX, tau_unit[EBP]
+	TESTL	EAX, EAX
+	JS	10$
+	CMPL	tau_typename[EBP], #-1
+	JE	10$
+
+;Here with all needed parameters found
+
+4$:	MOVB	AH, tau_screen[EBP]
+	LEAL	EDX, tau_typename[EBP]
+	PUSHL	EDX
+	PUSHL	#knlTrmCcb
+	PUSHL	EAX
+	CALL	sysIoDriverAddUnit#
+	TESTL	EAX, EAX
+	JS	12$
+	CMPL	tau_unit[EBP], #0	;Adding a console screen?
+	JNE	6$			;No
+	CMPL	knlConDhdb#+dhdb_addmouse, #0 ;Is there an associated mouse
+					      ;  class?
+	JE	6$			;No
+	MOVL	EDX, tau_screen[EBP]	;Yes - get the new TDB
+	MOVL	EBX, knlConDhdb+dhdb_tdbtbl-4[EDX*4]
+	TESTL	EBX, EBX
+	JE	20$
+	PUSHL	EBX
+	CALLI	knlConDhdb#+dhdb_addmouse ;Add a new collective mouse device
+6$:	MOVL	knlTda+tdaAmount#, #1
+8$:	LEAVE
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+10$:	MOVL	EAX, #ER_CHARM
+12$:	MOVL	knlTda+tdaError#, EAX
+	JMP	8$
+
+20$:	CRASH	NTDB
+.PAGE
+;Here from sysIoCharValues for the UNIT characteristic
+
+tauunit:MOVL	tau_unit[EBP], EAX	;Store unit number
+	CMPL	EAX, #99t		;Is it a reasonable value?
+	JMP	2$
+
+;Here from sysIoCharValues for the SCREEN characteristic
+
+tauscreen:
+	MOVL	tau_screen[EBP], EAX	;Store screen number
+	TESTL	EAX, EAX
+	JE	4$
+	CMPL	EAX, #VDSPMAX		;Is it a valid value?
+2$:	JBE	6$			;Yes
+4$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Here from sysIoCharValues for the TYPE characteristic
+
+tautype:MOVL	tau_typename+0[EBP], EAX ;Store type name
+	MOVL	tau_typename+4[EBP], EDX
+6$:	CLC
+ret002:	RET
+.PAGE
+;Function to process input character at device fork level - This is the
+;  subroutine called by all terminal device drivers when an input character
+;  is available.
+;	void sysTrmInput(
+;	    TDB *tdb,		// Address of TDB for terminal
+;	    long chr);		// Input character
+
+;The input character is encoded as follows:
+;	Bits Name       Use
+;	0-7             ASCII code or 0 if non-ASCII character
+;	8-15            Internal scan code or 0 if from serial terminal
+;	16   KB$RHTSHF  Right shift key pressed for character
+;	17   KB$RHTCTL  Right control key pressed for character
+;	18   KB$RHTALT  Right ALT key pressed for character
+;	20   KB$LFTSHF  Left shift key pressed for character
+;	21   KB$LFTCTL  Left control key pressed for character
+;	22   KB$LFTALT  Left ALT key pressed for character
+;	24   KB$SCLLCK  Scroll-lock state true for character
+;	25   KB$NUMLCK  Num-lock state true for chacacter
+;	26   KB$CAPLCK  Caps-lock state true for character
+;	27   KB$CARDET  Carrier detect state (serial ports only)
+;	28              Reserved
+;	29              Reserved
+;	30              Reserved
+;	31   KB$RELEASE Keyboard release code
+
+;This version of XOS defers almost all input character processing to main
+;  program level. Characters are stored in the input ring buffer and main
+;  program level is woken up if the ring buffer was empty. All input editing
+;  and echoing is done at main program level. While this introduces some
+;  additional overhead on each character it does significantly minimize the
+;  time spent at fork level. It also results in significantly cleaner code
+;  since the same code now handles echoing and output. This has the side
+;  effect that echoing is ALWAYS synchronous with input requests.
+
+tinp_tdb=!20t
+tinp_chr=!16t
+
+sysTrmInput::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, tinp_tdb[ESP]
+	TESTB	tdb_stsinp[ESI], #TSI$DISCARD ;Are we discarding keyboard input?
+	JNE	inpdone			;Yes
+	MOVL	EAX, tinp_chr[ESP]	;No - get the character
+	CMPL	tdb_dcb[ESI], #0	;Is this terminal in use?
+	JE	trmidle			;No
+	TESTL	EAX, EAX		;Key release code?
+	JS	trmstore		;Yes - never special here
+	TESTB	tdb_stsout[ESI], #TSO$HOLDP ;No - paused with pause key?
+	JE	2$			;No
+	CMPB	AL, #'C'-0x40		;Yes - is this ^C?
+	JNE	havecq2			;No - just resume output
+	ANDB	tdb_stsout[ESI], #~{TSO$HOLDS|TSO$HOLDP} ;Yes
+					;Don't hold output now
+	CALL	trmrestrt		;Restart output if need to
+	JMP	havecc			;Go process the ^C
+
+;Here if not paused
+
+2$:	TESTB	tdb_imode[ESI], #TIM$IMAGE ;No - image input mode now?
+	JNE	trmstore		;Yes - nothing is special here
+	TESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;Also not special here if in
+	JNE	trmstore		      ;  debug input mode
+	CMPB	AH, #ISC_PAUSE		;PAUSE key?
+	JE	havecs2			;Yes - almost like ^S
+	CMPB	AH, #ISC_BREAK		;BREAK key?
+	JE	havecc2			;Yes - almost like ^C
+	MOVB	BL, AL			;Only check 7 bits
+	ANDB	BL, #0x7F
+	CMPB	BL, #'C'-0x40		;Cntl-C?
+	JE	havecc			;Yes
+	CMPB	BL, #'S'-0x40		;Cntl-S?
+	JE	havecs			;Yes
+	CMPB	BL, #'Q'-0x40		;Cntl-Q?
+	JE	havecq			;Yes
+	CMPB	BL, #'O'-0x40		;Cntl-O?
+	JE	haveco			;Yes
+
+;Here to store the input character in the input ring buffer
+
+trmstore:
+	MOVL	EBX, tdb_irsize[ESI]	;Is the input ring full past the stop
+	SUBL	EBX, tdb_irbsl[ESI]	;  level?
+	JLE	20$
+	CMPL	tdb_ircnt[ESI], EBX
+	JB	20$			;No - just store the character
+	INCL	tdb_irheld[ESI]		;Yes - count it
+
+;Here if past the stop level
+
+	TESTB	tdb_flow[ESI], #TFC$IDTR ;Is DTR flow control enabled?
+	JE	4$			;No
+	PUSHL	EAX
+	MOVB	AL, #0			;Yes - clear DTR
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_setdtr[EBX]
+	JMP	16$
+
+;Here if past the stop level and DTR flow control is not enabled
+
+4$:	TESTB	tdb_flow[ESI], #TFC$IRTS ;Is RTS flow control enabled?
+	JE	10$
+	PUSHL	EAX
+	MOVB	AL, #0			;Yes - assume should clear RTS
+	TESTB	tdb_flow[ESI], #TFC$IREV ;Is the sense reversed?
+	JE	6$			;No
+	INCL	EAX			;Yes
+6$:	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_setrts[EBX]
+	JMP	16$
+
+;Here if past the stop level and CTS/RTS flow control is not enabled
+
+10$:	TESTB	tdb_flow[ESI], #TFC$IXONXOFF ;Is X-on/X-off flow control
+					     ;  enabled?
+	JE	20$			;No - accept the character and hope
+					;  for the best!
+	TESTB	tdb_stsinp[ESI], #TSI$INTHELD|TSI$IRBHELD
+					;Yes - already holding input?
+	JE	14$			;No - hold it now
+	MOVL	EBX, tdb_irsize[ESI]	;Yes - is the input ring full past the
+	SUBL	EBX, tdb_irbpl[ESI]	;  panic level?
+	JLE	20$
+	CMPL	tdb_ircnt[ESI], EBX
+	JB	16$			;No
+14$:	ORB	tdb_stsout+1[ESI], #TSO$FRCXOFF>8 ;Yes - output XOFF
+						  ;  immediately
+	BTSL	tdb_stsout[ESI], #TSO%OUTA ;Yes - is output active?
+	JC	18$			;Yes
+	PUSHL	EAX
+	MOVL	EBX, tdb_ddisp[ESI]	;No - start up output now
+	CALLI	tfx_resume[EBX]
+16$:	POPL	EAX
+18$:	ORB	tdb_stsinp[ESI], #TSI$IRBHELD ;Indicate have held off
+
+;Here to accept a character if we can
+
+20$:	MOVL	EBX, tdb_irsize[ESI]
+	SUBL	EBX, #2
+	CMPL	tdb_ircnt[ESI], EBX	;Is the input ring full now?
+	JAE	30$			;Yes - forget about this!
+	INCL	tdb_charin[ESI]		;OK - count the character
+	MOVL	EBX, tdb_irput[ESI]	;Get putter pointer
+	MOVL	[EBX], EAX		;Store character in ring
+	ADDL	EBX, #4
+	CMPL	EBX, tdb_ibufr[ESI]	;At end of buffer now?
+	JB	24$			;No
+	MOVL	EBX, tdb_iring[ESI]	;Yes - reset pointer to beginning
+24$:	MOVL	tdb_irput[ESI], EBX	;Update putter pointer
+	INCL	tdb_ircnt[ESI]		;Bump the input count
+
+;NOTE: It should not be necessary to wake up anyone if there is more than
+;      1 character in the buffer (since that should mean that someone is
+;      active getting characters from the buffer) but this should not happen
+;      very often and always trying to wake up someone protects against a
+;      race here. Also, waking up all waiters is overkill since only one
+;      will get the character but it is unlikely that more than one will be
+;      waiting and this protects against a race.
+
+	MOVL	EDI, tdb_dcb[ESI]	;Yes - are we attached to a DCB?
+	TESTL	EDI, EDI
+	JE	inpdone			;No	
+	TESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;Yes - in debug input mode?
+	JNE	26$			;Yes
+	ORB	dcb_sts1[EDI], #D1$DIRIAVL ;No - indicate input is available
+	MOVL	EDX, dcb_inptda[EDI]	;Are we part of an input frame?
+	TESTL	EDX, EDX
+	JE	26$			;No
+	CMPB	tdaState#[EDX], #THDS_DW2 ;Yes - is the IO thread waiting?
+	JNE	inpdone			;No
+	PUSHL	EDX			;Yes - wake him up
+	PUSHL	#0
+	CALL	sysIoResumeThread#
+	JMP	inpdone
+
+;Here if not part of an input frame - wake up any direct waiters
+
+26$:	MOVL	EAX, EDI		;Wake up any input waiters
+	SHRL	EAX, #6
+	PUSHL	EAX
+	CALL	sysSchEndWaitAll#
+inpdone:POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if the input ring buffer is full - discard the character
+
+30$:	INCL	tdb_irlost[ESI]		;Count the lost character
+	JMP	inpdone			;Continue
+.PAGE
+;Here with cntl-C - This must be handled here since it must work even when
+;  the program is not waiting for input. This is the only situation where the
+;  fork level code does anything except put characters into the input ring
+;  buffer. This must clear the input ring buffer (by settingn the putter
+;  equal to the taker and clearing the count) and also must ensure that the
+;  main program level code which is copying from the ring buffer to the line
+;  buffer discards any partial line it may have in the line buffer. This is
+;  potenially messy since the main program level code mustly runs with fork
+;  level enabled. The count is only used at fork level to determine when the
+;  input ring is full (main program level detects an empty buffer by comparing
+;  the putter and taker) so there is no race involved with clearing it. The
+;  main program code always raises to fork level when incrementing the taker
+;  so that is also OK.
+
+havecc:	TESTL	tdb_imode[ESI], #TIM$NOCC ;Should cntl-C be special?
+	JNE	trmstore		;No
+havecc2:MOVL	EDI, tdb_dcb[ESI]	;Get DCB
+	TESTL	EDI, EDI
+	JE	trmstore		;Not special if no DCB
+	MOVL	EBX, dcb_sespda[EDI]	;Get session PDA
+	TESTL	EBX, EBX
+	JE	trmstore		;Just in case
+	CMPL	pdaHndlTbl#+DH_STDTRM*8[EBX], EDI ;Is this the controlling
+						  ;  terminal?
+	JNE	trmstore		;No - do nothing!
+	CMPL	pdaSigVTbl#+VECT_CNTC*8+4[EBX], #0 ;Yes - does he want a signal?
+	JE	trmstore		;No - not special
+					;Stack arguments for sysSchReqSignal
+	PUSHL	#0			;Data count
+	PUSHL	pdaPid#[EBX]		;PID
+	PUSHL	#0			;Grant data
+	PUSHL	#0			;Grant function
+	PUSHL	#VECT_CNTC		;Vector number
+	PUSHL	EBX			;Set the P1$TRMJUNK bit in this and all
+	CALL	settrmjunk		;  child processes
+	CALL	sysSchReqSignal#	;Request signal
+	ADDL	ESP, #20t
+	CALL	trmclrtypa		;Clear the input buffers
+clroutr:TESTB	tdb_stsmisc[ESI], #TSM$OUTRING ;Do we have an output ring?
+	JE	inpdone			;No
+	CALL	trmcorg			;Yes - clear it
+	JMP	inpdone
+.PAGE
+;Here with cntl-S
+
+havecs:	TESTB	tdb_flow[ESI], #TFC$OXONXOFF ;Is X-on/X-off flow control
+					     ;  enabled?
+	JE	trmstore		;No
+	MOVB	AL, #TSO$HOLDS		;Yes - assume normal
+	TESTB	tdb_flow[ESI], #TFC$OREV ;Right?
+	JE	2$			;Yes
+havecs2:MOVB	AL, #TSO$HOLDP		;No - its pause style
+2$:	ORB	tdb_stsout[ESI], AL	;Yes - indicate should hold output
+	CALL	trmstopout		;Stop output
+	JMP	inpdone
+
+;Here with cntl-Q
+
+havecq:	TESTB	tdb_flow[ESI], #TFC$OXONXOFF ;Is X-on/X-off flow control
+					     ;  enabled?
+	JE	trmstore		;No
+havecq2:ANDB	tdb_stsout[ESI], #~{TSO$HOLDS|TSO$HOLDP}
+					;Yes - don't hold output now
+	CALL	trmrestrt		;Restart output if need to
+	JMP	inpdone
+
+;Here with cntl-O
+
+haveco:	BTL	tdb_imode[ESI], #TIM%NOCO ;Should this be special?
+	JC	trmstore		;No
+	XORB	tdb_stsout[ESI], #TSO$JUNK ;Yes - toggle the discard output
+	TESTB	tdb_stsout[ESI], #TSO$JUNK ;  bit
+	JE	inpdone			;If not set now
+	CALL	clroutr
+	JMP	inpdone
+.PAGE
+;Here with character for an idle terminal
+
+trmidle:
+
+;;;;;;	TESTB	tdb_stsmisc[ESI], #TSM$SESSION ;No - should we send a message
+;;;;;;	JE	inpdone			;No
+
+	TESTB	tdb_stsmisc[ESI], #TSM$IMSG ;Yes - have we already done this?
+	JNE	inpdone			;Yes - don't do it again
+	CMPB	AL, #CR			;Do we have a CR?
+	JNE	inpdone			;No - ignore it!
+	MOVB	AH, #0			;Yes - indicate have data
+	CALL	trmmsg			;Send the message
+	JMP	inpdone
+.PAGE
+;Function to set the P1$TRMJUNK bit in this and all child processes. This
+;  function is called recursively to handle multiple process levels.
+;	void settrmjunk(
+;	    PDA *pda);
+
+stj_pda=!4
+
+settrmjunk:
+	MOVL	EBX, stj_pda[ESP]
+	ORB	pdaStatus1#[EBX], #P1$TRMJUNK
+	MOVL	EBX, pdaChildPda#[EBX]
+8$:	TESTL	EBX, EBX
+	JE	10$
+	PUSHL	pdaSibPda#[EBX]
+	PUSHL	EBX
+	CALL	settrmjunk
+	POPL	EBX
+	JMP	8$
+
+10$:	RET	4
+.PAGE
+	.SBTTL	reqcpi - Subroutine to request ^P interrupt
+
+;Subroutine to request ^P interrupt
+;	c{EDI} = Offset of DCB for terminal
+;	CALL	reqcpi
+;	Z:set = Not requested
+;	Z:clr = Interrupt queued
+
+reqcpi::TESTL	EDI, EDI
+	JE	4$
+	CMPW	dcb_trcpsvect[EDI], #0	;Want this interrupt?
+	JE	4$			;No
+	PUSHL	ESI
+	CALL	knlGetQel#		;Yes
+	JC	2$
+	MOVL	EAX, dcb_trcpsdata[EDI] ;Store interrupt data
+	MOVL	slb_data+0[ESI], EAX
+	MOVZWL	EAX, dcb_trcpsvect[EDI]
+	CLRL	ECX
+	MOVW	ES, dcb_trcpspda[EDI]
+	MOVB	BH, #2
+	MOVB	BL, #SIGT_NORMAL
+	CLRL	EDX
+
+	CRASH	SIG?
+
+;;;;;;	CALL	knlReqSignal#
+
+2$:	POPL	ESI
+	TESTL	ESP, ESP		;Clear Z
+4$:	RET
+.PAGE
+	.SBTTL	chkinheld - Subroutine to see if held input should be unheld
+
+;Subroutine to see if held input should be unheld
+;	CALL	chkinheld
+;  EAX is preserved
+
+chkinheld::
+	PUSHL	EAX
+	MOVL	EAX, tdb_irsize[ESI]	;Is the input ring 3/4 empty?
+	SHRL	EAX, #2
+	CMPL	tdb_ircnt[ESI], EAX
+	JA	8$			;No
+	CLI				;Yes - no interrupts here
+	ANDB	tdb_stsinp[ESI], #~TSI$IRBHELD ;Un-hold input
+	TESTB	tdb_stsinp[ESI], #TSI$INTHELD ;Holding at interrupt level?
+	JNE	6$			;Yes
+	TESTB	tdb_flow[ESI], #TFC$IDTR ;Is DTR flow control enabled?
+	JE	2$			;No
+	MOVB	AL, #1			;Yes - set DTR
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_setdtr[EBX]
+	JMP	6$
+
+;Here if DTR flow control is not enabled
+
+2$:	TESTB	tdb_flow[ESI], #TFC$IRTS ;Is RTS flow control enabled?
+	JE	10$			;No
+	MOVB	AL, #1			;Yes - assume should set RTS
+	TESTB	tdb_flow[ESI], #TFC$IREV ;Is the sense reversed?
+	JE	4$			;No
+	DECL	EAX			;Yes
+4$:	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_setrts[EBX]
+6$:	STI
+8$:	POPL	EAX
+	RET
+
+;Here if CTS/RTS flow control is not enabled
+
+10$:	TESTB	tdb_flow[ESI], #TFC$IXONXOFF ;Is X-on/X-off flow control
+					     ;  enabled?
+	JE	6$			;No
+	ORB	tdb_stsout+1[ESI], #TSO$FRCXON>8 ;Yes - output XON immediately
+	STI				;Interrupts are OK now
+	BTSL	tdb_stsout[ESI], #TSO%OUTA ;Yes - is output active?
+	JC	8$			;Yes
+	MOVL	EBX, tdb_ddisp[ESI]	;No - start up output now
+	CALLI	tfx_resume[EBX]
+	POPL	EAX
+	RET
+.PAGE
+	.SBTTL	knlTrmMCSignal - Subroutine to generate modem control signal
+
+;Subroutine to generate modem control signal
+
+knlTrmMCSignal::
+	PUSHL	ESI
+	CALL	knlGetQel#		;Yes
+	JC	6$
+	MOVZBL	EAX, AL
+	XORB	AL, #0xF0
+	MOVL	slb_data+4[ESI], EAX	;Store modem bits
+	MOVL	EAX, dcb_trmcsdata[EDI] ;Store interrupt data
+	MOVL	slb_data+0[ESI], EAX
+	MOVZWL	EAX, dcb_trmcsvect[EDI]
+	MOVL	ECX, #2
+	MOVW	ES, dcb_trmcspda[EDI]
+	MOVB	BH, #2
+	MOVB	BL, #SIGT_NORMAL
+	CLRL	EDX
+
+	CRASH	SIG?
+
+;;;;;	CALL	knlReqSignal#
+
+6$:	POPL	ESI
+	RET
+.PAGE
+	.SBTTL	knlTrmCarLoss - Subroutine to process carrier loss
+
+;Subroutine to process carrier loss
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmCarLoss
+
+knlTrmCarLoss::
+	TESTB	tdb_modem[ESI], #TMC$MODEM ;Is modem control enabled?
+	JE	2$			;No - ignore this
+	MOVB	AL, tdb_closval[ESI]	;Yes - get carrier loss time-out value
+	CMPB	AL, #0			;Want any delay?
+	JE	knlTrmHungUp		;No
+	MOVB	tdb_clos[ESI], AL	;Yes - start the timer
+2$:	RET
+
+	.SBTTL	knlTrmCarDet - Subroutine to process carrier detect
+
+;Subroutine to process carrier detect
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmCarDet
+
+knlTrmCarDet::
+	TESTB	tdb_modem[ESI], #TMC$MODEM ;Is modem control enabled?
+	JE	4$			;No - ignore this
+	CMPB	tdb_clos[ESI], #0	;Yes - did we recently loose carrier?
+	JE	6$			;No
+	MOVB	tdb_clos[ESI], #0	;Yes - stop timer
+4$:	RET				;Thats all
+
+;Here with real initial carrier detect
+
+6$:	ORB	tdb_stsinp[ESI], #TSI$CARDET ;Indicate have carrier
+	CMPL	tdb_dcb[ESI], #0	;Is the terminal in use?
+	JNE	8$			;Yes
+	TESTB	tdb_stsmisc[ESI], #TSM$SESSION ;No - should we send a message?
+	JE	4$			;No
+	TESTB	tdb_stsmisc[ESI], #TSM$IMSG ;Yes - have we already done this?
+	JNE	4$			;Yes - don't do it again
+	MOVL	EAX, #0100h		;No - indicate have carrier detect
+	JMP	trmmsg			;Send the message
+
+;Here with initial carrier detect on an active terminal
+
+8$:	NOP
+10$:	RET
+
+	.SBTTL	knlTrmRing - Subroutine to process ring detect
+
+;Subroutine to process ring detect
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmRing
+
+knlTrmRing::
+	CMPL	tdb_dcb[ESI], #0	;Is this terminal in use?
+	JNE	10$			;Yes - ignore this
+	TESTB	tdb_modem[ESI], #TMC$MODEM ;No - modem control enabled?
+	JE	10$			;No - ignore this
+	TESTB	tdb_stsmisc[ESI], #TSM$SESSION ;No - should we send a message?
+	JE	10$			;No
+	TESTB	tdb_stsmisc[ESI], #TSM$IMSG ;Yes - have we already done this?
+	JNE	10$			;Yes - don't do it again
+	MOVL	EAX, #0200h		;No - indicate have ring detect
+	JMP	trmmsg			;Send the message
+.PAGE
+	.SBTTL	knlTrmDsrOn - Subroutine to process assersion of DSR
+
+;Subroutine to process asserstion of DSR
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmDsrOn
+
+knlTrmDsrOn::
+	TESTB	tdb_flow[ESI], #TFC$ODSR ;Is DSR flow enabled?
+	JNE	4$			;Yes
+	RET				;No - ignore this
+
+	.SBTTL	knlTrmDsrOff - Subroutine to process negation of DSR
+
+;Subroutine to process negation of DSR
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmDsrOff
+
+knlTrmDsrOff::
+	TESTB	tdb_flow[ESI], #TFC$ODSR ;Is DSR flow enabled?
+	JNE	10$			;Yes
+2$:	RET				;No - ignore this
+
+	.SBTTL	knlTrmCtsOn - Subroutine to process assersion of CTS
+
+;Subroutine to process assersion of CTS
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmCtsOn
+
+knlTrmCtsOn::
+	TESTB	tdb_flow[ESI], #TFC$OCTS ;Is CTS flow enabled?
+	JE	2$			;No - ignore this
+4$:	TESTB	tdb_flow[ESI], #TFC$OREV ;Yes - is the sense reversed?
+	JNE	12$			;Yes - go hold output
+6$:	TESTB	tdb_stsout[ESI], #TSO$HOLDS|TSO$HOLDP
+					;No - are we holding output now?
+	JE	2$			;No - nothing needed here
+	ANDB	tdb_stsout[ESI], #~{TSO$HOLDS|TSO$HOLDP}
+trmrestrt:				;Yes - don't hold output now
+	BTSL	tdb_stsout[ESI], #TSO%OUTA ;Is output active now?
+	JC	8$			;Yes
+	MOVL	EBX, tdb_ddisp[ESI]	;No - start up output again
+	CALLI	tfx_resume[EBX]
+8$:	JMP	knlTrmOutDone		;Wake up someone doing output if need to
+
+	.SBTTL	knlTrmCtsOff - Subroutine to process negation of CTS
+
+;Subroutine to process negation of CTS
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmCtsOff
+
+knlTrmCtsOff::
+	TESTB	tdb_flow[ESI], #TFC$OCTS ;Is CTS flow enabled?
+	JE	2$			;No - ignore this
+10$:	TESTB	tdb_flow[ESI], #TFC$OREV ;Yes - is the sense reversed?
+	JNE	6$			;Yes - go restart output
+12$:	ORB	tdb_stsout[ESI], #TSO$HOLDS ;Yes - indicate should hold output
+	JMP	trmstopout		;Stop output and return
+.PAGE
+	.SBTTL	trmmsg - Subroutine to send message for activity on idle terminal
+
+;Subroutine to send message for activity on idle terminal
+;	c(AL)  = Character
+;	c(AH)  = Reason (0 = data, 1 = carrier detect, 2 = ring detect)
+;	c{ESI} = Offset of TDB
+;	CALL	trmmsg
+
+trmmsg:	LEAL	EDX, tdb_name[ESI]	;Terminal name
+	PUSHL	EDX
+	PUSHL	#0			;No detect type
+	PUSHL	EAX			;Character + reason
+	PUSHL	#knlTrmMsgSrc		;Source string
+	LEAL	EAX, tdb_msgdst[ESI]	;Destination string
+	PUSHL	EAX
+	CALL	sysIpmSendLogInMsg#	;Send the message
+	TESTL	EAX, EAX
+	JS	4$			;If error
+
+;;;;;	MOVL	EAX, #10t*SPPERSEC
+;;;;;	MOVL	EBX, #trmmsgrst
+;;;;;	PUSHL	ESI
+;;;;;	CALL	sysSchWakeRequest#
+
+	ORB	tdb_stsmisc[ESI], #TSM$IMSG ;OK - indicate have sent message
+4$:	RET
+
+;Timer routine called 10 seconds after TSM$IMSG is set
+;	long trmmsgrst(
+;	    TMR *tmr);
+
+.IF NE 0
+tmrst_tmr=!4
+
+trmmsgrst:
+	MOVL	EBX, tmrst_tmr[ESP]
+	MOVL	EBX, tmr_data1[EBX]
+	ANDB	tdb_stsmisc[EBX], #~TSM$IMSG ;Allow idle messages again
+	CLRL	EAX			;Return 0 to indicate finished with
+	RET	4			;  the TMR
+.ENDC
+.PAGE
+
+;Function to clear type-ahead - Must be called at fork level or with
+;  TSI$DISCARD set.
+;	void trmclrtypa(void)
+
+trmclrtypa::
+	CLRL	EAX
+	MOVL	tdb_ibpnt[ESI], EAX	;Clear the line buffer
+	MOVL	tdb_ibcnt[ESI], EAX
+	ANDB	tdb_stsinp[ESI], #~TSI$INPAVL
+					;Fall into trmcirg
+
+;Function to clear the input ring buffer - Must be called at fork level or
+;  with TSI$DISCARD set.
+
+trmcirg::
+	MOVL	EAX, tdb_iring[ESI]	;Clear input ring
+	MOVL	tdb_irput[ESI], EAX
+	MOVL	tdb_irtak[ESI], EAX
+	MOVL	tdb_ircnt[ESI], #0
+	TESTB	tdb_stsinp[ESI], #TSI$IRBHELD ;Have we held off input?
+	JE	4$			;No
+	CALL	chkinheld		;Yes - see if should start it up again
+4$:	CLC
+	RET
+.PAGE
+;Subroutine called every tenth second to do terminal timing
+;	CALL	trmttas
+
+trmttas:MOVL	ESI, knlTrmCcb+ccb_blkhead ;Point to first TDB
+	TESTL	ESI, ESI
+	JE	12$
+2$:	CMPB	tdb_clos[ESI], #0	;Are we timing carrier loss?
+	JE	6$			;No
+	DECB	tdb_clos[ESI]		;Yes - has it run out yet?
+	JNE	6$			;No
+	TOFORK
+	CALL	knlTrmHungUp		;Hang him up!
+	FROMFORK
+6$:	CMPB	tdb_fill[ESI], #0	;Are we timing fill?
+	JE	10$			;No
+	DECB	tdb_fill[ESI]		;Yes
+	JNE	10$
+	TOFORK
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_resume[EBX]
+	FROMFORK
+10$:	MOVL	ESI, tdb_next[ESI]	;Advance to next TDB
+	TESTL	ESI, ESI
+	JNE	2$			;Continue if more
+12$:	RET				;All done
+.PAGE
+;Subroutine to hang up terminal - must be called at fork level
+;	c{ESI} = Offset of TDB
+;	CALL	knlTrmHungUp
+
+knlTrmHungUp::				;Indicate do not have carrier
+	ANDB	tdb_stsinp[ESI], #~TSI$CARDET
+	TESTB	tdb_modem[ESI], #TMC$MODEM ;Is modem control enabled?
+	JE	4$			;No
+	MOVB	AL, #0			;Yes - clear DTR
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_setdtr[EBX]
+4$:	CALL	trmstopout		;Make sure output stopped
+	MOVL	EBX, tdb_ddisp[ESI]	;Clear output ring buffer
+	CALLI	tfx_clrout[EBX]
+	MOVL	EDI, tdb_dcb[ESI]	;Get attached DCB
+	TESTL	EDI, EDI
+	JE	8$			;If none
+	TESTL	pdaSigVTbl#+VECT_HANGUP*8+4[EBX], #0 ;Does he want a signal?
+	JE	8$			;No
+	PUSHL	#0			;Yes - data count
+	PUSHL	pdaPid#[EBX]		;PID
+	PUSHL	#0			;Grant data
+	PUSHL	#0			;Grant function
+	PUSHL	EAX			;Vector number
+	CALL	sysSchReqSignal#	;Request signal
+	ADDL	ESP, #20t
+	TESTB	tdb_stsmisc[ESI], #TSM$OUTRING ;Do we have an output ring? (We
+					       ;  should only get a hang-up
+					       ;  indication for serial ports
+					       ;  but it seems like a good idea
+					       ;  to check this anyway!)
+	JE	6$
+	CALL	trmcorg			;Yes - clear itn
+6$:	CALL	trmclrtypa		;Clear out all buffered input
+8$:	TESTB	tdb_modem[ESI], #TMC$DETACH ;Should we detach?
+	JE	10$			;No
+	CALL	knlTrmDetach		;Yes - detach the port
+10$:	ANDB	tdb_stsout[ESI], #TSO$OUTA
+	JMP	trmmkidle#		;Reset terminal to default state
+					;  and return
+
+;Subroutine to detach a terminal
+;	c{ESI} = Offset of TDB
+;	c{EDI} = Offset of DCB
+;	CALL	knltrmDetach
+
+knlTrmDetach::
+	CLRL	EAX
+	MOVL	tdb_dcb[ESI], EAX
+	MOVL	dcb_trtdb[EDI], EAX
+	ANDL	dcb_name[EDI], #0FF000000h
+	ORL	dcb_name[EDI], #'###'	;Change name to ###n
+	MOVL	EBX, tdb_ddisp[ESI]	;Report status change to screen
+	JMPIL	tfx_ssstatus[EBX]	;  symbient if need to
+.PAGE
+	.SBTTL	trmstopout - Subroutine to stop terminal output immediately
+
+;Subroutine to stop terminal output immediately - must be called at fork
+;  level only
+;	CALL	trmstopout
+
+trmstopout::
+	TESTB	tdb_stsout[ESI], #TSO$OUTA ;Is output active?
+	JE	4$			;No - nothing needed here
+	PUSHL	EBX			;Yes
+	MOVL	EBX, tdb_ddisp[ESI]	;Tell device to stop as soon as
+	CALLI	tfx_stop[EBX]		;  possible
+	POPL	EBX
+4$:	RET
+.PAGE
+;Function to clear the output ring - Must be called from fork level only
+;  for terminals which use an output ring buffer (TSM$OUTRING is set).
+;	void trmcorg(void);
+
+trmcorg::
+	CALL	trmstopout		;Make sure output stopped
+	MOVL	EBX, tdb_ddisp[ESI]	;Clear output ring buffer
+	CALLI	tfx_clrout[EBX]
+knlTrmOutDone::
+	REQUIREFORK
+	MOVL	EDI, tdb_dcb[ESI]	;Attached?
+	TESTL	EDI, EDI
+	JE	8$			;No
+	TESTB	tdb_stsout+1[ESI], #TSO$QOWAIT>8 ;Yes - waiting for queued
+						 ;  output?
+	JE	4$			;No
+	PUSHL	EDI
+	PUSHL	EAX
+	CALL	sysIoResumeOutput#	;Yes - wake up someone doing queued IO
+4$:	MOVL	EAX, EDI
+	SHRL	EAX, #6
+	PUSHL	EAX
+	CALL	sysSchEndWaitAll#	;Wake up all direct IO waiters
+8$:	RET
+.PAGE
+	DATA
+
+;Impure data
+
+knlTrmCcb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'TRM', 0	;ccb_name    - Name of this class
+	.LONG	0xFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'TRM'		;ccb_npfxval - Name prefix part value
+	.LONG	trmdevchk	;ccb_devchk  - Address of device check routine
+	.LONG	trmcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	trmdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+ftrmdrv::	.LONG  0	;Offset of first terminal driver data block
+trmdcbnum::	.LONG  0	;Number of in use terminal DCBs
+trmdcbmax:	.LONG 0		;Maximum number of in use terminal DCBs
+trmdcblmt:	.LONG  10000t	;Maximum number of terminal DCBs allowed
+knlTrmMsgSrc::	.ASCIZ "DEV^TRM"
+
+	END

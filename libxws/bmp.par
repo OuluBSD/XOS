@@ -1,0 +1,28 @@
+.IF NDF DEFINES
+	.NLIST
+        .INCLUD XOSINC:\XMAC\DEFINES.PAR
+	.LIST
+.ENDC
+	.PARM
+
+;Define offsets in the BMP file header (this is a combination of the MS
+;  BITMAPFILEHEADER and BITMAPINFOHEADER structures)
+
+$$$=!0
+BLX bmf_ftype  , 2t		;File type (must be ASCII BM)
+BLX bmf_fsize  , 4t		;File size in longs
+BLX bmf_res1   , 2t		;Reserved, must be 0
+BLX bmf_res2   , 2t		;Reserved, must be 0
+BLX bmf_offbits, 4t		;Offset in file of actual bitmap data
+BLX bmf_hsize  , 4t		;Size of rest of header not including bmp_colors
+BLX bmf_width  , 4t		;Width of bitmap in pixels
+BLX bmf_height , 4t		;Height of bitmap in pixels
+BLX bmf_planes , 2t		;Number of planes (must be 1)
+BLX bmf_bitcnt , 2t		;Number of bits per pixel (1, 4, 8, or 24)
+BLX bmf_comp   , 4t		;Compression
+BLX bmf_isize  , 4t		;Image size (in bytes)
+BLX bmf_xres   , 4t		;X resolution (pels per meter)
+BLX bmf_yres   , 4t		;Y resolution (pels per meter)
+BLX bmf_clrused, 4t		;Number of colors used by bitmap
+BLX bmf_clrimp , 4t		;Number of colors which are important
+bmf_SIZE=!$$$

@@ -1,0 +1,32 @@
+	.TITLE	SCREEN
+
+;This module contains routines to support console screen switching.  The
+;  screen symbiont can not display the system menu on a graphics screen and
+;  does not support saving and restoring graphics screens when switching
+;  between screens.  Thus we must do all of this.  We first register with
+;  the screen symbiont so we will be notified of an attempt to display the
+;  system menu or to switch to this screen so we can do the right thing.
+;  When switching away for a graphics screen we just discard the screen
+;  contents.  When switching to a graphics screen we invalidate the entire
+;  base window thereby causing everything to be redrawn.
+
+	.PROC	80386
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTHREADS.PAR
+	.INCLUD XOSINC:\XMAC\CLIBX.PAR
+	.INCLUD XWS.PAR
+	.INCLUD XWSX.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	xwsInitScreen
+xwsInitScreen::
+
+	RET
+
+	.END

@@ -1,0 +1,334 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <string.h>
+#include <xos.h>
+#include <xossvc.h>
+#include <xoserr.h>
+#include <xoserrmsg.h>
+#include <xosstr.h>
+#include <xostrm.h>
+#include <xosxws.h>
+#include <xosxwsx.h>
+#include <xosbmf.h>
+
+// This module contains routines for loading bit-mapped fonts
+
+extern long errno;
+
+static XWSFNTUNLOAD   bmfunload;
+static XWSFNTGETGLYPH bmfgetglyph;
+
+
+#define BMFA_WEIGHT (BMFA_XBOLD|BMFA_BOLD|BMFA_DBOLD|BMFA_NORMAL|BMFA_LIGHT)
+
+
+static int getbytes(long file, int pos, char *pnt, int size);
+
+
+//*************************************************************************
+// Function: xwsbmfinit - Initialize bit-mapped fonts - This must be called
+//		called once upon startup.  It scans the XOSFNT: directory
+//		and constructs FNBs, FSBs, and FNTs for all .BMF files it
+//		finds there.
+// Returned: 0 if normal, negative XOS error code if error
+//*************************************************************************
+
+long xwsbmfinit(void)
+
+{
+    FNB  *fnb;
+    FSB  *fsb;
+    FNT  *fnt;
+    FNT **prevfnt;
+
+    long file;
+    long rtn;
+    long len;
+    FONTHEADER header;
+    char fontname[36];
+    char filename[256];
+
+
+/// static char srchstr[] = "XOSFNT:*.BMF";
+    static struct
+    {	byte4_parm  filoptn;
+		lngstr_parm filspec;
+		byte2_parm  srcattr;
+		byte4_parm  dirhndl;
+		byte4_parm  length;
+		char        end;
+    } sparms =
+    {	{PAR_SET|REP_HEXV, 4, IOPAR_FILOPTN, XFO_NOPREFIX|XFO_FILENAME},
+		{PAR_GET|REP_STR , 0, IOPAR_FILSPEC, NULL, 0, sizeof(filename), 0},
+		{PAR_SET|REP_HEXV, 2, IOPAR_SRCATTR, XA_NORMAL},
+		{PAR_SET|REP_HEXV, 4, IOPAR_DIRHNDL, 0},
+		{PAR_GET|REP_DECV, 4, IOPAR_LENGTH , 0}
+    };
+
+
+	if ((sparms.dirhndl.value = svcIoOpen(XO_IN|XO_ODF, "XOSFNT:", NULL)) < 0)
+		return (sparms.dirhndl.value);
+    sparms.filspec.buffer = filename;
+    for (;;)
+    {
+		if ((file = svcIoOpen(XO_IN, "*.BMF", &sparms)) < 0)
+		{
+			if (file == ER_FILNF)
+				break;
+			return (file);
+		}
+		rtn = svcIoInBlock(file, (char *)&header, sizeof(header));
+		svcIoClose(file, 0);
+		if (rtn != sizeof(header) || header.id1 != BMF_ID1 ||
+				header.id2 != BMF_ID2 || header.version != 0x100 ||
+					header.length > sparms.length.value)
+			continue;
+		*strnmov(fontname, header.name, 32) = 0;
+		if ((fnb = xwsgetfnb(fontname, 0, TRUE)) == NULL)
+			return (-errno);
+
+		// Here with the FNB for this font, either an existing one
+		//   or a new one we just created. Now get the FSB.
+
+		printf("### bmfont file: %s name: %s (%d x %d)\n", filename,
+				header.name, header.avgwidth, header.height);
+
+		if ((fsb = xwsgetfsb(fnb, header.height, header.avgwidth)) == NULL)
+			return (-errno);
+
+		printf("### FSB: %d x %d\n", fsb->width, fsb->height);
+
+		// Here with the FSB for this font, either an existing one
+		//   or a new one we just created. Now create the FNT.
+
+		prevfnt = &(fsb->ffnt);
+		for (;;)
+		{
+			if ((fnt = *prevfnt) == NULL || fnt->attr > header.attr)
+			{
+				len = strlen(filename) + 1;
+				if ((fnt = (FNT *)xwsMalloc(sizeof(FNT) + len)) == NULL)
+					return (-errno);
+				fnt->id = '*TNF';
+				fnt->fsb = fsb;
+				fnt->ascent = header.ascent; // Ascent (pixels)
+				fnt->descent = header.descent; // Descent (pixels)
+				fnt->inleading = header.inleading; // Internal leading (pixels)
+				fnt->exleading = header.exleading; // External leading (pixels)
+				fnt->height = header.height; // Height (pixels) (must be ascent
+											 //   + descent + inleading)
+				fnt->bmascent = header.ascent; //// + header.inleading;
+				fnt->bmheight = fnt->bmascent + header.descent; //// + 1;
+				fnt->maxwidth = header.maxwidth; // Maximum width
+				fnt->avgwidth = header.avgwidth; // Average width
+				fnt->attr = header.attr; // Attribute
+				fnt->underpos = header.underpos; // Underscore position
+				fnt->strikepos = header.strikepos; // Strike-out position
+				fnt->firstchar = header.firstchar; // First character
+				if ((fnt->numchars = header.numchars) == 0)
+					fnt->numchars = 256; // Number of characters
+				fnt->lastchar = header.firstchar + (fnt->numchars - 1);
+				fnt->dfltchar = header.dfltchar; // Default character
+				fnt->flags = header.flags; // Flag bits:
+				fnt->length = header.length - header.glyphtbl;
+				fnt->offset = header.glyphtbl;
+				fnt->loadcnt = 0;
+				fnt->table = NULL;	// Pointer to glyph pointer table
+				memcpy(fnt->filename, filename, len);
+				fnt->next = *prevfnt;
+				*prevfnt = fnt;
+				break;
+			}
+			else if ((fnt->attr & BMFA_WEIGHT) == (header.attr & BMFA_WEIGHT))
+				break;
+			prevfnt = &(fnt->next);
+		}
+    }
+    fnb = xwsfirstfnb;
+    while (fnb != NULL)
+    {
+///		printf("FNB: %s\n", fnb->name);
+        fsb = fnb->fbmfsb;
+		while (fsb != NULL)
+		{
+///		    printf("  FSB: %d x %d\n", fsb->width, fsb->height);
+			fnt = fsb->ffnt;
+			while (fnt != NULL)
+			{
+///				printf("    FNT: 0x%04.4X\n", fnt->attr);
+				fnt = fnt->next;
+			}
+			fsb = fsb->next;
+		}
+		fnb = fnb->next;
+    }
+    return (0);
+}	
+
+//**********************************************************************
+// Function: xwsbmfload - Load a bit-mapped font - If the font is not
+//		loaded, space for the glyph index table and the glyph
+//		bit-maps is allocated and these items are read from the
+//		font's .BMF file and the load count is set to 1.  If the
+//		font is already loaded, the load count is incremented.
+// Returned: Pointer to the FNT for the font if normal or NULL if error
+//**********************************************************************
+
+FNT *xwsbmfload(
+    char *name,		// Name of the font
+    long  height,	// Font height, in pixels
+    long  width,	// Font width, in pixels (-1 means don't care)
+    long  attr)		// Font attributes
+
+{
+    FNB   *fnb;
+    FSB   *fsb;
+    FSB   *nfsb;
+    FNT   *fnt;
+    FNT   *nfnt;
+    int   *tblpnt;
+    char  *strpnt;
+    GBM  **fnttbl;
+    long   file;
+    int    last;
+    int    size;
+    int    left;
+    int    pos;
+    int    amount;
+    int    cnt;
+    ushort fwid;
+    char   filename[264];
+
+    fnb = xwsfirstfnb;
+    while (fnb != NULL && stricmp(name, fnb->name) != 0)
+		fnb = fnb->next;
+    if (fnb == 0)
+		return (NULL);
+    fsb = nfsb = fnb->fbmfsb;
+    last = 0;
+    while (nfsb != NULL && height >= nfsb->height)
+    {
+		if (nfsb->height != last)
+		{
+			last = nfsb->height;
+			fsb = nfsb;
+		}
+		nfsb = nfsb->next;
+    }
+    nfsb = fsb;
+    while (nfsb != NULL && height == nfsb->height && width >= nfsb->width)
+    {
+		fsb = nfsb;
+		nfsb = nfsb->next;
+    }
+    fnt = nfnt = fsb->ffnt;
+    while (nfnt != NULL && attr >= nfnt->attr)
+    {
+		fnt = nfnt;
+		nfnt = nfnt->next;
+    }
+    if (fnt->loadcnt != 0)
+    {
+		fnt->loadcnt++;
+		return (fnt);
+    }
+    strmov(strmov(filename, "XOSFNT:"), fnt->filename);
+    if ((file = svcIoOpen(XO_IN, filename, NULL)) < 0)
+		return (NULL);
+    size = fnt->length + 2 * fnt->numchars;
+    if ((fnttbl = (GBM **)xwsMalloc(size)) == NULL)
+		return (NULL);
+    if (!getbytes(file, fnt->offset, (char *)fnttbl, fnt->numchars * 4))
+		return (NULL);
+    height = fnt->ascent + fnt->descent;
+    cnt = fnt->numchars;
+    left = size;
+    tblpnt = (int *)fnttbl;
+    strpnt = (char *)(tblpnt + fnt->numchars);
+    while (--cnt >= 0)
+    {
+		pos = *tblpnt;
+		if (!getbytes(file, pos, (char *)&fwid, 2))
+			return (NULL);
+		*tblpnt++ = (int)strpnt;
+		amount = ((fwid + 7)/8) * height + 2;
+		if ((left -= (amount + 8)) < 0)
+		{
+			errno = -ER_BDFNT;
+			return (NULL);
+		}
+		if (!getbytes(file, pos + 2, strpnt + 4, amount))
+			return (NULL);
+		((GBM *)(strpnt))->width = fwid;
+		((GBM *)(strpnt))->advance = fwid;
+		strpnt += (amount + 4);
+    }
+    fnt->loadcnt = 1;
+    fnt->table = fnttbl;
+    fnt->unldfont = bmfunload;
+    fnt->getglyph = bmfgetglyph;
+    return (fnt);
+}
+
+
+static int getbytes(
+    long  file,
+    int   pos,
+    char *pnt,
+    int   size)
+
+{
+    int rtn;
+
+    static struct
+    {	byte4_parm  pos;
+		char        end;
+    } pparms =
+    {	{PAR_SET|REP_DECV, 4, IOPAR_ABSPOS, 0}
+    };
+
+    pparms.pos.value = pos;
+    if ((rtn = svcIoInBlockP(file, pnt, size, &pparms)) != size)
+    {
+		if (rtn >= 0)
+			rtn = ER_EOF;
+		errno = -rtn;
+		return (FALSE);
+    }
+    return (TRUE);
+}
+
+
+//********************************************************************
+// Function: bmfunload - Unload a bit-mapped font - The load count for
+//		the font is decremented.  If it goes to 0, the font
+//		glyph pointer table and the glyph bit-maps are removed
+//		from memory.
+// Returned: Nothing
+//********************************************************************
+
+static void bmfunload(
+    FNT *fnt)		// Pointer to FNT for the font
+
+{
+    if (fnt->loadcnt == 0 || --(fnt->loadcnt) != 0)
+		return;
+    xwsFree(fnt->table);
+    fnt->table = NULL;
+}
+
+//*************************************************
+// Function: bmfgetglyph - Get a character glyph
+// Returned: Pointer to the glyph bit-map structure
+//*************************************************
+
+static GBM *bmfgetglyph(
+    FNT *fnt,
+    int  chr)
+
+{
+    if (chr < fnt->firstchar || chr > fnt->lastchar)
+		chr = fnt->dfltchar;
+    return ((fnt->table)[chr - fnt->firstchar]);
+}

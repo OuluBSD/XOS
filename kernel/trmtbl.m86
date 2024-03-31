@@ -1,0 +1,766 @@
+	.TITLE	trmtbl - General terminal class driver for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+
+	.SBTTL	Character input tables
+
+	DATA
+
+;Initial data forwarding character table for line mode (this is copied into
+;  tdb_dfctbl when the TIM$CHAR and TIM$IMAGE bits are cleared with the
+;  IOPAR_SINPMODE IO parameter.  A set bit indicates that the coresponding
+;  character is a data forwarding character.  Bits are ordered from right to
+;  left.
+
+	.MOD	4
+trmdfctbl::
+	.BYTE	00000000w	;^G ^F ^E ^D ^C ^B ^A NULL
+	.BYTE	00011100w	;^O ^N ^M ^L ^K ^J ^I ^H
+	.BYTE	00000000w	;^W ^V ^U ^T ^S ^R ^P ^Q
+	.BYTE	00000000w	;^_ ^^ ^] ^\ ^[ ^Z ^Y ^X
+	.BYTE	00000000w	; '  &  %  $  #  "  ! Space
+	.BYTE	00000000w	; /  .  -  ,  +  *  )  (
+	.BYTE	00000000w	; 7  6  5  4  3  2  1  0
+	.BYTE	00000000w	; ?  >  =  <  ;  :  9  8
+	.BYTE	00000000w	; G  F  E  D  C  B  A  @
+	.BYTE	00000000w	; O  N  M  L  K  J  I  H
+	.BYTE	00000000w	; W  V  U  T  S  R  Q  P
+	.BYTE	00000000w	; _  ^  }  \  {  Z  Y  X
+	.BYTE	00000000w	; g  f  e  d  c  b  a  `
+	.BYTE	00000000w	; o  n  m  l  k  j  i  h
+	.BYTE	00000000w	; w  v  u  t  s  r  q  p
+	.BYTE	10000000w	;DEL ~  }  |  {  z  y  x
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	00000000w
+	.BYTE	10000000w
+
+;Table which translates from ASCII character (7 bits) to internal code.
+;  Low byte contains the scan code value, high byte contains the shift
+;  and control key bits for the character.
+
+	.MOD	4
+sercode::
+	.BYTE	0  , 0		;00 - ^@ - NULL
+	.BYTE	5Ah, 20h	;01 - ^A
+	.BYTE	69h, 20h	;02 - ^B
+	.BYTE	67h, 20h	;03 - ^C
+	.BYTE	5Ch, 20h	;04 - ^D
+	.BYTE	4Fh, 20h	;05 - ^E
+	.BYTE	5Dh, 20h	;06 - ^F
+	.BYTE	5Eh, 20h	;07 - ^G
+	.BYTE	3Ah, 0		;08 - ^H - Backspace
+	.BYTE	3Bh, 0		;09 - ^I - Tab
+	.BYTE	39h, 0		;0A - ^J - Line feed
+	.BYTE	61h, 20h	;0B - ^K
+	.BYTE	62h, 20h	;0C - ^L
+	.BYTE	38h, 0		;0D - ^M - Return
+	.BYTE	6Ah, 20h	;0E - ^N
+	.BYTE	55h, 20h	;0F - ^O
+	.BYTE	56h, 20h	;10 - ^P
+	.BYTE	4Dh, 20h	;11 - ^Q
+	.BYTE	50h, 20h	;12 - ^R
+	.BYTE	5Bh, 20h	;13 - ^S
+	.BYTE	51h, 20h	;14 - ^T
+	.BYTE	53h, 20h	;16 - ^U
+	.BYTE	68h, 20h	;15 - ^V
+	.BYTE	4Eh, 20h	;17 - ^W
+	.BYTE	66h, 20h	;18 - ^X
+	.BYTE	52h, 20h	;19 - ^Y
+	.BYTE	65h, 20h	;1A - ^Z
+	.BYTE	10h, 0		;1B - ^[ - Escape
+	.BYTE	59h, 20h	;1C - ^\
+	.BYTE	58h, 20h	;1D - ^]
+	.BYTE	47h, 20h	;1E - ^^
+	.BYTE	4Bh, 20h	;1F - ^_
+	.BYTE	6Fh, 0		;20 - Space
+	.BYTE	41h, 10h	;21 - !
+	.BYTE	64h, 10h	;22 - "
+	.BYTE	43h, 10h	;23 - #
+	.BYTE	44h, 10h	;24 - $
+	.BYTE	45h, 10h	;25 - %
+	.BYTE	47h, 10h	;26 - &
+	.BYTE	64h, 0		;27 - '
+	.BYTE	49h, 10h	;28 - (
+	.BYTE	4Ah, 10h	;29 - )
+	.BYTE	48h, 10h	;2A - *
+	.BYTE	4Ch, 10h	;2B - +
+	.BYTE	6Ch, 0		;2C - ,
+	.BYTE	4Bh, 0		;2D - - (make sure - not at end of line!)
+	.BYTE	6Dh, 0		;2E - .
+	.BYTE	6Eh, 0		;2F - /
+	.BYTE	4Ah, 0		;30 - 0
+	.BYTE	41h, 0		;31 - 1
+	.BYTE	42h, 0		;32 - 2
+	.BYTE	43h, 0		;33 - 3
+	.BYTE	44h, 0		;34 - 4
+	.BYTE	45h, 0		;35 - 5
+	.BYTE	46h, 0		;36 - 6
+	.BYTE	47h, 0		;37 - 7
+	.BYTE	48h, 0		;38 - 8
+	.BYTE	49h, 0		;39 - 9
+	.BYTE	63h, 10h	;3A - :
+	.BYTE	63h, 0		;3B - ;
+	.BYTE	6Ch, 10h	;3C - <
+	.BYTE	4Ch, 0		;3D - =
+	.BYTE	6Dh, 10h	;3E - >
+	.BYTE	6Eh, 10h	;3F - ?
+	.BYTE	42h, 10h	;40 - @
+	.BYTE	5Ah, 10h	;41 - A
+	.BYTE	69h, 10h	;42 - B
+	.BYTE	67h, 10h	;43 - C
+	.BYTE	5Ch, 10h	;44 - D
+	.BYTE	4Fh, 10h	;45 - E
+	.BYTE	5Dh, 10h	;46 - F
+	.BYTE	5Eh, 10h	;47 - G
+	.BYTE	5Fh, 10h	;48 - H
+	.BYTE	54h, 10h	;49 - I
+	.BYTE	60h, 10h	;4A - J
+	.BYTE	61h, 10h	;4B - K
+	.BYTE	62h, 10h	;4C - L
+	.BYTE	6Bh, 10h	;4D - M
+	.BYTE	6Ah, 10h	;4E - N
+	.BYTE	55h, 10h	;4F - O
+	.BYTE	56h, 10h	;50 - P
+	.BYTE	4Dh, 10h	;51 - Q
+	.BYTE	50h, 10h	;52 - R
+	.BYTE	5Bh, 10h	;53 - S
+	.BYTE	51h, 10h	;54 - T
+	.BYTE	53h, 10h	;56 - U
+	.BYTE	68h, 10h	;55 - V
+	.BYTE	4Eh, 10h	;57 - W
+	.BYTE	66h, 10h	;58 - X
+	.BYTE	52h, 10h	;59 - Y
+	.BYTE	65h, 10h	;5A - Z
+	.BYTE	57h, 0		;5B - [
+	.BYTE	59h, 0		;5C - \
+	.BYTE	58h, 0		;5D - ]
+	.BYTE	46h, 10h	;5E - ^
+	.BYTE	4Bh, 10h	;5F - _
+	.BYTE	40h, 0		;60 - Grave
+	.BYTE	5Ah, 0		;61 - a
+	.BYTE	69h, 0		;62 - b
+	.BYTE	67h, 0		;63 - c
+	.BYTE	5Ch, 0		;64 - d
+	.BYTE	4Fh, 0		;65 - e
+	.BYTE	5Dh, 0		;66 - f
+	.BYTE	5Eh, 0		;67 - g
+	.BYTE	5Fh, 0		;68 - h
+	.BYTE	54h, 0		;69 - i
+	.BYTE	60h, 0		;6A - j
+	.BYTE	61h, 0		;6B - k
+	.BYTE	62h, 0		;6C - l
+	.BYTE	6Bh, 0		;6D - m
+	.BYTE	6Ah, 0		;6E - n
+	.BYTE	55h, 0		;6F - o
+	.BYTE	56h, 0		;70 - p
+	.BYTE	4Dh, 0		;71 - q
+	.BYTE	50h, 0		;72 - r
+	.BYTE	5Bh, 0		;73 - s
+	.BYTE	51h, 0		;74 - t
+	.BYTE	53h, 0		;76 - u
+	.BYTE	68h, 0		;75 - v
+	.BYTE	4Eh, 0		;77 - w
+	.BYTE	66h, 0		;78 - x
+	.BYTE	52h, 0		;79 - Y
+	.BYTE	65h, 0		;7A - z
+	.BYTE	57h, 10h	;7B - {
+	.BYTE	59h, 10h	;7C - |
+	.BYTE	58h, 10h	;7D - {
+	.BYTE	40h, 10h	;7E - ~
+	.BYTE	3Ch, 0		;7F - DEL
+.PAGE
+;Define symbols for indexes for special keys
+
+SK_NULL  =!0x80		;Unused code
+SK_LSHFT =!0x84		;Left shift key
+SK_RSHFT =!0x88		;Right shift key
+SK_LCTRL =!0x8C		;Left control key
+SK_RCTRL =!0x90		;Right control key
+SK_LALT  =!0x94		;Left ALT key
+SK_RALT  =!0x98		;Right ALT key
+SK_CAPLCK=!0x9C		;CAPS lock key
+SK_NUMLCK=!0xA0		;NUM lock key
+SK_SCLLCK=!0xA4		;Scroll lock key
+
+;Keyboard tables index table
+
+	.MOD	4
+knlScnTblX::
+	.LONG	knlKeyTblXN	;000 - Normal
+	.LONG	keytblxs	;001 - Shift only pressed
+	.LONG	keytblxc	;010 - Control only pressed
+	.LONG	keytblxcs	;011 - Shift and control pressed
+	.LONG	knlKeyTblXN	;100 - ALT only pressed
+	.LONG	keytblxs	;101 - ALT and shift pressed
+	.LONG	keytblxc	;110 - ALT and control pressed
+	.LONG	keytblxcs	;111 - ALT, shift and control pressed
+
+;This table translates from the internal keyboard scan code to an ASCII
+;  code and the XOS extended code when neither the shift or control
+;  keys are pressed
+
+knlKeyTblXN::
+	.BYTE	SK_NULL		;00
+	.BYTE	0		;01 - F1 key
+	.BYTE	0		;02 - F2 key
+	.BYTE	0		;03 - F3 key
+	.BYTE	0		;04 - F4 key
+	.BYTE	0		;05 - F5 key
+	.BYTE	0		;06 - F6 key
+	.BYTE	0		;07 - F7 key
+	.BYTE	0		;08 - F8 key
+	.BYTE	0		;09 - F9 key
+	.BYTE	0		;0A - F10 key
+	.BYTE	0		;0B - F11 key
+	.BYTE	0		;0C - F12 key
+	.BYTE	0		;0D
+	.BYTE	0		;0E
+	.BYTE	0		;0F
+	.BYTE	ESC		;10 - Escape
+	.BYTE	0		;11 - Insert
+	.BYTE	0		;12 - Home
+	.BYTE	0		;13 - Page up
+	.BYTE	0		;14 - Delete
+	.BYTE	0		;15 - End
+	.BYTE	0		;16 - Page down
+	.BYTE	0		;17 - Up arrow
+	.BYTE	0		;18 - Left arrow
+	.BYTE	0		;19 - Down arrow
+	.BYTE	0		;1A - Right arrow
+	.BYTE	0		;1B
+	.BYTE	0		;1C
+	.BYTE	0		;1D
+	.BYTE	0		;1E
+	.BYTE	0		;1F
+	.BYTE	'0'		;20 - Keypad 0
+	.BYTE	'1'		;21 - Keypad 1
+	.BYTE	'2'		;22 - Keypad 2
+	.BYTE	'3'		;23 - Keypad 3
+	.BYTE	'4'		;24 - Keypad 4
+	.BYTE	'5'		;25 - Keypad 5
+	.BYTE	'6'		;26 - Keypad 6
+	.BYTE	'7'		;27 - Keypad 7
+	.BYTE	'8'		;28 - Keypad 8
+	.BYTE	'9'		;29 - Keypad 9
+	.BYTE	'.'		;2A - Keypad .
+	.BYTE	'/'		;2B - Keypad /
+	.BYTE	'*'		;2C - Keypad *
+	.BYTE	'-'		;2D - Keypad - (!!!)
+	.BYTE	'+'		;2E - Keypad +
+	.BYTE	CR		;2F - Keypad enter
+	.BYTE	0		;30
+	.BYTE	0		;31
+	.BYTE	0		;32
+	.BYTE	0		;33
+	.BYTE	0		;34
+	.BYTE	0		;35
+	.BYTE	0		;36
+	.BYTE	0		;37
+	.BYTE	CR		;38 - Enter
+	.BYTE	LF		;39 - Line feed
+	.BYTE	BSP		;3A - Backspace
+	.BYTE	HT		;3B - Tab
+	.BYTE	07Fh		;3C - DEL
+	.BYTE	0		;3D
+	.BYTE	0		;3E
+	.BYTE	0		;3F
+	.BYTE	'`'		;40 - Grave or ~
+	.BYTE	'1'		;41 - 1 or !
+	.BYTE	'2'		;42 - 2 or @
+	.BYTE	'3'		;43 - 3 or #
+	.BYTE	'4'		;44 - 4 or $
+	.BYTE	'5'		;45 - 5 or %
+	.BYTE	'6'		;46 - 6 or ^
+	.BYTE	'7'		;47 - 7 or &
+	.BYTE	'8'		;48 - 8 or *
+	.BYTE	'9'		;49 - 9 or (
+	.BYTE	'0'		;4A - 0 or )
+	.BYTE	'-'		;4B - - or _
+	.BYTE	'='		;4C - = or +
+	.BYTE	'q'		;4D - Q
+	.BYTE	'w'		;4E - W
+	.BYTE	'e'		;4F - E
+	.BYTE	'r'		;50 - R
+	.BYTE	't'		;51 - T
+	.BYTE	'y'		;52 - Y
+	.BYTE	'u'		;53 - U
+	.BYTE	'i'		;54 - I
+	.BYTE	'o'		;55 - O
+	.BYTE	'p'		;56 - P
+	.BYTE	'['		;57 - [ or {
+	.BYTE	']'		;58 - ] or }
+	.BYTE	'\'		;59 - \ or |
+	.BYTE	'a'		;5A - A
+	.BYTE	's'		;5B - S
+	.BYTE	'd'		;5C - D
+	.BYTE	'f'		;5D - F
+	.BYTE	'g'		;5E - G
+	.BYTE	'h'		;5F - H
+	.BYTE	'j'		;60 - J
+	.BYTE	'k'		;61 - K
+	.BYTE	'l'		;62 - L
+	.BYTE	';'		;63 - ;
+	.BYTE	27h		;64 - ' or "
+	.BYTE	'z'		;65 - Z
+	.BYTE	'x'		;66 - X
+	.BYTE	'c'		;67 - C
+	.BYTE	'v'		;68 - V
+	.BYTE	'b'		;69 - B
+	.BYTE	'n'		;6A - N
+	.BYTE	'm'		;6B - M
+	.BYTE	','		;6C - , or <
+	.BYTE	'.'		;6D - . or >
+	.BYTE	'/'		;6E - / or ?
+	.BYTE	' '		;6F - Space
+	.BYTE	0		;70
+	.BYTE	0		;71
+	.BYTE	0		;72
+	.BYTE	SK_SCLLCK	;73 - Scroll lock
+	.BYTE	SK_NUMLCK	;74 - Num lock
+	.BYTE	SK_CAPLCK	;75 - Caps lock
+	.BYTE	SK_LSHFT	;76 - Left shift
+	.BYTE	SK_RSHFT	;77 - Right shift
+	.BYTE	SK_LALT		;78 - Left Alt
+	.BYTE	SK_RALT		;79 - Right Alt
+	.BYTE	SK_LCTRL	;7A - Left control
+	.BYTE	SK_RCTRL	;7B - Right control
+	.BYTE	SK_NULL		;7C - Print screen
+	.BYTE	0		;7D - Break
+	.BYTE	0		;7E - Pause
+	.BYTE	0		;7F - System shift
+.PAGE
+;This table translates from the internal keyboard scan code to an ASCII
+;  code and the XOS extended code when the shift key(s) only is pressed
+
+keytblxs::
+	.BYTE	SK_NULL		;00
+	.BYTE	0		;01 - F1 key
+	.BYTE	0		;02 - F2 key
+	.BYTE	0		;03 - F3 key
+	.BYTE	0		;04 - F4 key
+	.BYTE	0		;05 - F5 key
+	.BYTE	0		;06 - F6 key
+	.BYTE	0		;07 - F7 key
+	.BYTE	0		;08 - F8 key
+	.BYTE	0		;09 - F9 key
+	.BYTE	0		;0A - F10 key
+	.BYTE	0		;0B - F11 key
+	.BYTE	0		;0C - F12 key
+	.BYTE	0		;0D
+	.BYTE	0		;0E
+	.BYTE	0		;0F
+	.BYTE	ESC		;10 - ESC
+	.BYTE	0		;11 - Insert
+	.BYTE	0		;12 - Home
+	.BYTE	0		;13 - Page up
+	.BYTE	0		;14 - Delete
+	.BYTE	0		;15 - End
+	.BYTE	0		;16 - Page down
+	.BYTE	0		;17 - Up arrow
+	.BYTE	0		;18 - Left arrow
+	.BYTE	0		;19 - Down arrow
+	.BYTE	0		;1A - Right arrow
+	.BYTE	0		;1B
+	.BYTE	0		;1C
+	.BYTE	0		;1D
+	.BYTE	0		;1E
+	.BYTE	0		;1F
+	.BYTE	'0'		;20 - Keypad 0
+	.BYTE	'1'		;21 - Keypad 1
+	.BYTE	'2'		;22 - Keypad 2
+	.BYTE	'3'		;23 - Keypad 3
+	.BYTE	'4'		;24 - Keypad 4
+	.BYTE	'5'		;25 - Keypad 5
+	.BYTE	'6'		;26 - Keypad 6
+	.BYTE	'7'		;27 - Keypad 7
+	.BYTE	'8'		;28 - Keypad 8
+	.BYTE	'9'		;29 - Keypad 9
+	.BYTE	'.'		;2A - Keypad .
+	.BYTE	'/'		;2B - Keypad /
+	.BYTE	'*'		;2C - Keypad *
+	.BYTE	'-'		;2D - Keypad - (!!!)
+	.BYTE	'+'		;2E - Keypad +
+	.BYTE	CR		;2F - Keypad enter
+	.BYTE	0		;30
+	.BYTE	0		;31
+	.BYTE	0		;32
+	.BYTE	0		;33
+	.BYTE	0		;34
+	.BYTE	0		;35
+	.BYTE	0		;36
+	.BYTE	0		;37
+	.BYTE	CR		;38 - Enter
+	.BYTE	LF		;39 - Line feed
+	.BYTE	BSP		;3A - Backspace
+	.BYTE	HT		;3B - Tab
+	.BYTE	07Fh		;3C - DEL
+	.BYTE	0		;3D
+	.BYTE	0		;3E
+	.BYTE	0		;3F
+	.BYTE	'~'		;40 - Grave or ~
+	.BYTE	'!'		;41 - 1 or !
+	.BYTE	'@'		;42 - 2 or @
+	.BYTE	'#'		;43 - 3 or #
+	.BYTE	'$'		;44 - 4 or $
+	.BYTE	'%'		;45 - 5 or %
+	.BYTE	'^'		;46 - 6 or ^
+	.BYTE	'&'		;47 - 7 or &
+	.BYTE	'*'		;48 - 8 or *
+	.BYTE	'('		;49 - 9 or (
+	.BYTE	')'		;4A - 0 or )
+	.BYTE	'_'		;4B - - or _
+	.BYTE	'+'		;4C - = or +
+	.BYTE	'Q'		;4D - Q
+	.BYTE	'W'		;4E - W
+	.BYTE	'E'		;4F - E
+	.BYTE	'R'		;50 - R
+	.BYTE	'T'		;51 - T
+	.BYTE	'Y'		;52 - Y
+	.BYTE	'U'		;53 - U
+	.BYTE	'I'		;54 - I
+	.BYTE	'O'		;55 - O
+	.BYTE	'P'		;56 - P
+	.BYTE	'{'		;57 - [ or {
+	.BYTE	'}'		;58 - ] or }
+	.BYTE	'|'		;59 - \ or |
+	.BYTE	'A'		;5A - A
+	.BYTE	'S'		;5B - S
+	.BYTE	'D'		;5C - D
+	.BYTE	'F'		;5D - F
+	.BYTE	'G'		;5E - G
+	.BYTE	'H'		;5F - H
+	.BYTE	'J'		;60 - J
+	.BYTE	'K'		;61 - K
+	.BYTE	'L'		;62 - L
+	.BYTE	':'		;63 - ;
+	.BYTE	'"'		;64 - ' or "
+	.BYTE	'Z'		;65 - Z
+	.BYTE	'X'		;66 - X
+	.BYTE	'C'		;67 - C
+	.BYTE	'V'		;68 - V
+	.BYTE	'B'		;69 - B
+	.BYTE	'N'		;6A - N
+	.BYTE	'M'		;6B - M
+	.BYTE	'<'		;6C - , or <
+	.BYTE	'>'		;6D - . or >
+	.BYTE	'?'		;6E - / or ?
+	.BYTE	' '		;6F - Space
+	.BYTE	0		;70
+	.BYTE	0		;71
+	.BYTE	0		;72
+	.BYTE	SK_SCLLCK	;73 - Scroll lock
+	.BYTE	SK_NUMLCK	;74 - Num lock
+	.BYTE	SK_CAPLCK	;75 - Caps lock
+	.BYTE	SK_LSHFT	;76 - Left shift
+	.BYTE	SK_RSHFT	;77 - Right shift
+	.BYTE	SK_LALT		;78 - Left Alt
+	.BYTE	SK_RALT		;79 - Right Alt
+	.BYTE	SK_LCTRL	;7A - Left control
+	.BYTE	SK_RCTRL	;7B - Right control
+	.BYTE	SK_NULL		;7C - Print screen
+	.BYTE	0		;7D - Break
+	.BYTE	0		;7E - Pause
+	.BYTE	0		;7F - System shift
+.PAGE
+;This table translates from the internal keyboard scan code to an ASCII
+;  code and the XOS extended code when the control key only is pressed
+
+keytblxc::
+	.BYTE	SK_NULL		;00
+	.BYTE	0		;01 - F1 key
+	.BYTE	0		;02 - F2 key
+	.BYTE	0		;03 - F3 key
+	.BYTE	0		;04 - F4 key
+	.BYTE	0		;05 - F5 key
+	.BYTE	0		;06 - F6 key
+	.BYTE	0		;07 - F7 key
+	.BYTE	0		;08 - F8 key
+	.BYTE	0		;09 - F9 key
+	.BYTE	0		;0A - F10 key
+	.BYTE	0		;0B - F11 key
+	.BYTE	0		;0C - F12 key
+	.BYTE	0		;0D
+	.BYTE	0		;0E
+	.BYTE	0		;0F
+	.BYTE	ESC		;10 - ESC
+	.BYTE	0		;11 - Insert
+	.BYTE	0		;12 - Home
+	.BYTE	0		;13 - Page up
+	.BYTE	0		;14 - Delete
+	.BYTE	0		;15 - End
+	.BYTE	0		;16 - Page down
+	.BYTE	0		;17 - Up arrow
+	.BYTE	0		;18 - Left arrow
+	.BYTE	0		;19 - Down arrow
+	.BYTE	0		;1A - Right arrow
+	.BYTE	0		;1B
+	.BYTE	0		;1C
+	.BYTE	0		;1D
+	.BYTE	0		;1E
+	.BYTE	0		;1F
+	.BYTE	'0'		;20 - Keypad 0
+	.BYTE	'1'		;21 - Keypad 1
+	.BYTE	'2'		;22 - Keypad 2
+	.BYTE	'3'		;23 - Keypad 3
+	.BYTE	'4'		;24 - Keypad 4
+	.BYTE	'5'		;25 - Keypad 5
+	.BYTE	'6'		;26 - Keypad 6
+	.BYTE	'7'		;27 - Keypad 7
+	.BYTE	'8'		;28 - Keypad 8
+	.BYTE	'9'		;29 - Keypad 9
+	.BYTE	'.'		;2A - Keypad .
+	.BYTE	'/'		;2B - Keypad /
+	.BYTE	'*'		;2C - Keypad *
+	.BYTE	'-'		;2D - Keypad - (!!!)
+	.BYTE	'+'		;2E - Keypad +
+	.BYTE	CR		;2F - Keypad enter
+	.BYTE	0		;30
+	.BYTE	0		;31
+	.BYTE	0		;32
+	.BYTE	0		;33
+	.BYTE	0		;34
+	.BYTE	0		;35
+	.BYTE	0		;36
+	.BYTE	0		;37
+	.BYTE	CR		;38 - Enter
+	.BYTE	LF		;39 - Line feed
+	.BYTE	7Fh		;3A - Backspace
+	.BYTE	HT		;3B - Tab
+	.BYTE	7Fh		;3C - DEL
+	.BYTE	0		;3D
+	.BYTE	0		;3E
+	.BYTE	0		;3F
+	.BYTE	'`'		;40 - Grave or ~
+	.BYTE	'1'		;41 - 1 or !
+	.BYTE	'2'		;42 - 2 or @
+	.BYTE	'3'		;43 - 3 or #
+	.BYTE	'4'		;44 - 4 or $
+	.BYTE	'5'		;45 - 5 or %
+	.BYTE	'6'		;46 - 6 or ^
+	.BYTE	'7'		;47 - 7 or &
+	.BYTE	'8'		;48 - 8 or *
+	.BYTE	'9'		;49 - 9 or (
+	.BYTE	'0'		;4A - 0 or )
+	.BYTE	'-'		;4B - - or _
+	.BYTE	'='		;4C - = or +
+	.BYTE	'Q'-40h		;4D - Q
+	.BYTE	'W'-40h		;4E - W
+	.BYTE	'E'-40h		;4F - E
+	.BYTE	'R'-40h		;50 - R
+	.BYTE	'T'-40h		;51 - T
+	.BYTE	'Y'-40h		;52 - Y
+	.BYTE	'U'-40h		;53 - U
+	.BYTE	'I'-40h		;54 - I
+	.BYTE	'O'-40h		;55 - O
+	.BYTE	'P'-40h		;56 - P
+	.BYTE	'['-40h		;57 - [ or {
+	.BYTE	']'-40h		;58 - ] or }
+	.BYTE	'\'-40h		;59 - \ or |
+	.BYTE	'A'-40h		;5A - A
+	.BYTE	'S'-40h		;5B - S
+	.BYTE	'D'-40h		;5C - D
+	.BYTE	'F'-40h		;5D - F
+	.BYTE	'G'-40h		;5E - G
+	.BYTE	'H'-40h		;5F - H
+	.BYTE	'J'-40h		;60 - J
+	.BYTE	'K'-40h		;61 - K
+	.BYTE	'L'-40h		;62 - L
+	.BYTE	';'		;63 - ;
+	.BYTE	27h		;64 - ' or "
+	.BYTE	'Z'-40h		;65 - Z
+	.BYTE	'X'-40h		;66 - X
+	.BYTE	'C'-40h		;67 - C
+	.BYTE	'V'-40h		;68 - V
+	.BYTE	'B'-40h		;69 - B
+	.BYTE	'N'-40h		;6A - N
+	.BYTE	'M'-40h		;6B - M
+	.BYTE	','		;6C - , or <
+	.BYTE	'.'		;6D - . or >
+	.BYTE	'/'		;6E - / or ?
+	.BYTE	' '		;6F - Space
+	.BYTE	0		;70
+	.BYTE	0		;71
+	.BYTE	0		;72
+	.BYTE	SK_SCLLCK	;73 - Scroll lock
+	.BYTE	SK_NUMLCK	;74 - Num lock
+	.BYTE	SK_CAPLCK	;75 - Caps lock
+	.BYTE	SK_LSHFT	;76 - Left shift
+	.BYTE	SK_RSHFT	;77 - Right shift
+	.BYTE	SK_LALT		;78 - Left Alt
+	.BYTE	SK_RALT		;79 - Right Alt
+	.BYTE	SK_LCTRL	;7A - Left control
+	.BYTE	SK_RCTRL	;7B - Right control
+	.BYTE	SK_NULL		;7C - Print screen
+	.BYTE	0		;7D - Break
+	.BYTE	0		;7E - Pause
+	.BYTE	0		;7F - System shift
+.PAGE
+;This table translates from the internal keyboard scan code to an ASCII
+;  code and the XOS extended code when the control key and shift keys
+;  are pressed
+
+keytblxcs::
+	.BYTE	SK_NULL		;00
+	.BYTE	0		;01 - F1 key
+	.BYTE	0		;02 - F2 key
+	.BYTE	0		;03 - F3 key
+	.BYTE	0		;04 - F4 key
+	.BYTE	0		;05 - F5 key
+	.BYTE	0		;06 - F6 key
+	.BYTE	0		;07 - F7 key
+	.BYTE	0		;08 - F8 key
+	.BYTE	0		;09 - F9 key
+	.BYTE	0		;0A - F10 key
+	.BYTE	0		;0B - F11 key
+	.BYTE	0		;0C - F12 key
+	.BYTE	0		;0D
+	.BYTE	0		;0E
+	.BYTE	0		;0F
+	.BYTE	ESC		;10 - ESC
+	.BYTE	0		;11 - Insert
+	.BYTE	0		;12 - Home
+	.BYTE	0		;13 - Page up
+	.BYTE	0		;14 - Delete
+	.BYTE	0		;15 - End
+	.BYTE	0		;16 - Page down
+	.BYTE	0		;17 - Up arrow
+	.BYTE	0		;18 - Left arrow
+	.BYTE	0		;19 - Down arrow
+	.BYTE	0		;1A - Right arrow
+	.BYTE	0		;1B
+	.BYTE	0		;1C
+	.BYTE	0		;1D
+	.BYTE	0		;1E
+	.BYTE	0		;1F
+	.BYTE	'0'		;20 - Keypad 0
+	.BYTE	'1'		;21 - Keypad 1
+	.BYTE	'2'		;22 - Keypad 2
+	.BYTE	'3'		;23 - Keypad 3
+	.BYTE	'4'		;24 - Keypad 4
+	.BYTE	'5'		;25 - Keypad 5
+	.BYTE	'6'		;26 - Keypad 6
+	.BYTE	'7'		;27 - Keypad 7
+	.BYTE	'8'		;28 - Keypad 8
+	.BYTE	'9'		;29 - Keypad 9
+	.BYTE	'.'		;2A - Keypad .
+	.BYTE	'/'		;2B - Keypad /
+	.BYTE	'*'		;2C - Keypad *
+	.BYTE	'-'		;2D - Keypad - (!!!)
+	.BYTE	'+'		;2E - Keypad +
+	.BYTE	CR		;2F - Keypad enter
+	.BYTE	0		;30
+	.BYTE	0		;31
+	.BYTE	0		;32
+	.BYTE	0		;33
+	.BYTE	0		;34
+	.BYTE	0		;35
+	.BYTE	0		;36
+	.BYTE	0		;37
+	.BYTE	CR		;38 - Enter
+	.BYTE	LF		;39 - Line feed
+	.BYTE	7Fh		;3A - Backspace
+	.BYTE	HT		;3B - Tab
+	.BYTE	7Fh		;3C - DEL
+	.BYTE	0		;3D
+	.BYTE	0		;3E
+	.BYTE	0		;3F
+	.BYTE	'`'		;40 - Grave or ~
+	.BYTE	'1'		;41 - 1 or !
+	.BYTE	'@'		;42 - 2 or @
+	.BYTE	'3'		;43 - 3 or #
+	.BYTE	'4'		;44 - 4 or $
+	.BYTE	'5'		;45 - 5 or %
+	.BYTE	'^'-40h		;46 - 6 or ^
+	.BYTE	'7'		;47 - 7 or &
+	.BYTE	'8'		;48 - 8 or *
+	.BYTE	'9'		;49 - 9 or (
+	.BYTE	'0'		;4A - 0 or )
+	.BYTE	'_'-40h		;4B - - or _
+	.BYTE	'='		;4C - = or +
+	.BYTE	'Q'-40h		;4D - Q
+	.BYTE	'W'-40h		;4E - W
+	.BYTE	'E'-40h		;4F - E
+	.BYTE	'R'-40h		;50 - R
+	.BYTE	'T'-40h		;51 - T
+	.BYTE	'Y'-40h		;52 - Y
+	.BYTE	'U'-40h		;53 - U
+	.BYTE	'I'-40h		;54 - I
+	.BYTE	'O'-40h		;55 - O
+	.BYTE	'P'-40h		;56 - P
+	.BYTE	'['-40h		;57 - [ or {
+	.BYTE	']'-40h		;58 - ] or }
+	.BYTE	'\'-40h		;59 - \ or |
+	.BYTE	'A'-40h		;5A - A
+	.BYTE	'S'-40h		;5B - S
+	.BYTE	'D'-40h		;5C - D
+	.BYTE	'F'-40h		;5D - F
+	.BYTE	'G'-40h		;5E - G
+	.BYTE	'H'-40h		;5F - H
+	.BYTE	'J'-40h		;60 - J
+	.BYTE	'K'-40h		;61 - K
+	.BYTE	'L'-40h		;62 - L
+	.BYTE	';'		;63 - ;
+	.BYTE	27h		;64 - ' or "
+	.BYTE	'Z'-40h		;65 - Z
+	.BYTE	'X'-40h		;66 - X
+	.BYTE	'C'-40h		;67 - C
+	.BYTE	'V'-40h		;68 - V
+	.BYTE	'B'-40h		;69 - B
+	.BYTE	'N'-40h		;6A - N
+	.BYTE	'M'-40h		;6B - M
+	.BYTE	','		;6C - , or <
+	.BYTE	'.'		;6D - . or >
+	.BYTE	'/'		;6E - / or ?
+	.BYTE	' '		;6F - Space
+	.BYTE	0		;70
+	.BYTE	0		;71
+	.BYTE	0		;72
+	.BYTE	SK_SCLLCK	;73 - Scroll lock
+	.BYTE	SK_NUMLCK	;74 - Num lock
+	.BYTE	SK_CAPLCK	;75 - Caps lock
+	.BYTE	SK_LSHFT	;76 - Left shift
+	.BYTE	SK_RSHFT	;77 - Right shift
+	.BYTE	SK_LALT		;78 - Left Alt
+	.BYTE	SK_RALT		;79 - Right Alt
+	.BYTE	SK_LCTRL	;7A - Left control
+	.BYTE	SK_RCTRL	;7B - Right control
+	.BYTE	SK_NULL		;7C - Print screen
+	.BYTE	0		;7D - Break
+	.BYTE	0		;7E - Pause
+	.BYTE	0		;7F - System shift

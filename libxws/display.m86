@@ -1,0 +1,454 @@
+	.TITLE	display
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to set current background bitmap
+;	void xwsWinSetBgBitmap(
+;	    XWSWIN    *win,
+;	    XWSBITMAP *bm,
+;	    int        redraw);
+
+;This function uses the Pascal calling sequence
+
+sbgbm_win   =!12t
+sbgbm_bm    =!8t
+sbgbm_redraw=!4t
+
+	.ENTRY	xwsWinSetBgBitmap
+xwsWinSetBgBitmap::
+	MOVL	EDX, sbgbm_win[ESP]
+	MOVL	EAX, win_basbgbmn[EDX]
+	TESTL	EAX, EAX
+	JE	2$
+	PUSHL	EAX
+	CALL	xwsBitmapDestroy#
+	MOVL	EDX, sbgbm_win[ESP]
+2$:	MOVL	EAX, sbgbm_bm[ESP]
+	MOVL	win_basbgbmn[EDX], EAX
+	CMPL	sbgbm_redraw[ESP], #0
+	JE	4$
+	PUSHL	EDX
+	CALL	xwsWinInvalidateAll
+4$:	RET	12t
+
+.PAGE
+;Function to set current background color
+;	void xwsWinSetBgColor(
+;	    XWSWIN *win,
+;	    int     bgcol,
+;	    int     redraw);
+
+;This function uses the Pascal calling sequence
+
+sbgc_win   =!12t
+sbgc_bgcol =!8t
+sbgc_redraw=!4t
+
+	.ENTRY	xwsWinSetBgColor
+xwsWinSetBgColor::
+	MOVL	EBX, sbgc_win[ESP]
+	MOVL	EDX, win_basdrw[EBX]
+	MOVL	EAX, sbgc_bgcol[ESP]
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EDX, drw_funcdsp[EDX]
+	CALLI	gfx_getcolor[EDX]
+4$:	MOVL	win_basbgcoln[EBX], EAX
+	CMPL	sbgc_redraw[ESP], #0
+	JE	10$
+	PUSHL	sbgc_win[ESP]
+	CALL	xwsWinInvalidateAll
+10$:	RET	12t
+
+;Function to set current border color
+;	WIN *win;
+;	int  brdcol;
+;	xwsWinSetBgColor(win, bgcol);
+
+;This function uses the Pascal calling sequence
+
+sbdc_win   =!8t
+sbdc_brdcol=!4t
+
+	.ENTRY	xwsWinSetBrdColor
+xwsWinSetBrdColor::
+	MOVL	EBX, sbdc_win[ESP]
+	MOVL	EDX, win_basdrw[EBX]
+	MOVL	EAX, sbdc_brdcol[ESP]
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EDX, drw_funcdsp[EDX]
+	CALLI	gfx_getcolor[EDX]
+8$:	MOVL	win_basbdcol[EBX], EAX
+	RET	8t
+.PAGE
+;Function to get the border region of a window
+;	RGN rgn = xwsWinGetBrdRgn(WIN *win);
+
+;This function uses the Pascal calling sequence
+
+gbr_win=!4t
+
+	.ENTRY	xwsWinGetBrdRgn
+xwsWinGetBrdRgn::
+	MOVL	EBX, gbr_win[ESP]
+	PUSHL	win_basbasergn[EBX]
+	PUSHL	win_basclientrgn[EBX]
+	CALL	xwsRgnDiff#
+	RET	4t
+.PAGE
+;Function to display a text character at a specified position using the current
+;  font and colors
+;	long xwsDrawCharXY(
+;	    WIN  *win,
+;	    long  chr,
+;	    long  xpos,
+;	    long  ypos,
+;	    FONT *font,
+;	    long  color);
+;  Value returned is the new current text X position
+
+;This function uses the Pascal calling sequence
+
+dcxy_win  =!32t
+dcxy_chr  =!28t
+dcxy_xpos =!24t
+dcxy_ypos =!20t
+dcxy_font =!16t
+dcxy_color=!12t
+
+	.ENTRY	xwsDrawCharXY
+xwsDrawCharXY::
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, dcxy_win[EBP]
+	PUSHL	EDI
+	PUSHL	dcxy_font[EBP]
+	PUSHL	dcxy_chr[EBP]
+	MOVL	EAX, dcxy_xpos[EBP]
+	ADDL	EAX, win_basxorg[EDI]
+	PUSHL	EAX
+	MOVL	EAX, dcxy_ypos[EBP]
+	ADDL	EAX, win_basyorg[EDI]
+	PUSHL	EAX
+	PUSHL	dcxy_color[EBP]
+	CALL	xwsdispchar#
+	POPL	EBP
+	POPL	EDI
+	RET	24t
+.PAGE
+;Function to invalidate all of a window, including all child windows
+;	void xwsWinInvalidateAll(
+;	   WIN *win);
+
+ia_win=!8
+
+	.ENTRY	xwsWinInvalidateAll
+xwsWinInvalidateAll::
+	PUSHL	EDI
+	MOVL	EDI, ia_win[ESP]	;Get offset of the WIN
+	PUSHL	EDI			;Clear all of this window
+	PUSHL	#0
+	CALL	xwsWinInvalidateRgn
+	MOVL	EDI, win_basfchild[EDI] ;Get first child window
+	TESTL	EDI, EDI
+	JE	6$			;If no child windows
+4$:	PUSHL	EDI			;Clear child window
+	CALL	xwsWinInvalidateAll
+	MOVL	EDI, win_bassibling[EDI] ;Get next child window
+	TESTL	EDI, EDI
+	JNE	4$			;Continue if more child windows
+6$:	POPL	EDI			;Finished
+	RET	4
+.PAGE
+;Function to invalidate a rectangle in a window
+;	void xwsWinInvalidateRect(
+;	    WIN *win,
+;	    long xpos,
+;	    long ypos,
+;	    long width,
+;	    long height);
+
+;This function uses the Pascal calling sequence
+
+irt_win   =!28t
+irt_xpos  =!24t
+irt_ypos  =!20t
+irt_width =!16t
+irt_height=!12t
+
+	.ENTRY	xwsWinInvalidateRect
+xwsWinInvalidateRect::
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, irt_win[EBP]
+	PUSHL	EDI
+	PUSHL	irt_xpos[EBP]
+	PUSHL	irt_ypos[EBP]
+	PUSHL	irt_width[EBP]
+	PUSHL	irt_height[EBP]
+	CALL	xwsRgnCreateRect#
+	JMP	4$
+
+	.ENTRY	xwswininvalidaterectns
+xwswininvalidaterectns::
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, irt_win[EBP]
+	MOVL	EAX, irt_xpos[EBP]
+	ADDL	EAX, win_basxorg[EDI]
+	PUSHL	EAX
+	MOVL	EAX, irt_ypos[EBP]
+	ADDL	EAX, win_basyorg[EDI]
+	PUSHL	EAX
+	PUSHL	irt_width[EBP]
+	PUSHL	irt_height[EBP]
+	CALL	xwsrgncreaterectns#
+4$:	TESTL	EAX, EAX
+	JE	10$
+	PUSHL	EAX
+	PUSHL	EAX			;Get intersection of our region and
+	PUSHL	win_basmaskrgn[EDI]	;  the window's mask region
+	CALL	xwsRgnIntersect#
+	CMPL	win_basdrawrgn[EDI], #0 ;Already have a draw region?
+	JE	6$			;No
+	PUSHL	EAX			;Yes - add the new one in
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnUnion#
+	XCHGL	EAX, [ESP]
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basdrawrgn[EDI]	;Give up the previous draw region
+	CALL	xwsRgnDestroy#
+	POPL	EAX			;Restore the new draw region
+6$:	MOVL	win_basdrawrgn[EDI], EAX ;Store it
+
+	MOVL	xxxdrawrgn, EAX		;DEBUG ONLY!
+
+$$$INV::
+
+	CALL	xwsreqdraw#		;Request a draw event for the window
+	CALL	xwsRgnDestroy#
+10$:	POPL	EBP
+	POPL	EDI
+	RET	20t
+
+xxxdrawrgn::.LONG 0
+.PAGE
+;Function to invalidate a region in a window. The specified region is added
+;  to the current draw region for the window and request for a draw event for
+;  the window is queued if none is currently queued. The specified region is
+;  given up by this function and must not be referenced after this function
+;  is called. If it needs to be retained, it must be duplicated before this
+;  function is called.
+;	void xwsWinInvalidateRgn(
+;	    WIN *win,
+;	    RGN *rgn);
+
+;This function uses the Pascal calling sequence
+
+irg_win=!16t
+irg_rgn=!12t
+
+	.ENTRY	xwsWinInvalidateRgn
+xwsWinInvalidateRgn::
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, irg_win[EBP]
+	CMPL	irg_rgn[EBP], #0	;Was a region specified?
+	JNE	4$			;Yes
+	PUSHL	win_basmaskrgn[EDI]	;No - invalidate the entire window
+	CALL	xwsRgnDuplicate#
+	CMPL	win_basdrawrgn[EDI], #0
+	JE	8$
+	PUSHL	EAX
+	JMP	6$
+
+;Here if a region was specified
+
+4$:	PUSHL	irg_rgn[EBP]		;Get intersection of region specified
+	PUSHL	win_basmaskrgn[EDI]	;  and the window's mask region
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+	PUSHL	irg_rgn[EBP]
+	CALL	xwsRgnDestroy#
+	POPL	EAX
+	CMPL	win_basdrawrgn[EDI], #0 ;Already have a draw region?
+	JE	8$			;No
+	PUSHL	EAX			;Yes - add the new one in
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnUnion#
+	XCHGL	EAX, [ESP]
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#
+6$:	PUSHL	win_basdrawrgn[EDI]	;Give up the previous draw region
+	CALL	xwsRgnDestroy#
+	POPL	EAX			;Restore the new draw region
+8$:	MOVL	win_basdrawrgn[EDI], EAX ;Store it
+	CALL	xwsreqdraw#		;Request a draw event for the window
+	POPL	EBP
+	POPL	EDI
+	RET	8t
+.PAGE
+
+;Subroutine to set focus to a window if allowed by current modal window
+;	c{EDI} = Offset of WIN for window
+;	CALL	xwssetfocusmodal
+;	Z:set = Access to window allowed, focus set
+;	Z:clr = Access to window not allowed, focus not changed
+
+	.ENTRY	xwssetfocusmodal
+xwssetfocusmodal::
+	CALL	xwscheckmodal
+	JNE	2$
+	PUSHL	EDI
+	CALL	xwssetfocus#
+	CLRL	EAX
+2$:	RET
+.PAGE
+;Subroutine to make a window modal
+
+mkmdl_win=!16t
+
+	.ENTRY	xwsmakemodal
+xwsmakemodal::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, mkmdl_win[ESP]
+	CMPL	xwsmodalwin#, EDI	;Is this window the current modal
+					;  window?
+	JE	8$			;Yes - nothing needed here
+	TESTB	win_basstatus[EDI], #WSB$MODAL ;Is this window modal now?
+	JE	2$			;No
+	CALL	xwsclearmodal		;Yes
+2$:	MOVL	EAX, xwsmodalwin#	;No - have a modal window now?
+	TESTL	EAX, EAX
+	JNE	4$			;Yes
+	MOVL	EAX, xwsfocuswin#	;No - have a focus window now?
+	TESTL	EAX, EAX
+	JE	4$			;No
+	ORB	win_basstatus[EDI], #WSB$PREVFOCUS ;Yes - indicate its a focus
+						   ;  window
+4$:	MOVL	win_basprevmodal[EDI], EAX
+6$:	MOVL	xwsmodalwin#, EDI
+	PUSHL	EDI
+	CALL	xwssetfocus#
+8$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Subroutine to make a window not modal - Note that this does not remove the
+;  focus indication from the window since it is only called when a window is
+;  being destroyed.  It is called whenever a modal or focus window is destroyed.
+;  It is called for a focus window since it may be linked to the end of the
+;  modal window list.
+
+	.ENTRY	xwsclearmodal
+xwsclearmodal::
+	CMPL	xwsmodalwin#, EDI	;Is this the current modal window?
+	JNE	10$			;No
+	PUSHL	EDI
+	MOVL	EDI, win_basprevmodal[EDI]
+	TESTL	EDI, EDI
+	JE	4$
+	PUSHL	EDI
+	CALL	xwssetfocus#
+4$:	MOVL	EAX, EDI
+	POPL	EDI
+	TESTB	win_basstatus[EDI], #WSB$PREVFOCUS
+	JE	6$
+	CLRL	EAX
+6$:	MOVL	xwsmodalwin#, EAX
+8$:	ANDB	win_basstatus[EDI], #~{WSB$MODAL|WSB$PREVFOCUS}
+	MOVL	win_basprevmodal[EDI], #0
+	RET
+
+;Here if not the current modal window
+
+10$:	MOVL	EBX, xwsmodalwin#	   ;Find modal window which point to
+12$:	CMPL	win_basprevmodal[EBX], EDI ;  this window
+	JE	14$
+	MOVL	EBX, win_basprevmodal[EBX]
+	TESTL	EBX, EBX
+	JNE	12$
+	RET
+
+;Here with modal window which points to this window
+
+14$:	MOVL	EAX, win_basprevmodal[EDI]
+	MOVL	win_basprevmodal[EBX], EAX
+	JMP	8$
+.PAGE
+;Subroutine to check if access to a window is blocked by a modal window
+;	c{EDI} = Offset of WIN for window
+;	CALL	xwscheckmodal
+;	Z:set = Access is OK
+;	Z:clr = Access is blocked
+
+	.ENTRY	xwscheckmodal
+xwscheckmodal::
+	CMPL	xwsmodalwin#, #0
+	JE	4$
+	MOVL	EBX, EDI
+2$:	CMPL	xwsmodalwin#, EBX
+	JE	4$
+	MOVL	EBX, win_basparent[EBX]
+	TESTL	EBX, EBX
+	JNE	2$
+	INCL	EBX			;Clear Z
+4$:	RET
+.PAGE
+;Function to set set "Focus"
+;	void xwsWinSetFocus(
+;	    WIN *win,		// New window to receive focus
+;	    int  nmode);	// 0=Non-Modal, 1=Modal
+
+;This function uses the Pascal calling sequence
+
+dc_win  =!16t
+dc_nmode=!12t
+
+; Notes:
+; 1) Check if Window already has focus, (early out...)
+; 2) Check for current Window (both Modal, Non)
+; 3) Exit if current is modal?
+; 4) Cleanup for previous Window, if any
+; 5) Invalidate and refresh entire tree
+;
+	.ENTRY	xwsWinSetFocus
+xwsWinSetFocus::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, dc_win[ESP]
+	CALL	xwscheckmodal
+	JNE	10$
+	PUSHL	EDI
+	CALL	xwssetfocus#
+	CLRL	EAX
+10$:	POPL	ESI
+	POPL	EDI
+	RET	8t
+
+	.END

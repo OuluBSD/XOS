@@ -1,0 +1,538 @@
+	.TITLE	ffsrename - FFS rename function
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+	CODE
+
+;Rename presents a major problem in that two independent names must be locked
+;  at the same time to prevent races.  We solve this by opening the file
+;  (using the existing or old name) for exclusive (read and write) access
+;  which prevents any one else from trying to rename or delete it. We then
+;  open the directory for the new name and keep it locked or simply lock it
+;  if it is the same as the old directory.
+
+;There is also a problem in that we must modify two different directory
+;  entries, which may be in different directories. Even if they are in the
+;  same directory there is no way to insure that this operation will be
+;  atomic, except for the unusal case where both entries are completely
+;  contained in one disk block. Normally we would expect to have to update
+;  at least 2 blocks and, worse case, will have to update 4 blocks. This
+;  creates a window that could result in a file disapearing or having more
+;  than one directory entry (depending on the order the updates are done)
+;  if there is a system failure while these updates are being made. There
+;  is no way to completely prevent this since to do so requires an atomic
+;  update of at least 2 different disk blocks, which is not possible. What
+;  we can do is create a situation that is 100% recoverable if this unlikely
+;  event happens. We do a three phase operation as follows:
+;    1) Mark the old name as "being renamed". This makes it invisible to
+;       normal directory searches but does not free up the directory entry.
+;       This is committed to disk immediately.
+;    2) Create the new name and link it to the file. This is also committed
+;       to disk immediately.
+;    3) Free up the original directory entry.
+;  If there is a system failure after step 1 starts and step 2 finishes, the
+;  file will no longer be visible to normal searches. However it is still on
+;  disk and can be recovered by a disk cleanup utility. If a failure occurs
+;  after step 2 is complete but before step 3 is complete, the file system
+;  will be completely consistant but there will be a lost directory entry
+;  in the old directory. When the utility sees a "being renamed" file, it
+;  must search ALL directories to see if any other file corresponds to the
+;  same file contents. This is necessary because there is no way to know if
+;  step 2 completed or not. If it did complete the new name will exist and
+;  will point to the same file contents. If another name is found, all that
+;  needs to be done is to remove the old directory entry. If it is not found
+;  the old directory entry needs to be restored. There is one small problem
+;  with this. Because of the design of the FAT file system, if the file being
+;  renamed has no space allocated, there is no way to match up the two names.
+;  All that can be done is to restore the old name, which may result in
+;  effectively copying the null file instead of renaming it. This may be
+;  confusing, but does not damage the integerty of the file system.
+
+XFO$all=XFO$PHYDEV|XFO$DOSDEV|XFO$VOLUME|XFO$XOSDEV|XFO$PATH|XFO$FILE|XFO$VERSION
+
+;Here for the rename file entry - When get here the we have expanded strings
+;  for both the old and new names. The device name is in tdaDevname (different
+;  device errors have already been detected). The new name string may include
+;  a complete path specification or may be a simple name in the old name
+;  directory. This is indicated by the value of the first byte:
+;    1 = Simple name in the old directory (may be a duplicate).
+;    2 = Full path specification (will never specify the old directory).
+;	long ffsrename(
+;	    char *oldspec,
+;	    char *newspec);
+;  Value returned is 0 if normal or a negative XOS error code if error. In
+;    all cases there is nothing open on the DCB although the DCB is still
+;    open (it will be closed by the kernel rename code)
+
+;NOTE: Normally there is a one-to-one correspondance between open files and
+;      DCBs, but this is not necessary. It is possible to have multiple
+;      files associated with a DCB open at the same time. However, only one
+;      may be mamipulated at a time. This is the file/directory that is "open
+;      on the DCB" (as it is referred to here and elsewhere in the sources).
+;      The address of this file's base FIB is in dcb_dkbasefib and dcb_dkcurfib
+;      contains the address of the current FIB for the file. Also,
+;      dcb_dkfilepos contains the current position in the file. All that is
+;      needed to switch to a different open file/directory is to change these
+;      3 items in the DCB. Obviously, the values for other open files must
+;      be kept track of elsewhere than the DCB. It should be noted that
+;      whenever a file/directory is opened all directories between it and
+;      the root and the root remain open as long as the file is open. They
+;      are all closed (which simply means decrementing bfr_opencnt) when the
+;      file is closed by following the links in bfr_dirfib (see ffsclosefib).
+;      This implies that the cache must be big enought to hold all of these
+;      FIBs. Given that the cache normally ocntains several thousand buffers,
+;      this is not normally not a problem. In this code both the old and new
+;      directories are kept open using a single DCB and managed by swapping
+;      there states into the 3 items described above.
+
+$$$=!0
+FRM ffsr_option  , 4
+FRM ffsr_filefib , 4
+FRM ffsr_odirfib , 4
+FRM ffsr_ndirfib , 4
+FRM ffsr_odirfblk, 8
+FRM ffsr_odirbblk, 8
+FRM ffsr_oextnum , 4		;Number of extended entries for old name
+FRM ffsr_odirpos , 4		;Position of entry in old directory
+FRM ffsr_ochksum , 4
+FRM ffsr_ofilecls, 4
+FRM ffsr_odb     , odb_SIZE
+ffsr_SIZE=!$$$
+
+ffsr_spec1=!20t
+ffsr_spec2=!16t
+
+ffsrename::
+	PUSHL	EDI
+	PUSHL	EBX
+	ENTER	ffsr_SIZE, 0
+	CLRL	EAX
+	MOVL	ffsr_filefib[EBP], EAX	;No FIBs are open now
+	MOVL	ffsr_odirfib[EBP], EAX
+	MOVL	ffsr_ndirfib[EBP], EAX
+	MOVL	EAX, knlTda+tdaOption##	;Save his option bits
+	MOVL	ffsr_option[EBP], EAX
+	ANDL	knlTda+tdaOption##, #~XO$FAILEX ;Clear the one we don't want
+	ORL	knlTda+tdaOption##, #XO$EXREAD|XO$EXWRITE|XO$IN|XO$OUT
+	MOVL	EDI, knlTda+tdaDcb##	;Set the ones we must have here
+	PUSHL	ffsr_spec1[EBP]
+	MOVL	EAX, dcb_sdisp[EDI]	;Open the old name
+	CALLI	sd_open[EAX]
+	TESTL	EAX, EAX
+	JS	ffsrdn
+
+;Here with the old file open
+
+	MOVL	EAX, dcb_dkbasefib[EDI]	;Save address of FIB for the file
+	MOVL	ffsr_filefib[EBP], EAX
+	MOVL	EAX, bfr_dirfiba[EAX]	;Save address of FIB for the old
+	MOVL	ffsr_odirfib[EBP], EAX	;  directory
+	LEAL	EDI, ffsr_odb+4[EBP]	;Clear the ODB
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ECX, #{odb_name+3}/4
+	CLRL	EAX
+	RSTOSL	[EDI]			;Store label (only used for debugging)
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ffsr_odb+odb_label[EBP], #'ODB+'
+	ORL	knlTda+tdaHvValue1##, #IOV1$SRCATTR ;Indicate search attributes
+						    ;  specified
+	ORB	knlTda+tdaSrcAttr##, #XA$FILE|XA$DIRECT|XA$LABEL|XA$SYSTEM|XA$HIDDEN
+					;Search for anything
+	MOVL	EDX, ffsr_spec2[EBP]
+	INCL	EDX
+	MOVL	ffsr_odb+odb_ppath[EBP], EDX
+	CMPB	-1[EDX], #1		;Renaming to same directory?
+	JNE	14$			;No
+	PUSHL	EDX			;Yes - see if the name is different
+	MOVL	EAX, ffsr_filefib[EBP]
+	ADDL	EAX, #ff_name
+	PUSHL	EAX
+	CALL	sysLibStrICmp##
+	TESTL	EAX, EAX
+	JNE	10$			;No
+	MOVL	EAX, #ER_DNREN		;Yes - fail
+	JMP	ffsrdn
+
+;Here if name is different
+
+10$:	MOVL	EAX, ffsr_odirfib[EBP]	;Make the DCB open on the old directory
+	MOVL	dcb_dkbasefib[EDI], EAX
+	MOVL	dcb_dkcurfib[EDI], EAX
+	MOVL	dcb_dkfilepos[EDI], #0
+	PUSHL	EAX			;Lock the directory
+	CALL	xosdskLockBufrW##
+	JMP	hvnewdir
+
+;Here renaming to a different directory - Open the new directory
+
+14$:	MOVL	knlTda+tdaOption##, #XO$REQFILE|XO$ODFS
+	LEAL	EAX, ffsr_odb[EBP]
+	PUSHL	EAX			;Look for the directory for the new
+	CALL	ffsfindondisk#		;  name
+	TESTL	EAX, EAX
+	JS	ffsrdn			;If error
+	JE	16$			;If found the directory
+	MOVL	EAX, #ER_DIRNF
+	JMP	ffsrdn
+
+;Here with the new directory open
+
+16$:	MOVL	EDX, ffsr_filefib[EBP]	;Are we renaming a directory?
+	TESTB	ff_attrib[EDX], #XA$DIRECT
+	JE	hvnewdir		;No
+
+;Here if renaming a directory to another directory - We must make sure the
+;  new directory is not the direcotry or a child of the directory being
+;  renamed. This would turn the directory tree into a closed loop with no
+;  outside access!
+
+	INT3
+
+	MOVL	EAX, dcb_dkbasefib[EDI]
+18$:	CMPL	EAX, EDX
+	JE	20$
+	MOVL	EAX, bfr_dirfiba[EAX]	;Get the parent directory FIB
+	TESTL	EAX, EAX
+	JNE	18$			;If more to check
+	JMP	hvnewdir		;OK - go ahead and rename it
+
+;Here if the new directory is the directory or a child of the directory being
+;  renamed - fail!
+
+20$:	MOVL	EAX, #ER_IDREN
+	JMP	ffsrdn
+.PAGE
+;Here with the new directory open on the DCB and locked. This may be a new
+;  directory or may be the same as the old directory (in which case it is
+;  only open once).
+
+hvnewdir:
+	MOVL	EAX, dcb_dkbasefib[EDI]
+	MOVL	ffsr_ndirfib[EBP], EAX
+	LEAL	EDX, ffsr_odb+odb_name[EBP] ;Put the name where it goes
+	MOVL	ECX, ffsr_odb+odb_ppath[EBP]
+	ANDB	ffsr_odb+odb_flags[EBP], #~ODBF$PERIOD
+4$:	MOVZBL	EAX, [ECX]
+	INCL	ECX
+	MOVB	[EDX], AL
+	INCL	EDX
+	CMPB	AL, #'.'
+	JNE	6$
+	ORB	ffsr_odb+odb_flags[EBP], #ODBF$PERIOD
+6$:	CMPB	AL, #0
+	JNE	4$
+	TESTB	ffsr_odb+odb_flags[EBP], #ODBF$PERIOD
+	JNE	10$
+	MOVW	-1[EDX], #'.'
+	INCL	EDX
+10$:	LEAL	EAX, ffsr_odb+odb_name+1[EBP]
+	SUBL	EDX, EAX
+	MOVL	ffsr_odb+odb_namelen[EBP], EDX
+
+;Here when almost ready to do the rename. The old file is open for exclusive
+;  access (not on the DCB). The new directory directory is open on the DCB
+;  and locked.
+
+	MOVL	EAX, ffsr_option[EBP]	   ;Restore the caller's options and
+	ORL	EAX, #XO$EXREAD|XO$EXWRITE ;  set the ones we need
+	MOVL	knlTda+tdaOption##, EAX
+	LEAL	EDX, ffsr_odb[EBP]	;Search for the new name in the new
+	PUSHL	EDX			;  directory
+	PUSHL	#XA$FILE|XA$DIRECT|XA$LABEL|XA$HIDDEN|XA$SYSTEM
+	CLRL	EDX
+	BTL	EAX, #XO%FAILEX
+	ADCL	EDX, #0
+	PUSHL	EDX
+	PUSHL	#1
+	CALL	ffsfindindir#
+	TESTL	EAX, EAX
+	JS	ffsrdn			;If error
+	JNE	ready			;If not found
+
+;Here if a file or directory with the new name was found. We attempt to
+;  delete it. We will not get here if the user specified XA$FAILEX. In this
+;  case the call to ffsfindindir above will fail.
+
+	CALL	ffsdelete#		;Try to delete the file
+	TESTL	EAX, EAX		;Go on if it worked
+	JS	ffsrdn			;If error
+.PAGE
+;Here when ready to do the rename. The old file or directory is open for
+;  exclusive access. The new directory directory is open on the DCB and is
+;  locked. We know that the new file or directory does not exist in the new
+;  directory. First we mark the old file as being renamed. This violates the
+;  letter of the rules for dealing with directories since we are modifying
+;  a directory we do not have locked. (We can't lock it because we have the
+;  new directory locked!) This is OK since we have the file open for exclusive
+;  access so no one else can remove the entry while we are changing it. This
+;  also means the directory cannot be removed (since it contains at least one
+;  entry).
+
+ready:	MOVL	EBX, ffsr_filefib[EBP]
+	MOVL	EDX, bfr_block+4[EBX]	;Get the block for the base directory
+	MOVL	EAX, bfr_block+0[EBX]	;  entry for the file
+	ANDL	EDX, #0x07FFFFFF
+	MOVL	ECX, dcb_dkucb[EDI]
+	SUBL	EAX, ucb_partnoff+0[ECX]
+	SBBL	EDX, ucb_partnoff+4[ECX]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	MOVL	ffsr_odirbblk+0[EBP], EAX
+	MOVL	ffsr_odirbblk+4[EBP], EDX
+	MOVL	EAX, ff_dirfblk+0[EBX]	;Also remember block for first entry
+	MOVL	EDX, ff_dirfblk+4[EBX]
+	MOVL	ffsr_odirfblk+0[EBP], EAX
+	MOVL	ffsr_odirfblk+4[EBP], EDX
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	#0			;Don't try to do read-ahead since we
+	PUSHL	EAX			;  don't need the next block
+	CALL	xosdskFindBlock##	;Get the block into a buffer
+	TESTL	EAX, EAX
+	POPL	ECX
+	JS	ffsrdn			;If error
+	MOVL	EDX, ff_dirpos[EBX]
+	ANDL	EDX, #0x1E0
+	LEAL	EDX, bfr_data[ECX+EDX]
+	MOVZBL	EAX, de_name+0[EDX]	;Save first character of the file name
+	MOVB	de_renchr[EDX], AL
+	ORB	de_bits[EDX], #0x07	;Set low 3 bits as an indication that
+					;  this name is being renamed.
+	MOVB	de_name+0[EDX], #0xE5	;"Remove" the entry
+	PUSHL	ECX			;Save address of the block
+	PUSHL	ECX
+	CALL	xosdskWriteBufr##	;Write out the directory block
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	ffsrdn
+	PUSHL	ECX
+	CALL	xosdskRelsBufr##	;Release the directory block
+
+;;;;	MOVL	EAX, ffsr_odirfib[EBP]	;Did we rename to the same directory?
+;;;;	CMPL	EAX, ffsr_ndirfib[EBP]
+;;;;	JE	4$			;Yes
+;;;;	PUSHL	EAX			;No - unlock the old directory
+;;;;	CALL	xosdskRelsBufr##
+
+;Now put the new entry in the new directory. This is done by calling ffsmakefib
+;  and specifying the current FIB as the "old FIB". This is not really as
+;  strange as it seems at first since FIBs and directories are very closely
+;  coupled. Most of the code in ffsmakefib deals with creating a directory
+;  entry (which is pretty complex for the FAT file system), not with creating
+;  the FIB.
+
+4$:	MOVL	EAX, ffsr_ndirfib[EBP]	;Make the new directory open on the
+	MOVL	dcb_dkbasefib[EDI], EAX	;  DCB
+	MOVL	dcb_dkcurfib[EDI], EAX
+	MOVL	dcb_dkfilepos[EDI], EAX
+	MOVL	EDX, ffsr_filefib[EBP]	;Save the values we need to delete the
+	MOVZBL	EAX, ff_extnum[EDX]	;  old directory entry
+	MOVL	ffsr_oextnum[EBP], EAX
+	MOVZBL	EAX, ff_chksum[EDX]
+	MOVL	ffsr_ochksum[EBP], EAX
+	MOVZWL	EAX, ff_f1pnt+1[EDX]	;Get low 16 bits of the first cluster
+	MOVL	ffsr_ofilecls[EBP], EAX	;  for the file
+	MOVL	EAX, ff_dirpos[EDX]
+	MOVL	ffsr_odirpos[EBP], EAX
+	ADDL	EDX, #ff_name		;Clear the name from the old file FIB
+6$:	CMPB	[EDX], #0
+	JE	8$
+	MOVB	[EDX], #0
+	INCL	EDX
+	JMP	6$
+
+8$:	LEAL	EAX, ffsr_odb[EBP]
+	PUSHL	EAX
+	PUSHL	ffsr_filefib[EBP]
+	CALL	ffsmakefib#
+	TESTL	EAX, EAX
+	JS	ffsrdn
+
+;We are now finished with the new file and the new directory. If we moved the
+;  file to a different directory, we close the new file which also closes its
+;  directory. If we renamed the file in the same directory we never opened
+;  the "new" directory separately, so we must wait until we are done with the
+;  directory before we close the new file. This is OK since the only reason
+;  the we need to close it here is that we need to unlock all of the locked
+;  FIBs so we can lock the old directory, which we don't need to do in this
+;  case since the old directory is locked now.
+
+	MOVL	EAX, ffsr_ndirfib[EBP]	;Are the old and new directories the
+	CMPL	EAX, ffsr_odirfib[EBP]	;  same?
+	JNE	14$			;No
+	ANDL	knlTda+tdaPVFileOptn##, #~XFO$PATH ;Yes - just give him the
+						   ;  name
+14$:	TESTL	knlTda+tdaPVFileOptn##, #XFO$PATH|XFO$FILE
+					;No - should we give him the new
+					;  path or name?
+	JE	18$			;No
+
+;Here if need to give the caller the new file path/name (We ignore address
+;  errors here since we don't want to report an error on a successful rename.
+;  If the buffer is not accessable the caller will probably find out about it
+;  pretty soon regardless.
+
+	CMPL	knlTda+tdaPSFileSpec##, #0 ;Have at least one byte available?
+	JLE	18$			;No - forget it
+	PUSHL	knlTda+tdaPPFileSpec##	;Yes - give him the new name flag (0xFF)
+	PUSHL	#lit0xFF
+	CALL	sysLibStrMov##
+	TESTL	EAX, EAX
+	JS	18$			;Don't bother with the name if error
+	INCL	knlTda+tdaPPFileSpec##
+	DECL	knlTda+tdaPSFileSpec##
+	INCL	knlTda+tdaPCFileSpec##
+	PUSHL	dcb_dkbasefib[EDI]	;Give him the new file path/name
+	CALL	ffsstorefilespec#
+	TESTL	EAX, EAX
+	JS	18$
+	PUSHL	knlTda+tdaPLFileSpec##	;Give him the total size
+	PUSHL	knlTda+tdaPCFileSpec##
+	CALL	sysUSPutShort##
+
+;Here with the path/name stored if necessary
+
+18$:	MOVL	EAX, ffsr_odirfib[EBP]	;Did we rename to the same directory?
+	CMPL	EAX, ffsr_ndirfib[EBP]
+	JE	20$			;Yes - the old directory is now open
+					;  on the DCB and is locked
+	CALL	ffsclosefib#		;No - close the file and its new
+	CLRL	EAX			;  directory
+	MOVL	ffsr_ndirfib[EBP], EAX	;
+	MOVL	ffsr_filefib[EBP], EAX
+
+	MOVL	EBX, ffsr_odirfib[EBP]	;Make the old directory open on the DCB
+	MOVL	dcb_dkbasefib[EDI], EBX
+	MOVL	dcb_dkcurfib[EDI], EBX
+	MOVL	dcb_dkfilepos[EDI], #0
+	PUSHL	EBX			;Lock the old directory
+	CALL	xosdskLockBufrW##
+	TESTL	EAX, EAX
+	JS	ffsrdn
+
+;Here with the new FIB (directory entry) committed to disk. The rename is
+;  now generally visible and is complete except for removing the old directory
+;  entry that we flagged as "being renamed" by "almost" removing the base
+;  entry only. Since we have closed the new file (and its directory) we can
+;  now lock the old directory while we really remove the entry.
+
+20$:	PUSHL	ffsr_oextnum[EBP]	;Remove the entry from the directory
+	PUSHL	ffsr_ochksum[EBP]	;  (This commits the changes to disk.)
+	PUSHL	ffsr_ofilecls[EBP]
+	PUSHL	ffsr_odirfblk+4[EBP]
+	PUSHL	ffsr_odirfblk+0[EBP]
+	PUSHL	ffsr_odirbblk+4[EBP]
+	PUSHL	ffsr_odirbblk+0[EBP]
+	PUSHL	ffsr_odirpos[EBP]
+	CALL	ffsfromdir#
+	TESTL	EAX, EAX
+	JS	ffsrdn
+	CLRL	EAX
+
+;Here when the rename is finished, possibly because an error occured before
+;  it was complete. We must determine the state of the file and directory(s)
+;  and close everything that is open. If we are renaming to the same directory,
+;  all that is needed is to close the file. If we are renaming to a different
+;  directory, we must first see which directory the file is in, close the file,
+;  and then close the other directory if it is open. On a good rename, if
+;  renaming to the same directory, we get here with the old and new directory
+;  the same and with the file open. If renaming to a different directory, the
+;  file and new directory will be closed and the old directory wil be open.
+
+ffsrdn:	PUSHL	EAX			;Save the value to return
+	CMPL	ffsr_filefib[EBP], #0	;Is the file open now?
+	JNE	26$			;Yes
+	CMPL	ffsr_odirfib[EBP], #0	;No - is the old directory open? (Can't
+					;  have the new directory open if the
+					;  file is not open.)
+	JE	40$			;No - all done
+	MOVL	EAX, ffsr_odirfib[EBP]	;Yes - close the old directory
+	MOVL	dcb_dkfilepos[EDI], #0
+	MOVL	dcb_dkbasefib[EDI], EAX
+	MOVL	dcb_dkcurfib[EDI], EAX
+	CALL	ffsclosefib#
+	JMP	40$
+
+;Here if the file is open
+
+26$:	MOVL	EAX, ffsr_ndirfib[EBP]	;Are the old and new directories the
+	CMPL	EAX, ffsr_odirfib[EBP]	;  same?
+	JE	36$			;Yes - just close the file which will
+					;  close its directory
+
+;Here if the file is open and the old and new directories are different
+
+	MOVL	EDX, ffsr_filefib[EBP]	;Is the file now in the new directory?
+	CMPL	EAX, bfr_dirfiba[EDX]
+	JNE	30$			;No
+	MOVL	dcb_dkfilepos[EDI], #0	;Yes - make it open of the DCB
+	MOVL	dcb_dkbasefib[EDI], EDX
+	MOVL	dcb_dkcurfib[EDI], EDX
+	CALL	ffsclosefib#		;Close the new file which will also
+					;  also close the new directory (which
+					;  was probably locked)
+	MOVL	EAX, ffsr_odirfib[EBP]	;Close the old directory (we know it
+	MOVL	dcb_dkfilepos[EDI], #0	;  is open if we get here)
+	MOVL	dcb_dkbasefib[EDI], EAX
+	MOVL	dcb_dkcurfib[EDI], EAX
+	CALL	ffsclosefib#
+	JMP	40$
+
+;Here if the file is open, the directories are different and the file is still
+;  in the old directory. (This will happen if we fail to delete the new name
+;  in a different directory.)
+
+30$:	CMPL	ffsr_ndirfib[EBP], #0	;Is the new directory open?
+	JE	36$			;No
+	MOVL	EAX, ffsr_ndirfib[EBP]	;Yes - close it first since it is
+	MOVL	dcb_dkfilepos[EDI], #0	;  probably locked
+	MOVL	dcb_dkbasefib[EDI], EAX
+	MOVL	dcb_dkcurfib[EDI], EAX
+	CALL	ffsclosefib#
+36$:	MOVL	EAX, ffsr_filefib[EBP]	;Yes - close the file which will also
+	MOVL	dcb_dkfilepos[EDI], #0	;  close the old directory
+	MOVL	dcb_dkbasefib[EDI], EAX
+	MOVL	dcb_dkcurfib[EDI], EAX
+	CALL	ffsclosefib#
+40$:	POPL	EAX			;Restore the value to return
+	LEAVE
+	POPL	EBX
+	POPL	EDI
+	RET	8
+
+lit0xFF:.LONG	0xFF
+
+	LKEEND

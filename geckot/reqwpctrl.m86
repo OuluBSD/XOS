@@ -1,0 +1,234 @@
+	.TITLE	$_reqwpctrl
+
+;*--------------------------------------------------------------------------*
+;* reqwpctrl.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+;Request format:
+;  Offset Size Description
+;     0     1  Function:
+;		 1 = Set read/write watchpoint
+;		 2 = Set write watchpoint
+;		 3 = Set instruction wathcpoint
+;		 4 = Remove watchpoint
+;		 5 = Remove all watchpoints
+;     1     1  Size:
+;		 1 = Byte
+;		 2 = Word
+;		 4 = Long
+;     2     4  Breakpoint address or offset
+;     6     2  Count (if setting a watchpoint - not currently implimented!)
+
+;Response format:
+;  Offset Size Description
+
+	.ENTRY	$_reqwpctrl
+$_reqwpctrl::
+	CMPL	$_reqlength#, #1
+	JB	$_badlength#
+	MOVZBL	EDX, $_dbbufr#+0
+	CMPB	DL, #5			;Remove all watchpoints?
+	JE	rmvallwp		;Yes
+	JA	$_baddata#		;If bad function
+	CMPL	$_reqlength#, #8
+	JB	$_badlength#
+	MOVL	ECX, #4
+	CLRL	EAX
+	MOVL	EDI, #$_wptable#
+	MOVL	EBX, $_dbbufr#+2
+4$:	CMPL	EBX, wpt_addr[EDI]
+	JE	10$
+	INCL	EAX
+	ADDL	EDI, #wpt_SIZE
+	LOOP	ECX, 4$
+
+;Here if not found in the table
+
+	CMPL	EDX, #4
+	JE	fail
+	MOVL	ECX, #4			;Find an empty entry
+	CLRL	EAX
+	MOVL	EDI, #$_wptable#
+	MOVL	EBX, $_dbbufr#+2
+6$:	CMPL	wpt_addr[EDI], #0
+	JE	8$
+	INCL	EAX
+	ADDL	EDI, #wpt_SIZE
+	LOOP	ECX, 6$
+	JMP	fail
+
+8$:	JMPIL	nftbl[EDX*4]
+
+nftbl:	.LONG	$_baddata#	; 0
+	.LONG	setreadwp	; 1 - Set read watchpoint
+	.LONG	setwritewp	; 2 - Set write watchpoint
+	.LONG	setinstwp	; 3 - Set instruction watchpoint
+
+;Here if address was found in the table
+
+10$:	JMPIL	fndtbl[EAX*4]
+
+fndtbl:	.LONG	$_baddata#	; 0
+	.LONG	setreadwp	; 1 - Set read watchpoint
+	.LONG	setwritewp	; 2 - Set write watchpoint
+	.LONG	setinstwp	; 3 - Set instruction watchpoint
+	.LONG	removewp	; 4 - Remove watchpoint
+
+fail:	ORB	$_dbbufr#+0, #0x80
+	JMP	done
+
+12$:	MOVL	bpt_addr[EAX], #0
+	MOVL	EAX, #10t
+done:	PUSHL	#DBRQ_WPCTRL
+	PUSHL	EAX
+	CALL	$_sendresponse#
+	RET
+.PAGE
+;Here to set a read/write watchpoint
+
+setreadwp:
+	MOVL	EDX, #0x0303
+	JMP	4$
+
+;Here to set a write watchpoint
+
+setwritewp:
+	MOVL	EDX, #0x0301
+	JMP	4$
+
+;Here to set an instruction watchpoint
+
+setinstwp:
+	MOVL	EDX, #0x0300
+	JMP	4$
+
+removewp:
+	CLRL	EDX
+	CLRL	EBX
+4$:	MOVL	wpt_addr[EDI], EBX	;Store new address in the table
+	MOVL	ECX, $_dbbufr#+0
+	MOVB	wpt_type[EDI], CL
+	MOVB	wpt_size[EDI], CH
+	MOVZBL	ECX, CH			;Get the WP type
+	CMPL	ECX, #4
+	JBE	6$
+	CLRL	ECX
+6$:	ORL	EDX, sztbl[ECX*4]	;Add the size bits
+	JMPIL	wpntbl[EAX*4]		;Dispatch on the watchpoint number
+
+wpntbl:	.LONG	wptcr0
+	.LONG	wptcr1
+	.LONG	wptcr2
+	.LONG	wptcr3
+
+sztbl:	.LONG	0x00		;0
+	.LONG	0x00		;1 = Byte
+	.LONG	0x04		;2 = Word
+	.LONG   0x08		;3 = Quad
+	.LONG	0x0C		;4 = Long
+
+;In the following routines:
+;	c(DL)  = Bits for the LEN-R/W bits
+;	c{DH)  = Bits for the Ln-Gn bits
+;	c{EBX} = Address
+
+;Here to set or clear watchpoint 0
+
+wptcr0:	MOVL	DR0, EBX
+	MOVZBL	EAX, DH
+	MOVZBL	EDX, DL
+	SHLL	EDX, #16t
+	ANDL	ECX, #~0x000F0003
+	JMP	10$
+
+;Here to clear watchpoint 1
+
+wptcr1:	MOVL	DR1, EBX
+	MOVZBL	EAX, DH
+	SHLL	EAX, #2
+	MOVZBL	EDX, DL
+	SHLL	EDX, #20t
+	ANDL	ECX, #~0x00F0000C
+	JMP	10$
+
+;Here to clear watchpoint 2
+
+wptcr2:	MOVL	DR2, EBX
+	MOVZBL	EAX, DH
+	SHLL	EAX, #4
+	MOVZBL	EDX, DL
+	SHLL	EDX, #24t
+	ANDL	ECX, #~0x0F000030
+	JMP	10$
+
+;Here to clear watchpoint 3
+
+wptcr3:	MOVL	DR3, EBX
+	MOVZBL	EAX, DH
+	SHLL	EAX, #6
+	MOVZBL	EDX, DL
+	SHLL	EDX, #28t
+	ANDL	ECX, #~0xF00000C0
+10$:	ORL	EAX, EDX
+	MOVL	EDX, DR7		;Get current WP enable bits
+	ANDL	EDX, ECX		;Remove the one we want to change
+	ORL	EAX, EDX
+	ANDL	EAX, #~0x0300		;Assume no data watchponts set
+	TESTL	EAX, #0x33330000	;Have any data watchpoints set now?
+	JE	12$			;No
+	ORL	EAX, #0x0300		;Yes - set exact match state
+12$:	MOVL	DR7, EAX		;Set new value
+	MOVL	EAX, #10
+	JMP	done
+.PAGE
+
+;Here to remove all watchpoints
+
+rmvallwp:
+	MOVL	ECX, #4
+	MOVL	EAX, #$_wptable#
+	CLRL	EDX
+4$:	MOVL	wpt_addr[EAX], EDX
+	ADDL	EAX, #wpt_SIZE
+	LOOP	ECX, 4$
+	MOVL	DR7, EAX
+	MOVL	DR0, EAX
+	MOVL	DR1, EAX
+	MOVL	DR2, EAX
+	MOVL	DR3, EAX
+	MOVL	EAX, #1
+	JMP	done
+
+	END

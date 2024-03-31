@@ -1,0 +1,104 @@
+
+         6014     6040    60000    60004    60008    6000C    60010    60014    6001C
+text 808B0000 00021207 031F027F 03170287 02EF028F 020C01DF 020401E7 01EB01E9 027F01DF
+ 640 908B0000 00021207 031F027F 03170287 02EF028F 020C01DF 020401E7 020401E7 027F010F
+ 800 90850000 00042808 041F021F 041F031F 03C70347 02730257 02730257 025C0258 031F0257
+1024 90820000 00041608 053F03FF 053F03FF 049F0417 032502FF 030702FF 03080302 03FF02FF
+1280 90810000 00021206 069704FF 069704FF 059F052F 042903FF 042903FF 04030400 04FF03FF
+1600 90A00000 00021206 096F063F 086F063F 073F067F 04E104AF 04E104AF 04B304B0 063F04AF
+1920 90200000 00041405 0A27077F 0A27077F 08CF07FF 05DB059F 05DB059F 05A305A0 077F059F
+
+     Analog P   PAConf FIFO-CTL APln-CTL   Stride
+        61100    70008    70030    70180    70188
+text 80008000 00000000 0000005F 48000000 00000280
+ 640 80000000 80000000 0000005F 94000000 00000500
+ 800 80000018 80000000 0000005F 94000000 00000640
+1024 80000000 80000000 0000005F 94000000 00000800
+1280 80000018 80000000 0000005F 94000000 00000A00
+1600 80000018 80000000 0000005F 94000000 00000C80
+1920 80000010 80000000 0000005F 94000000 00000F00
+
+
+
+Maybe should set up 70034???
+
+
+Regs to set: (Pipe A)
+
+06014 DPLL control
+06040 DPLL divisor 0
+
+60000 HTOTAL  
+60004 HBLANK
+60008 HSYNC
+6000C VTOTAL
+60010 VBLANK
+60014 VSYNC
+6001C SRCSIZE
+
+70008 APCONF
+70188 STRIDE
+
+Mode change seq: (only plane A or VGA and pipe A are running, only analog output)
+
+1) Disable sDVO ports' stall input (not needed now)
+
+2) Program sDVO ADD device ???? (not needed now)
+
+3) Disable ports
+  APORTCTRL: Set bits 11:10 (turns off sync), clear bit 31 (disables video)
+
+4) Disable planes
+  ADSPCNTR: Clear bit 31 (disables plane A)
+
+5) Disable pipe
+APCONF:    Clear bit 31, wait for bits 31-30 to be 0 (maybe), otherwise wait about 5ms)
+
+6) Disable VGA display (must be done after pipe is disabled!)
+  VGACNTRL: Clear bit 31
+
+7) Wait until all pipes stop (easiest to do simple delay)
+
+8) Disable panelfitter
+  ????
+
+9) Disable the DPLL
+  ADPLLCTRL: Clear bit 31 (might be a good idea to wait a bit  here!)
+
+10) Some magic fiddling with pipes and planes
+  APIPECONF: Clear bits 18:19 (disables connected planes (overrides ADSPCNTR))
+  ADSPCNTR:  Set bit 31
+  ADSPBADDR: Write 0
+  ADSPCNTR:  Clear bit 31 (disables plane A)
+  ADSPBADDR: Write 0 (more magic!)
+  APIPECONF: Restore bits 18:19 (why here??)
+
+11) Program and enable the DPLL
+  A00DPLLDIV: Write value
+  ADPLLCTRL:  Write value with bit 31 clear (bit 28 set if target mode is NOT VGA)
+  ADPLLCTRL:  Set bit 31 to start DPLL
+
+12) Wait until DPLL is stable (> 150us)
+
+13) Set pipe timings
+  AHTOTAL:  Write value
+  AHBLANK:  Write value
+  AHSYNC:   Write value
+  AVTOTAL:  Write value
+  AVBLANK:  Write value
+  AVSYNC:   Write value
+  ASTRIDE:  Write value
+  ASRCSIZE: Write value
+
+14) Enable panelfitter if needed
+  ???
+
+15) Enable pipe
+  APIPECONF: Set bit 31
+
+16) Enable planes (VGA or hires)
+  If NOT VGA: ADSPCNTR: Set bit 31
+  If VGA:     VGACBTRK: Set bit 31
+
+17) Enable ports
+  Analog display: APORTCTRL: Set bits 4:3 for mode, clear bits 11:10, set bit 31

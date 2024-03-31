@@ -1,0 +1,171 @@
+	.TITLE	vgachk - Transient LKE to determine VGA type
+
+;*--------------------------------------------------------------------------*
+;* VGACHK.M86
+;*
+;* Written by: John R. Goltz
+;*
+;* Edit History:
+;* 1.0.0  18-Nov-99 JRG - Original version
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+;This LKE is used to determine the type of the console VGA display adapter.
+;  When it is loaded, a pointer (VALUE) to an array of longs must be supplied.
+;  This array must contain at least 2 longs.
+;  If there are no PCI display adapters, the first long is set to 0 and the
+;  second is set to 1 if the legacy adapter is a monochrome adapter and to 2
+;  if it is a color adapter.
+;  If there are any PCI display adapters no legacy information is stored. A
+;  pair of longs is stored for each PCI display adapter (assuming they will
+;  fit in the VALUE array). The first long contains the PCI bus addres with
+;  bit 31 set. The second long contais the DEVID/VENID value.
+
+	LKEHEAD	VGACHK, MAJV, MINV, EDITNUM, LKETYPE_TRANS
+
+	.SBTTL	Initialization routine
+
+	ONCEDATA
+
+vgachkinitblk:					;Characteristics description
+ CHARBGN  2, 0					;  block for initialization
+ CHARENT  VALUE, DATAS, , 0, 0, valstr, 0, 0
+ CHAREND
+DATASIZE=$-vgachkinitblk
+
+XMBINDEX DATAINDEX, DATASIZE
+
+	ONCE
+
+;Initialization subroutine (since this is an init-only LKE, the initialization
+;  subroutine contains all the executable code in the LKE)
+;	c{EDX] = Address of characteristics list
+;	CALL	vgachkinit
+;	C:set = Error code
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Offset of first code byte to not save
+;	  c{EDX} = Offset of first data byte to not save
+
+$$$=!0
+FRM vc_dcnt, 4t
+FRM vc_cpnt, 4t
+FRM vc_dpnt, 4t
+FRM vc_num , 4t
+FRM vc_pcib, 4t
+vc_SIZE=!$$$
+
+vgachkinit::
+	ENTER	vc_SIZE, 0
+	CMPL	knlTda+tdaBuffer2##, #0
+	JE	2$
+	PUSHL	#0
+	PUSHL	 #vgachkinitblk
+	CALL	sysIoCharValues##	;Process the characteristics
+	TESTL	EAX, EAX
+	JS	16$			;If error
+	CMPL	vc_dpnt[EBP], #0	;Did he give us a data pointer?
+	JNE	8$			;Yes
+2$:	MOVL	EAX, #ER_CHARM		;No - fail
+	JMP	16$
+
+;Here if have a data pointer
+
+8$:	CLRL	EAX
+	MOVL	vc_num[EBP], EAX
+	MOVL	EDI, vc_cpnt[EBP]
+	IFFAULT	knlRtnAdrErLv##
+	MOVW	[EDI], AX
+	MOVL	EDI, vc_dpnt[EBP]
+	IFFAULT	knlRtnAdrErLv##
+	MOVL	[EDI], EAX
+	TESTB	knlDispType##, #DISP$COLOR ;Color adapter?
+	JE	10$			;No
+	INCL	EAX			;Yes
+10$:	INCL	EAX
+	IFFAULT	knlRtnAdrErLv##
+	MOVL	4[EDI], EAX
+	MOVL	vc_pcib[EBP], #0
+12$:	LEAL	EAX, vc_pcib[EBP]
+	PUSHL	EAX
+	PUSHL	#3
+	PUSHL	#0
+	PUSHL	#-1
+	CALL	xospciFindByClass##
+	TESTL	EAX, EAX
+	JNS	20$			;If found on
+	CMPL	EAX, #ER_PDNAV		;No more displays?
+	JNE	16$			;No - return the error
+14$:	MOVL	EBX, lkei_pctop[EBP]	;Yes give good return and go away
+	MOVL	[EBX], #-1		;  completely
+	MOVL	EBX, lkei_pdtop[EBP]
+	MOVL	[EBX], #-1
+	MOVL	EAX, vc_num[EBP]
+16$:	LEAVE
+	RET	lkei_ADJ
+
+;Here found a PCI display controller
+
+20$:	INCL	vc_num[EBP]
+	MOVL	EDI, vc_dpnt[EBP]
+	MOVL	EDX, vc_pcib[EBP]
+	MOVL	EAX, pcib_addr[EDX]
+	BTSL	EAX, #31t
+	IFFAULT	knlRtnAdrErLv##
+	MOVL	[EDI], EAX
+	MOVL	EAX, pcib_devid[EDX]
+	IFFAULT	knlRtnAdrErLv##
+	MOVL	4[EDI], EAX
+	ADDL	vc_dpnt[EBP], #8
+	INCB	BH
+	MOVL	EDI, vc_cpnt[EBP]
+	IFFAULT	knlRtnAdrErLv##
+	ADDW	[EDI], #8
+	DECL	vc_dcnt[EBP]		;Room for another?
+	JNE	12$			;Yes
+	JMP	14$			;No
+.PAGE
+valstr:	SHRL	ECX, #3
+	JE	knlBadCharS##
+	MOVL	vc_dcnt[EBP], ECX
+	MOVL	vc_dpnt[EBP], EBX
+	MOVL	vc_cpnt[EBP], EAX
+	CLC
+	RET
+.PAGE
+	.MOD	4
+lit10:	.LONG	10t
+
+	LKEEND

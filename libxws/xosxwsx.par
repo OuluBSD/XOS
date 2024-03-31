@@ -1,0 +1,623 @@
+.IF NDF DEFINES
+	.NLIST
+        .INCLUD XOSINC:\XMAC\DEFINES.PAR
+	.LIST
+.ENDC
+	.PARM
+
+$$DEBUG=!0
+
+
+.IF NE $$DEBUG
+	.MACRO	CHECKSEGMENT
+	PUSHL	EAX
+	MOVL	EAX, rgnbufr-rgn_ytable+0[EBX]
+	CMPL	EAX, rgnbufr-rgn_ytable+4[EBX]
+	JLE	$+3.S
+	INT3
+	POPL	EAX
+	.ENDM
+.IFF
+	.MACRO	CHECKSEGMENT
+	.ENDM
+.ENDC
+
+
+.IF NE $$DEBUG
+	.MACRO	CHECKRGN  rgn
+	PUSHL	rgn
+	CALL	xwschkrgn#
+	.ENDM
+.IFF
+	.MACRO	CHECKRGN  rgn
+	.ENDM
+.ENDC
+
+linebufr   ==0x4FF00000		;Offset of the temporary line buffer
+LINEBSZ    =!0x4000		;Maximum size of the temporary line buffer
+
+rgnbufr   ==0x4FF04000		;Offset of the temporary region buffer
+RGNBSZ    =!0x40000		;Maximum size of the temporary region buffer
+
+LINEMAX   =!980t		;Maximum size of a stored text line
+
+;Define offsets from the base vector
+
+XWSVECT_MOUSE=!1t
+
+;Define offsets from the base address for the thread TDBs
+
+TDBOS_DRAW  =!0x20000-tdb_SIZE
+TDBOS_KEYBRD=!0x40000-tdb_SIZE
+TDBOS_MOUSE =!0x60000-tdb_SIZE
+TDBOS_FIMAGE=!0x80000-tdb_SIZE
+
+;Define offsets in the RGN (region object)
+
+$$$=!0
+BLK rgn_label , 4t		;Label (RGN#)
+BLK rgn_user  , 2t
+BLK rgn_type  , 1t		;Region type
+BLK rgn_xxx   , 1t
+BLK rgn_size  , 4t		;Total size of RGN (bytes)
+BLK rgn_usecnt, 4t		;Use count (number of users - 1)
+BLK rgn_ycount, 4t		;Number of Y index table entries
+BLK rgn_left  , 4t		;Left side X position
+BLK rgn_right , 4t		;Right side X position
+BLK rgn_top   , 4t		;Top Y position
+BLK rgn_bottom, 4t		;Bottom Y position
+BLK rgn_ytable, 0t		;Start of the Y index table
+rgn_SIZE=!$$$
+
+;Define offsets in a RECT object
+
+$$$=!0
+BLK rect_xpos  , 4t
+BLK rect_ypos  , 4t
+BLK rect_width , 4t
+BLK rect_height, 4t
+
+;Define offsets in a COORD object
+
+$$$=!0
+BLK coord_xval, 4t
+BLK coord_yval, 4t
+
+;Define offsets in each RSB (Region Segment Block)
+
+$$$=!0
+BLK rsb_left , 4t		;Left side
+BLK rsb_right, 4t		;Right side
+
+;Define bits for rgn_type
+
+RGNTYPE_NULL     =!0t		;Null region
+RGNTYPE_SIMPLE   =!1t		;Simple region
+RGNTYPE_COMPLEX  =!2t		;Complex region
+RGNTYPE$HDISJOINT=!0100h	;Horizontally disjoint region
+RGNTYPE$VDISJOINT=!0200h	;Vertically disjoint region
+
+;Define offsets in the DRW (drawing context object)
+
+$$$=!0
+BLK drw_label    , 4t		;Label (DRW#)
+BLK drw_user     , 2t
+BLK drw_type     , 1t		;Type
+BLK drw_disable  , 1t		;Non-zero to disable writing
+BLK drw_buffer   , 4t		;Offset of start of display buffer
+BLK drw_bufsize  , 4t		;Size of buffer (bytes)
+BLK drw_width    , 4t		;Width (pixels)
+BLK drw_height   , 4t		;Height (pixels)
+BLK drw_pixelspan, 4t		;Span between lines (pixels)
+BLK drw_bytespan , 4t		;Span between lines (bytes)
+BLK drw_pixelsize, 4t		;Pixel size (bytes)
+BLK drw_waitidle , 4t		;Offset of wait until idle routine
+BLK drw_update   , 4t		;Offset of display update routine
+BLK drw_getcolor , 4t		;Offset of get color routine
+BLK drw_rgnfill  , 4t		;Offset of region fill routine
+BLK drw_rgncopy  , 4t		;Offset of region copy routine
+BLK drw_rectfill , 4t		;Offset of rectangle fill routine
+BLK drw_chardraw , 4t		;Offset of character draw routine
+BLK drw_setcursor, 4t		;Offset of set cursor routine
+BLK drw_shwcursor, 4t		;Offset of show cursor routine
+drw_SIZE=!$$$
+
+;Define values for drw_type
+
+DRWTYPE_DISPLAY=!1t		;Physical display
+DRWTYPE_MEMORY =!2t		;Memory
+
+;Define offsets in the highlight area data block (HLA)
+
+$$$=!0
+BLK hla_tl   , 4t
+BLK hla_char , 2t
+BLK hla_index, 2t
+hla_SIZE=!$$$
+
+;Define offsets in the base part of the WIN (window object)
+
+$$$=!0
+BLK win_label        , 4t	;Label (WIN#)
+BLK win_user         , 2t
+BLK                  , 2t
+BLK win_basdrw       , 4t	;Address of DRW for window
+BLK win_basoffset    , 4t	;Address of window in its display buffer
+BLK win_basparent    , 4t	;Address of WIN for parent window
+BLK win_basfchild    , 4t	;Address of WIN for first child window
+BLK win_bassibling   , 4t	;Address of WIN for next sibling window
+
+BLK win_bastype      , 1t	;Window type
+BLK win_basmoving    , 1t
+BLK win_basdrawflg   , 1t
+BLK win_bascaret     , 1t
+
+BLK win_basxpos      , 4t	;X position in parent window
+BLK win_basypos      , 4t	;Y position in parent window
+BLK win_baswidth     , 4t	;Width
+BLK win_basheight    , 4t	;Height
+BLK win_basscnxpos   , 4t	;X position on screen
+BLK win_basscnypos   , 4t	;Y position on screen
+BLK win_baszorder    , 4t	;Z-order (larger value is toward viewer)
+
+BLK win_basxorg      , 4t
+BLK win_basyorg      , 4t
+
+BLK win_basclntwidth , 4t	;Width of client area
+BLK win_basclntheight, 4t	;Height of client area
+BLK win_basleftwidth , 4t	;Width of left border area
+BLK win_basrightwidth, 4t
+BLK win_bastopheight , 4t	;Height of top border area
+BLK win_basbtmheight , 4t
+
+BLK win_basbits1     , 4t	;Window bits 1
+BLK win_basbits2     , 4t	;Window bits 2
+BLK win_basbits3     , 4t	;Window bits 3
+BLK win_basbits4     , 4t	;Window bits 4
+BLK win_basevmask    , 4t	;Event mask bits
+BLK win_basstatus    , 2t	;Window status bits
+BLK win_basconfig    , 2t	;Window configuration bits
+BLK win_bascursor    , 4t	;Address of CUR for cursor for window
+
+BLK win_basmvxofs    , 4t	;X offset for cursor when dragging window
+BLK win_basmvyofs    , 4t	;Y offset for cursor when dragging window
+
+BLK win_basdrawnext  , 4t	;Address of next WIN in the draw list
+
+BLK win_basbasergn   , 4t	;Address of RGN for base region for window
+				;  (this region covers the entire window)
+BLK win_basclientrgn , 4t	;Address of RGN for client region for window
+BLK win_basuserrgn   , 4t	;Address of RGN for user specified clipping
+				;  region (this is initially a copy of
+				;  win_basclientrgn and is always a subset of
+				;  win_basclientrgn)
+BLK win_basmaskrgn   , 4t	;Address of RGN for currently visible part of
+				;  the window (this does not exclude the
+				;  parts not in the clipping region)
+
+BLK win_bascliprgn   , 4t	;Address of current clipping region RGN. It is
+				;  used to clip everything drawn to the window.
+				;  When not in draw mode this is the
+				;  intersection of win_basmaskrgn and
+				;  win_basuserrgn. When it draw mode it also
+				;  excludes everything that has not been
+				;  explicitly invalidated.
+BLK win_basdrawrgn   , 4t	;Address of RGN for current draw region.
+
+BLK win_basdrwmaskrgn, 4t	;Address of draw mode mask region RGN. When not
+				;  in draw mode this is NULL. When in draw mode
+				;  it is the initial clipping region.
+
+BLK win_bassavcliprgn, 4t	;Address of saved clipping region RGN when in
+				;  draw mode
+
+BLK win_basprevmodal , 4t	;Previous modal window (bit 31 set to indicate
+				;  previous focus, not modal window)
+BLK win_bastbhead    , 4t
+BLK win_bastbtail    , 4t
+BLK win_bashlbgn     , hla_SIZE
+BLK win_bashlend     , hla_SIZE
+BLK win_bascarettar  , 2t	;Caret target position (for vertical movement)
+BLK                  , 2t
+				;Following items are used when drawing the
+				;  background and borders
+BLK win_basibhead    , 4t
+
+BLK win_basbgcoln    , 4t	;Normal background color
+BLK win_basbgcola    , 4t	;Alternate background color
+BLK win_basbgbmn     , 4t	;Normal background bitmap
+BLK win_basbgbma     , 4t	;Alternate background bitmap
+
+BLK win_basbrdrwo    , 4t	;Outer border width
+BLK win_basbrdrwc    , 4t	;Center border width
+BLK win_basbrdrwi    , 4t	;Inter border width
+BLK win_basshdcoln   , 4t	;Normal border shadow color
+BLK win_basshdcola   , 4t	;Alternate border shadow color
+BLK win_bashilcoln   , 4t	;Normal border highlight color
+BLK win_bashilcola   , 4t	;Alternate border highlight color
+BLK win_basbrdrcol   , 4t	;Center border color
+BLK win_basbrdrbm    , 4t	;Center border bitmap
+BLK win_baspressofs  , 1t	;Offset for text when pressed
+BLK                  , 3t
+
+BLK win_basfnot      , 4t	;First notify event
+
+BLK win_basedb       , 4t	;Offset of EDB
+BLK win_basdraw      , 4t	;Offset of draw function for window
+BLK win_basevent     , 4t	;Offset of user event function
+BLK win_basevarg1    , 4t
+BLK win_basevarg2    , 4t
+BLK win_basusrpntr   , 4t	;User defined pointer
+win_basSIZE=!$$$
+
+;Define offsets in the WIN for containers
+
+$$$=!win_basSIZE
+
+win_conSIZE=!$$$
+
+;Define offsets in the WIN for buttons
+
+$$$=!win_basSIZE
+
+win_butSIZE=!$$$
+
+;Define offsets in the WIN for list windows
+
+$$$=!win_basSIZE
+BLK win_listselitem , 4t
+BLK win_listalphamin, 4t
+BLK win_listalphamax, 4t
+win_listSIZE=!$$$
+
+;Define offsets in the WIN for response windows
+
+$$$=!win_basSIZE
+
+win_respSIZE=!$$$
+
+;Define offsets in the WIN for edit windows
+
+$$$=!win_basSIZE
+
+win_editSIZE=!$$$
+
+;Define bits for win_basstatus
+
+WSB$PREVFOCUS=!0x0010		;win_basprevmodal points to a focus window
+WSB$MODAL    =!0x0008		;Window is modal
+WSB$ALTCOL   =!0x0004		;Use alternate colors
+WSB$PRESSED  =!0x0002		;Window is pressed
+WSB$DRAWN    =!0x0001		;Window has been drawn at least once
+
+;Define bits for win_basconfig
+
+WCB$LIST  =!0x0001		;Window is some kind of list window
+
+;Define values for win_bastype
+
+WINTYPE_CONTAINER=!1t
+WINTYPE_BUTTON   =!2t
+WINTYPE_CHECKBOX =!3t
+WINTYPE_LIST     =!4t
+WINTYPE_SELECT   =!5t
+WINTYPE_VALUE    =!6t
+WINTYPE_RESPONSE =!7t
+WINTYPE_EDIT     =!8t
+
+;Define values for win_bascaret
+
+CARET_NONE =!0t			;No caret
+CARET_BEGIN=!1t			;Caret is at beginning of highlighted area
+CARET_END  =!2t			;Caret is at end of highlighted area
+
+;Define bits for the "bits" argument to xwsBitmapLoadXXX functions
+
+BLB$DEFER=!0001h		;Defer loading
+
+;Define offsets in the BITMAP (bitmap object)
+
+$$$=!0
+BLK bm_id     , 4t		;ID ('BM**')
+BLK bm_user   , 2t
+BLK           , 2t
+;;;BLK bm_fnot   , 4t		;First notify object for BITMAP
+BLK bm_status , 4t		;Status bits
+BLK bm_drw    , drw_SIZE
+BLK bm_bitmap , 0t
+
+;Define bit values for bm_status
+
+BMS$DONE=!0001h			;Bitmap is completely loaded
+
+;Define offsets in the NOT (notify object)
+
+$$$=!0
+BLK not_id     , 4t		;ID ('NOT*')
+BLK not_not    , 4t		;The notifier object
+BLK not_nextnot, 4t		;Next notify object for same notifier
+BLK not_nextwin, 4t		;Next notify object for same window
+BLK not_win    , 4t		;This window object
+BLK not_head   , 4t		;Offset of head pointer for this notify list
+not_SIZE=!$$$
+
+;Define offsets in the CUR (cursor object)
+
+$$$=!0
+BLK cur_id    , 4t		;ID
+BLK cur_user  , 2t
+BLK           , 2t
+BLK cur_xsize , 4t		;X size
+BLK cur_ysize , 4t		;Y size
+BLK cur_xhot  , 4t		;X hot-spot position
+BLK cur_yhot  , 4t		;Y hot-spot position
+BLK cur_color1, 4t		;First color
+BLK cur_color2, 4t		;Second color
+BLK cur_patbm , 4t		;Offset of pattern bitmap
+BLK cur_maskbm, 4t		;Offset of mask bitmap
+cur_SIZE=!$$$
+
+;Define offsets in the IB (image blck)
+
+$$$=!0
+BLK ib_label, 4t		;Label (IB##)
+BLK ib_next , 4t		;Address of next IB for window
+BLK ib_prev , 4t		;Address of previous IB for windowa
+BLK ib_inx  , 4t		;Index
+BLK ib_xpos , 4t		;X position
+BLK ib_ypos , 4t		;Y position
+BLK ib_bm   , 4t		;Address of bitmap object to display
+ib_SIZE=!$$$
+
+;Define offsets in the FNB (Font Name Block)
+
+$$$=!0
+BLK fnb_label   , 4t		;Label (FNB#)
+BLK fnb_next    , 4t		;Next FNB
+BLK fnb_ffsb    , 4t		;First FSB
+BLK fnb_ftcmap  , 1t		;FreeType character map index
+BLK fnb_fonename, 0t		;Font name
+
+;Define offsets in the FSB (Font Size Block)
+
+$$$=!0
+BLK fsb_label  , 4t		;Label (FSB#)
+BLK fsb_next   , 4t		;Next FSB for same font
+BLK fsb_fnb    , 4t		;FNB
+BLK fsb_ffnt   , 4t		;first FNT
+BLK fsb_szinx  , 4t		;Index used to select size in font files
+				;  which contain multiple sizes
+BLK fsb_height , 4t		;Height of font (pixels)
+BLK fsb_width  , 4t		;Average width of font (pixels)
+BLK fsb_faceinx, 4t		;FreeType2 face index
+fsb_SIZE=!$$$
+
+;Define offsets in the FNT (font object) for bitmap fonts
+
+$$$=!0
+BLK fnt_label     , 4t		;Label (FNT#)
+BLK fnt_user      , 4t
+BLK fnt_width     , 4t
+BLK fnt_height    , 4t
+BLK fnt_ascent    , 4t		;Ascent (pixels)
+BLK fnt_descent   , 4t		;Descent (pixels)
+BLK fnt_extra     , 4t		;Extra ascent (pixels)
+BLK fnt_lspace    , 4t		;Line spacing
+BLK fnt_maxwidth  , 4t		;Maximum width
+BLK fnt_attr      , 4t		;Attributes
+BLK fnt_underpos  , 4t		;Underscore position
+BLK fnt_undersize , 4t		;Underscore position
+BLK fnt_strikepos , 4t		;Strike-out position
+BLK fnt_strikesize, 4t		;Strike-out position
+BLK fnt_flags     , 4t		;Flag bits:
+				;  Bit 1: 1 if monospaced font
+				;  Other bits are reserved and must be 0
+;Following items are private
+
+BLK fnt_next      , 4t		;next FNT from same font size
+BLK fnt_fnb       , 4t		;FNB
+BLK fnt_fsb       , 4t		;FSB
+BLK fnt_ftface    , 4t		;Corresponding FreeType2 face object
+BLK fnt_loadcnt   , 4t		;Load count
+BLK fnt_glyphtbl  , 128t*4	;GCB hash table
+
+
+;Define bits in fnt_attr
+
+FNTA_XBOLD =!0x1000	;Extra bold
+FNTA_BOLD  =!0x0800	;Bold
+FNTA_DBOLD =!0x0400	;Demi-bold
+FNTA_NORMAL=!0x0200	;Normal
+FNTA_LIGHT =!0x0100	;Light
+FNTA_ITALIC=!0x0001	;Italic
+
+;Define bits in fnt_flags
+
+FNTF_MONO  =!0x0004
+FNTF_OBLICK=!0x0002
+FNTF_ITALIC=!0x0001
+
+;Define offsets in the GCB (Glyph Cache Block)
+
+$$$=!0
+BLK gcb_label   , 4t		;Label (GCB#)
+BLK gcb_hash    , 4t		;Next GCB in the hash chain
+BLK gcb_next    , 4t		;Next GCB in the management list
+BLK gcb_prev    , 4t		;Previous GCB in the management list
+BLK gcb_glyphinx, 4t		;Glyph index in the font file
+BLK gcb_fnt     , 4t		;FNT which owns this GCB
+BLK gcb_ftglyph , 4t		;Pointer to the FreeType2 glyphslot structure
+
+;Define the FT_BitmapGlyphRec structure which is part of FreeType2. These
+;  definitions try to follow the FreeType2 naming conventions rather than
+;  ours although we have added a ftg_ prefix to each name.
+
+$$$=!0
+BLK ftg_library  , 4t
+BLK ftg_clazz    , 4t
+BLK ftg_format   , 4t
+BLK ftg_advance_x, 4t
+BLK ftg_advance_y, 4t
+BLK ftg_left     , 4t
+BLK ftg_top      , 4t
+BLK ftg_rows     , 4t
+BLK ftg_width    , 4t
+BLK ftg_pitch    , 4t
+BLK ftg_buffer   , 4t
+BLK ftg_num_grays, 4t
+BLK ftg_pal_mode , 4t
+BLK ftg_palette  , 4t
+
+;Define the cursor state values
+
+CS_NONE  =!0t
+CS_MOVE  =!1t
+CS_SIZET =!2t
+CS_SIZEL =!3t
+CS_SIZEB =!4t
+CS_SIZER =!5t
+CS_SIZETL=!6t
+CS_SIZETR=!7t
+CS_SIZEBL=!8t
+CS_SIZEBR=!9t
+
+
+$$$=!0
+BLK cpd_tl  , 4t
+BLK cpd_binx, 4t
+BLK cpd_cnum, 4t
+BLK cpd_hpos, 4t
+cpd_SIZE=!$$$
+
+;Define offsets in the background color structure
+
+$$$=!0
+BLK bgc_color  , 4t		;Color for background area
+BLK bgc_length , 4t		;Length of background area
+BLK bgc_ascent , 4t		;Ascent for background area
+BLK bgc_descent, 4t		;Descent for background area
+bgc_SIZE=!$$$
+
+;Define offsets in the data block that specifies the formatting state of a
+;  TL. This block is part of each TL and specifies the initial formatting
+;  state of the line. It is also included in the FD and specifies the
+;  current formatting state as the line is formatted.
+
+BLK fmt_ascent , 4t		;Maximum ascent from baseline (positive)
+BLK fmt_descent, 4t		;Maximum descent from baseline (positive)
+BLK fmt_hortab , 4t
+BLK fmt_xright , 4t		;Right margin X position
+BLK fmt_lspace , 4t		;Line spacing
+BLK fmt_pspace , 4t		;Paragraph spacing
+BLK fmt_bits   , 2t
+BLK fmt_attr   , 2t
+BLK fmt_fnum   , 2t		;Font number
+BLK fmt_fattr  , 2t		;Font attributes
+BLK fmt_fsize  , 2t		;Font size
+BLK fmt_fwidth , 2t		;Font width
+BLK fmt_txtcol , 4t		;Initial forground (text) color
+BLK fmt_bgcol  , bgc_SIZE	;Initial background color
+fmt_SIZE=!$$$
+
+;Define offsets in the TB (Text Block) structure
+
+$$$=!0
+BLK tb_label   , 4t		;Label (TB##)
+BLK tb_next    , 4t		;Offset of next TB in window
+BLK tb_prev    , 4t
+BLK tb_tlhead  , 4t		;Offset of first TL
+BLK tb_tltail  , 4t		;Offset of last TL
+BLK tb_inx     , 4t		;Index value
+BLK tb_xpos    , 4t		;X position
+BLK tb_ypos    , 4t		;Y position
+BLK tb_yinc    , 4t		;Y increment (list windows only)
+BLK tb_width   , 4t		;Width
+BLK tb_height  , 4t		;Height
+BLK tb_lmargin , 4t		;Left margin
+BLK tb_rmargin , 4t		;Right margin
+BLK tb_tmargin , 4t		;Top margin
+BLK tb_bmargin , 4t		;Bottom margin
+BLK tb_nrmcol  , 4t		;Normal text color
+BLK tb_altcol  , 4t		;Alternate text color
+BLK tb_hlcol   , 4t		;Highlight color
+BLK tb_caretcol, 4t		;Caret color
+BLK tb_bgcol   , 4t		;Background fill color
+BLK tb_bghlcol , 4t		;Background highlight color
+
+BLK tb_fnum    , 2t		;Font number
+BLK tb_fattr   , 2t		;Font attributes
+BLK tb_fheight , 2t		;Font height
+BLK tb_fwidth  , 2t		;Font width
+
+BLK tb_attr    , 2t
+BLK            , 2t
+tb_SIZE=!$$$
+
+;Define offsets in the TL (Text Line) structure
+
+$$$=!0
+BLK tl_label  , 4t		;Label (TL##)
+BLK tl_tb     , 4t		;Address of TB for block
+BLK tl_next   , 4t		;Address of next TL in block
+BLK tl_prev   , 4t
+BLK tl_xpos   , 4t		;X position of line (relative to text box)
+BLK tl_ypos   , 4t		;Y position of baseline of line (relative to
+				;  text box)
+BLK tl_length , 4t		;Length of line in pixels
+BLK tl_hlpos  , 4t
+BLK tl_hllen  , 4t
+BLK tl_fmt    , fmt_SIZE	;Initial formatting state for the line
+BLK           , 2t
+BLK tl_lnum   , 2t		;Line number in block (starts at 0)
+BLK tl_numchar, 2t		;Number of characters in line
+BLK tl_count  , 2t		;Number of bytes in line
+BLK tl_text   , 0t		;First data byte
+
+;Define bits for tl_bits
+
+;;;TLB$MONO  =!0x10		;Line uses single mono-spaced font
+TLB$WRAP  =!0x04		;Line has been word-wrapped
+TLB$EOL   =!0x02		;Line terminated with EOL (NL) character
+TLB$EOP   =!0x01		;Line terminated with EOP character
+
+;Define bits for tl_fattr
+
+TLA$XBOLD =!1000h		;Extra bold
+TLA$BOLD  =!0800h		;Bold
+TLA$DBOLD =!0400h		;Demi-bold
+TLA$NORMAL=!0200h
+TLA$LIGHT =!0100h		;Light
+TLA$STRIKE=!0008h		;Strike-out
+TLA$DUNDER=!0004h		;Double underscore
+TLA$UNDER =!0002h		;Underscore
+TLA$ITALIC=!0001h		;Italic
+
+
+$$$=!0
+BLK fd_label    , 4t
+BLK fd_tb       , 4t
+BLK fd_text     , 4t
+BLK fd_count    , 4t
+BLK fd_cnt2     , 4t
+BLK fd_dpnt     , 4t
+BLK fd_dcnt     , 4t
+BLK fd_pnt2     , 4t
+BLK fd_pnt1     , 4t
+BLK fd_left     , 4t
+BLK fd_numchar  , 4t
+BLK fd_length   , 4t
+BLK fd_fmt      , fmt_SIZE
+BLK fd_reqfnum  , 4t
+BLK fd_reqfsize , 4t
+BLK fd_reqfwidth, 4t
+BLK fd_reqfattr , 4t
+BLK fd_attr     , 4t
+BLK fd_curbgc   , 4t		;Offset of current BGC in use
+BLK fd_itemnum  , 4t
+BLK fd_begintl  , 4t
+BLK fd_nexttl   , 4t
+BLK fd_selitem  , 1t
+BLK             , 3t
+BLK fd_curfnum  , 4t
+BLK fd_curfnt   , 4t
+fd_SIZE=!$$$

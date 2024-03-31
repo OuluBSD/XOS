@@ -1,0 +1,788 @@
+Since the main purpose of the xws functions is to provide the underlying
+mechanism for a window server which uses a pipe-lined communications
+protocol to communicate with client programs, every effort is made to
+not report errors unless absolutely necessary.  In general, if an argument
+value is invalid or a specified item (such as a font) is not available, a
+default value is used instead of reporting an error.  When an error is
+reported, it is almost always because of some unrecoverable condition,
+such as no memory available.
+
+Since it is expected that these functions will be used only by a "trusted"
+program (such as a window server), there are no "handles" for the various
+objects that are created.  Instead direct pointers to the objects are used.
+This assumes that the code using this functions will be well behaved and
+will not corrupt the objects to which it thus has direct access.  Also, no
+attempt is made to check for obvious programming errors, such as illegal
+pointers, etc.
+
+There are virtually no instances where the external program should directly
+use or modify the contents of any xws object.  They should all be treated
+as "cookies" which are not used except to pass then back to xws functions
+as arguments.
+
+
+****** xws objects
+
+The following objects are used by xws and are visible to the external
+program.  The contents of these objects IS NOT DEFINED and must not be
+accessed by the external program.
+
+RGN - Region object - This object defines a region.  A region is an abstract
+	description of a shape.  There are no restrictions on the shape
+	that a region can represent.  It can be anything from a simple
+	rectangular shape to a complex shape consisting of many disjoint
+	polygons or even isolated points or line segments.
+
+DRW - Drawing context object - This object defines a drawing context.  This
+	is either a display screen or a memory buffer used as a drawing
+	surface.  A drawing context always contains a base window which
+	exactly covers the available drawing area.  Drawing is never done
+	directly to a drawing context but to its base window or to a child
+	of that window.
+
+WIN - Window object - This object defines a window.  A window is the basic
+	display element.  It serves as a drawing surface and as a container
+	for child windows.
+
+CUR - Cursor object - This object defines a graphics cursor.
+
+FNT - Font object - This object defines a text font.
+
+
+It should be noted that xws treats drawing contexts and windows differently
+than most other windowing packages.  xws considers the drawing context to
+be nothing but a definition of the drawing surface.  All actual drawing is
+done to a window, not to the drawing context.  This allows any drawing
+context to contain a window structure, rather than restricting the window
+structure to the actual screen.
+
+
+****** xws data structures
+
+The following data structures are used by XWS to pass information to or
+from the external program.  The detailed definition of these structures
+can be found in the XWS.H header file.
+
+PAR - Parameter structure - Used to pass parameter values to the functions
+	which create windows.
+
+ENB - Environment block - Used to pass the external environment definition
+	to the functions which create windows.
+
+FM  - Font metrics structure - Used to return information about a font.
+
+
+****** Data items
+
+There are a number of data items which can be accessed by the external
+program.  Most of these are standard objects or pointers to standard objects
+which do not need to be created before they are used.
+
+WIN *xws_ScreenWIN;	Pointer to the base WIN object for the display screen.
+
+CUR *xws_CurFinger;	Pointer to CUR object for the standard "finger" cursor.
+
+CUR *xws_CurMove;	Pointer to CUR object for the standard "move" cursor.
+			This cursor is normally displayed when a window has
+			been selected for moving.
+
+CUR *xws_CurPoint;	Pointer to CUR object for the standard pointer cursor.
+
+CUR *xws_CurSizeEW;	Pointer to CUR object for the standard east-west
+			resize cursor.
+
+CUR *xws_CurSizeNESW;	Pointer to CUR object for the standard
+			north-east/south-west resize cursor.
+
+CUR *xws_CurSizeNS;	Pointer to CUR object for the standard north-south
+			resize cursor.
+
+CUR *xws_CurSizeNWSE;	Pointer to CUR object for the standard
+			north-west/south-east resize cursor.
+
+The following structures can be used to provide initial values for user
+defined structures.  They MUST NOT be modified.
+
+PAR  ParContainerDflt;	Parameter structure for default container.  This
+			generates a container window with a fairly thin simple
+			3-d border.
+
+PAR  ParContainerPlain; Parameter structure for plain container.  This
+			generates a container window with no border.
+
+
+****** Win functions
+
+The Win functions create, destroy, and manipulate windows.
+
+
+====== xwsWinCreateContainer
+
+This function creates a container window.
+
+Prototype:
+	WIN *xwsWinCreateContainer(
+		WIN   *parent,		// Parent window
+		long   xpos,		// X position
+		long   ypos,		// Y position
+		long   xsize,		// X size (width)
+		long   ysize,		// Y size (height)
+		PAR   *parms,		// Parameter structure
+		void (*paint)(WIN *win),// Pointer to caller's paint function
+		long (*event)(WIN *win, long arg1, long arg2, long arg3,
+			long arg4),	// Pointer to caller's event function
+		EDB   *edb);		// Pointer to caller's environment
+					//   data block
+
+The value returned is the address of the WIN for the new window if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function was called with an error code as its
+argument.
+
+
+====== xwsWinGetBndBox
+
+This function returns the position and size of the bounding box for the window.
+
+Prototype:
+	void *xwsWinGetBndBox(
+		WIN  *win,		// Pointer to WIN object for window
+		RECT *rect);		// Pointer to RECT stucture to receive
+					//   values
+
+The rect structure is filled in with the position and size of the bounding
+box for the window in screen coordinates.
+
+
+====== xwsWinGetClient
+
+This function returns the size of the client area for the window.
+
+Prototype:
+	void *xwsWinGetClient(
+		WIN  *win,		// Pointer to WIN object for window
+		RECT *rect);		// Pointer to RECT stucture to receive
+					//   values
+
+The rect structure is filled in with the position and size of the window's
+client area in window coordinates.  This means that the position returned is
+always (0, 0), so the only information returned is the size of the client area.
+
+
+====== xwsWinGetInsets
+
+This function returns the insets for the window.
+
+Prototype:
+	void *xwsWinGetInsets(
+		WIN    *win,		// Pointer to WIN object for window
+		INSETS *insets);	// Pointer to INSETS stucture to
+					//   receive values
+
+The insets structure is filled in with the widths of the borders of the window.
+
+
+====== xwsWinInvalidateRgn
+
+This function invalidates all or part of a window.
+
+Prototype:
+	long xwsWinInvalidateRgn(
+		WIN *win,		// Pointer to WIN object for window
+		RGN *rgn);		// Pointer to RGN object for region to
+					//   invalidate
+
+The value returned is TRUE if the function was successful or a FALSE if an
+error occured.  If FALSE is returned, the external program's error function
+was called with an error code as its argument.
+
+
+The region defined by the rgn argument is marked as invalid and a redraw
+request is queued for the window.  If the rgn argument is NULL, the entire
+window is marked as invalid.
+
+
+====== xwsWinMove
+
+This function moves and resizes a window.
+
+Prototype:
+	long xwsWinMove(
+		WIN *win,		// Pointer to WIN object for window
+		long xpos,		// New X position for window
+		long ypos, 		// New Y position for window
+		long width,		// New width for window
+		long height);		// New height for window
+
+The value returned is TRUE if the function was successful or a FALSE if an
+error occured.  If FALSE is returned, the external program's error function
+was called with an error code as its argument.
+
+
+====== xwsWinRedrawBegin
+
+This function is called to begin a redraw sequence.
+
+Prototype:
+	long xwsWinRedrawBegin(
+		WIN *win);		// Pointer to WIN object for window
+
+The value returned is TRUE if the function was successful or a FALSE if an
+error occured.  If FALSE is returned, the external program's error function
+was called with an error code as its argument.
+
+The redraw sequence for a window can be written in two different ways:
+  1.	All redrawing is done within the function.  The xwsRedrawBegin
+	function is called upon entry to the redraw function before any
+	drawing is done.  After all drawing is complete, the xwsRedrawEnd
+	function is called before returning from the redraw function.
+  2.	All or some of the drawing is defered.  An external mechanism is used
+	to request drawing at a later time after returning from the redraw
+	function.  In this case, the xwsRedrawBegin function is not called
+	until drawing is to actually start.  xwsRedrawEnd is called when
+	redrawing is complete.  In this case, the redraw function will not
+	be called again until xwsRedrawEnd is called, but it is possible that
+	the redraw function will be called from within the xwsRedrawEnd
+	function.  The external queueing mechanism must handle this situation.
+	This mode of redrawing is intended to support external client programs
+	with completely pipe-lined protocol which does not require any round
+	trip delays during the redraw sequence.
+Note that a mix of these methods can be used with different windows at the
+same time, but each window should use only one method.
+
+
+====== xwsWinRedrawEnd
+
+This function is called to terminate a redraw sequence.
+
+Prototype:
+	long xwsWinRedrawEnd(
+		WIN *win);		// Pointer to WIN object for window
+
+The value returned is TRUE if the function was successful or a FALSE if an
+error occured.  If FALSE is returned, the external program's error function
+was called with an error code as its argument.
+
+See the description of the xwsWinRedrawBegin function for a description of
+the redraw sequence.
+
+
+====== xwsWinSetBgColor
+
+This function sets the current background color for a window.
+
+Prototype:
+	void xwsWinSetBgColor(
+		WIN *win,		// Pointer to WIN object for window
+		long bgcol);		// New background color (RGB format)
+
+The current background color is used by the Draw and Fill functions when
+drawing on the window.  It is used as the fill color for all Fill functions
+and as the background text cell color when drawing text characters in
+non-transparent mode.  Note that changing this color has no immediate
+affect on the appearance of the window.  It only affects subsuquent calls
+to Draw and Fill functions.
+
+
+====== xwsWinSetFgColor
+
+This function sets the current foreground color for a window.
+
+Prototype:
+	void xwsWinSetFgColor(
+		WIN *win,		// Pointer to WIN object for window
+		long fgcol);		// New foreground color (RGB format)
+
+The current foreground color is used by the Draw and Fill functions when
+drawing on the window.  It is used as the line color for all Draw functions.
+This includes functions which draw text characters.  Note that changing this
+color has no immediate affect on the appearance of the window.  It only
+affects subsuquent calls to Draw and Fill functions.
+
+
+====== xwsWinSetFont
+
+This function sets the current text font for a window.
+
+Prototype:
+	FNT *xwsWinSetFont(
+		WIN *win, 		// Pointer to WIN object for window
+		FNT *fnt);		// Pointer to FNT object for new font
+
+The value returned is a pointer to the FNT for the previous current font if
+the function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function was called with an error code as its
+argument.
+
+The current font is used by the Draw functions which draw text characters.
+
+
+****** Cur functions
+
+The Cur functions create, destroy, and manipulate cursors.
+
+
+====== xwsCurCreate
+
+This function creates a cursor.
+
+Prototype:
+	CUR *xwsCurCreate(
+		long   xsize,		// Horizontal size of the cursor
+		long   ysize,		// Vertical size of the cursor
+		long   xhot,		// Horizontal position of the hot-spot
+		long   yhot,		// Vertical position of the hot-spot
+		long  *colors,		// Pointer to color array
+		long   num,		// Number of colors
+		uchar *patbm,		// Pointer to the pattern bitmap
+		uchar *maskbm);		// Pointer to the mask bitmap
+
+The value returned is a pointer to the CUR object for the new cursor if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+Currently, only two color cursors are supported, thus the num argument must
+have a value of 2.  The pattern and mask bitmaps are both packed 8 bits per
+byte with the low order bit representing the left-most pixel.  The meaning of
+these bits is as follows:
+
+      Pattern    Mask           Displayed
+         0         0        First cursor color
+         0         1        Second cursor color
+         1         0        Screen pixel
+         1         1        NOT screen pixel
+
+Colors are specified in RGB format.  The bitmaps are tightly packed, except
+that each line of the cursor starts in a new byte.  The maximum cursor size
+is 64 x 64 pixels.
+
+
+****** Rgn functions
+
+
+====== xwsRgnCreateRect
+
+This function creates a rectangular region.
+
+Prototype:
+	RGN *xwsRgnCreateRect(xpos, ypos, xsize, ysize);
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+
+====== xwsRgnDiff
+
+This function creates a new region which is the difference of two regions.
+
+Prototype:
+	RGN *xwsRgnDiff(
+		const RGN *rgn1,	// First region
+		const RGN *rgn2);	// Second region
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+The new region created contains all points in the first region that are not
+also in the second region.
+
+
+====== xwsRgnDuplicate
+
+This function duplicates a region.
+
+Prototype:
+	RGN *xwsRgnDuplicate(
+		RGN *rgn);
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+The new region created is an exact duplicate of the original region.
+
+
+====== xwsRgnDupOffset
+
+This function duplicates a region with its position changed.
+
+Prototype:
+	RGN *xwsRgnDupOffset(
+		RGN *rgn,
+		long xoffset,
+		long yoffset);
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+The new region created is an exact duplicate of the original region except
+that its position is offset by the x and y values specified.
+
+
+====== xwsRgnFree
+
+This function destroys a region and free up the resources it used.
+
+Prototype:
+	void xwsRgnFree(
+		RGN rgn);
+
+
+====== xwsRgnIntersect
+
+This function creates a new region which is the intersection of two regions.
+
+Prototype:
+	RGN *xwsRgnIntersect(
+		const RGN *rgn1,	// First region
+		const RGN *rgn2);	// Second region
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+The new region created contains all points that are in both the first region
+and the second region.
+
+
+====== xwsRgnUnion
+
+This function creates a new region which is the union of two regions.
+
+Prototype:
+	RGN *xwsRgnUnion(
+		const RGN *rgn1,	// First region
+		const RGN *rgn2);	// Second region
+
+The value returned is a pointer to the RGN object for the new region if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+The new region created contains all points that are in either the first region
+or the second region.
+
+
+****** Draw functions
+
+
+====== xwsDrawChar
+
+This function displays a text character at the current text position using
+the current font and colors.
+
+Prototype:
+	long xwsDrawChar(
+		WIN  win,		// Pointer to WIN object for window
+		long chr);		// Character to display
+
+The value returned is the new current text position X coordinate if the
+function was successful or 0x80000000 if an error occured.  If 0x80000000 is
+returned, the external program's error function is called first with an
+error code.
+
+====== xwsDrawCharXY
+
+This function displays a text character at the specified text position using
+the current font and colors.
+
+Prototype:
+	long xwsDrawCharXY(
+		WIN *win,		// Pointer to WIN object for window
+		long chr,		// Character to display
+		long xpos,		// X position
+		long ypos);		// Y position
+
+The value returned is the new current text position X coordinate if the
+function was successful or 0x80000000 if an error occured.  If 0x80000000 is
+returned, the external program's error function is called first with an
+error code.
+
+
+====== xwsDrawCircle
+
+This function draws an unfilled circle using the current foreground color.
+
+Prototype:
+	void xwsDrawCircle(
+		WIN *win,		// Pointer to WIN object for window
+		long x1,		// X coordinate of upper left corner
+					//   of bounding box
+		long y1,		// Y coordinate of upper left corner
+					//   of bounding box
+		long diameter);		// Diameter of circle
+
+
+====== xwsDrawEllipse
+
+This function draws an unfilled ellipse using the current foreground color.
+
+Prototype:
+	void xwsDrawEllipse(
+		WIN *win,		// Pointer to WIN object for window
+		long x1,		// X coordinate of upper left corner
+					//   of bounding box
+		long y1,		// Y coordinate of upper left corner
+					//   of bounding box
+		long xdiameter,		// X diameter of ellipse
+		long ydiameter);	// Y diameter of ellipse
+
+
+====== xwsDrawLine
+
+This function draws a line useing the current foreground color
+
+Prototype:
+	void xwsDrawLine(
+		WIN *win,		// Pointer to WIN object for window
+		long x1,		// X coordinate of one end of line
+		long y1,		// Y coordinate of one end of line
+		long x2,		// X coordinate of other end of line
+		long y2);		// Y coordinate of other end of line
+
+
+====== xwsDrawRect
+
+This function draws an unfilled rectangle using the current foreground color
+
+Prototype:
+	void xwsDrawRect(
+		WIN *win,		// Pointer to WIN object for window
+		long xpos,		// X position of upper left corner
+		long ypos,		// Y position of upper left corner
+		long width,		// Width of rectangle
+		long height);		// Height of rectangle
+
+
+====== xwsDrawText
+
+This function displays a text string at the current text position using the
+current font and colors.
+
+Prototype:
+	long xwsDrawText(
+		WIN  *win,		// Pointer to WIN object for window
+		char *text,		// Pointer to text string
+		long  length);		// Length of text string
+
+The value returned is the new current text position X coordinate if the
+function was successful or 0x80000000 if an error occured.  If 0x80000000 is
+returned, the external program's error function is called first with an
+error code.
+
+
+====== xwsDrawTextXY
+
+This function displays a text string at the specified text position using the
+current font and colors.
+	long xwsDrawText(
+		WIN  *win,		// Pointer to WIN object for window
+		char *text,		// Pointer to text string
+		long  length,		// Length of text string
+		long  xpos,		// X position
+		long  ypos);		// Y position
+
+The value returned is the new current text position X coordinate if the
+function was successful or 0x80000000 if an error occured.  If 0x80000000 is
+returned, the external program's error function is called first with an
+error code.
+
+
+****** Fill functions
+
+
+====== xwsFillCircle
+
+This function draws a filled circle using the current background color.
+
+Prototype:
+	void xwsFillCircle(
+		WIN *win,		// Pointer to WIN object for window
+		long x1,		// X coordinate of upper left corner
+					//   of bounding box
+		long y1,		// Y coordinate of upper left corner
+					//   of bounding box
+		long diameter);		// Diameter of circle
+
+
+====== xwsFillEllipse
+
+This function draws a filled ellipse using the current background color.
+
+Prototype:
+	void xwsDrawEllipse(
+		WIN *win,		// Pointer to WIN object for window
+		long x1,		// X coordinate of upper left corner
+					//   of bounding box
+		long y1,		// Y coordinate of upper left corner
+					//   of bounding box
+		long xdiameter,		// X diameter of ellipse
+		long ydiameter);	// Y diameter of ellipse
+
+
+====== xwsFillRect
+
+This function draws a filled rectangle using the current background color
+
+Prototype:
+	void xwsDrawRect(
+		WIN *win,		// Pointer to WIN object for window
+		long xpos,		// X position of upper left corner
+		long ypos,		// Y position of upper left corner
+		long width,		// Width of rectangle
+		long height);		// Height of rectangle
+
+
+****** Font functions
+
+
+====== xwsFontGetLength
+
+This function gets the length of a text string for a font.
+;	FNT *fnt;
+;	char *text;
+;	long  count;
+	long xwsFontGetLength(
+		FNT  *fnt,		// Pointer to FNT object for font
+		char *text,		// Pointer to the text string
+		long  length);		// Length of the text string
+
+The value returned is width of the displayed text in pixels.
+
+
+====== xwsFontGetMetrics
+
+This function returns the metrics for a font.
+
+Prototype:
+	void xwsFontGetMetrics(
+		FNT *fnt,		// Pointer to FNT object for font
+		FM  *fm)		// Pointer to FM structure to be
+					//   filled in
+
+
+====== xwsFontLoad
+
+This function obtains a FNT object for a font.
+
+Prototype:
+	FNT *xwsFontLoad(
+		char *name,		// Name of font
+		long  height,		// Height of font (pixels)
+		long  width,		// Width of font (pixels)
+		long  attr);		// Attributes
+
+The value returned is a pointer to the FNT object for the font if the
+function was successful or NULL if an error occured.  If NULL is returned,
+the external program's error function is called first with an error code.
+
+
+====== xwsFontUnload
+
+This function destroys a FNT object and releases any resources it was using.
+
+Prototype:
+	void xwsFontUnload(
+		FNT fnt);		// Pointer to FNT object
+
+
+****** Store functions
+
+These functions store text strings into a window such that their display
+is managed by xws.  Text is stored in units called text blocks.  A text
+block is identified by its starting coordinates.  Text may be word-wrapped
+at a right margin (settable) and vertical spacing can be controlled.  The
+text strings used by these functions can contain formating codes as
+described in the TDP (Text Display Protocol) description.  Only one text
+block can exist at any coordinate.  If another text block is created at
+the same coordinate, it replaces the orignal block at that coordinate.
+
+
+====== xwsStoreTextAdd
+
+This function stores a text string in a window, adding to the text block at
+the position specified.
+
+Prototype:
+	void xwsStoreTextAdd(
+		WIN win,		// Pointer to WIN object for window
+		char *text,		// Pointer to text string
+		long  length,		// Length of text string
+		long  xpos,		// X position for text block
+		long  ypos,		// Y position for text block
+		long  bits);		// Option bits
+
+If there is no text block at the specified position, a new text block is
+created there.
+
+
+====== xwsStoreTextCon
+
+This function stores a text string in a window, adding the text to the last
+text block written to.
+
+Prototype:
+	void xwsStoreTextCon(
+		WIN win,		// Pointer to WIN object for window
+		char *text,		// Pointer to text string
+		long  length,		// Length of text string
+		long  bits);		// Option bits
+
+If no text block has been written to, this function does nothing.
+
+
+====== xwsStoreTextNew
+
+This function stores a text string in a window, starting a new text block
+at the position specified.
+
+Prototype:
+	void xwsStoreTextNew(
+		WIN win,		// Pointer to WIN object for window
+		char *text,		// Pointer to text string
+		long  length,		// Length of text string
+		long  xpos,		// X position for text block
+		long  ypos,		// Y position for text block
+		long  bits);		// Option bits
+
+If there is a text block at the specified position, it is removed and the
+text specified here replaces it.
+
+
+****** Timer functions
+
+The timer functions provide a simple way to manage timer signals which is
+consistant with xws.
+
+
+====== xwsTimerStart
+
+This function starts a periodic timer.
+
+Prototype:
+	long xwsTimerStart(
+		void (*timer)(TIMERDATA data),
+					// Function to call
+		long   data,		// Data value for function
+		long   vector,		// Signal vector to use
+		long   interval);	// Interval (fractional days)
+
+
+The value returned is a positive timer handle if normal or zero if an error
+occured.  If 0 is returned, the external program's error function is called
+first with an error code.
+
+
+====== xwsTimerStop
+
+This function stops a timer.
+
+Prototype:
+	long xwsTimerStop(
+		long handle);		// Timer handle
+
+The value returned is 1 if normal or zero if an error occured.  If 0 is
+returned, the external program's error function is called first with an error
+code.

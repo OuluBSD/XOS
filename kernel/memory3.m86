@@ -1,0 +1,806 @@
+	.TITLE	memory3 - Shared memory routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+;Define offsets in the spy area definition block (SADB)
+
+$$$=!0
+BLK sadb_label, 4	;Label (SADB)
+BLK sadb_addr , 4	;Address
+BLK sadb_size , 4	;Size (pages)
+BLK sadb_top  , 4	;First address not allocated
+BLK sadb_fmdb , 4	;Address of first MDB which maps the area
+
+	CODE
+
+;SVC to make the SPY region visible to a user program
+;	long svcMemSpy(
+;	    long   area,	// Area to map: 1 = PDA spy area
+;				//              2 = TDA spy area
+;	    uchar *addr);	// Address at which to map the spy area
+;  Value returned is the size of the area mapped (in bytes) if normal or a
+;  negative XOS eror code if error. The address is rounded down to a page
+;  boundry. There must be 128KB free for the PDA spy area and 32KB free for
+;  the TDA spy area.
+
+;NOTE: Only the number of spy pages currently allocated are mapped to user
+;      space. The mapped area is NOT increased when additional spy pages
+;      are allocated. When referencing a spy page the user program MUST
+;      check that the address is within the mapped region (or it may take a
+;      page fault trap). If it is not mapped, the msect must be given up and
+;      the svcMemSpy function called again. This will expand the mapped region
+;      to include all currently allocated spy pages. When making this check
+;      the size returned from this call must be used. Issueing a svcMemChange
+;      call to get the size will return the maximum size for the msect (128KB
+;      or 32KB) and NOT the actaul amount mapped. Spy pages are never
+;      deallocated once they are allocated.
+
+$$$=!0
+FRM mkspy_pntr , 4
+FRM mkspy_mdb  , 4
+FRM mkspy_uaddr, 4
+mkspy_SIZE=!$$$
+
+psvcMemSpy::
+	MOVL	EAX, knlTda+tdaArg1#
+	DECL	EAX
+	JNE	4$
+	MOVL	ESI, #pdasadb
+	JMP	6$
+
+2$:	MOVL	EAX, #ER_FUNC
+	RET
+
+4$:	DECL	EAX
+	JNE	2$
+	MOVL	ESI, #tdasadb
+6$:	ENTER	mkspy_SIZE, 0
+	ANDL	knlTda+tdaArg2#, #0xFFFFF000
+	PUSHL	knlTda+tdaArg2#		;Look for the requested msect
+	LEAL	EAX, mkspy_pntr[EBP]
+	PUSHL	EAX
+	LEAL	EAX, mkspy_mdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemFindMsect#	;Find requested msect
+	TESTL	EAX, EAX
+	JS	mksdn			;If error
+	JE	14$			;If not there
+	MOVL	EAX, #ER_MACFT		;Error if the msect exists
+	JMP	mksdn
+
+;Here to create an msect for the physical mapping
+
+14$:	PUSHL	knlTda+tdaArg2#		;Set up an MDB
+	MOVL	EAX, sadb_size[ESI]	;Size in bytes
+	SHLL	EAX, #12t
+	PUSHL	EAX
+	PUSHL	mkspy_pntr[EBP]
+	CALL	createmsect#
+	TESTL	EAX, EAX
+	JS	mksdn			;If error
+	MOVL	EBX, mkspy_pntr[EBP]	;OK - get address of the new MDB
+	MOVL	EBX, [EBX]
+	MOVL	ECX, sadb_size[ESI]	;Get size in pages
+	MOVL	mdb_size[EBX], ECX	;Store size in the MDB
+	ORB	mdb_sts[EBX], #MSS$NODEALOC ;Indicate should not deallocate
+	MOVL	mdb_devpnt[EBX], ESI	;Link the SADB to the MDB
+	MOVL	EAX, sadb_fmdb[ESI]	;Link the MDB into the list for the SADB
+	MOVL	mdb_devnext[EBX], EAX
+	MOVL	sadb_fmdb[ESI], EBX
+	MOVL	mdb_remove[EBX], #spyremove
+
+;Now map all of the spy area pages
+
+	MOVL	EAX, knlTda+tdaArg2#
+	MOVL	mkspy_uaddr[EBP], EAX
+	MOVL	ESI, sadb_addr[ESI]
+	SHRL	ESI, #10t
+16$:	MOVL	EAX, knlPgTable#[ESI]
+	TESTB	AL, #0x01
+	JE	18$
+	PUSHL	mkspy_uaddr[EBP]	;Map the pages
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x65
+	ANDL	EAX, #0xFFFFF000
+	PUSHL	EAX
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages#
+	TESTL	EAX, EAX
+	JS	20$			;If error
+	ADDL	mkspy_uaddr[EBP], #1000
+	ADDL	ESI, #4
+	JMP	16$
+
+;Here when finsihed
+
+18$:	MOVL	EAX, mkspy_uaddr[EBP]	;Get the size of the area actually
+	SUBL	EAX, knlTda+tdaArg2#	;  mapped
+mksdn:	LEAVE
+	RET
+
+;Here if error mapping pages
+
+20$:	PUSHL	EAX
+	PUSHL	#0
+	PUSHL	knlTda+tdaArg2#
+	PUSHL	#0
+	CALL	sysMemChngMsect#
+	POPL	EAX
+	JMP	mksdn
+.PAGE
+;Function called when a spy region msect is removed
+;	long spyremove(
+;	    MDB *mdb);
+;  Value returned is always 0 (we can always remove the msect).
+
+spyrmv_mdb=!8
+
+spyremove:
+	PUSHL	EDI
+	MOVL	EBX, spyrmv_mdb[ESP]
+	MOVL	ECX, mdb_devpnt[EBX]
+	ADDL	ECX, #sadb_fmdb
+4$:	MOVL	EDX, [ECX]
+	TESTL	EDX, EDX
+	JE	14$
+	CMPL	EDX, EBX
+	JE	6$
+	LEAL	ECX, mdb_devnext[EDX]
+	JMP	4$
+
+6$:	MOVL	EAX, mdb_devnext[EBX]	;Remove this MDB from the list
+	MOVL	[ECX], EAX
+	MOVL	EDI, mdb_base[EBX]	;Unmap all of the pages
+	SHRL	EDI, #10t
+	MOVL	ECX, mdb_size[EBX]
+8$:	MOVL	knlPgTable#[EDI], #0
+	ADDL	EDI, #4
+	TESTL	EDI, #0x0FFF		;At end of a page table?
+	JNE	10$			;No
+	PUSHL	ECX
+	PUSHL	EDI			;Yes - give up the page table if its
+	CALL	givepgtbl#		;  empty now
+	POPL	ECX
+10$:	LOOP	ECX, 8$
+	PUSHL	EDI
+	CALL	givepgtbl#
+	CLRL	EAX			;That's all (
+	POPL	EDI
+	RET
+
+14$:	CRASH	BSAL			;[Bad Spy Area List]
+.PAGE
+;Define stack frame offsets for convgbl and linkgbl
+
+$$$=!0
+FRM gbl_type , 2t		;Section type
+FRM gbl_addr , 6t		;Base address for msect to convert
+FRM gbl_name , 48t		;Name for section
+FRM gbl_level, 4t		;Compatibility level
+FRM gbl_la   , 4t		;Address of SDA
+FRM gbl_sdasz, 4t		;Size of SDA (pages)
+FRM gbl_sel  , 4t		;Selector for SDA
+FRM gbl_num  , 4t		;Section ID
+FRM gbl_mdb  , 4t		;Offset of MDB for msect
+FRM gbl_acl  , 4t		;Address of access control list data
+gbl_SIZE=!$$$
+
+	.SBTTL	svcMemConvShr - Convert msect to shared section
+
+;Here for the svcMemConvShr SVC - convert msect to shared section
+;	long svcMemConvShr(
+;	    void *base,		// Base address of msect
+;	    char *name,		// Name of shared section
+;	    long  type,		// Section type: 1 = Writable
+;				//		 2 = Read only
+;				//		 3 = Copy on write
+;				// Bit 7 set if access control list contains
+;				//   list of process IDs
+;	    long  level,	// Compatibility level
+;	    long  protection,	// Protection value
+;	    void *acl);		// Pointer to access control list
+;  Value returned is section ID (always positive) if normal or negative error
+;    code if error
+
+psvcMemConvShr::
+
+	CRASH	????
+
+	MOVL	EDX, knlTda+tdaArg5#	;Get section type
+	SHLL	EDX, #16t
+	MOVW	DX, knlTda+tdaArg1#	;Get selector for msect
+	MOVL	EBX, knlTda+tdaArg2#	;Get offset msect
+	IFFAULT	knlRtnAdrEr#
+	LFSL	ESI, knlTda+tdaArg4#	;Get address of name
+	MOVL	EAX, knlTda+tdaArg6#	;Get compatibility level
+	MOVL	ECX, knlTda+tdaArg7#	;Get protection value
+	IFFAULT	knlRtnAdrEr#
+	LGSL	EDI, knlTda+tdaArg9#	;Get address of access control list
+					;Fall into convgbl on next page
+.PAGE
+	.SBTTL	convshr - Subroutine to convert msect to shared section
+
+;Subroutine to convert msect to shared section
+;	c{EAX} = Compatibility level
+;	c{EBX} = Offset of base of msect
+;	c{ECX} = Protection
+;	c{EDX} = Section type | Selector for msect
+;	c{GS:EDI} = Address of access control list
+;	c{FS:ESI} = Address of name for section
+;	CALL	convshr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Section ID
+
+convshr::
+	ENTER	gbl_SIZE, 0
+	MOVL	gbl_acl+0.B[EBP], EDI	;Store address of ACL
+	MOVL	gbl_acl+4.B[EBP], GS
+	CALL	setshr			;Do common setup
+	JC	8$.S			;If error
+	JE	10$.S			;Fail if section exists
+	MOVB	AL, gbl_type.B[EBP]	;Get section type
+	ANDB	AL, #7Fh		;Make sure valid
+	JE	knlBadValueLv#
+	CMPB	AL, #3
+	JA	knlBadValueLv#
+	JNE	2$.S			;Go on if don't want copy on write
+	MOVL	EAX, #ER_NIYT
+	JMP	6$.S
+
+2$:	MOVL	EDX, gbl_addr+0.B[EBP]	;Find the msect
+	PUSHL	EBP
+	MOVZWL	EBP, gbl_addr+4.B[EBP]
+
+	CRASH	????
+
+;;;;;	CALL	knlFindMsect#
+	MOVL	EDX, EBP
+	POPL	EBP
+	JC	8$			;If error
+	JE	14$			;OK if msect exists
+	MOVL	EAX, #ER_NOMEM		;Msect does not exist - error
+6$:	STC
+8$:	LEAVE
+	RET
+
+;Here if section exists
+
+10$:	MOVL	EAX, #ER_ALDEF
+	JMP	6$.S
+
+;Here if msect exists
+
+14$:	CMPB	mdb_devtype[EDI], #0	;Also fail if not simple msect
+	JNE	10$
+	MOVL	EAX, mdb_size[EDI]	;Calculate number of pages needed for
+	SHLL	EAX, #2			;  the SDA
+	ADDL	EAX, #sdaFPnt#-1000h+0FFFh
+					;NEED TO ADD IN BYTES NEEDED FOR
+					;ACL HERE!
+	SHRL	EAX, #12t
+	CMPL	EAX, #{pda_TSIZE-1000}>12t ;Too big?
+	JA	ermacftlv		;Yes - fail
+					;OK - now we scan all pages in the
+					;  msect and make sure none are virtual
+	MOVL	EBX, mdb_base[EDI]	;Get address of msect
+	SHRL	EBX, #10t		;Change to page table offset
+	ADDL	EBX, #knlPgTable#
+	MOVL	ECX, mdb_size[EDI]	;Get number of pages
+16$:	TESTB	[EBX], #01		;Is this a virtual page?
+	JE	ermacftlv		;Yes - fail!
+	ADDL	EBX, #4			;No - continue if more pages to check
+	LOOP	ECX, 16$
+	CMPL	knlMemAvail#, EAX	;OK - are enough pages available now?
+	JAE	20$			;Yes - go on
+	MOVL	EAX, #ER_NEMA
+	STC
+18$:	LEAVE
+	RET
+
+;Here if have enough memory for the SDA
+
+20$:	MOVL	gbl_sdasz[EBP], EAX	;Yes - store number of pages needed
+	MOVL	gbl_addr+4[EBP], EDX	;Store msect data
+	MOVL	gbl_mdb[EBP], EDI
+
+	CRASH	????
+
+;;;;;;	CALL	knlFindProc#		;Find a process slot
+	JC	18$			;If none available
+	MOVL	gbl_la[EBP], EBX	;OK - save address
+	MOVL	gbl_num[EBP], EAX	;Save "process number"
+
+	CRASH	????
+
+;;;;;	MOVW	knlProcTable#[EAX*2], BX
+	CMPL	EAX, knlProcHigh#	;Is this a new high?
+	JBE	22$			;No
+	MOVL	knlProcHigh#, EAX	;Yes - update value
+22$:	INCL	knlProcInUse#		;Bump number of "processes" in use
+	MOVL	EDX, gbl_la[EBP]
+	MOVL	ECX, #DT_RWDATA+PL_0+{DC_PG+DC_32}*100h+{16t-1}*10000h
+
+;;;;;;	CALL	knlSetGDesc#		;Set up SDA selector
+
+	MOVL	ECX, gbl_sdasz[EBP]	;Get number of pages needed
+	MOVL	EDX, gbl_la[EBP]	;Get address for the SDA
+	ADDL	EDX, #1000h
+	PUSHL	EDX
+	PUSHL	gbl_sdasz[EBP]
+	PUSHL	#MT_SDA
+	PUSHL	#0x67
+	PUSHL	EBX
+	PUSHL	#0
+	CALL	sysMemGetPages#		;Get pages for the SDA
+	TESTL	EAX, EAX
+	JS	30$			;If error (should not happen since we
+	MOVL	ES, gbl_sel[EBP]	;  checked for available memory above)
+	MOVL	EDI, #1000h		;OK - clear the pages
+	CLRL	EAX
+	MOVL	ECX, gbl_sdasz[EBP]
+	SHLL	ECX, #10t
+	CLD
+	RSTOSL	[EDI]
+;;;;;;	MOVL	ES:sdaMagic#, #SDA_MAGIC ;Store magic number
+	MOVL	EAX, procseq#		;Get the current process sequence number
+	INCL	procseq#		;Increment process sequence number
+	CMPW	procseq#, #0x7FFF	;Has it overflowed?
+	JBE	26$			;No
+	MOVW	procseq#, #0x100	;Yes - reset it
+26$:	SHLL	EAX, #16t
+	MOVW	AX, gbl_num[EBP]	;Restore process number
+	MOVL	ES:sdaSid#, EAX		;Store in SDA
+	MOVB	AL, gbl_type[EBP]	;Store section type in the SDA
+	MOVB	ES:sdaType#, AL
+	LEAL	ESI, gbl_name[EBP]	;Copy section name to the SDA
+	MOVL	EDI, #sdaName#
+	MOVL	ECX, #48t/4
+	RMOVSL	[EDI], [ESI]
+	MOVL	EDI, gbl_mdb[EBP]	;Store MDB offset
+	MOVL	ES:sdaMdbHead#, EDI
+	MOVL	ES:sdaMdbTail#, EDI
+	CLRL	EAX
+	MOVL	mdb_segsda[EDI], ES
+	MOVL	mdb_segnext[EDI], EAX
+	MOVL	mdb_lockcnt[EDI], EAX
+	MOVB	mdb_devtype[EDI], #0FFh
+	MOVL	mdb_remove[EDI], #sectremove
+	ORB	mdb_sts[EDI], #MSS$FIXED ;Indicate now fixed size
+	MOVL	EAX, mdb_size[EDI]	;Copy section size to the SDA
+	MOVL	ES:sdaTotalSize#, EAX
+	MOVL	EAX, gbl_sdasz[EBP]	;Also copy size of the SDA itself
+	MOVL	ES:sdaSdaSize#, EAX
+	MOVL	EDI, gbl_mdb[EBP]
+	MOVL	ESI, mdb_base[EDI]	;Get address of msect
+	SHRL	ESI, #10t		;Change to page table offset
+	ADDL	ESI, #knlPgTable#
+	MOVL	ECX, mdb_size[EDI]	;Get number of pages
+	MOVL	EBX, EDI
+	MOVL	EDI, #sdaFPnt#		;Copy all pointers for the msect to
+	CLD				;  the SDA
+28$:	LODSL	[ESI]
+	STOSL	[EDI]
+	MOVL	EDX, EAX
+	SHRL	EAX, #7			;Get knlMemTable index
+	ANDL	EAX, #1Ch
+	JE	30$			;If no corresponding knlMemTable entry!
+;;;;;	MOVL	EAX, knlMemTable#-4[EAX] ;Get offset of memory area table
+	SUBL	EDX, -4.B[EAX]		;Subtract base address of memory area
+	SHRL	EDX, #12t		;Get index for area table
+	ORB	2[EAX+EDX*8], #10h	;Make this a shared page
+	MOVL	4[EAX+EDX*8], ES	;Store selector for the SDA
+	MOVZBL	EAX, 3[EAX+EDX*8]	;Get lock count for page
+	ADDL	mdb_lockcnt[EBX], EAX	;Add into shared section lock count
+	LOOP	ECX, 28$
+	INCL	ES:sdaUseCnt#		;Initialize the use count
+	MOVL	EAX, firstsda		;Link this SDA into the SDA list
+	MOVL	ES:sdaNext#, EAX
+	MOVL	firstsda#, ES
+	MOVL	EAX, ES:sdaSid#		;Get the section ID to return
+	LEAVE				;Finished
+	RET
+
+30$:	CRASH	MAER
+.PAGE
+	.SBTTL	svcMemLinkShr - Link to shared section
+
+;Here for the svcMemLinkShr SVC - Link to shared section
+;	long svcMemLinkShr(
+;	    void *base,		// Base address for new msect (msect must
+;				//   exist)
+;	    char *name,		// Name of shared section
+;	    long  level);	// Compatibility level
+;  Value returned is size of msect created if normal or negative error code
+;    if error
+
+psvcMemLinkShr::
+	MOVZWL	EDX, knlTda+tdaArg1#	;Get selector
+	MOVL	EBX, knlTda+tdaArg2#	;Get offset
+	IFFAULT	knlRtnAdrEr#
+	LFSL	ESI, knlTda+tdaArg4#	;Get address of name
+					;Fall into linkgbl on next page
+.PAGE
+	.SBTTL	linkshr - Subroutine to link to shared section
+
+;Subroutine to link to shared section
+;	c{EAX} = Compatibility level
+;	c{EBX} = Offset of base of msect
+;	c{EDX} = Selector for msect
+;	c{ES:EDI} = Address of name for section
+;	CALL	linkshr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Size of msect created
+
+linkshr::
+	ENTER	gbl_SIZE, 0
+	CALL	setshr			;Do common setup
+	JC	6$			;If error
+	JNE	2$			;Fail if section does not exist
+	MOVL	EDX, gbl_addr+0[EBP]	;Look for the msect
+	PUSHL	EBP
+	PUSHL	ES
+	MOVL	EBP, gbl_addr+4[EBP]
+
+	CRASH	????
+
+;;;;;	CALL	knlFindMsect#
+	JC	12$			;If error
+	JNE	10$			;OK if msect does not exist
+	POPL	ES			;Msect exists - error
+	POPL	EBP
+ermacftlv:
+	MOVL	EAX, #ER_MACFT
+	JMP	4$
+
+;Here if section does not exist
+
+2$:	MOVL	EAX, #ER_NTDEF
+4$:	STC
+6$:	LEAVE
+	RET
+
+;Here if msect does not exist
+
+10$:	MOVL	FS, [ESP]		;Get size of the section
+	MOVL	ECX, FS:sdaTotalSize#
+	SHLL	ECX, #12t		;Change to bytes
+	CALL	createmsect#		;Set up an MDB and some other stuff
+	MOVL	EDX, EBP
+12$:	POPL	ES
+	POPL	EBP
+	JC	6$			;If error
+	CMPL	EDX, #0xFFFFFFF8	;Changing the real mode segment?
+	JNE	14$			;No
+	CLRL	EBX			;Yes - address is 0
+	JMP	16$
+
+14$:
+;;;;;;	MOVB	BL, knlPda+pdaLdt#+st_base+2[EDX] ;Get address for segment
+;;;;;;	MOVB	BH, knlPda+pdaLdt#+st_baseh[EDX]
+	SHLL	EBX, #16t
+;;;;;;	MOVW	BX, knlPda+pdaLdt#+st_base[EDX]
+16$:	ADDL	EBX, knlPda+mdb_base[EDI] ;Get address for msect
+	SHRL	EBX, #10t		;Change to page table pointer
+	ADDL	EBX, #knlPgTable#
+	MOVL	ECX, ES:sdaTotalSize#	;Get number of pages in the section
+	MOVL	mdb_size[EDI], ECX	;Store as size of msect
+	PUSHL	EDI
+	PUSHL	EDX
+	MOVL	EAX, ES
+	MOVL	FS, EAX
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	MOVL	EDI, EBX		;Scan his page table and make sure all
+	CLD				;  of the pages we need are available
+	CLRL	EAX
+	PUSHL	ECX
+	PUSHL	EDI
+	IFFAULT	26$
+18$:	RESCASL	[EDI]
+	POPL	EDI
+	POPL	ECX
+	JNE	30$
+20$:	MOVL	ESI, #sdaFPnt#		;Point to first pointer for section
+	CLRL	EDX			;Assume section should be writable
+	DECL	EDX
+	CMPB	FS:sdaType#, #2		;Right?
+	JNE	22$			;Yes
+	MOVB	DL, #0xFD		;No - it should be read-only
+22$:	LODSL	FS:[ESI]		;Copy memory pointers to his page
+	ANDL	EAX, EDX		;  table
+	IFFAULT	34$
+24$:	STOSL	[EDI]
+	LOOP	ECX, 22$
+	POPL	EDX
+	POPL	EDI
+	MOVL	EAX, FS:sdaMdbTail#	;Link this MDB into the list for the
+	MOVL	mdb_segnext[EAX], EDI
+	CLRL	EAX
+	MOVL	mdb_segnext[EDI], EAX
+	MOVL	mdb_lockcnt[EDI], EAX
+	MOVL	FS:sdaMdbTail#, EDI
+	MOVW	mdb_segsda[EDI], FS	;Store section data in the MDB
+	MOVB	mdb_devtype[EDI], #0xFF
+	MOVL	mdb_remove[EDI], #sectremove
+	ORB	mdb_sts[EDI], #MSS$FIXED ;Indicate now fixed size
+	INCL	FS:sdaUseCnt#		;Bump use count for section
+	LEAVE
+	RET
+
+;Here if page fault while scanning page table to check for address conflicts
+;  - we see if the msect will extend beyond the non-existant page table, and,
+;  if so, continue the search
+
+	FAULTHDR
+26$:	SUBL	EAX, EDI		;Calculate distance to end of page
+	ANDL	EAX, #0FFFh
+	SHRL	EAX, #2
+	SUBL	ECX, EAX		;Reduce count
+	JG	28$			;If need to go to next page
+	POPL	EDI			;Finished - restore registers
+	POPL	ECX
+	JMP	20$			;Continue
+
+;Here if need to continue scan
+
+28$:	ADDL	EDI, #0FFFh		;Advance address to next page
+	ANDL	EDI, #0FFFFF000h
+	CLRL	EAX
+	JMP	18$			;Continue
+
+;Here if have address conflict - must give up the msect we just made and
+;  return error
+
+30$:	MOVL	EAX, #ER_MACFT		;Get error code
+32$:	POPL	EDX			;Fix up the stack and restore EDI
+	POPL	EDI
+	PUSHL	EBP
+	MOVL	EBP, EDX
+
+	CRASH	????
+
+;;;;;;	CALL	junkmsect#		;Get rid of the msect
+
+	POPL	EBP
+	LEAVE
+	STC
+	RET
+
+;Here if page fault while storing pointers into his page table - must allocate
+;  a page table page
+
+	FAULTHDR
+34$:	PUSHL	EAX
+	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	EDI
+	CALL	sysMemGetPgTbl#		;Allocate a page table
+	POPL	EDX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JC	36$			;If error
+	POPL	EAX
+	JMP	24$			;OK - continue
+
+36$:	POPL	EDX
+	JMP	32$
+.PAGE
+;Subroutine to do initial setup for convshr and linkshr
+;	c{EAX}    = Compatibility level
+;	c{DX:EBX} = Address of base of msect
+;	c{FS:ESI} = Address of name of section
+;	CALL	setshr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = Section exists
+;	    c[ES] = Selector for SDA
+;	  Z:clr = Section does not exist
+
+setshr:	MOVL	gbl_level[EBP], EAX	;Store compatibility level
+	MOVL	gbl_addr+0[EBP], EBX
+	MOVL	gbl_addr+4[EBP], EDX
+	CLRL	EAX			;Set up name buffer
+	DECL	EAX
+	MOVL	gbl_name+0[EBP], EAX
+	MOVL	gbl_name+4[EBP], EAX
+	MOVL	gbl_name+8[EBP], EAX
+	MOVL	gbl_name+12t[EBP], EAX
+	MOVL	EAX, SS
+	MOVL	ES, EAX
+	LEAL	EDI, gbl_name+16t[EBP]
+	MOVL	ECX, #32t
+	IFFAULT	knlRtnAdrEr#
+2$:	LODSB	FS:[ESI]
+	CMPB	AL, #0
+	JE	4$
+	STOSB	[EDI]
+	LOOP	ECX, 2$
+	LODSB	FS:[ESI]
+	CMPB	AL, #0
+	JE	6$
+	MOVL	EAX, #ER_BDSPC
+	STC
+	RET
+
+4$:	RSTOSB	[EDI]			;Fill rest of buffer with 0s
+6$:	CLD
+	MOVL	EAX, firstsda#		;Get first SDA in system
+	TESTL	EAX, EAX		;Have another?
+	JE	10$			;No - not there
+8$:	MOVL	ES, EAX
+	MOVL	EDI, #sdaName#		;Compare names
+	LEAL	ESI, gbl_name[EBP]
+	MOVL	ECX, #48t/4
+	RECMPSL	[EDI], [ESI]
+	JE	ret008			;If match return with Z set
+	MOVZWL	EAX, ES:sdaNext#	;Get next SDA
+	TESTL	EAX, EAX		;Have more?
+	JNE	8$			;Yes - continue
+10$:	INCL	EAX			;No - not there - clear Z
+ret008:	RET
+.PAGE
+	.SBTTL	sectremove - Subroutine called when shared section is removed
+
+;Subroutine called when shared section is removed
+;	c{EDI} = Offset of MDB
+;	c{EBP} = Selector for section
+;	CALL	sectremove
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  EBX, EDI, EBP, and ES are preserved
+
+sectremove::
+	CMPL	mdb_lockcnt[EDI], #0	;Have any locked pages in the section?
+	JNE	1$			;Yes - can't remove it!
+	PUSHL	ES
+	PUSHL	EBX
+	MOVL	ES, mdb_segsda[EDI]	;Get selector for SDA
+	MOVL	EAX, mdb_segnext[EDI]	;Get next MDB for section
+	CMPL	ES:sdaMdbHead#, EDI	;Is this the first MDB for the section?
+	JNE	2$			;No
+	MOVL	ES:sdaMdbHead#, EAX	;Yes - unlink it
+	CLRL	EBX
+	JMP	10$
+
+;Here if have any locked pages in the shared section
+
+1$:	MOVL	EAX, #ER_MPILK
+	STC
+	RET
+
+2$:	MOVL	EBX, ES:sdaMdbHead#
+4$:	TESTL	EBX, EBX
+	JE	6$
+	CMPL	mdb_segnext[EBX], EDI	;Is this MDB next?
+	JE	8$			;Yes
+	MOVL	EBX, mdb_segnext[EBX]	;No - advance to next MDB
+	JMP	4$			;Continue
+
+6$:	CRASH	BMCS			;[Bad MDB Chain for Section]
+
+8$:	MOVL	mdb_segnext[EBX], EAX
+10$:	TESTL	EAX, EAX		;Is this the last MDB in the list?
+	JNE	12$			;No
+	MOVL	ES:sdaMdbTail#, EBX	;Yes - update tail pointer
+12$:	DECL	ES:sdaUseCnt#		;Reduce use count
+	JLE	14$			;If this was the last user
+	MOVL	ECX, mdb_size[EDI]	;If still have some users
+	CLRL	EAX			;Clear msect size in the MDB so
+	MOVL	mdb_size[EDI], EAX	;  memremove will not try to give up
+	PUSHL	EDI			;  the section's pages
+	MOVL	EDI, mdb_base[EDI]	;Clear his map
+	SHRL	EDI, #10t
+	ADDL	EDI, #knlPgTable#
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RSTOSL	[EDI]
+	MOVL	EBX, EDI
+	SUBL	EBX, #knlPgTable#	;Give up page directory page if its
+	PUSHL	EBX
+	CALL	givepgtbl#		;  empty
+	POPL	EDI
+	POPL	EBX
+	POPL	ES
+	CLC				;Make sure C is clear
+	RET
+
+;Here if this was the last MDA for the section - give up the section - we do
+;  this by giving up the SDA and making the pages look like a private section
+;  (more-or-less, we do not change the F2 knlMemTable field which memremove does
+;  not use) - memremove will give up the pages when we return
+
+14$:	MOVL	EDX, ES:sdaNext#	;No more users - remove this SDA from
+	CLRL	EAX			;  the system's SDA list
+	MOVW	AX, ES
+	CMPL	firstsda#, EAX		;Is this the first SDA?
+	JNE	16$			;No
+	MOVL	firstsda#, EDX		;Yes
+	JMP	24$
+
+;Here if not first SDA in the list
+
+16$:	MOVL	EBX, firstsda#
+18$:	TESTL	EBX, EBX
+	JE	20$
+	MOVL	FS, EBX
+	CMPL	FS:sdaNext#, EAX
+	JE	22$
+	MOVL	EBX, FS:sdaNext#
+	JMP	18$
+
+20$:	CRASH	BDSL			;[BaD SDA List]
+
+22$:	MOVL	FS:sdaNext#, EDX
+24$:	MOVL	ESI, #sdaFPnt#		;Scan the pointers and convert the
+	MOVL	ECX, mdb_size[EDI]	;  pages back to private pages
+	CLD
+28$:	LODSL	ES:[ESI]
+	MOVL	EDX, EAX
+	SHRL	EAX, #7			;Get knlMemTable index
+	ANDL	EAX, #0x1C
+	JE	30$			;If no corresponding knlMemTable entry!
+;;;;;	MOVL	EAX, knlMemTable#-4[EAX] ;Get offset of memory area table
+	SUBL	EDX, -4[EAX]		;Subtract base address of memory area
+	SHRL	EDX, #12t		;Get index for area table
+	ANDB	2[EAX+EDX*8], #~0x10	;Make this a shared page
+	MOVL	4[EAX+EDX*8], EDI	;Store offset of the MDB
+	LOOP	ECX, 28$
+	MOVL	EBX, ES:sdaSid#		;Get address for the SDA
+	SHLL	EBX, #pda_SHIFT
+	ADDL	EBX, #pdabase+pda_TSIZE+1000h
+	MOVL	ECX, #{pda_TSIZE-1000h}>12t ;Get maximum number of pages
+;;;;;;	MOVL	EAX, #SDA_MAGIC
+;;;;;;	CALL	giveuppda#		;Give up the SDA (memremove will give
+	POPL	EBX			;  up the memory pages)
+	POPL	ES
+	CLC				;Make sure C is clear
+	RET
+
+30$:	CRASH	MAER
+.PAGE
+	DATA
+
+pdasadb:.LONG	'PADB'		;padb_label
+	.LONG	procspy		;padb_addr
+	.LONG	32t		;padb_size
+	.LONG	procspy+0x1000	;Padb_top
+	.LONG	0		;padb_fmdb
+
+tdasadb:.LONG	'PADB'		;padb_label
+	.LONG	thrdspy		;padb_addr
+	.LONG	8		;padb_size
+	.LONG	thrdspy+0x1000	;Padb_top
+	.LONG	0		;padb_fmdb
+
+	END

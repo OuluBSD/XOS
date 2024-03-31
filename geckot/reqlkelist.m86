@@ -1,0 +1,105 @@
+	.TITLE	$_reqlkelist
+
+;*--------------------------------------------------------------------------*
+;* reqrdreg.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+
+;**************************************************
+; Function: reqlkelist - Handle the LKELIST request
+; Returned: Nothing
+;**************************************************
+
+	.ENTRY	$_reqlkelist
+$_reqlkelist::
+	PUSHL	EDI
+	PUSHL	ESI
+	CLRL	EAX
+	MOVL	EDX, lastlke#		;Get number of the last LKE loaded
+	TESTL	EDX, EDX
+	JE	2$
+	MOVZWL	EAX, lke_number[EDX]
+2$:	MOVW	$_dbbufr#+2, AX
+	MOVL	EDI, #$_dbbufr#+4
+	MOVZWL	EDX, $_dbbufr#+0	;Get number of first LKE he want's to
+					;  know about
+	MOVL	ESI, firstlke#		;Get address of first LKE
+4$:	TESTL	ESI, ESI
+	JE	20$			;If none
+	CMPW	DX, lke_number[ESI]	;Want this one?
+	JBE	10$			;Yes
+	MOVL	ESI, lke_next[ESI]	;Advance to next LKE
+	JMP	4$
+
+;Here with an LKE for which to return informaton
+
+10$:	MOVZWL	EAX, lke_number[ESI]	;LKE number
+	MOVW	[EDI], AX
+	MOVL	2[EDI], ESI		;Code address
+	MOVL	EAX, lke_dataaddr[ESI]	;Data address
+	MOVL	6[EDI], EAX
+	LEAL	EDX, lke_name[ESI]	;Determine length of the name
+	MOVL	ECX, #16t
+14$:	CMPB	[EDX], #0
+	JE	16$
+	INCL	EDX
+	LOOP	ECX, 14$
+16$:	SUBL	EDX, ESI
+	LEAL	ECX, -lke_name[EDX]
+	MOVB	10t[EDI], CL		;Store length of the name
+	ADDL	EDI, #11t
+	LEAL	EDX, lke_name[ESI]
+	JREGZ	ECX, 20$
+18$:	MOVZBL	EAX, [EDX]		;Store the name
+	INCL	EDX
+	MOVB	[EDI], AL
+	INCL	EDI
+	LOOP	ECX, 18$
+	CMPL	EDI, $_dbbufr#+DBBUFRSZ-28t ;Room for another entry?
+	JBE	20$			;No
+	MOVL	ESI, lke_next[ESI]	;Yes - advance to next LKE
+	TESTL	ESI, ESI		;It there another one?
+	JNE	10$			;Yes - continue
+
+;Here with the response complete, either because we ran out of LKEs or out
+;  of buffer space.
+
+20$:	SUBL	EDI, #$_dbbufr#
+	PUSHL	#DBRQ_LKELIST
+	PUSHL	EDI
+	CALL	$_sendresponse#
+	POPL	ESI
+	POPL	EDI
+	RET

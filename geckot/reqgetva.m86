@@ -1,0 +1,128 @@
+	.TITLE	$_reqgetva
+
+;*--------------------------------------------------------------------------*
+;* command.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+
+;************************************************
+; Function: $_reqgetva - Handle the GETVA request
+; Returned: Nothing
+;************************************************
+
+;Request format:
+;  Offset Size Description
+;     0     4  Physical address
+
+;Response format:
+;  Offset Size Description
+;     0    4   Physical address (echoed)
+;     4    4*N Virtual address(es)
+
+$$$=!0
+FRM gva_pdcnt , 4
+FRM gva_ptcnt , 4
+FRM gva_pgaddr, 4
+FRM gva_pgofs , 4
+gva_SIZE=!$$$
+
+	.ENTRY	$_reqgetva
+$_reqgetva::
+	CMPL	$_reqlength#, #4	;Make sure long enough
+	JB	$_badlength#
+	ENTER	gva_SIZE, 0
+	MOVL	EBX, #$_dbbufr#+4
+	MOVL	EAX, $_dbbufr#+0
+	PUSHL	#RDMSZ_LONG		;Get a long
+	SHRL	EAX, #12t
+	LEAL	EAX, pgtable[EAX*4]
+	PUSHL	#knlPda+pdaPageDir	;Try to read the current page directory
+	PUSHL	#$_dbbufr#+4		;Address of the data buffer
+	PUSHL	#1			;Number of items to read
+	CALL	$_rdmem#		;Read memory
+	CMPL	EAX, #4			;Did it work?
+	JE	4$			;Yes
+	MOVL	[EBX], #-2		;No - mapping must not be set up yet
+	JMP	10$
+
+;Now that we know we can access the page directry we do direct memory reads
+;  for the rest of this. All of the addresses we need to read should be valid
+;  (if not, the system is very sick!) and the speed difference is significant
+;  since we need to look at a lot of locations.
+
+4$:	MOVL	EAX, $_dbbufr#+0	;Get the virtual page address
+	MOVL	EDX, EAX
+	ANDL	EAX, #0xFFFFF000
+	MOVL	gva_pgaddr[EBP], EAX
+	ANDL	EDX, #0x0FFF		;Get the offset in the page
+	MOVL	gva_pgofs[EBP], EDX
+	CLRL	EDI			;Point to start of the page directory
+	MOVL	gva_pdcnt[EBP], #1024t
+6$:	TESTB	knlPda+pdaPageDir[EDI], #0x01 ;Is the page table in use?
+	JE	18$			;No - go on
+	MOVL	ESI, EDI		;Yes - get address of first page table
+	SHLL	ESI, #10t		;  table entry
+	MOVL	gva_ptcnt[EBP], #1024t
+8$:	MOVL	EAX, pgtable[ESI]	;Get page table entry
+	TESTB	AL, #0x01
+	JE	16$
+	ANDL	EAX, #0xFFFFF000	;Remove all but physical page address
+	CMPL	EAX, gva_pgaddr[EBP]	;Is it the one we want?
+	JNE	16$			;No
+	CMPL	EBX, #$_dbbufr#+DBBUFRSZ-12t ;Room for another entry?
+	JB	14$			;Yes
+	MOVL	[EBX], #-1		;No - indicate list truncated
+10$:	ADDL	EBX, #4
+	JMP	20$
+
+14$:	MOVL	EAX, ESI		;Yes - get the corresponding virtual
+	SHLL	EAX, #10t		;  address
+	ORL	EAX, gva_pgofs[EBP]	;Add offset in page
+	MOVL	[EBX], EAX		;Store it in the response
+	ADDL	EBX, #4
+16$:	ADDL	ESI, #4
+	DECL	gva_ptcnt[EBP]
+	JNE	8$
+18$:	ADDL	EDI, #4
+	DECL	gva_pdcnt[EBP]
+	JNE	6$
+20$:	SUBL	EBX, #$_dbbufr#
+	PUSHL	#DBRQ_GETVA
+	PUSHL	EBX
+	CALL	$_sendresponse#
+	LEAVE
+	RET
+
+	END

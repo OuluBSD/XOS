@@ -1,0 +1,856 @@
+	.TITLE	lib - General C library routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\ctype.par
+
+	USERCODE
+
+;Function to get the length of a zero terminated string
+;	long sysStrLen(
+;	    char *str);
+;  Value returned is the length of the string (positive) or a negative XOS
+;    error code if error.
+
+strlen_str=!8
+
+sysLibStrLen::
+	PUSHL	EDI
+	MOVL	EDI, strlen_str[ESP]
+
+	CHECKES
+
+	MOVL	ECX, #-1                ;Allow for very large string
+	CLRL	EAX                     ;Scan for NUL character
+	IFFAULT	4$
+	RNSCASB	[EDI]			;Scan to end of string
+	NOTL	ECX			;Get length plus one
+	LEAL	EAX, -1[ECX]		;Get length in right register
+2$:	POPL	EDI
+	RET	4
+
+	FAULTHDR
+4$:	MOVL	EAX, #ER_ADRER
+	JMP	2$
+.PAGE
+;Function to get the length of a zero terminated string
+;	long sysStrLen(
+;	    char *str);
+;  Value returned is the length of the string (positive) or a negative XOS
+;    error code if error.
+
+strnlen_str=!12t
+strnlen_cnt=!8
+
+sysLibStrNLen::
+	PUSHL	EDI
+	MOVL	EDI, strnlen_str[ESP]
+
+	CHECKES
+
+	CLRL	EAX                     ;Scan for NUL character
+	MOVL	ECX, strnlen_cnt[eSP]
+	jREGZ	ECX, 6$
+	IFFAULT	10$
+	RNSCASB	[EDI]			;Scan to end of string
+	JNE	2$
+	INCL	ECX
+2$:	MOVL	EAX, strnlen_cnt[ESP]
+	SUBL	EAX, ECX
+4$:	POPL	EDI
+	RET	8
+
+6$:	DECL	ECX			;Allow for very large string
+	IFFAULT	10$
+	RNSCASB	[EDI]			;Scan to end of string
+	NOTL	ECX			;Get length plus one
+	LEAL	EAX, -1[ECX]		;Get length in right register
+	JMP	4$
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+.PAGE
+;Function to compare two strings
+;	int sysStrCmp(
+;	    char *str1,
+;	    char *str2);
+;  Value returned is 0 if equal, a 16-bit negative 0 extended value if
+;    str1 < str2, a positive value if str1 > str2 or a negative XOS error
+;    code if error. str1 is protected against page faults
+
+strcmp_str1=!16t
+strcmp_str2=!12t
+
+sysLibStrCmp::
+	PUSHL	ESI
+	PUSHL	EDI
+
+	CHECKES
+
+	MOVL	ESI, strcmp_str1[ESP]	;Get offset of first string
+	MOVL	EDI, strcmp_str2[ESP]	;Get offset of second string
+	IFFAULT	12$
+4$:	LODSB	[ESI]			;Get character from first string
+	SCASB	[EDI]			;Compare to second string
+	JNE	6$			;If different
+	TESTB	AL, AL			;Same - end of string?
+	JNZ	4$			;No - continue
+	CLRL	EAX			;Yes - return 0
+	JMP	10$			;Join up with common code
+
+; Here if strings are different, or one is shorter than the other
+
+6$:	MOVXBL	EAX, AL			;Sign extend both characters
+	MOVXBL	EDX, -1[EDI]
+	SUBL	EAX, EDX		;Return the difference
+	ANDL	EAX, #0xFFFF
+10$:	POPL	EDI
+	POPL	ESI
+	RET	8t
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to compare two strings
+;	int sysStrCmp(
+;	    char *str1,
+;	    char *str2,
+;	    long  len);
+;  Value returned is 0 if equal, a 16-bit negative 0 extended value if
+;    str1 < str2, a positive value if str1 > str2 or a negative XOS error
+;    code if error. str1 is protected against page faults
+
+strncmp_str1=!20t
+strncmp_str2=!16t
+strncmp_len =!12t
+
+sysLibStrNCmp::
+	PUSHL	ESI
+	PUSHL	EDI
+
+	CHECKES
+
+	MOVL	ESI, strncmp_str1[ESP]	;Get offset of first string
+	MOVL	EDI, strncmp_str2[ESP]	;Get offset of second string
+	MOVL	ECX, strncmp_len[ESP]	;Max. no. of bytes to compare
+	IFFAULT	12$
+4$:	LODSB	[ESI]			;Get character from first string
+	SCASB	[EDI]			;Compare to second string
+	JNE	6$			;If different
+	TESTB	AL, AL			;Same - end of string?
+	LOOPNE	ECX, 4$ 		;Different - continue if more to check
+6$:	MOVXBL	EAX, AL			;Sign extend both characters
+	MOVXBL	EDX, -1[EDI]
+	SUBL	EAX, EDX		;Return the difference (may be zero)
+	ANDL	EAX, #0xFFFF
+10$:	POPL	EDI
+	POPL	ESI
+	RET	12t
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to compare two strings ignoring case
+;	XOSCALL sysStrICmp(
+;	    const char *str1,	// Pointer to first string
+;	    const char *str2);	// Pointer to second string
+;  Value returned is 0 if equal, a 16-bit negative 0 extended value if
+;    str1 < str2, a positive value if str1 > str2 or a negative XOS error
+;    code if error. str1 is protected against page faults
+
+stricmp_str1=!12t
+stricmp_str2=!8
+
+sysLibStrICmp::
+	PUSHL	ESI
+	MOVL	ESI, stricmp_str1[ESP]	;Get offset of first string
+	MOVL	ECX, stricmp_str2[ESP]	;Get offset of second string
+
+	CHECKES
+
+	CLRL	EAX
+	CLRL	EDX
+	IFFAULT	14$
+2$:	LODSB	[ESI]			;Get character from first string
+	TESTB	knlLibIsTable#+1[EAX], #_LOWER
+	JE	4$
+	SUBB	AL, #0x20
+4$:	MOVB	DL, [ECX]
+	INCL	ECX
+	TESTB	knlLibIsTable#+1[EDX], #_LOWER
+	JE	6$
+	SUBB	DL, #0x20
+6$:	SUBB	AL, DL
+	JNE	10$			;If different
+	CMPB	DL, #0			;Same - end of string?
+	JNE	2$			;No - continue
+	JMP	12$			;Yes - finished - return 0
+
+;Here if strings are different
+
+10$:	MOVXBW	AX, AL			;Extend difference to 16 bits
+12$:	POPL	ESI
+	RET	8
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	12$
+.PAGE
+;Function to compare two strings ignoring case
+;	XOSCALL sysStrNICmp(
+;	    cchar *str1,	// Pointer to first string
+;	    cchar *str2,	// Pointer to second string
+;	    int    cnt);	// Maximum number of character to compare
+;  Value returned is 0 if equal, a 16-bit negative 0 extended value if
+;    str1 < str2, a positive value if str1 > str2 or a negative XOS error
+;    code if error. str1 is protected against page faults
+
+;WARNING: Only str1 if protected for page faults!
+
+strnicmp_str1=!16t
+strnicmp_str2=!12t
+strnicmp_cnt =!8
+
+sysLibStrNICmp::
+	PUSHL	ESI
+	MOVL	ESI, strnicmp_str1[ESP]	;Get offset of first string
+	MOVL	ECX, strnicmp_str2[ESP]	;Get offset of second string
+	IFFAULT	12$
+2$:	MOVZBL	EAX, [ESI]		;Get character from first string
+	INCL	ESI
+	TESTB	knlLibIsTable#+1[EAX], #_LOWER
+	JE	4$
+	SUBL	EAX, #0x20
+4$:	MOVZBL	EDX, [ECX]
+	INCL	ECX
+	TESTB	knlLibIsTable#+1[EDX], #_LOWER
+	JE	6$
+	SUBL	EDX, #0x20
+6$:	SUBL	EAX, EDX
+	JNE	8$			;Finished if different
+	TESTL	EDX, EDX		;Same - end of string?
+	JE	8$			;Yes - finished
+	DECL	strnicmp_cnt[ESP]	;More to compare?
+	JNE	2$			;Yes - continue
+8$:	ANDL	EAX, #0xFFFF
+10$:	POPL	ESI			;No - finished
+	RET	12t
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to find a character in a string
+;	int sysStrChr(
+;	    const char *str,
+;	    long        chr);
+;  Value returned is the offset of the character in the string or a negative
+;    XOS error code.
+
+strchr_str=!8
+strchr_chr=!4
+
+sysLibStrChr::
+	MOVL	EAX, strchr_str[ESP]
+	IFFAULT	12$
+4$:	MOVZBL	EDX, [EAX]
+	CMPB	DL, #0
+	JE	10$
+	CMPB	DL, strchr_chr[ESP]
+	JE	6$
+	INCL	EAX
+	JMP	4$
+
+;Here with character found
+
+6$:	SUBL	EAX, strchr_str[ESP]
+8$:	RET	8
+
+10$:	MOVL	EAX, #ER_NTFND
+	JMP	8$
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	8$
+.PAGE
+;Function to find a character in a string scanning from end of the string
+;	int sysStrRChr(
+;	    const char *str,
+;	    long        chr);
+;  Value returned is the offset of the character in the string or a negative
+;    XOS error code.
+
+strrchr_str=!12t
+strrchr_chr=!8
+
+sysLibStrRChr::
+        PUSHL	EDI			;First find end of the string
+
+	CHECKES
+
+	MOVL	EDI, strrchr_str[ESP]	;Get offset of string
+	MOVL	ECX, #-1		;Use maximum string size
+	CLRL	EAX			;Scan for trailing NUL
+	RNSCASB	[EDI]			;Scan to end of string
+	NOTL	ECX			;Get length including final null
+	DECL	EDI			;Point to final null
+
+;Scan backwards for character, starting at trailing NUL
+
+	MOVB	AL, strrchr_chr[ESP]	;Get character to search for
+	STD				;Scan in reverse direction
+	RNSCASB	[EDI]			;Search for the character
+	JNZ	12$			;If not found
+	LEAL	EAX, 1[EDI]		;Return offset of character
+	SUBL	EAX, strrchr_str[ESP]
+10$:	CLD
+	POPL	EDI
+	RET	8
+
+12$:	MOVL	EAX, #ER_NTFND		;Not found, so return not found
+	JMP	10$
+.PAGE
+;Function to copy a string
+;	XOSCALL sysStrMov(
+;	    char *dst,
+;	    char *src);
+;  Value returned is the number of characters moved if normal or
+;    a negative XOS error code if error
+
+strmov_dst=!16t
+strmov_src=!12t
+
+sysLibStrMov::
+	PUSHL	ESI
+	PUSHL	EDI
+	MOVL	EDI, strmov_src[ESP]	;Get offset of source string
+
+	CHECKES
+
+	MOVL	ECX, #-1
+	CLRL	EAX
+	RNSCASB	[EDI]			;Scan to end of source string
+	MOVL	ESI, strmov_src[ESP]
+	MOVL	ECX, EDI
+	SUBL	ECX, ESI
+	MOVL	EDI, strmov_dst[ESP]	;Get offset of destination string
+	RMOVSB	[EDI], [ESI]		;Copy the string
+	DECL	EDI
+	MOVL	EAX, EDI
+	SUBL	EAX, strmov_dst[ESP]
+	POPL	EDI
+	POPL	ESI
+	RET	8			;Return
+.PAGE
+;Function to copy a string with count
+;	XOSCALL sysStrNMov(
+;	    char *dst,
+;	    char *src,
+;	    int   cnt);
+;  Value returned is the number of characters moved if normal or
+;    a negative XOS error code if error
+
+strnmov_dst=!20t
+strnmov_src=!16t
+strnmov_max=!12t
+
+sysLibStrNMov::
+	PUSHL	ESI
+	PUSHL	EDI
+	MOVL	EDI, strnmov_src[ESP]	;Get address of source string
+	MOVL	ECX, strnmov_max[ESP]	;Get maximum length
+	JREGZ	ECX, 6$			;If nothing to copy
+
+	CHECKES
+
+	CLRL	EAX
+	IFFAULT	12$
+	RNSCASB	[EDI]			;Scan to end of source string
+2$:	MOVL	ESI, strnmov_src[ESP]
+	MOVL	ECX, EDI		;Calculate length (This will include
+	SUBL	ECX, ESI		;  the final 0 if string is less than
+					;  the maximum.)
+	MOVL	EDI, strnmov_dst[ESP]	;Get address of destination string
+	IFFAULT	12$
+	RMOVSB	[EDI], [ESI]		;Copy the string
+	DECL	EDI
+	IFFAULT	12$
+	CMPB	[EDI], #0
+	JE	4$
+	INCL	EDI
+4$:	MOVL	EAX, EDI		;Get address of last character copied
+	SUBL	EAX, strnmov_dst[ESP]	;Get number of characters copied
+	POPL	EDI
+	POPL	ESI
+	RET	12t			;Return
+
+;Here if maximum count value is 0
+
+6$:	CLRL	EAX
+10$:	POPL	EDI
+	POPL	ESI
+	RET	12t
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+
+;Function to copy a string with count with extended behavior - If the string
+;  is less or equal to cnt bytes long, it is copied with a final 0 byte.
+;  This means the the maximum number of bytes than can be stored is cnt + 1.
+;  If the string is longer than cnt bytes an ER_ARG2L error is returned and
+;  nothing is copied.
+;	char *sysStrNMovX(
+;	    char *dst,
+;	    char *src,
+;	    int   cnt);
+
+sysLibStrNMovX::
+	PUSHL	ESI
+	PUSHL	EDI
+	MOVL	EDI, strnmov_src[ESP]	;Get offset of source string
+	MOVL	ECX, strnmov_max[ESP]	;Get maximum length
+	JREGZ	ECX, 6$			;If nothing to copy
+
+	CHECKES
+
+	CLRL	EAX
+	IFFAULT	12$
+	RNSCASB	[EDI]			;Scan to end of source string
+	JE	2$			;Normal copy if we saw the final 0
+	IFFAULT	12$
+	CMPB	[EDI], #0		;Did we get the whole string?
+	JNE	18$			;No
+	INCL	EDI			;Yes - copy cnt + 1 bytes
+	JMP	2$
+
+;Here if string is too long
+
+18$:	MOVL	EAX, #ER_ARG2L
+	JMP	10$
+
+;Function to copy a count limited string always storing a final 0 byte
+;	char *sysStrNMovZ(
+;	    char *dst,
+;	    char *src,
+;	    int   cnt);
+
+sysLibStrNMovZ::
+	PUSHL	ESI
+	PUSHL	EDI
+	MOVL	EDI, strnmov_src[ESP]	;Get address of source string
+	MOVL	ECX, strnmov_max[ESP]	;Get maximum length
+	JREGZ	ECX, 6$			;If nothing to copy
+
+	CHECKES
+
+	CLRL	EAX
+	IFFAULT	12$
+	RNSCASB	[EDI]			;Scan to end of source string
+	JE	20$
+	INCL	EDI
+20$:	MOVL	ESI, strnmov_src[ESP]
+	MOVL	ECX, EDI		;Calculate length (This will include
+	SUBL	ECX, ESI		;  the final 0 if string is less than
+					;  the maximum.)
+	MOVL	EDI, strnmov_dst[ESP]	;Get address of destination string
+	DECL	ECX			;Don't copy the final 0 byte
+	MOVL	EAX, ECX		;Remember how much we are copying
+	IFFAULT	12$
+	RMOVSB	[EDI], [ESI]		;Copy the string
+	IFFAULT	12$
+	MOVB	[EDI], #0		;Store a final 0 byte
+	JMP	10$
+.PAGE
+;Function to put store hex number in memory as ASCII
+;	long XOSFNC sysLibHex2Str(
+;	    char *str
+;	    long  val,
+;	    long  dig);
+;  Value returned is the number of characters stored or a negative XOS
+;    error code if address error
+
+h2s_str=!12t
+h2s_val=!8
+h2s_dig=!4
+
+sysLibHex2Str::
+	MOVL	EDX, h2s_val[ESP]
+	MOVL	ECX, #8
+	SUBL	ECX, h2s_dig[ESP]
+	JLE	2$
+	SHLL	ECX, #2
+	SHLL	EDX, CL
+2$:	MOVL	EAX, h2s_str[ESP]
+	MOVL	ECX, h2s_dig[ESP]
+6$:	ROLL	EDX, #4t
+	PUSHL	EDX
+	ANDB	DL, #0x0F
+	CMPB	DL, #10t
+	JB	10$
+	ADDB	DL, #'A'-'0'-10t
+10$:	ADDB	DL, #'0'		;Make ASCII character
+	IFFAULT	20$
+	MOVB	[EAX], DL		;Store it
+	INCL	EAX
+	POPL	EDX
+	LOOP	ECX, 6$
+	SUBL	EAX, h2s_str[ESP]
+12$:	RET	12t
+
+;Here if address error
+
+	FAULTHDR
+20$:	MOVL	EAX, #ER_ADRER
+	JMP	12$
+.PAGE
+;Function to store decimal number in memory as ASCII
+;	long XOSFNC sysLibDec2Str(
+;	    char *str
+;	    long  value);
+;  Value returned is the number of characters stored or a negative XOS
+;    error code if address error
+
+$$$=!0
+FRM d2s_bufr, 16t
+FRM d2s_cnt , 4t
+d2s_SIZE=!$$$
+
+d2s_str=!12t
+d2s_val=!8
+
+sysLibDec2Str::
+	ENTER	d2s_SIZE
+	MOVL	d2s_cnt[EBP], #0	;Collect the digit values in d3s_bufr
+	LEAL	ECX, d2s_bufr[EBP]
+	MOVL	EAX, d2s_val[EBP]
+4$:	CLRL	EDX			;Get next digit
+	DIVL	knlLit10#
+	MOVB	[ECX], DL
+	INCL	ECX
+	INCL	d2s_cnt[EBP]
+	TESTL	EAX, EAX
+	JNE	4$
+	MOVL	EAX, d2s_str[EBP]
+6$:	DECL	ECX			;Store the characters in his buffer
+	MOVZBL	EDX, [ECX]
+	ADDL	EDX, #'0'
+	IFFAULT	14$
+	MOVB	[EAX], DL
+	INCL	EAX
+	DECL	d2s_cnt[EBP]
+	JNE	6$
+	SUBL	EAX, d2s_str[EBP]
+10$:	LEAVE
+	RET	8
+
+;Here if address error
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to convert a decimal numeric string to a numeric value
+;	long XOSFNC sysLibStr2Dec(
+;	    char *pnt,
+;	    long *val);
+;  Value returned is the offset in the string of the stopper character
+;    (positive) if normal or a negative XOS error code if error.
+
+s2d_pnt=!8
+s2d_val=!4
+
+sysLibStr2Dec::
+	MOVL	EAX, s2d_pnt[ESP]
+	CLRL	ECX
+	IFFAULT	20$
+4$:	MOVZBL	EDX, [EAX]
+	INCL	EAX
+	TESTB	knlLibIsTable#+1[EDX], #_DIGIT
+	JE	8$
+	ANDL	EDX, #0x0F
+	IMULL	ECX, #10t
+	ADDL	ECX, EDX
+	JMP	4$
+
+;Here if not a digit
+
+8$:	MOVL	EDX, s2d_val[ESP]	;Store the value
+	MOVL	[EDX], ECX
+	SUBL	EAX, s2d_pnt[ESP]	;Get offset of the stopper
+	DECL	EAX
+12$:	RET	8
+
+	FAULTHDR
+20$:	MOVL	EAX, ER_ADRER
+	JMP	12$
+.PAGE
+;Function to convert an 8-character name to upper case
+;	llong sysLibStr8ToUpper(
+;	    llong name);
+
+s8tou_name=!4
+
+sysLibStr8ToUpper::
+	LEAL	EDX, s8tou_name[ESP]
+	MOVL	ECX, #8
+4$:	MOVZBL	EAX, [EDX]
+	CMPB	AL, #0
+	JE	10$
+	CMPB	AL, #'a'
+	JB	6$
+	ADDL	EAX, #'A'-'a'
+	MOVB	[EDX], AL
+6$:	INCL	EDX
+	LOOP	ECX, 4$
+10$:	MOVL	EAX, s8tou_name+0[ESP]
+	MOVL	EDX, s8tou_name+4[ESP]
+	RET	8
+.PAGE
+;Function to set a memory area to an 8-bit value
+;	long sysLibMemSet(
+;	    char  *pnt,
+;	    int    value,
+;	    size_t size);
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+sysmemset_pnt=!20t
+sysmemset_val=!16t
+sysmemset_sz =!12t
+
+sysLibMemSet::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, sysmemset_sz[ESP]	;Get amount to set
+	TESTL	EBX, EBX
+	JLE	14$
+
+	CHECKES
+
+	MOVL	EDI, sysmemset_pnt[ESP]	;Get offset of destination area
+	MOVL	EDX, EDI		;Save it for later
+	MOVB	AL, sysmemset_val[ESP]	;Get character to set
+        CMPL	EBX, #3			;Less than a longword to copy?
+	JBE	10$			;Yes, just copy it and quit
+        MOVL    ECX, EDI                ;Get destination address
+        NEGL    ECX                     ;Get 2's complement so that
+	ANDL	ECX, #3			; we can figure no. of bytes
+        SUBL    EBX, ECX                ;  needed for longword alignment
+	IFFAULT	20$
+	RSTOSB	[EDI]			;Copy 0-3 bytes
+
+;Copy the low byte through the upper 3 bytes (so RMOVSL will work right)
+
+	MOVB	AH, AL			;Replicate low 8 bits in next 8 bits
+	MOVL	ECX, EAX		;Copy to spare register
+	SHLL	EAX, #16t		;Move low 16 bits to high 16 bits
+	MOVW	AX, CX			;Now copy low 16 bits from spare
+
+;Now copy longwords of data
+
+        MOVL    ECX, EBX                ;Get the no. of remaining bytes
+        SHRL    ECX, #2			;Calculate longword count
+	IFFAULT	20$
+        RSTOSL  [EDI]			;Move data by longwords
+10$:    MOVL    ECX, EBX                ;Calculate the number
+        ANDL    ECX, #3			;  of bytes left to output
+	IFFAULT	20$
+	RSTOSB	[EDI]			;Copy 0-3 bytes
+        MOVL    EAX, EDX                ;Get pointer in right register
+14$:	CLRL	EAX
+16$:	POPL	EBX
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+20$:	MOVL	EAX, #ER_ADRER
+	JMP	16$
+.PAGE
+;Function to set a memory area to an 32-bit value
+;	void sysLibMemSetLong(
+;	    long  *pnt,
+;	    long   value,
+;	    size_t size);	// Number of longs to set
+
+sysmemsetl_pnt=!16t
+sysmemsetl_val=!12t
+sysmemsetl_sz =!8t
+
+sysLibMemSetLong::
+	PUSHL	EDI
+	MOVL	ECX, sysmemsetl_sz[ESP]	;Get amount to set
+
+	CHECKES
+
+	MOVL	EDI, sysmemsetl_pnt[ESP] ;Get offset of destination area
+	MOVL	EAX, sysmemsetl_val[ESP] ;Get value to set
+        RSTOSL  [EDI]			;Store longs
+	POPL	EDI
+	RET	12t
+.PAGE
+;Function to copy bytes
+;	void sysLibMemCpy(
+;	    long *dst,
+;	    long *src,
+;	    long  cnt);
+
+mcp_dst=!20t
+mcp_src=!16t
+mcp_cnt=!12t
+
+sysLibMemCpy::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, mcp_dst[ESP]
+	MOVL	ESI, mcp_src[ESP]
+	MOVL	ECX, mcp_cnt[ESP]
+
+	CHECKES
+
+	CMPL	ECX, #8
+	JB	6$
+2$:	TESTL	EDI, #0x03
+	JE	4$
+	IFFAULT	14$
+	MOVSB	[EDI], [ESI]
+	DECL	ECX
+	JMP	2$
+
+4$:	MOVL	EAX, ECX
+	SHRL	ECX, #2
+	IFFAULT	14$
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #0x03
+	IFFAULT	14$
+6$:	RMOVSB	[EDI], [ESI]
+	MOVL	EAX, mcp_cnt[ESP]
+10$:	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to copy longs
+;	long sysLibMemCpyLong(
+;	    long *dst,
+;	    long *src,
+;	    long  cnt);
+
+mcl_dst=!20t
+mcl_src=!16t
+mcl_cnt=!12t
+
+sysLibMemCpyLong::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, mcl_dst[ESP]
+	MOVL	ESI, mcl_src[ESP]
+	MOVL	ECX, mcl_cnt[ESP]
+
+	CHECKES
+
+	IFFAULT	10$
+	RMOVSL	[EDI], [ESI]
+	CLRL	EAX
+4$:	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+.PAGE
+;Function to copy longs in reverse order
+;	long sysLibMemRCpyLong(
+;	    long *dst,
+;	    long *src,
+;	    long  cnt);
+
+mrcl_dst=!20t
+mrcl_src=!16t
+mrcl_cnt=!12t
+
+sysLibMemRCpyLong::
+
+	CHECKES
+
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, mrcl_dst[ESP]
+	MOVL	ESI, mrcl_src[ESP]
+	MOVL	ECX, mrcl_cnt[ESP]
+	LEAL	EDI, -4[EDI+ECX*4]	;Point to the ends of the areas
+	LEAL	ESI, -4[ESI+ECX*4]
+	STD				;Copy backwards
+	IFFAULT	10$
+	RMOVSL	[EDI], [ESI]
+	CLD
+	CLRL	EAX
+4$:	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+.PAGE
+;Function to compare longs in memory
+;	long sysLibMemCmpLong(
+;	    long *src1,
+;	    long *src2,
+;	    long  cnt);
+
+mrcl_src1=!20t
+mrcl_src2=!16t
+mrcl_cnt =!12t
+
+sysLibMemCmpLong::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, mrcl_dst[ESP]
+	MOVL	ESI, mrcl_src1[ESP]
+	MOVL	EDI, mrcl_src2[ESP]
+	MOVL	ECX, mrcl_cnt[ESP]
+
+	CHECKES
+
+	CLRL	EAX			;Assume equal
+	IFFAULT	10$
+	RECMPSL	[EDI], [ESI]
+	SETNE	AL
+4$:	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+
+	END

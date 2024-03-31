@@ -1,0 +1,109 @@
+	.TITLE	usrenv - XOS user mode environment string routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+
+;Environment strings are implimented completely in user space. The are stored
+;  in the same msect used to pass arguments to a process. 
+
+;Environment strings
+;  can be defined at the current process level, at the session level (assuming
+;  that the session process handles the VECT_SETENV signal) and at system
+;  level.
+
+
+	CODE
+	USERCODE
+
+
+;Here for svcSysGetAllEnv
+
+	.MOD	4
+svcSysGetAllEnv::
+	MOVL	EAX, #ER_NIYT
+	RET	12t
+
+
+;Here for svcSysGetEnv - Return environment string value
+;	char *svcSysGetEnv(
+;	    char  *name,	// Name to search for (no wild-card characters)
+;	    char **pstr);	// Address of pointer to receive address of
+;				//   the environment string
+;  Value returned length of the string found if normal or a negative XOS
+;    error code if error.
+
+sge_name=!12t
+sge_pstr=!8
+
+	.MOD	4
+svcSysGetEnv::
+	PUSHL	EBX
+	MOVL	EBX, sge_pstr[ESP]
+	MOVL	[EBX], #nullstr
+	CLRL	EAX
+	POPL	EBX
+	RET	8
+.PAGE
+;Here for svcSysFindEnv - Find environment string
+;	char *svcSysFindEnv(
+;	    long  level,	// Level: (bits 14 and 15 determine format)
+;				//   00 = Process ID (all 0 means self)
+;				//   01 = Low 8 bits gives offset up from
+;				//	    current process (rest ignored)
+;				//   10 = Low 8 bits gives offset down from
+;				//	    session process (rest ignored)
+;				//   11 = System level (rest ignored)
+;	    char *name,		// Address of name to search for (may contain
+;				//   wild-card characters)
+;	    char *found,	// Address of buffer to receive found name
+;				//   (must be at least 32 bytes)
+;	    char **pstr);	// Address of pointer to receive address of
+;				//   the environment string
+;	    long *skip);	// Address of skip count value (may be null)
+;  Value returned length of the string found if normal or a negative XOS
+;    error code if error.
+
+	.MOD	4
+svcSysFindEnv::
+	MOVL	EAX, #ER_NTDEF
+	RET	24t
+.PAGE
+;Here for svcSysDefEnv SVC - Define environment string.
+;	long svcSysDefEnv(
+;	    long  level,	// 0 = This process
+;				// 1 = Session process (session process must
+;				//     be able to process a VECT_SETENV signal)
+;				// 2 = System level
+;	    char *name,		// Address of name to search for
+;	    char *define);	// Address of defination string
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+svcSysDefEnv::
+	MOVL	EAX, #ER_NIYT
+	RET	12t
+
+nullstr:.BYTE	0
+
+	END

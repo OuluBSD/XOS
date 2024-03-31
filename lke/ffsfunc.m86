@@ -1,0 +1,173 @@
+	.TITLE	ffsfunc - FFS routines for changing file parameters
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+$$CHKCHAIN=!0
+
+	CODE
+
+FRC_MDT=!0x04
+FRC_CDT=!0x02
+FRC_AT =!0x01
+
+;Function to update file parameters
+;	void ffsupdateparm(
+;	    FIB *fib);		// File FIB
+
+updp_fib =!8
+
+ffsupdateparm::
+	PUSHL	EBX
+	MOVL	EBX, updp_fib[ESP]
+	TESTL	knlTda+tdaHvValue1##, #IOV1$FILEATTR ;Attribute bits specified?
+	JE	4$			;No
+	MOVZBL	EAX, knlTda+tdaFileAttr## ;Yes - use them
+	MOVZBL	EDX, ff_attrib[EBX]
+	ANDL	EAX, #XA$FILE|XA$ARCH|XA$HIDDEN|XA$SYSTEM
+	ANDB	ff_attrib[EBX], #XA$FILE|XA$ARCH|XA$HIDDEN|XA$SYSTEM
+	ORB	ff_attrib[EBX], AL
+	XORL	EDX, EAX		;Did we change this?
+	TESTL	EDX, #XA$FILE|XA$ARCH|XA$HIDDEN|XA$SYSTEM
+	JE	4$			;No
+	ORB	bfr_status[EBX], #BS$CHNGD ;Yes - indicate FIB has been changed
+
+4$:	TESTB	ff_attrib[EBX], #XA$DIRECT ;Directory?
+	JNE	8$			;Yes - can't change the group size
+	TESTL	knlTda+tdaHvValue1##, #IOV1$GRPSIZE ;No - group size specified?
+	JE	8$			;No
+	MOVL	EDX, knlTda+tdaGrpSize## ;Yes - get it
+	TESTL	EDX, EDX		;Cannot be 0
+	JNE	6$
+	INCL	EDX
+6$:	MOVL	ff_grpsize[EBX], EDX	;Store group size for file (Don't
+					;  indicate FIB changes since this is
+					;  not written to the directory!)
+
+8$:	TESTL	knlTda+tdaHvValue1##, #IOV1$CDATE ;Was a creation date/time
+						  ;  specified?
+	JE	12$			;No
+	PUSHL	knlTda+tdaCDate##+4	;Yes - use it
+	PUSHL	knlTda+tdaCDate##+0
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+	CALL	conv2ffsdttm
+	CMPL	ff_cdttm[EBX], EAX	;Really changing it?
+	JE	12$			;No
+	MOVL	ff_cdttm[EBX], EAX	;Yes
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+
+12$:	TESTL	knlTda+tdaHvValue1##, #IOV1$MDATE ;Was a modify date/time
+						  ;  specified?
+	JE	16$			;No
+	PUSHL	knlTda+tdaMDate##+4	;Yes - use it
+	PUSHL	knlTda+tdaMDate##+0
+	CALL	conv2ffsdttm
+	CMPL	ff_mdttm[EBX], EAX	;Really changing it?
+	JE	14$			;No
+	MOVL	ff_mdttm[EBX], EAX	;Yes
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+14$:	ORB	ff_status[EBX], #FS$MDTTMSET
+
+16$:	TESTL	knlTda+tdaHvValue1##, #IOV1$ADATE ;Was an access date specified?
+	JE	18$			;No
+	PUSHL	knlTda+tdaMDate##+4	;Yes - use it
+	PUSHL	knlTda+tdaMDate##+0
+	CALL	conv2ffsdttm
+	SHRL	EAX, #16t
+	CMPW	ff_adate[EBX], AX	;Really changing it?
+	JE	18$			;No
+	MOVW	ff_adate[EBX], AX	;Yes
+	ORB	bfr_status[EBX], #BS$CHNGD ;Indicate FIB has been changed
+
+18$:	POPL	EBX
+	RET	4
+.PAGE
+;Functiont to convert from system date/time value to a DOS file date/time value
+;	long conv2ffsdttm(
+;	    llong sysdt);
+
+cv2d_dt=!4
+
+conv2ffsdttm::
+	MOVL	EAX, cv2d_dt+0[ESP]
+	MOVL	EDX, cv2d_dt+4[ESP]
+	TESTL	EDX, EDX
+	JE	8$			;If already in DOS format
+	ADDL	EAX, #ST_SECOND		;System format - round to 2-second value
+	ADCL	EDX, #0
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	knlSysTimeOnly##
+	CALL	knlSys2DosTime##	;Convert to DOS time format
+	POPL	EDX
+	XCHGL	EAX, [ESP]
+	CALL	knlSys2DosDate##	;Convert to DOS date format
+	JNC	6$
+	MOVL	EAX, #0x21		;Before 1980 - make it 1-Jan-80
+6$:	SHLL	EAX, #16t
+	POPL	EDX
+	ORL	EAX, EDX
+8$:	RET	8
+
+;Function to get current date and time in DOS file format
+;	long getcurdosdt(void);
+
+getcurffsdttm::
+	CLI				;No interrupts here
+	PUSHL	knlDosDate##		;Get current DOS format date
+	MOVL	EAX, knlSysTime##+0	;Get current system format time (We do
+	MOVL	EDX, knlSysTime##+4	;  not maintain a DOS format time.)
+	STI				;Interrupt OK now
+	CALL	knlSys2DosTime##	;Convert time to DOS format
+	POPL	EDX			;Restore DOS date
+	SHLL	EDX, #16t		;Combine with DOS time
+	ORL	EAX, EDX
+	RET
+.PAGE
+
+cv2s_dttm=!4
+
+conv2sysdttm::
+	MOVZWL	EAX, cv2s_dttm+2[ESP]	;Get date
+	CALL	knlDos2SysDate##	;Change to system format
+	PUSHL	EDX
+	PUSHL	EAX			;Save date
+	MOVZWL	EAX, cv2s_dttm+0+8[ESP]	;Get time
+	CALL	knlDos2SysTime##	;Change to system format
+	POPL	ECX
+	ADDL	EAX, ECX
+	POPL	ECX
+	ADCL	EDX, ECX
+	RET	4
+
+	LKEEND

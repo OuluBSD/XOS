@@ -1,0 +1,769 @@
+	.TITLE	ioqueue - Queued IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;There are a number ways that IO can be done.
+;  1. Direct IO
+;  2. Interruptable direct IO
+;  3. Queued IO
+;  4. Signal based IO
+;  5. Continuous IO
+;The first three methods are refered to as standard IO and use the svcIoQueue
+;  SVC. This behaves somewhat differently depending on the type of IO being
+;  done.
+;  1. Direct IO - After copying arguments, a routine is called for the
+;     specified function. This function will generally provide some global
+;     processing and call a device driver routine to finish the function.
+;     All processing is done in the calling thread. The routine for the
+;     requested function does not return until the IO operation is complete.
+;     This implies that all waiting for IO is done in exec mode and that
+;     user signals are not delivered until the IO operation completes. These
+;     calls are always blocking calls. This type of IO is supported by all
+;     devices that use standard IO.
+;  2. Interruptable direct IO is a variation on direct IO. In this case a
+;     device driver will do as much as it can without waiting and then
+;     returns requesting a "re-do". The calling thread is put in a wait
+;     state and the EIP is backed up to point to the INT for the svcIoQueue
+;     SVC with a modified value in EAX to indicate a continued operation.
+;     At this point the IO transfer is not active. When the device driver
+;     can process more of the transfer, the calling thread in woke up and
+;     the IO transfer continues from where it left off. All processing is
+;     done in the calling thread but signals can be delivered when the
+;     thread is waiting in user mode. This type of IO is only supported
+;     for terminal devices. It is mainly intented to more easily support
+;     interactive operation where it is often necessary to terminate IO
+;     requests due to other events.
+;  3. Queued IO creates a separate IO thread to perform the IO operation.
+;     The function routine creates an IO thread and passes the QAB arguments
+;     to it and immediately returns. If the caller has specified a blocking
+;     call and the IO transfer has not completed a "re-do" is done much as
+;     described above. In this case, when the user thread wakes up and the
+;     svcIoQueue SVC is repeated, it simply checks again to see if the
+;     transfer is complete. Multiple requests can be made for the same
+;     device (each with its own QAB) and will be handled in sequence. (NOTE:
+;     Multiple requests for a device are not fully supported by this version
+;     of XOS!) This type of IO is supported by almost all devices that use
+;     standard IO. It is not supported by the console device.
+
+;When waiting for a queued IO operation, a wait index of the address of the
+;  QAB divided by 4 plus the TID for the calling user thread is used. When
+;  waiting for an interruptable direct IO operation, a wait index of the
+;  address of the DCB divided by 64 is used. When any IO operation is complete
+;  and the waitcnt field of the handle table entry is non-zero threads are
+;  also woke up using the address of the DCB divided by 64. This is needed
+;  to wake up threads that are trying to cancel an IO operation.
+
+;IO may be either queued or direct.  This refers to both the way the device
+;  driver handles the IO operation and the way the user sees the operation.
+;  Some device can do only direct IO, others can do either. Input and output
+;  are separate.  A device driver may do queued input, but not queued
+;  output, or any other combination.  (The console driver does queued input
+;  or direct input but only direct output, for example.)  The user may request
+;  either direct or queued IO from any device. If only direct IO can be done
+;  a request for queued IO is ignored and direct IO is done. When direct IO
+;  is done the QFNC$WAIT bit is ignored and the call always waits until IO is
+;  complete. Depending on the device, this wait may or may not be interruptable
+;  by signals. (Generally devices that do only direct IO are interruptable and
+;  devices that can do queued IO are not, but this is not an absolute rule.) A
+;  wait for queued IO is always interruptable by signals. Of the standard XOS
+;  IO devices, console device output and IPM output is direct only. Both of
+;  these are completely CPU driven and creating a background thread to do the
+;  output makes no sense. Console ouput is interruptable by signals. IPM output
+;  is not, but it is always fast enought that this should not be a issue. Also
+;  console input is interruptable when doing direct IO and it is the only
+;  device capable of both direct and queued IO that defaults to direct IO.
+
+;A common interface is used to all functions invoked with the svcIoQueue SVC.
+;  The functions are all called without arguments after the contents of the
+;  QAB has been copied to the QAB image in the TDA and some common set up has
+;  been done. Waiting for IO complete is done using the SVC re-do mechanenism.
+;  If the value returned (in EAX) is negative, an initial error is indicated.
+;  The negative error code is returned for the svcIoQueue call and the QAB is
+;  not modified. Otherwise the IO function must return 0 and set following
+;  locations in the TDA before it returns:
+;	tdaStatus: QSTS$QUEUED is set if queued IO was started. QSTS$DONE is
+;		     set if the IO operation is complete. If neither is set
+;		     incomplete direct is indicated.
+;	tdaAmount: Set to the value for qab_amount. For direct IO this is the
+;		     amount transfered in this call.
+;	tdaError:  Set to the value for qab_error.
+;	tdaHandle: Set to the value of the device handle by functions that
+;		     return a handle value.
+;  The last 2 items are set to 0 by the common set up code and do not need to
+;  be set if the desired value is 0. If QSTS$DONE is not set an SVC re-do is
+;  done.
+
+;When waiting for IO, a wait indexed is used. When waiting for any queued
+;  request, the index used is the address of the QAB divided by 4 plus
+;  the TID of the user thread which called svcIoQueue. When waiting for
+;  interrupted direct IO, the index used is the address of the DCB divided
+;  by 64. Waking up threads waiting for queued IO is done by the common
+;  queued IO completion routines (sysIoFinishQueue qqqqqqqqq ). Drivers which support interrupted direct IO must
+;  include code to wake up threads waiting for interrupted direct IO.
+
+;In various places in the code the comments refer to an "IO frame" or an
+;  "input frame" or an "output frame". An IO frame is an association between
+;  a thread and a device. This association must be established before any
+;  standard XOS IO operation can be done for a device. (Non-standard IO,
+;  such as signal based IO (MOUSE device) or continuous stream IO (SND devices)
+;  does not use an IO frame.) At any time a device can be part of up to to
+;  IO frames, one input frame and one output frame. Half duplex devices do not
+;  use input frames so can only be part of one IO frame. A thread can be part
+;  of only one IO frame. An IO frame is established when knlTda.dcb points to
+;  the DCB, knlTda.frame contains the offset in the DCB structure of either
+;  inptda (input frame) or outtda (output frame) and when knlTda.dcb->inptda
+;  (input frame) or knlTda.dcb->outtda (output frame) contains the address of
+;  the threads TDA. If an IO operation is attempted in a thread which is
+;  already part of an IO frame an ER_BUSY error is returned. Generally, this
+;  is impossible since user threads doing direct IO (which will be part of an
+;  IO frame never return to user mode without destroying the IO frame. User
+;  threads doing queued IO are never made part of an IO frame. Devices which
+;  do interruptable direct IO always destroy the IO frame used before returning
+;  to user mode to wait, even though the IO operation is not complete.
+
+;To determine if an IO frame is set up for a thread, check if the value of
+;  knlTda.frame is non-0. A non-0 value in knlTda.dcb does not necessarily
+;  indicate that a frame is set up. This value is also used to reference a
+;  DCB when opening and closing a device without having an IO frame set up.
+
+;Here for the svcIoQueue SVC - Queued IO function
+;	long svcIoQueue(
+;	    QAB *qab);		// Address of queued IO argument block
+;
+;  Value returned is 0 if normal or negative error code if error (normal means
+;    that the request was queued or passed to the device, it does NOT mean that
+;    the function worked - that is reported in the qab_error field in the QAB)
+
+psvcIoQueue::
+	MOVL	EDX, knlTda+tdaArg1#	;Yes - get address of argument block
+	CMPL	EDX, #systembase-qab_SIZE
+	JA	ioqueae
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$QUEUED>24t ;Continued queued IO?
+	JNE	queiochk		;Yes
+	MOVL	knlTda+tdaQab#, EDX	;No - save address of the QAB
+	CLRL	EAX
+	IFFAULT	ioqueae
+	MOVW	qab_status[EDX], AX
+	IFFAULT	ioqueae
+	MOVL	qab_error[EDX], EAX
+	MOVL	EDI, #knlTda+tdaFunc#	;Copy his QAB
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	ESI, EDX
+	MOVL	ECX, #qab_SIZE/4
+	IFFAULT	ioqueae
+	RMOVSL	[EDI], [ESI]
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$DIRECT>24t ;Continued direct IO?
+	JE	4$			;No
+	MOVL	ECX, knlTda+tdaAmount#	;Yes - adjust the buffer address
+	ADDL	knlTda+tdaBuffer1#, ECX
+	SUBL	knlTda+tdaCount#, ECX	;And adjust the count
+	JG	6$			;Something is wrong if not > 0
+	MOVL	EAX, #ER_ICDEV
+	RET
+
+	IFFAULT	ioqueae
+4$:	MOVL	qab_amount[EDX], EAX	;Clear the amount done
+6$:	MOVL	knlTda+tdaAmount#, EAX
+	MOVB	knlTda+tdaQSts1#, AL
+	MOVL	knlTda+tdaPVFileOptn#, EAX ;Clear file options value
+	MOVL	knlTda+tdaDcb#, EAX
+	MOVL	knlTda+tdaAdb#, EAX
+	DECL	EAX
+	MOVL	knlTda+tdaTimeOut#+0, EAX
+	MOVL	knlTda+tdaTimeOut#+4, EAX
+	MOVZBL	EAX, knlTda+tdaFunc#	;Get function
+	CMPB	AL, #QFNC_MAX		;Valid function?
+	JBE	10$			;Yes
+	CLRL	EAX			;No
+10$:	CALLI	qiotbl[EAX*4]		;Dispatch to routine for function
+.PAGE
+ioquertn::				;Debug label only!
+
+	REQUIREMAIN
+
+
+	TESTL	EAX, EAX
+	JE	4$			;If normal
+	JS	2$			;If immediate error
+	CRASH	NOT0
+
+2$:	RET
+
+4$:	MOVL	EDX, knlTda+tdaQab#	;No - restore address of his QAB
+	TESTB	knlTda+tdaStatus#+1, #QSTS$QUEUED>8 ;Direct IO?
+	JNE	queiochk		;No - it's queued IO
+
+;Here if direct IO. Direct IO is always "complete" in that no IO operation
+;  is active when we get here. There may, however, still be more to  do as
+;  indicated by the QSTS$DONE bit.
+
+;Devices that do not allow interrupted direct IO always set QSTS$DONE when
+;  returning since they always complete the requested transfer before
+;  returning. When QSTS$DONE is set we simply return to the user. Devices
+;  which allow interrupted direct IO may return with QSTS$DONE clear to
+;  indicate that the transfer must be continued after waiting. There is a
+;  race here since the device returns at main program level. Thus there is
+;  a possibility that additional fork level IO has occured and the transfer is
+;  now complete. Each such device maintains two bits in dcb_sts1 D1$DIRIAVL
+;  for input and D1$DIROAVL for output) that indicate is more data or buffer
+;  space is currently available. We go to fork level and test the bit for the
+;  direction of this transfer. If it is set, we retry without waiting.
+
+;Since this is direct IO, we can check the QAB bits in the QAB copy in the TDA
+;  since we are in the same thread that did the IO
+
+diriochk:
+	MOVL	EDI, knlTda+tdaDcb#	;Get the DCB
+	TESTL	EDI, EDI
+	JE	10$
+
+;Here with a DCB - destroy the IO frame	
+
+	MOVZBL	EAX, knlTda+tdaFrame#
+	TESTL	EAX, EAX
+	JNE	6$
+	CRASH	NFRM			[No FRaMe]
+
+6$:	MOVL	[EDI+EAX], #0
+	MOVL	knlTda+tdaDcb#, #0
+10$:	MOVB	knlTda+tdaFrame#, #0
+	MOVL	EAX, knlTda+tdaAmount#	;Give him the amount transfered
+	IFFAULT	ioqueae
+	ADDL	qab_amount[EDX], EAX
+	TESTB	knlTda+tdaStatus+1, #QSTS$DONE>8 ;Finished now?
+	JNE	dirdone			;Yes
+	TESTB	knlTda+tdaStatus+1, #QSTS$REDO>8 ;Want re-do without wait?
+	JNE	dirnowait		;Yes
+
+;Here if need to re-do direct IO with wait
+
+	TESTL	EDI, EDI		;The DCB address should only be NULL
+					;  if this was a close or devparm or
+	JNE	12$			;  failed open. In all of these cases,
+					;  QSTS$DONE should be set so we should
+					;  not get here.
+	CRASH	NDCB			;[No DCB]
+
+12$:	TOFORK
+	MOVL	EDX, #D1$DIRIAVL	;Assume doing input
+	CMPB	knlTda+tdaFrame#, #dcb_inptda
+	JNE	14$
+	ADDL	EDX, #D1$DIROAVL-D1$DIRIAVL
+
+$$$$DIRCHK::
+14$:	TESTB	dcb_sts1[EDI], DL	;Did anything sneak in?
+	JNE	16$			;Yes - re-do without waiting
+
+;Here if really need to wait - use the DCB address divided by 64 as the
+;  wait index
+
+	MOVL	EAX, EDI
+	SHRL	EAX, #6
+	PUSHL	EAX
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#		;Requeue the thread
+	PUSHL	#THDS_DS2
+	CALL	sysSchRequeue#
+	MOVB	knlSchedReq#, #1	;Request scheduling
+16$:	FROMFORK
+dirnowait:
+	MOVL	EAX, #SVC$REDOREQ|SVC$DIRECT ;Indicate direct IO re-do
+	RET				;Return from psvcIoQueue with re-do
+					;  request
+.PAGE
+;Here if direct IO is finished - We must do the IO clean-up here
+
+dirdone:MOVL	EAX, knlTda+tdaError#	;Give him the error value
+	IFFAULT	ioqueae
+	MOVL	qab_error[EDX], EAX
+	CMPB	knlTda+tdaFunc#, #QFNC_INBLOCK ;Should we store the handle?
+	JAE	6$			;No
+	MOVL	ECX, knlTda+tdaHandle#	;Yes
+	TESTL	EAX, EAX		;Error?
+	JS	2$
+	CMPB	knlTda+tdaFunc#, #QFNC_DEVPARM
+	JNE	4$
+2$:	MOVL	ECX, #0x7FFF
+	IFFAULT	ioqueae
+4$:	MOVL	qab_handle[EDX], ECX
+
+6$:	MOVZWL	EAX, knlTda+tdaStatus#	;Give him the status bits
+	IFFAULT	ioqueae
+	MOVW	qab_status[EDX], AX
+	IFFAULT	ioqueae
+	MOVZBL	ESI, qab_vector[EDX]	;Does he want a signal?
+	TESTL	ESI, ESI
+	JE	14$			;No - all finished here
+	TOFORK				;Yes
+	PUSHL	EDX			;Signal data (address of the QAB)
+	PUSHL	#1			;One data item
+	PUSHL	knlPda+pdaPid#		;Target PID
+	PUSHL	#0			;No grant function
+	PUSHL	#0
+	PUSHL	ESI			;Vector number
+	CALL	sysSchReqSignal#	;Request the signal
+	ADDL	ESP, #24t
+	FROMFORK
+	TESTL	EAX, EAX
+	JS	16$			;If error
+14$:	CLRL	EAX
+16$:	RET				;Return from psvcIoQueue
+
+20$:	INSUREMAIN
+	JMP	16$
+.PAGE
+;Here if queued IO. 
+
+queiochk:
+	INSUREFORK
+	IFFAULT	ioqueae
+	TESTB	qab_status+1[EDX], #QSTS$DONE>8 ;Finished now?
+	JNE	quedone			;Yes
+	IFFAULT	ioqueae
+	TESTB	qab_func+1[EDX], #QFNC$WAIT>8 ;No - should we wait?
+	JE	quedone			;No
+	SHRL	EDX, #2			;Yes
+	ADDL	EDX, knlTda+tdaTid#
+	PUSHL	EDX
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#		;Requeue the thread
+	PUSHL	#THDS_DS2
+	CALL	sysSchRequeue#
+	MOVB	knlSchedReq#, #1	;Request scheduling
+	FROMFORK
+	MOVL	EAX, #SVC$REDOREQ|SVC$QUEUED ;Indicate queued IO re-do
+	RET				;Return from psvcIoQueue with re-do
+					;  request
+
+;Here if queued IO is finished - Nothing is needed here since all of the
+;  necessary clean-up was done in sysIoFinishQueue.
+
+quedone:FROMFORK
+	CLRL	EAX
+	RET
+
+;Here if address error accessing the QAB - just return the error!
+
+	FAULTHDR
+ioqueae:MOVL	EAX, #ER_ADRER
+	RET
+.PAGE
+	.SBTTL	svcIoWait - Wait until IO is complete for device
+
+;Here for the svcIoWait SVC - Wait until IO is complete for device - this
+;  function can only be used to wait for queued IO operations.  This is only
+;  a problem if it is called from an interrupt routine which interrupted a
+;  main program wait or re-do of a direct IO operation.  Direct IO calls do
+;  not proceed from the svcIoQueue call until IO is complete.  If it is
+;  called for an interrupted direct IO wait, it returns immediately.  If it
+;  is called for an interrupt queued IO wait, it will wait (at interrupt
+;  level) until the operation is complete.  The interrupt will then be
+;  dismissed and the original svcIoQueue call will be re-executed.  Since
+;  the operation is now complete, this will return immediately.
+;	long svcIoWait(
+;	    QAB *qab);
+;  Value returned is 0 if normal or negative error code if error
+
+psvcIoWait::
+	MOVL	EDX, knlTda+tdaArg1#	;Get address of his QAB
+	CMPL	EDX, #systembase-qab_SIZE
+	JBE	queiochk
+	JMP	ioqueae
+.PAGE
+	.SBTTL	Queued IO dispatch table
+
+	DATA
+
+qiotbl:	.LONG	badqio		;               = 0  - Illegal
+	.LONG	openfunc#	;QFNC_OPEN      = 1  - Open device/file
+	.LONG	devparmfunc#	;QFNC_DEVPARM   = 2  - Device parameters
+	.LONG	nextfilefunc#	;QFNC_NEXTFILE  = 3  - Next file
+	.LONG	devcharfunc#	;QFNC_DEVCHAR   = 4  - Device characteristics
+	.LONG	devparmfunc#	;QFNC_DELETE    = 5  - Delete file
+	.LONG	devparmfunc#	;QFNC_RENAME    = 6  - Rename file
+	.LONG	badqio		;               = 7  - Illegal
+knlFixPath1::
+	.LONG	badqio		;QFNC_SETPATH   = 8  - Set path
+	.LONG	classfunc#	;QFNC_CLASSFUNC = 9  - Class functions
+	.LONG	badqio		;               = 10 - Illegal
+	.LONG	badqio		;               = 11 - Illegal
+	.LONG	inpfunc		;QFNC_INBLOCK   = 12 - Input block
+	.LONG	badqio		;               = 13 - Illegal
+	.LONG	outfunc		;QFNC_OUTBLOCK  = 14 - Output block
+	.LONG	badqio		;               = 15 - Illegal
+	.LONG	badqio		;               = 16 - Illegal
+	.LONG	trmfunc#	;QFNC_TRMFUNC   = 17 - Terminal functions
+	.LONG	badqio		;               = 18 - Illegal
+	.LONG	specfunc	;QFNC_SPECIAL   = 19 - Special device functions
+	.LONG	labelfunc	;QFNC_LABEL     = 20 - Get device label
+	.LONG	commitfunc	;QFNC_COMMIT    = 21 - Commit data
+	.LONG	closefunc#	;QFNC_CLOSE     = 22 - Close file
+QFNC_MAX=!{$-qiotbl}/4-1
+
+	CODE
+
+badqio:	MOVL	EAX, #ER_IFDEV
+ret004:	RET
+.PAGE
+;Here for the input block function
+
+inpfunc:CALL	sysIoGetDcb#		;Get address of our DCB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED ;Has the device been removed?
+	JNE	devrmvd			;Yes
+	TESTL	dcb_dsp[EDI], #DS$DUPLEX ;No - is this a duplex device?
+	JNE	4$			;Yes
+	MOVB	knlTda+tdaFrame#, #dcb_outtda ;No - use the output frame
+	MOVL	knlTda+tdaRoutine#, #inpfunc1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+	RET
+
+;Here if should use the input frame
+
+4$:	MOVB	knlTda+tdaFrame#, #dcb_inptda
+	MOVL	knlTda+tdaRoutine#, #inpfunc1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+	RET
+
+inpfunc1:
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]
+	JMPIL	sd_inblock[EAX]
+
+;Here if the device has been removed
+
+devrmvd::
+	MOVL	EAX, #ER_DVRMV
+10$:	MOVL	knlTda+tdaError#, EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+;Here for the output block function
+
+outfunc:CALL	sysIoGetDcb#		;Get address of our DCB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+	MOVL	knlTda+tdaRoutine#, #outfunc1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+	RET
+
+;Here in an IO thread if necessary
+
+outfunc1:
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]	;OK - dispatch to the driver
+	JMPIL	sd_outblock[EAX]
+.PAGE
+;Here for the special device function
+;	CALL	specfunc
+
+specfunc:
+	CALL	sysIoGetDcb#		;Get offset of our DCB
+	TESTL	EAX, EAX
+	JS	ret004
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	PUSHL	#dmyparms#		;Process device parameters to see if
+	PUSHL	#knlComDPParms#		;  have IOPAR_CLASS
+	PUSHL	#PDPF$IGNBP
+	CALL	sysIoProcDevParam#
+	TESTL	EAX, EAX
+	JS	12$
+	TESTB	AL, #PDPF$CLASS		;Did we have a IOPAR_CLASS parameter?
+	JE	6$			;No - fail
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+	MOVL	knlTda+tdaRoutine#, #spec1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+	RET
+
+;Here in an IO thread if necessary
+
+spec1:	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]	;Dispatch to device driver
+	JMPIL	sd_special[EAX]
+
+;Here if do not have a IOPAR_CLASS parameter
+
+6$:	MOVL	EAX, #ER_PARMM
+	RET
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+12$:	RET
+.PAGE
+;Here for the device label function
+
+labelfunc:
+	CALL	sysIoGetDcb#		;Get offset of our DCB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]
+	CMPL	sd_label[EAX], #0
+	JE	badqio
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+	MOVL	knlTda+tdaRoutine#, #label1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+4$:	RET
+
+;Here in an IO thread if necessary
+
+label1:	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]	;OK - dispatch to the driver
+	JMPIL	sd_label[EAX]
+
+;Here for the commit data function
+
+commitfunc::
+	CALL	sysIoGetDcb#		;Get offset of our DCB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+
+	MOVL	EAX, dcb_sdisp[EDI]
+	CMPL	sd_commit[EAX], #0
+	JE	badqio
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+	MOVL	knlTda+tdaRoutine#, #commit1
+	CALL	sysIoQueueThread#	;Queue an IO thread if need to
+	RET
+
+;Here in an IO thread if necessary
+
+commit1:MOVL	EDI, knlTda+tdaDcb#
+	TESTB	dcb_sts1[EDI], #D1$REMOVED
+	JNE	devrmvd
+	MOVL	EAX, dcb_sdisp[EDI]	;OK - dispatch to the driver
+	JMPIL	sd_commit[EAX]
+.PAGE
+;Common label routine for unlabeled devices
+
+knlNullLabel::
+	CMPB	knlTda+tdaOption#, #1	;Read function?
+	JE	knlNullQio		;Yes - return null label
+	JMP	knlIFnDev#		;No - fail
+
+;Here for queued IO function which does nothing
+
+;;;;knlNullQioTF::
+;;;;	TOFORK
+knlNullQio::
+	CLRL	EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	MOVL	knlTda+tdaDcb#, EAX
+	RET
+.PAGE
+;Here in an IO thread when a queued IO request is complete. This code is
+;  responsible for waking up anyone waiting for an svcIoQueue or svcIoWait
+;  to complete and for requesting the completion software interrupt.
+
+;When get here, EAX MUST contain 0. The following values must contain the
+;  values to be returned in the corresponding QAB items (These values are all
+;  set to 0 when the request is started.):
+;	c{tdaAmount} = Amount transfered or otherwise processed
+;	c{tdaError}  = Negative XOS error code (leave 0 if no error)
+
+sysIoFinishQueue::
+	MOVL	EDI, knlTda+tdaQab#	;Get address of his QAB
+	TESTL	EDI, EDI		;Do we have a QAB?
+	JE	14$			;No
+
+	MOVL	EAX, knlTda+tdaAmount#	;Store amount done
+	IFFAULT	14$
+	MOVL	qab_amount[EDI], EAX
+
+	MOVL	EAX, knlTda+tdaError#	;Store error code
+	IFFAULT	14$
+	MOVL	qab_error[EDI], EAX
+
+	CMPB	knlTda+tdaFunc#, #QFNC_INBLOCK ;Should we store the handle?
+	JAE	6$			;No
+	MOVL	EDX, knlTda+tdaHandle#	;Yes
+	TESTL	EAX, EAX		;Error?
+	JS	2$
+	CMPB	knlTda+tdaFunc#, #QFNC_DEVPARM
+	JNE	4$
+2$:	MOVL	EDX, #0x7FFF
+	IFFAULT	14$
+4$:	MOVL	qab_handle[EDI], EDX
+
+6$:	MOVZWL	EAX, knlTda+tdaStatus#	;Store status bits with QSTS$DONE set
+	BTSL	EAX, #QSTS%DONE
+	IFFAULT	14$
+	MOVW	qab_status[EDI], AX
+
+	CMPB	knlTda+tdaFrame#, #dcb_inptda
+	JNE	10$
+	TESTB	knlTda+tdaQSts1#, #XF1$NOINPSIG ;Want signal?
+	JMP	12$
+
+10$:	TESTB	knlTda+tdaQSts1#, #XF1$NOOUTSIG ;Want signal?
+12$:	JNE	14$			;No
+	TESTL	EDI, EDI		;Maybe - do we have a QAB?
+	JE	14$			;No
+	IFFAULT	14$			;Yes
+	MOVZBL	EAX, qab_vector[EDI]	;Get vector number
+	TESTL	EAX, EAX		;Want signal here?
+	JE	14$			;No
+	CMPL	EAX, #32t		;Yes - valid vector number?
+	JB	14$			;No - forget it!
+	TOFORK
+	PUSHL	EDI			;Yes - signal data (address of the QAB)
+	PUSHL	#1			;Data count
+	PUSHL	knlPda+pdaPid#		;PID
+	PUSHL	#0			;No grant function
+	PUSHL	#0
+	PUSHL	EAX			;Vector number
+	CALL	sysSchReqSignal#	;Request the signal
+	FROMFORK
+	ADDL	ESP, #24t
+
+;Wake up anyone waiting for this. All queued IO operations we use a wait index
+;  of the address of the QAB divided by 4 plus the TID of the user thread.
+
+	FAULTHDR
+14$:	TOFORK
+	MOVL	EDX, knlTda+tdaUserTda#
+	MOVL	EAX, EDI
+	SHRL	EAX, #2
+	ADDL	EAX, tdaTid#[EDX]
+	PUSHL	EAX
+	CALL	sysSchEndWaitAll#	;Wake up all waiters
+	FROMFORK
+
+	MOVZBL	EDX, knlTda+tdaHandle#	;Is anyone trying to cancel this?
+	CMPB	knlPda+pdaHndlTbl#+7[EDX*8], #0
+	JE	145$			;No
+
+;Here if someone may be trying to cancel this. There is a bit of a possible
+;  race here and we may see this non-zero with noone waiting, but trying
+;  to wake them up in this case will do no harm.
+
+	TOFORK
+	MOVL	EAX, knlTda+tdaDcb#	;Wait index is address of the DCB
+	SHRL	EAX, #6			;  divided by 64
+	PUSHL	EAX
+	CALL	sysSchEndWaitAll#
+	FROMFORK
+
+145$:	CMPB	curqnum#, #THDS_RN1	;Is current process in PQ1?
+	JE	15$			;Yes - don't bother scheduling now
+	MOVB	knlSchedReq#, #1	;No - reschedule immediately
+15$:	CALL	sysIoThreadClean#	;Do common IO clean-up
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTL	EDI, EDI
+	JE	26$
+	MOVZBL	EBX, knlTda+tdaFrame#	;Get offset of IO frame pointer
+	TESTL	EBX, EBX		;Do we have a queue?
+	JE	26$			;No
+	MOVL	EAX, [EDI+EBX]		;Yes - is it us?
+	CMPL	EAX, knlTda+tdaAddr#
+	JE	16$
+	CRASH	BIOQ			;[Bad IO Queue]
+
+16$:	MOVL	ESI, knlTda+tdaIoQHead#	;Is anything queued?
+	TESTL	ESI, ESI
+	JE	24$			;No - all done here
+	CMPB	knlTda+tdaIoQCnt#, #0	;Yes - valid count?
+	JNE	18$			;Yes
+	CRASH	BDQC			;[BaD Queue Count]
+
+18$:	DECB	knlTda+tdaIoQCnt#	;Reduce queue count
+	MOVL	EAX, [ESI]		;Remove next IORB from the list
+	TESTL	EAX, EAX		;Anything left in list?
+	JNE	20$			;Yes
+	MOVL	knlTda+tdaIoQTail#, EAX	;No - clear tail pntr
+20$:	MOVL	knlTda+tdaIoQHead#, EAX	;Update head pointer
+
+;Here with queued request to do
+
+	PUSHL	ESI
+	MOVL	EDI, #knlTda+tdaIoqb#
+	MOVL	ECX, #ioqb_NUMCOPY
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+	TOFORK
+	PUSHL	#sysIoFinishQueue	;Termination routine
+	PUSHL	ioqb_routine[ESI]	;Stack address of the new routine
+	PUSHL	ESI			;Give up the IORB
+	CALL	sysMemGiveXmb#
+	FROMFORK			;Let device forks run
+	RET				;Go to the new routine
+
+;Here if finished with this IO frame
+
+24$:	MOVL	[EDI+EBX], #0		;Clear the address to indicate
+					;  no longer doing IO
+26$:	PUSHL	knlTda+tdaAddr#		;Remove this thread from the system
+	CALL	removethread#		;  (This should never return!)
+	CRASH	SCHD
+.PAGE
+
+
+igi_ppiorb=!4
+
+sysIoGetIoqb::
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#-ioqb_INDEX
+	PUSHL	EAX
+	CALL	sysMemGetXmb#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ioqb_label[EBX], #'IORB'
+	CLRL	EAX
+	MOVL	ioqb_next[EBX], EAX
+	MOVB	ioqb_frame[EBX], AL
+	MOVB	ioqb_qsts1[EBX], AL
+	MOVL	EDX, igi_ppiorb[ESP]
+	MOVL	[EDX], EBX
+4$:	RET	4
+
+	END

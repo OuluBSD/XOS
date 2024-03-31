@@ -1,0 +1,332 @@
+	.TITLE	svc - Supervisor call routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	SVCDEF.INC
+
+	CODE
+
+
+
+	.MACRO	SD pcnt, pname
+.IF NB {pname}
+  .IF GE pcnt
+	.LONG	psvc'pname#
+  .ENDC
+.ENDC
+	.ENDM
+
+svcdsptbl:
+	.LONG	badsvc
+	SVCDEFSYS
+
+
+	.MACRO	SD pcnt, pname
+.IF NB {pname}
+  .IF GE pcnt
+	.BYTE	pcnt
+  .ENDC
+.ENDC
+	.ENDM
+
+svcargcnt:
+	.BYTE	0
+	SVCDEFSYS
+
+SVCMAX=!$-svcargcnt-1
+.PAGE
+;There are two parallel system call mechanisms. The "direct call" mechanism is
+;  preferred since it eliminates an unnecessary CALL, but is not compatable
+;  with some compilers. The "stub call" mechanism is compatable with all C
+;  compilers that support the "Pascal" calling sequence since it uses a
+;  normal function call. The direct call mechanism does not reference the
+;  user stack if no arguments are passed. This feature is used when starting
+;  and when terminating a process.
+
+;Here when an INT 0x1D is executed. This is the "direct call" SVC entry.
+;	C{EAX} = Function (low 16 bits) + redo state (high 16 bits)
+
+dsvcint::
+	PUSHAL				;Save all registers
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EDX, SS
+	MOVL	DS, EDX
+	MOVL	ES, EDX
+	MOVL	EDX, ESP		;DEBUG - make sure stack pointer is OK
+	SUBL	EDX, #tdaXStkBegin#
+	CMPL	EDX, knlTda+tdaAddr#
+	JNE	badespi
+	MOVZWL	EAX, AX
+	CMPL	EAX, #SVCMAX
+	JA	baddsvc
+	MOVZBL	ECX, svcargcnt[EAX]	;Get number of arguments
+	MOVL	knlTda+tdaArgCnt#, ECX
+	JREGZ	ECX, 4$			;If no arguments
+	MOVL	ESI, 60t[ESP]		;Get address of his stack
+	MOVL	EDI, #knlTda+tdaArg1#+4	;Point to the palce to put his last
+	MOVL	EDX, ECX		;  argument
+	NEGL	EDX
+	LEAL	EDI, [EDI+EDX*4]
+	CLD
+	IFFAULT	badusrstk#
+	RMOVSL	[EDI], [ESI]		;Copy his arguments
+	SUBL	ESI, #4
+	MOVL	knlTda+tdaArgPnt#, ESI
+$$$$DSVC::
+4$:	CALLI	svcdsptbl[EAX*4]
+
+;Here with the SVC complete with the return code in EAX. A value with bit 31
+;  set and bits 15-0 clear indicates a redo request.
+
+dsvcdn:	CMPB	knlForkLvl#, #FORK_MAIN	;Make sure not at fork level!
+	JNE	svcatfk
+	MOVL	EDX, ESP		;DEBUG - make sure stack pointer is OK
+	SUBL	EDX, #tdaXStkBegin#
+	CMPL	EDX, knlTda+tdaAddr#
+	JNE	badesps
+	TESTL	EAX, EAX		;Error or redo request?
+	JS	8$			;Yes
+6$:	MOVL	44t[ESP], EAX		;Put the return code in his EAX
+	IFFAULT	badusrstk#
+	MOVL	ESI, 60t[ESP]		;Get address of his stack again
+	MOVL	EAX, knlTda+tdaArgCnt#
+	SHLL	EAX, #2			;Adjust his stack pointer to remove
+	ADDL	60t[ESP], EAX		;  the arguments
+	TOFORK
+	JMP	knlSignalChk#		;Check for signals and return to
+					;  the user
+
+8$:	TESTL	EAX, #0x0000FFFF	;Redo request?
+	JNE	6$			;No - just return error to caller
+	JMP	svcredo			;Yes
+
+baddsvc:CRASH	BSVC
+.PAGE
+;All INT 0x1E instructions are in stubs in user space that are reached as
+;  the target of a far call. In most cases this code does not use the return
+;  address saved on the exec stack by the INT but returns directly to the
+;  address after the far call. It also removes arguments from the user's
+;  stack before returning. When a redo of the SVC is required, the retry
+;  state is saved in the high 16 bits of the user's EAX value and the user's
+;  EIP is set to point to the INT 0x1E. The user thread will reexecute the
+;  INT 0x1E the next time it runs.
+
+
+;Here when an INT 0x1E is executed. This is the "stub call" SVC entry.
+;	C{EAX} = Function (low 16 bits) + redo state (high 16 bits)
+
+;All INT 0x1E instructions are in stubs in user space that are reached as
+;  the target of a far call. In most cases this code does not use the return
+;  address saved on the exec stack by the INT but returns directly to the
+;  address after the far call. It also removes arguments from the user's
+;  stack before returning. When a redo of the SVC is required, the retry
+;  state is saved in the high 16 bits of the user's EAX value and the user's
+;  EIP is set to point to the INT 0x1E. The user thread will reexecute the
+;  INT 0x1E the next time it runs.
+
+ssvcint::
+	PUSHAL				;Save all registers
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EDX, SS
+	MOVL	DS, EDX
+	MOVL	ES, EDX
+	MOVL	EDX, ESP		;DEBUG - make sure stack pointer is OK
+	SUBL	EDX, #tdaXStkBegin#
+	CMPL	EDX, knlTda+tdaAddr#
+	JNE	badespi
+	MOVZWL	EAX, AX
+	CMPL	EAX, #SVCMAX
+	JA	badsvc
+	MOVZBL	ECX, svcargcnt[EAX]	;Get number of arguments
+	MOVL	knlTda+tdaArgCnt#, ECX
+	JREGZ	ECX, 4$			;If no arguments
+	MOVL	ESI, 60t[ESP]		;Get address of his stack
+	ADDL	ESI, #4			;Point to last argument on his stack
+	MOVL	EDI, #knlTda+tdaArg1#+4	;Point to the palce to put his last
+	MOVL	EDX, ECX		;  argument
+	NEGL	EDX
+	LEAL	EDI, [EDI+EDX*4]
+	CLD
+	IFFAULT	badusrstk#
+	RMOVSL	[EDI], [ESI]		;Copy his arguments
+	SUBL	ESI, #4
+	MOVL	knlTda+tdaArgPnt#, ESI
+$$$$SVC::
+4$:	CALLI	svcdsptbl[EAX*4]
+
+;Here with the SVC complete with the return code in EAX. A value with bit 31
+;  set and bits 15-0 clear indicates a redo request.
+
+ssvcdn:	CMPB	knlForkLvl#, #FORK_MAIN	;Make sure not at fork level!
+	JNE	svcatfk
+	MOVL	EDX, ESP		;DEBUG - make sure stack pointer is OK
+	SUBL	EDX, #tdaXStkBegin#
+	CMPL	EDX, knlTda+tdaAddr#
+	JNE	badesps
+	TESTL	EAX, EAX		;Error or redo request?
+	JS	8$			;Yes
+6$:	MOVL	44t[ESP], EAX		;Put the return code in his EAX
+	IFFAULT	badusrstk#
+	MOVL	ESI, 60t[ESP]		;Get address of his stack again
+	IFFAULT	badusrstk#
+	MOVL	EDX, [ESI]		;Copy his real return address
+	MOVL	48t[ESP], EDX
+	MOVL	EAX, knlTda+tdaArgCnt#
+	INCL	EAX
+	SHLL	EAX, #2			;Adjust his stack pointer to remove
+	ADDL	60t[ESP], EAX		;  the arguments
+	TOFORK
+	CMPB	knlSchedReq#, #0	;Need to schedule now?
+	JE	knlSignalChk#		;No - check for signals and return to
+					;  the user
+	JMP	scheduler#		;Yes
+
+;Here if the returned value is negative
+
+8$:	TESTL	EAX, #0x0000FFFF	;Redo request?
+	JNE	6$			;No - just return error to caller
+
+;Here if need to redo the SVC - In this case we store the redo bits in the
+;  high half of his EAX and subtract 2 from the original return EIP so will
+;  reexecute the INT 1E when the thread runs again. The SVC routine will have
+;  already set up a timeout (if necessary), set up the wait hash list, and
+;  requeued the thread to the appropriate wait queue (usually by calling
+;  sysSchSetUpWait).
+;	c{EAX} = Redo bits
+
+svcredo:ORL	44t[ESP], EAX		;Store the redo bits
+	SUBL	48t[ESP], #2		;Back up his EIP to the INT 0x1E
+	TOFORK
+	JMP	scheduler#		;Reschedule
+
+badsvc:	CRASH	BSVC
+
+svcatfk:CRASH	ATFL
+
+badespi:STR	DX
+	CRASH	BSPI
+
+badesps:STR	DX
+	CRASH	BSPS
+.PAGE
+	.SBTTL	common subroutine returns
+
+;Here to return zero
+
+knlRtnLZero::
+	CLRL	EDX
+knlRtnZero::
+	CLRL	EAX
+	RET
+
+knlRtnZeroP1::
+	CLRL	EAX
+	RET	4
+
+knlRtnZeroP2::
+	CLRL	EAX
+	RET	8
+
+;Here to return one
+
+knlRtnOne::
+	CLRL	EAX
+	INCL	EAX
+	RET
+
+;Here to return minus one
+
+knlRtnMOne::
+	CLRL	EAX
+	DECL	EAX
+	RET
+.PAGE
+	.SBTTL	SVC error returns
+
+knlPrivFail::
+	MOVL	EAX, #ER_PRIV
+	STC
+	RET
+
+knlBadFunc::
+	MOVL	EAX, #ER_FUNC
+	STC
+	RET
+
+	FAULTHDR
+knlBadValueLv::
+	LEAVE
+
+	FAULTHDR
+knlBadValue::
+	MOVL	EAX, #ER_VALUE
+	STC
+	RET
+
+knlBadCharVLv::
+	LEAVE
+knlBadCharV::
+	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+
+knlBadCharF::
+	MOVL	EAX, #ER_CHARF
+	STC
+	RET
+
+	IFFAULT	knlRtnAdrEr#
+knlNullCharStr::
+	MOVB	ES:[EBX], #0
+	CLRL	ECX
+	RET
+
+knlBadParmVLv::
+	LEAVE
+knlBadParmV::
+	MOVL	EAX, #ER_PARMV
+	STC
+	RET
+
+knlBadParmILv::
+	LEAVE
+knlBadParmI::
+	MOVL	EAX, #ER_PARMI
+	STC
+	RET
+
+knlBadParmMLv::
+	LEAVE
+knlBadParmM::
+	MOVL	EAX, #ER_PARMM
+	STC
+	RET
+
+	END

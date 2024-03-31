@@ -1,0 +1,2500 @@
+	.TITLE	sched1 - Scheduling routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+	.SBTTL	Data
+
+	DATA
+
+
+;Run queue head table - Index is by the thread state. Contains address of
+;  first TDA in each run queue.
+
+quehead::   .LONG 0
+queheadRN0::.LONG 0
+queheadRN1::.LONG 0
+queheadRN2::.LONG 0
+queheadRN3::.LONG 0
+
+;Run queue tail table - Index is by the thread state. Contains address of
+;  last TDA in each run queue.
+
+quetail::   .LONG 0
+quetailRN0::.LONG 0
+quetailRN1::.LONG 0
+quetailRN2::.LONG 0
+quetailRN3::.LONG 0
+
+;Next state table - Index is by the thread state. Each entry contains the
+;  state for the next state. This is used both for sequencing between run
+;  state and from wait states to run states.
+
+quenextq::
+	.BYTE	0
+	.BYTE	THDS_RN0	;RN0
+	.BYTE	THDS_RN2	;RN1
+	.BYTE	THDS_RN3	;RN2
+	.BYTE	THDS_RN3	;RN3
+				;Following states are uninterruptable wait
+				;  states (Thread waits in exec mode.)
+	.BYTE	THDS_RN1	;DW1  - Device wait 1
+	.BYTE	THDS_RN2	;DW2  - Device wait 2
+	.BYTE	THDS_RN3	;DW3  - Device wait 3
+	.BYTE	THDS_RN2	;BLK  - Disk block wait
+	.BYTE	THDS_RN2	;MNT  - Disk mount wait
+	.BYTE	THDS_RN2	;IOCP - Copying IO devices
+	.BYTE	THDS_RN2	;MEMX - Transferring memory
+	.BYTE	THDS_RN2	;XMEM - Exec memory resource wait
+	.BYTE	THDS_RN2	;SYMW - Support symbiont wait
+
+				;Following states are interruptable wait
+				;  states (Thread waits in user mode.)
+	.BYTE	THDS_RN1	;DS1  -	Device suspend 1
+	.BYTE	THDS_RN2	;DS2  - Device suspend 2
+	.BYTE	THDS_RN3	;DS3  - Device suspend 3
+	.BYTE	THDS_RN2	;PROC - Process wait
+	.BYTE	THDS_RN2	;EVNT - Event wait
+	.BYTE	THDS_RN2	;SPND - Suspend
+	.BYTE	THDS_RN1	;CRIT - Critical region wait
+
+	.MOD	4
+
+;Generate the in-queue time table. Each entry gives the initial in-queue time
+;  for the target run queue in hardware clock counts. Index is by queue times
+;  4. The marco argument that specifies this value is system ticks
+
+inquetime:
+	.LONG	0
+	.LONG	1*CCPERSP-10t		;RN0  - Run queue 0
+	.LONG	2*CCPERSP-10t		;RN1  - Run queue 1
+	.LONG	4*CCPERSP-10t		;RN2  - Run queue 2
+	.LONG	8*CCPERSP-10t		;RN3  - Run queue 3
+	.LONG	2*CCPERSP-10t		;DW1  - Device wait 1
+	.LONG	4*CCPERSP-10t		;DW2  - Device wait 2
+	.LONG	8*CCPERSP-10t		;DW3  - Device wait 3
+	.LONG	4*CCPERSP-10t		;BLK  - Disk block wait
+	.LONG	4*CCPERSP-10t		;MNT  - Disk mount wait
+	.LONG	4*CCPERSP-10t		;IOCP - Copying IO devices
+	.LONG	4*CCPERSP-10t		;MEMX - Transferring memory
+	.LONG	4*CCPERSP-10t		;XMEM - Exec memory resource wait
+	.LONG	4*CCPERSP-10t		;SYMW - Support symbiont wait
+	.LONG	2*CCPERSP-10t		;DS1  - Device suspend 1
+	.LONG	4*CCPERSP-10t		;DS2  - Device suspend 2
+	.LONG	8*CCPERSP-10t		;DS3  - Device suspend 3
+	.LONG	4*CCPERSP-10t		;PROC - Process wait
+	.LONG	4*CCPERSP-10t		;EVNT - Event wait
+	.LONG	4*CCPERSP-10t		;SPND - Suspend
+	.LONG	2*CCPERSP-10t		;CRIT - Critical region wait
+
+;Generate the state name table. This table is not used by the kernel but
+;  is provided for use by a user mode system status display program. Index
+;  is by the state * 4. Table is terminated by a 0 long.
+
+knlQueNames::
+	.LONG	0
+	.LONG	'R0'		;RN0
+	.LONG	'R1'		;RN1
+	.LONG	'R2'		;RN2
+	.LONG	'R3'		;RN3
+	.LONG	'W1'		;DW1  - Device wait 1
+	.LONG	'W2'		;DW2  - Device wait 2
+	.LONG	'W3'		;DW3  - Device wait 3
+	.LONG	'DB'		;BLK  - Disk block wait
+	.LONG	'DM'		;MNT  - Disk mount wait
+	.LONG	'CP'		;IOCP - Copying IO devices
+	.LONG	'MX'		;MEMX - Transferring memory
+	.LONG	'XM'		;XMEM - Exec memory resource wait
+	.LONG	'SS'		;SYMW - Support symbiont wait
+	.LONG	'S1'		;DS1  -	Device suspend 1
+	.LONG	'S2'		;DS2  - Device suspend 2
+	.LONG	'S3'		;DS3  - Device suspend 3
+	.LONG	'PR'		;PROC - Process wait
+	.LONG	'EV'		;EVNT - Event wait
+	.LONG	'SP'		;SPND - Suspend
+	.LONG	'CR'		;CRIT - Critical region wait
+
+	DATA
+
+	.MOD	4
+actproc::.LONG	0		;Number of processes active in system
+ticked:: .LONG	0		;Clock flag (number of ticks since scheduler
+				;  serviced the clock)
+tickcnt::.LONG	0		;Number of ticks to handle this time
+dostick::.LONG	0		;Number of DOS clock ticks pending
+
+tdafreelist::
+	.LONG	0		;TDA free list head pointer
+	.LONG	0
+tdafreecnt:
+	.LONG	0
+tdafreelimit:
+	.LONG	5
+
+fputda::.LONG	0		;Actual address of TDA for thread which owns
+				;  the FPU
+knlPdaTable::
+	   .BYTE PDATYPE_PDA
+	   .BLKB MAXPROCS+1	;PDA table
+knlTdaTable::
+	   .BYTE TDATYPE_BASE
+	   .BLKB MAXTHRDS+1	;TDA table
+
+	.MOD	4
+totltim::  .LONG 0, 0		;Total system time
+
+pq3faircnt::.LONG 0
+pq3fairval::.LONG 16t
+
+timerhead::.LONG 0		;Timer list head pointer
+timerlist::.LONG 0, 0		;Timer lock block
+firstoas:: .LONG 0		;Address of first once-a-second routine block
+firstttas::.LONG 0		;Address of first ten-times-a-second routine
+				;  block
+firstoat:: .LONG 0		;Address of first once-a-tick routine block
+debugret:: .LONG 0
+debugES::  .LONG 0
+zeroldt:   .LONG 0, 0
+rmtmrhead::.LONG 0		;Head pointer for real mode timer list
+waithashtbl::
+	   .BLKL 256t		;Wait list hash table
+
+curqnum::  .BYTE 0		;Queue for current process
+knlSchedReq::
+	   .BYTE 0		;-1 to request scheduling
+seccnt::   .BYTE 0		;Second counter
+tnthcnt::  .BYTE 0		;Tenth second counter
+sneakcnt:: .LONG 0
+
+procspymemtop::
+	   .LONG procspy+0x1000
+thrdspymemtop::
+	   .LONG thrdspy+0x1000
+
+tmrhandle::.LONG 1		;Next TMR handle value to use
+
+timerroutine::
+	   .LONG 0
+ERRSTKSIZE==!256t
+
+	.MOD	4
+errbase::
+	.BLKB	ERRSTKSIZE	;Error handler stack
+errstk:
+
+;Stack error handler task TSS
+
+stkerrtss::.LONG 0		;tss_link
+	   .LONG 0, 0		;tss_stk0
+	   .LONG 0, 0		;tss_stk1
+	   .LONG 0, 0		;tss_stk2
+	   .LONG 0x1000		;tss_CR3
+	   .LONG stkerr#	;tss_EIP
+	   .LONG 0		;tss_EFR
+	   .LONG 0		;tss_EAX
+	   .LONG 0		;tss_ECX
+	   .LONG 0		;tss_EDX
+	   .LONG 0		;tss_EBX
+	   .LONG errstk		;tss_ESP
+	   .LONG 0		;tss_EBP
+	   .LONG 0		;tss_ESI
+	   .LONG 0		;tss_EDI
+	   .LONG GS_XDATA	;tss_ES
+	   .LONG GS_XCODE	;tss_CS
+	   .LONG GS_XDATA	;tss_SS
+	   .LONG GS_XDATA	;tss_DS
+	   .LONG 0		;tss_FS
+	   .LONG 0		;tss_GS
+	   .LONG 0		;tss_LDT
+	   .LONG 0		;tss_IOBitMap
+
+dblerrtss::.LONG 0		;tss_link
+	   .LONG 0, 0		;tss_stk0
+	   .LONG 0, 0		;tss_stk1
+	   .LONG 0, 0		;tss_stk2
+	   .LONG 0x1000		;tss_CR3
+	   .LONG dblerr#	;tss_EIP
+	   .LONG 0		;tss_EFR
+	   .LONG 0		;tss_EAX
+	   .LONG 0		;tss_ECX
+	   .LONG 0		;tss_EDX
+	   .LONG 0		;tss_EBX
+	   .LONG errstk		;tss_ESP
+	   .LONG 0		;tss_EBP
+	   .LONG 0		;tss_ESI
+	   .LONG 0		;tss_EDI
+	   .LONG GS_XDATA	;tss_ES
+	   .LONG GS_XCODE	;tss_CS
+	   .LONG GS_XDATA	;tss_SS
+	   .LONG GS_XDATA	;tss_DS
+	   .LONG 0		;tss_FS
+	   .LONG 0		;tss_GS
+	   .LONG 0		;tss_LDT
+	   .LONG 0		;tss_IOBitMap
+
+schedpnt:: .LONG schedring
+schedring::.BLKL 4*64t
+schedtop:: .LONG 0xFFFFFFFF
+
+timerpnt::.LONG	timerrng
+timerrng::.BLKL	512t
+timertop::.LONG	0xFFFFFFFF
+
+.PAGE
+	.SBTTL	schedinit- Scheduler initialization
+
+	ONCE
+
+;Subroutine to initialize the initial process
+
+$$$=!0
+FRM ips_pda, 4
+ips_SIZE=!$$$
+
+initprocesses::
+	ENTER	ips_SIZE, 0
+	LEAL	EAX, ips_pda[EBP]
+	PUSHL	EAX
+	CALL	newprocess		;Create the INIT process (this will be
+	TESTL	EAX, EAX		;  process 1)
+	JS	16$			;If error (should not happen!)
+
+;Switch to the context of the new process (mostly). This lets us cheat and
+;  allocate user memory here and eliminates the need for some globally mapped
+;  user mode once-only code! This code counts on knowing that the new PDA was
+;  created in PDA slot 1 and the new TDA was created in TDA slot 1.
+
+	MOVL	EAX, knlInitPda+pdaCR3#
+	MOVL	CR3, EAX
+	MOVL	EAX, #procspy+2*pspy_SIZE
+	MOVL	pspy_name+0[EAX], #'***I' ;Set process name to ***INIT***
+	MOVL	pspy_name+4[EAX], #'NIT*'
+	MOVW	pspy_name+8[EAX], #'**'
+	MOVL	pspy_sespid[EAX], #0x00010001
+
+;Give him all privileges!
+
+	DECL	knlInitPda+pdaActPriv#+0
+	DECL	knlInitPda+pdaActPriv#+4
+	DECL	knlInitPda+pdaAvlPriv#+0
+	DECL	knlInitPda+pdaAvlPriv#+4
+
+;Initialize memory limit and allowed values to infinity
+
+	DECL	knlInitPda+pdaWSLimit#	;Working set size limit
+	DECL	knlInitPda+pdaWSAllow#	;Working set size allowed
+	DECL	knlInitPda+pdaTMLimit#	;Total user memory limit
+	DECL	knlInitPda+pdaTMAllow#	;Total user memory allowed
+	DECL	knlInitPda+pdaUMLimit#	;Protected mode memory limit
+	DECL	knlInitPda+pdaUMAllow#	;Protected mode memory allowed
+	DECL	knlInitPda+pdaOMLimit#	;Overhead memory limit
+	DECL	knlInitPda+pdaOMAllow#	;Overhead memory allowed
+	TOFORK
+	PUSHL	#PG$WRITE|PG$READ	;Allocate user memory at 0
+	PUSHL	#0
+	MOVL	ECX, #icodeend#+0x400
+	SUBL	ECX, #icode#
+	PUSHL	ECX
+	CALL	sysMemChngMsect#
+	TESTL	EAX, EAX
+	JS	16$
+	PUSHL	#PG$WRITE|PG$READ	;Allocate a page for the HUM
+	PUSHL	#humarea
+	PUSHL	#0x1000
+	CALL	sysMemChngMsect#
+	TESTL	EAX, EAX
+	JNS	18$
+16$:	CRASH	CCIP			;[Can'T Create Initial Process]
+
+;Here with memory allocated for the first process
+
+18$:	MOVL	knlInitTda+tdaSRegESP, #knlInitTda+tdaXStkBegin#
+	MOVL	knlInitTda+tdaURegESP#, #0x400 ;Set his initial SS:ESP (0x400)
+	MOVL	knlInitTda+tdaURegSS#, #GS_UDATA|0x03
+	MOVL	knlInitTda+tdaURegDS#, #GS_UDATA|0x03 ;Set his DS
+	MOVL	knlInitTda+tdaURegEIP#, #0x400 ;Set his initial CS:EIP (0x400)
+	MOVL	knlInitTda+tdaURegCS#, #GS_UCODE|0x03
+	MOVL	knlInitTda+tdaURegEFR#, #0x200 ;Start him out with signals
+	MOVB	knlInitTda+tdaSigLvl#, #8      ;  completely disabled
+	MOVL	knlInitPda+pdaSesPda#, #knlInitPda ;We are in our own session
+	MOVL	ESI, #icode#		;Get address of code for process
+	MOVL	EDI, #0x400		;Get place to put it
+	MOVL	ECX, #icodeend#		;Get number of longs to copy
+	SUBL	ECX, #icode#
+	SHRL	ECX, #2t
+
+	CHECKES
+
+	RMOVSL	[EDI], [ESI]		;Copy code to user space
+	MOVL	EAX, knlNullPda+pdaCR3#	;Switch back to the null
+	MOVL	CR3, EAX		;  process context
+	FROMFORK
+	MOVB	tnthcnt, #5t		;Initialize timer counters
+	MOVB	seccnt, #10t
+	LEAVE
+	RET				;All finished here
+
+	CODE
+.PAGE
+	.SBTTL	schedule - The scheduler
+
+;Function to invoke the scheduler - This function may be called at main program
+;  level raised to fork level to invoke the scheduler. This uses a non-standard
+;  calling sequence as follows:
+;	PUSHLF
+;	CALLF	knlSchedule
+;  All registers are preserved on return.
+
+knlSchedule::
+	PUSHAL			;Store all registers
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+
+;This is the start of the actual scheduler code. It may be entered from above
+;  after a call from main program level or from the fork scheduler when there
+;  are no device requests and there is a scheduler request. In either case,
+;  The stack is set up with a standard interrupt register save frame. It may
+;  also be branched to directly if the registers and EIP/SS/EFR are on the
+;  stack.
+
+scheduler::
+	MOVL	EAX, ESP		;Make sure the ESP is right
+	ANDL	EAX, #0xFFFFC000
+	CMPL	EAX, knlTda+tdaAddr#
+	JE	4$
+	CRASH	BSTK
+
+4$:	MOVB	knlSchedReq, #0		;Clear scheduler request
+	CMPL	knlCurSpeed#, #SPEED_IDLE
+	JNE	6$
+	CALLI	knxSpdSetActive#
+6$:	MOVB	knlForkLvl#, #FORK_SFORK
+	CALL	updatethrdtime#
+	CMPL	knlPda+pdaAddr#, #knlNullPda ;Null process?
+	JE	26$			;Yes
+	CMPL	knlTda+tdaState#, #THDS_RN3 ;Is he in a run queue now?
+	JA	26$			;No
+	CMPL	knlTda+tdaInQueTime#, #0 ;Yes - can he continue in his queue?
+	JG	26$			;Yes
+	MOVL	EAX, knlTda+tdaState#	;No
+	MOVZBL	EAX, quenextq[EAX]	;Get new queue
+	TESTL	EAX, EAX
+	JE	26$			;If none
+	PUSHL	knlTda+tdaAddr#		;Requeue him
+	PUSHL	EAX
+	CALL	sysSchRequeue
+26$:	CMPL	ticked, #0		;Have we seen a clock interrupt?
+	JE	getrun			;No - just go get a runnable process
+.PAGE
+;Here if the clock has ticked
+
+	MOVL	EAX, ticked		;Yes - get number of unserviced clock
+	SUBL	ticked, EAX		;  interrupts and reduce the value (we
+	MOVL	tickcnt, EAX		;  do it this funny way to eliminate a
+					;  race if a timer interrupt occures
+					;  here)
+dotimer:SLOCK	timerlist
+	MOVL	ESI, timerhead		;Anyone in the timer list?
+	TESTL	ESI, ESI
+	JE	timerdone		;No - go on
+	CMPL	tmr_label[ESI], #'TMR*'	;Yes - make sure valid
+	JE	6$
+	CRASH	NTMR
+
+6$:	CLI				;Get current date/time
+	MOVL	EAX, knlSysDateTime#+0
+	MOVL	EDX, knlSysDateTime#+4
+	STI
+	CMPL	tmr_dttm+4[ESI], EDX	;Time for him yet?
+	JA	timerdone		;No
+	JB	8$			;Yes
+	CMPL	tmr_dttm+0[ESI], EAX	;Maybe
+	JA	timerdone		;No
+
+;Here with an expired TMR
+
+8$:	MOVL	EAX, tmr_next[ESI]	;Remove him from the system list
+	TESTL	EAX, EAX
+	JE	10$
+	CMPL	tmr_label[EAX], #'TMR*'
+	JE	10$
+	CRASH	NTMR
+
+10$:	MOVL	timerhead, EAX
+	SRELS	timerlist		;Give up the spin-lock!!
+
+	PUSHL	tmr_pda[ESI]		;Stack the arguments for his function
+	PUSHL	tmr_handle[ESI]
+	PUSHL	tmr_data1[ESI]
+	PUSHL	tmr_data2[ESI]
+	MOVL	EBX, tmr_disp[ESI]
+	MOVL	timerroutine, EBX	;Save routine offset for debugging!
+	MOVL	EAX, tmr_repeat+0[ESI]	;Does he want to repeat?
+	ORL	EAX, tmr_repeat+4[ESI]
+	JE	14$			;No
+	ORB	11t[ESP], #0x80		;Yes - set high bit of the handle for
+					;  the timer function
+	MOVL	EAX, tmr_repeat+0[ESI]	;Update the expiration date/time
+	MOVL	EDX, tmr_repeat+4[ESI]
+	ADDL	tmr_dttm+0[ESI], EAX
+	ADCL	tmr_dttm+4[ESI], EDX
+	SLOCK	timerlist
+	PUSHL	ESI			;Put it back in the system list
+	CALL	timerinsert
+	SRELS	timerlist
+	JMP	16$
+
+;Here if not repeating - give up the TMR
+
+14$:	PUSHL	ESI
+	CALL	sysMemGiveXmb#
+16$:	CALLI	EBX			;Call the timer routine
+	CMPB	knlForkLvl#, #FORK_SFORK ;For debugging!
+	JNE	20$
+	JMP	dotimer			;Continue
+
+20$:	CRASH	NDFL
+.PAGE
+;Here if not time to handle anyone (else)
+
+timerdone:
+	SRELS	timerlist
+	MOVL	ESI, firstoat		;Get pointer to first once-a-tick
+	TESTL	ESI, ESI		;  block
+	JE	12$			;If none
+10$:	PUSHL	[ESI]
+	CALLI	os_disp[ESI]		;Call once-a-tick routine
+	POPL	ESI
+	TESTL	ESI, ESI		;Have another?
+	JNE	10$			;Yes
+12$:	DECB	tnthcnt			;No - time for ten-times-a-second stuff?
+	JNE	getrun			;No
+	MOVB	tnthcnt, #SPPERSEC/10t	;Yes
+	MOVL	ESI, firstttas		;Get pointer to first block
+	TESTL	ESI, ESI
+	JE	16$			;If none
+14$:	PUSHL	[ESI]
+	CALLI	os_disp[ESI]		;Call ten-times-a-second routine
+	POPL	ESI
+	TESTL	ESI, ESI		;Have another one to do?
+	JNE	14$			;Yes
+16$:	DECB	seccnt			;No - time for once-a-second stuff?
+	JNE	getrun			;No - go on
+	MOVB	seccnt, #10t		;Yes - reset counter
+
+	CALL	setdlst#		;Set daylight savings state
+	MOVL	EAX, serialchk#		;Get the serial number check value
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	NOTL	EAX
+	CMPL	EAX, serialnum#
+	JE	18$
+	CRASH	SERN
+
+18$:	CALL	devoas#			;Call device once-a-second routines
+	MOVL	ESI, firstoas		;Get pointer to first block
+	TESTL	ESI, ESI
+	JE	getrun			;If no more
+20$:	PUSHL	[ESI]
+	CALLI	os_disp[ESI]		;Call once-a-second routine
+	POPL	ESI
+	TESTL	ESI, ESI
+	JNE	20$			;If have another
+					;Done - fall into getrun on next page
+.PAGE
+;Here to find thread to run next
+
+getrun::CMPL	queheadRN3, #0		;No - anyone in PQ3?
+	JE	2$			;No - go on
+	DECL	pq3faircnt		;Yes - time to be fair?
+	JNS	2$			;No
+	PUSHL	queheadRN3		;Yes - move the top thread in PQ3
+	PUSHL	#THDS_RN2		;  to PQ2
+	CALL	sysSchRequeue
+	MOVL	EAX, pq3fairval
+	MOVL	pq3faircnt, EAX
+2$:	MOVL	ESI, queheadRN0		;Anyone runnable in PQ0?
+	TESTL	ESI, ESI
+	JNE	runthrd			;Yes
+	MOVL	ESI, queheadRN1		;Anyone runnable in PQ1?
+	TESTL	ESI, ESI
+	JNE	runthrd			;Yes
+	MOVL	ESI, queheadRN2		;No - anyone runnable in PQ2?
+	TESTL	ESI, ESI
+	JNE	runthrd			;Yes
+	MOVL	ESI, queheadRN3		;No - anyone runnable in PQ3?
+	TESTL	ESI, ESI
+	JE	runnull			;No
+	MOVL	EAX, pq3fairval		;Yes - reset the fairness count
+	MOVL	pq3faircnt, EAX
+	JMP	runthrd
+
+;Here to run the null thread
+
+runnull:CALLI	knxSpdSetIdle#		;Yes - set to idle speed
+	MOVL	ESI, #knlNullTda	;Get the null process thread
+	MOVL	knlIsNull#, #1
+	JMP	4$
+
+;Here to run a real thread
+
+runthrd:MOVL	knlIsNull#, #0
+
+;;;	PUSHL	EAX
+;;;	CALLI	knxSpdSetBusy#
+;;;	POPL	EAX
+
+4$:	CMPL	ESI, knlTda+tdaAddr#	;Changing threads?
+	JE	knlUserModeChk		;No
+	MOVL	EAX, CR0
+	CMPL	ESI, fputda		;Yes - does this thread own the FPU
+	JE	6$			;Yes
+	BTSL	EAX, #3			;No - set the TS bit in CR0 if it's not
+	JC	10$			;  already set
+	JMP	8$
+
+6$:	BTZL	EAX, #3			;Clear the TS bit if it's not clear
+	JNC	10$
+
+8$:	MOVL	CR0, EAX
+10$:	MOVL	EAX, knlTda+tdaPda#	;Are we changing memory context?
+	CMPL	EAX, tdaPda[ESI]
+	JE	chgthrd			;No
+	TESTB	knlPda+pdaStatus1#, #P1$V86MEM ;Yes - does previous process
+					       ;  have V86 mode memory?
+	JE	chgproc			;No
+	MOVL	EDI, knlPda+pdaHndlTbl#+DH_STDTRM*8 ;Yes
+	TESTL	EDI, EDI		;Get his console terminal DCB
+	JNS	chgproc			;If no DCB
+	CMPL	dcb_ccb[EDI], #knlTrmCcb# ;Is it a terminal?
+	JNE	chgproc			;No
+	PUSHL	ESI
+	MOVL	ESI, dcb_trtdb[EDI]	;Yes - get offset of TDB
+	TESTL	ESI, ESI
+	JE	12$			;If no TDB
+	PUSHL	EAX
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_dosuse[EBX]		;Use DOS page 0 console data
+12$:	POPL	ESI
+chgproc:MOVL	knlTda+tdaSRegESP#, ESP	;Save his current ESP
+
+	MOVL	EAX, tdaTssSel#[ESI]	;Make sure the busy bit is not set in
+	ANDB	gdtable+5[EAX], #0xFD	;  the TSS descriptor
+
+	MOVL	EBX, tdaPda#[ESI]	;Get values for the new context
+	MOVL	EDX, tdaPtaPTP0#[ESI]
+	MOVL	ECX, tdaPtaPTP1#[ESI]
+	MOVL	EDI, pdaCR3#[EBX]
+	CLI				;No interrupts here
+	MOVL	pdaPageTbl+{{knlTda>10t}&0xFFFC}[EBX], EDX
+	MOVL	pdaPageTbl+{{{knlTda+0x1000}>10t}&0xFFFC}[EBX], ECX
+	MOVL	CR3, EDI
+	MOVL	ESP, knlTda+tdaSRegESP#
+	LTR	AX			;Set the TSS selector
+ 	CLRL	EAX			;Make sure no LDT
+	LLDT	AX
+	MOVL	EAX, ESP		;Make sure the ESP is right
+	ANDL	EAX, #0xFFFFC000
+	CMPL	EAX, knlTda+tdaAddr#
+	JNE	badesp2
+	STI				;Interrupts OK now
+	TESTB	knlPda+pdaPageDir+{{humperthrd>20t}&0xFFC}, #0x01
+					;Do we have a page directory for
+					;  the HUM?
+	JE	16$			;No - go on
+	CMPB	tdaType[ESI], #TDATYPE_IO ;Yes - is this an IO thread?
+	JNE	14$
+	MOVL	ESI, tdaUserTda#[ESI]	;Yes - get the right TDA
+14$:	MOVL	EAX, tdaPtaPTPT#[ESI]	;Get map value for the per-thread page
+	MOVL	knlPgTable#+{humperthrd>10t}, EAX
+	MOVL	CR3, EDI
+
+;Here with the new context in effect
+
+16$:	TESTB	knlPda+pdaStatus1#, #P1$V86MEM ;Does new process have V86 mode
+					       ;  memory?
+	JE	knlUserModeChk		;No
+	MOVL	EAX, knlDosTime#	;Yes - update his page 0 timer value
+	MOVL	bda_vtimer, EAX
+	MOVL	EDI, knlPda+pdaHndlTbl+DH_STDTRM*8t
+	TESTL	EDI, EDI		;Get his console terminal DCB
+	JNS	knlUserModeChk		;If no DCB
+	CMPL	dcb_ccb[EDI], #knlTrmCcb# ;Is it a terminal?
+	JNE	knlUserModeChk		;No
+	MOVL	ESI, dcb_trtdb[EDI]	;Yes - get offset of TDB
+	TESTL	ESI, ESI
+	JE	knlUserModeChk		;If no TDB
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_dosupd[EBX]		;Set up DOS page 0 console data
+	JMP	knlUserModeChk
+
+badesp2:STR	DX
+	CRASH	BSP2
+
+badesp3:STR	DX
+	CRASH	BSP3
+
+;Here if changing threads in the same process
+
+chgthrd:MOVL	knlTda+tdaSRegESP#, ESP	;Save his current ESP
+	MOVL	EDX, tdaPtaPTP0#[ESI]
+	MOVL	ECX, tdaPtaPTP1#[ESI]
+	MOVL	EDI, CR3
+	MOVL	EAX, tdaTssSel#[ESI]	;Make sure the busy bit is not set in
+	ANDB	gdtable+5[EAX], #0xFD	;  the TSS descriptor
+	CLI				;No interrupts here
+	MOVL	knlPda+pdaPageTbl+{{knlTda>10t}&0xFFC}, EDX
+	MOVL	knlPda+pdaPageTbl+{{{knlTda+0x1000}>10t}&0xFFC}, ECX
+	MOVL	CR3, EDI
+	MOVL	ESP, knlTda+tdaSRegESP#
+	LTR	AX			;Set the TSS selector
+	MOVL	EAX, ESP		;Make sure the ESP is right
+	ANDL	EAX, #0xFFFFC000
+	CMPL	EAX, knlTda+tdaAddr#
+	JNE	badesp3
+	STI
+	TESTB	knlPda+pdaPageDir+{{humperthrd>20t}&0xFFC}, #0x01
+					;Do we have a page directory for
+					;  the HUM?
+	JE	knlUserModeChk		;No - go on
+	CMPB	tdaType[ESI], #TDATYPE_IO ;Yes - is this an IO thread?
+	JNE	24$
+	MOVL	ESI, tdaUserTda#[ESI]	;Yes - get the right TDA
+24$:	MOVL	EAX, tdaPtaPTPT#[ESI]
+	MOVL	knlPgTable#+{humperthrd>10t}, EAX
+	MOVL	CR3, EDI
+
+;Here with the state correct for the new process
+
+knlUserModeChk::
+	REQUIREFORK
+	CMPL	knlTda+tdaWakeTmr#, #0	;Have a wake timer now?
+	JE	26$			;No
+	PUSHL	knlTda+tdaWakeTmr#	;Yes - cancel it
+	MOVL	knlTda+tdaWakeTmr#, #0
+	CALL	sysSchTmrCancel
+26$:	CMPL	knlTda+tdaWaitNext#, #-1 ;Is this thread in a wait list?
+	JE	28$			;No
+	PUSHL	knlTda+tdaAddr#		;Yes - remove it
+	CALL	sysSchClrWait
+28$:	MOVL	EAX, ESP
+	ANDL	EAX, #0x1FFF
+	CMPL	EAX, #tdaXStkBegin#	;About to return to user mode?
+	JNE	schdone			;No - don't check for interrupts
+	TESTL	knlTda+tdaURegCS#, #0x03 ;Maybe
+	JE	schdone			;No
+knlSignalChk::
+	INSUREFORK
+
+	ANDB	knlTda+tdaURegEFR#+1, #~0x30
+	TESTB	knlTda+tdaURegEFR#+2, #0x02 ;V86 mode?
+	JE	30$			;No
+	ORB	knlTda+tdaURegEFR#+1, #0x30 ;Yes - set IOPL to 3 !!!!!
+30$:
+
+	MOVZBL	EAX, knlTda+tdaSigReq#	;Yes - get interrupt requests
+	ANDB	AL, knlTda+tdaSigMask#	;Mask for current level
+	BSFL	EBX, EAX		;Find first doable request
+	JNE	dosignal#		;If have a doable request
+schdone:MOVL	EAX, ESP		;Make sure the ESP is right
+	ANDL	EAX, #0xFFFFC000
+	CMPL	EAX, knlTda+tdaAddr#
+	JNE	badesp4
+	CALL	updateschedtime#
+	FROMFORK
+	IFFAULT	badGS
+tryGS:	POPL	GS
+	IFFAULT	badFS
+tryFS:	POPL	FS
+	IFFAULT	badES
+tryES:	POPL	ES
+	IFFAULT	badDS
+tryDS:	POPL	DS
+	POPAL
+	CLI
+;;;;	CMPB	CS:knlSchedReq, #0	;Did another request sneak in?
+;;;;	JNE	snuck			;Yes
+	IFFAULT	badusrstk#
+	IRET				;No - finished now
+
+badesp4:STR	DX
+	CRASH	BSP4
+
+;Here if another scheduler request snuck in while the scheduler was executing
+
+snuck:	STI
+
+	INCL	sneakcnt
+
+	PUSHAL				;Save registers again
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EAX, #GS_XDATA
+	MOVL	DS, EAX
+	MOVL	ES, EAX
+	MOVB	knlForkLvl, #FORK_SFORK
+	JMP	scheduler
+
+;Here if error restoring GS
+
+	FAULTHDR
+badGS:	IFFCALL	badusrstk#
+	MOVL	[ESP], #0
+	JMP	tryGS
+
+;Here if error restoring FS
+
+	FAULTHDR
+badFS:	IFFCALL	badusrstk#
+	MOVL	[ESP], #0
+	JMP	tryFS
+
+;Here if error restoring ES
+
+	FAULTHDR
+badES:	IFFCALL	badusrstk#
+	MOVL	[ESP], #0
+	JMP	tryES
+
+;Here if error restoring DS
+
+	FAULTHDR
+badDS:	IFFCALL	badusrstk#
+	MOVL	[ESP], #0
+	JMP	tryDS
+.PAGE
+;Function to requeue process to run
+;	void sysSchRunRequeue(
+;	    TDA *tda);		// Actual address of TDA to requeue
+
+srr_tda=!8
+
+sysSchRunRequeue::
+	REQUIREFORK
+	PUSHL	ESI
+	MOVL	ESI, srr_tda[ESP]
+	MOVL	EDX, tdaState#[ESI]	;Get current state
+	TESTL	EDX, EDX
+	JNE	6$
+	CRASH	BDQX
+
+6$:	CMPL	EDX, #THDS_RN3		;Is it running now?
+	JLE	10$			;Yes - don't requeue it here
+	MOVZBL	EAX, quenextq[EDX]	;No - get new state
+
+;Start of debug code
+
+	PUSHL	ESI
+	MOVL	ECX, schedpnt
+	MOVL	[ECX], ESI
+	MOVW	4[ECX], DX
+	MOVW	6[ECX], AX
+	MOVL	ESI, 8[ESP]
+	MOVL	8[ECX], ESI
+	MOVL	ESI, knlSchTtl#
+	MOVL	12t[ECX], ESI
+	ADDL	ECX, #0x10
+	CMPL	ECX, #schedtop
+	JB	8$
+	MOVL	ECX, #schedring
+8$:	MOVL	schedpnt, ECX
+	MOVL	[ECX], #0xF0F0F0F0
+	POPL	ESI
+
+;End of debug code
+
+	TESTL	EAX, EAX		;If none (should only happen if have
+	JE	10$			;  just killed the process!)
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	sysSchRequeue
+	CMPL	tdaWaitIndex#[ESI], #-1	;Was this process in a wait list?
+	JE	10$			;No
+	PUSHL	ESI
+	CALL	sysSchClrWait		;Yes - remove from the wait list
+10$:	MOVL	EAX, knlPda+pdaAddr#	;Is the null process running?
+	CMPL	EAX, #knlNullPda
+	JE	18$			;Yes - reschedule now
+	CMPL	knlTda+tdaQuePrev#, #0	;No - at head of its queue?
+	JNE	20$			;No - don't bother scheduling now
+	CMPL	knlTda+tdaState#, #THDS_RN0 ;Yes - in RN0
+	JE	18$			;Yes - reschedule
+	CMPL	queheadRN0, #0		;No - anyone in RN0
+	JNE	20$			;Yes
+	CMPL	knlTda+tdaState#, #THDS_RN1 ;In RN1
+	JE	18$			;Yes - reschedule
+	CMPL	queheadRN1, #0		;No - anyone in RN1
+	JNE	20$			;Yes
+	CMPL	knlTda+tdaState#, #THDS_RN2 ;Yes - in RN2
+	JE	18$			;Yes - reschedule
+	CMPL	queheadRN0, #0		;No - anyone in RN2
+	JNE	20$			;Yes
+18$:	MOVB	knlSchedReq, #1
+20$:	POPL	ESI
+	RET	4
+.PAGE
+;Subroutine to requeue process
+;	void sysSchRequeue(
+;	    TDA *tda,
+;	    long state);
+
+srq_tda  =!16t
+srq_state=!12t
+
+sysSchRequeue::
+	REQUIREFORK
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, srq_tda[ESP]
+	MOVL	EAX, tdaState#[ESI]	;Get current state
+
+;Remove the thread from its current queue if necessary
+
+	CMPL	EAX, #THDS_RUNMAX	;Is it in a runable state?
+	JA	8$			;No
+	MOVL	EBX, tdaQuePrev#[ESI]	;Yes - get previous TDA in current queue
+	MOVL	EDX, tdaQueNext#[ESI]	;Get next TDA in current queue
+	TESTL	EBX, EBX		;Is this the first TDA in the queue?
+	JNE	2$			;No
+	MOVL	quehead[EAX*4], EDX	;Yes - update head pointer
+	JMP	4$
+
+2$:	MOVL	tdaQueNext#[EBX], EDX	;Update forward pointer in previous TDA
+4$:	TESTL	EDX, EDX		;Is this the last PDA in the queue?
+	JNE	6$			;No
+	MOVL	quetail[EAX*4], EBX	;Yes - update tail pointer
+	JMP	8$
+
+6$:	MOVL	tdaQuePrev#[EDX], EBX	;Update backward pointer in next TDA
+
+;Set new state
+
+8$:	MOVL	ECX, inquetime[EAX*4]	;Get new in-queue time in case we
+					;  need it
+	MOVL	EAX, srq_state[ESP]	;Get new state value
+	CMPL	EAX, #THDS_MAX		;Debug: make sure valid state
+	JA	10$
+	TESTL	EAX, EAX
+	JNE	12$
+10$:	CRASH	BDQX
+
+;Here with valid new state value
+
+12$:	MOVL	tdaState#[ESI], EAX	;Store new state in the TDA
+	MOVL	EDX, tdaSpy#[ESI]
+	MOVB	tspy_quenum[EDX], AL	;And store it in the spy area
+
+;Put thread at the end of the new queue if necessary
+
+	CMPL	EAX, #THDS_RUNMAX	;Is this a runnable state?
+	JA	20$			;No
+	MOVL	EDX, quetail[EAX*4]	;Yes - get tail of list
+	TESTL	EDX, EDX		;Anything in the queue?
+	JNE	14$			;Yes
+	MOVL	quehead[EAX*4], ESI	;No - set new head pointer
+	JMP	16$
+
+14$:	MOVL	tdaQueNext#[EDX], ESI	;Store new forward pointer in current
+					;  tail TDA
+16$:	MOVL	quetail[EAX*4], ESI	;Store new tail pointer
+	MOVL	tdaQuePrev#[ESI], EDX	;Update our queue pointers
+	MOVL	tdaQueNext#[ESI], #0
+	CMPL	EAX, #THDS_RN3		;Just put it in a run queue?
+	JA	20$			;No
+	MOVL	tdaInQueTime[ESI], ECX	;Store the new in-queue time
+20$:	POPL	EBX
+	POPL	ESI
+	RET	8			;Finished
+.PAGE
+;Function to set up to wait for IO - Must be called at fork level.
+;	void sysSchSetUpToWait(
+;	    long  waitinx,	// Wait index (-1 means no wait index)
+;	    llong timeout,	// Time out value (system ticks)
+;	    long  state);	// Wait state to use
+
+suw_waitx=!16t
+suw_to   =!8
+suw_state=!4
+
+sysSchSetUpToWait::
+	PUSHL	suw_waitx[ESP]
+	CALL	sysSchSetWaitIndex
+	CMPL	knlTda+tdaWakeTmr#, #0	;Have a wake request active now?
+	JE	4$			;No - go on
+	CRASH	HWKT			;[Have WaKe TMR]
+
+4$:	MOVL	EAX, suw_to+0[ESP]
+	ANDL	EAX, suw_to+4[ESP]
+	INCL	EAX
+	JE	8$
+	PUSHL	suw_to+4+0[ESP]
+	PUSHL	suw_to+0+4[ESP]
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	PUSHL	#waittimeout
+	CALL	sysSchTmrCreate
+	TESTL	EAX, EAX
+	JNS	8$
+	CRASH	CNCT			;[CaN't Create Timer]
+
+8$:	MOVL	knlTda+tdaWakeTmr#, EAX
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	suw_state+4[ESP]
+	CALL	sysSchRequeue
+	RET	16t
+.PAGE
+;Function called when an IO wait times out
+;	void waittimeout(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+wto_pda  =!16t
+wto_hndl =!12t
+wto_data1=!8
+wto_data2=!4
+
+waittimeout:
+	MOVL	EDX, wto_data1[ESP]
+	CMPL	tdaRtnValue0#[EDX], #0
+	JS	6$
+	MOVL	tdaRtnValue0#[EDX], #ER_NORSP ;Store the error code
+6$:	PUSHL	EDX
+	CALL	sysSchRunRequeue	;Wake him up
+	RET	16t
+.PAGE
+;Function to put a thread in a wait hash list
+;	void sysSchSetWaitIndex(
+;	    long index);
+
+sswx_inx=!4
+
+sysSchSetWaitIndex::
+	REQUIREFORK
+	CMPL	knlTda+tdaWaitNext#, #-1 ;Is this process already in a wait
+					 ;  list?
+	JNE	4$			;Yes - serious problem
+2$:	CMPL	sswx_inx[ESP], #-1	;Do we need a wait index?
+	JE	12$			;No
+	MOVL	EAX, sswx_inx[ESP]	;Yes - get hash table index
+	MOVL	knlTda+tdaWaitIndex#, EAX
+	MOVZBL	EAX, AL
+	MOVL	EDX, knlTda+tdaAddr#
+	MOVL	ECX, waithashtbl[EAX*4] ;Get current hash table entry
+	TESTL	ECX, ECX
+	JNE	6$			;If not empty list
+	MOVL	waithashtbl[EAX*4], EDX	;Link this process into the hash list
+	JMP	10$
+
+4$:	CRASH	IWTL			;[In WaiT List]
+
+;Here if hash list is not empty - find the end of the list
+
+6$:	CMPL	tdaWaitNext#[ECX], #0
+	JE	8$
+	MOVL	ECX, tdaWaitNext#[ECX]
+	JMP	6$
+
+;Here if hash list is empty
+
+8$:	MOVL	tdaWaitNext#[ECX], EDX	;Link this process into the hash list
+10$:	MOVL	knlTda+tdaWaitNext#, #0
+12$:
+	CALL	checkwait
+
+	RET	4
+.PAGE
+checkwait::
+	PUSHL	EAX
+	PUSHL	EBX
+	PUSHL	ECX
+	PUSHL	EDX
+	MOVL	EDX, #waithashtbl
+	MOVL	ECX, #256t
+2$:	MOVL	EBX, [EDX]
+4$:	TESTL	EBX, EBX
+	JE	10$
+	CMPL	EBX, #-1
+	JNE	6$
+	CRASH	BWHL
+
+6$:	MOVZBL	EAX, tdaWaitIndex#[EBX]
+	SHLL	EAX, #2
+	ADDL	EAX, #waithashtbl
+	CMPL	EAX, EDX
+	JE	8$
+	CRASH	BWHL
+
+8$:	MOVL	EBX, tdaWaitNext#[EBX]
+	JMP	4$
+
+10$:	ADDL	EDX, #4
+	LOOP	ECX, 2$
+	POPL	EDX
+	POPL	ECX
+	POPL	EBX
+	POPL	EAX
+	RET
+.PAGE
+;Function to wake up all processes waiting using a specified wait index - must
+;  be called at fork level
+;	long sysSchEndWaitAll(
+;	    long index);
+;  Value returned is number of threads woken up.
+
+sewa_index=!12t
+
+sysSchEndWaitAll::
+	REQUIREFORK
+	PUSHL	EDI
+	PUSHL	ESI
+	CLRL	EDI			;Clear the count
+	MOVZBL	ESI, sewa_index[ESP]	;Get hash table index
+	LEAL	ESI, waithashtbl[ESI*4]	;Point to hash table entry
+2$:	MOVL	ECX, [ESI]		;Get next process
+	JREGZ	ECX, 10$		;Done if no more
+	MOVL	EAX, sewa_index[ESP]
+	CMPL	tdaWaitIndex#[ECX], EAX	;Is it waiting for this event?
+	JNE	6$			;No
+	INCL	EDI			;Yes - bump count
+	MOVL	EDX, tdaWaitNext#[ECX]	;Remove from list
+	MOVL	[ESI], EDX
+	MOVL	tdaWaitNext#[ECX], #-1	;Clear hash link and index
+	MOVL	tdaWaitIndex#[ECX], #-1
+	PUSHL	ECX
+	CALL	sysSchRunRequeue	;Requeue the process
+	JMP	2$			;Continue
+
+;Here if do not want to wake up this process - advance to next one in hash list
+
+6$:	LEAL	ESI, tdaWaitNext#[ECX]
+	JMP	2$
+
+;Here when finished
+
+10$:	MOVL	EAX, EDI		;Return the count
+	POPL	ESI
+	POPL	EDI
+
+	CALL	checkwait
+
+	RET	4
+.PAGE
+;Function to wake up one thread waiting for an event - must be called at
+;  fork level
+;	TDA *sysSchEndWaitOne(
+;	    long index);	// Wait index
+;  Value returned is actual address of the TDA for the thread what was woken
+;    up or NULL if no thread was found to wake up.
+
+ewo_index=!8
+
+sysSchEndWaitOne::
+	REQUIREFORK
+
+	CALL	checkwait
+
+	PUSHL	EBX
+	MOVL	EAX, ewo_index[ESP]
+	MOVZBL	EBX, AL			;Get hash table index
+	LEAL	EBX, waithashtbl[EBX*4]	;Point to hash table entry
+2$:	MOVL	ECX, [EBX]		;Get next thread
+	TESTL	ECX, ECX		;Another one there?
+	JE	10$			;No - all done
+	CMPL	tdaWaitIndex#[ECX], EAX	;Yes - is it waiting for this event?
+	JE	4$			;Yes
+	LEAL	EBX, tdaWaitNext#[ECX]	;No - advance to next hash entry
+	JMP	2$
+
+;Here with a thread to wake up
+
+4$:	MOVL	EDX, tdaWaitNext#[ECX]	;Remove it from its hash list
+	MOVL	[EBX], EDX
+	MOVL	tdaWaitNext#[ECX], #-1	;Clear hash link and index
+	MOVL	tdaWaitIndex#[ECX], #-1
+	PUSHL	ECX
+	PUSHL	ECX
+	CALL	sysSchRunRequeue	;Requeue the process to run
+	POPL	EAX
+8$:	POPL	EBX
+
+	CALL	checkwait
+
+	RET	4
+
+;Here if no thread found to wake up
+
+10$:	CLRL	EAX
+	JMP	8$
+.PAGE
+;Function to remove wait request for process - must be called at fork level
+;	void sysSchClrWait(
+;	    TDB *tdb);
+
+scw_tdb=!8
+
+sysSchClrWait::
+	REQUIREFORK
+	PUSHL	EBX
+	MOVL	EDX, scw_tdb[ESP]
+	MOVL	EAX, tdaWaitIndex#[EDX]	;Get wait index
+	CMPL	EAX, #-1
+	JE	8$			;If not waiting
+	MOVZBL	EBX, AL
+	LEAL	EBX, waithashtbl[EBX*4]
+2$:	MOVL	ECX, [EBX]		;Get entry from the hash list
+	CMPL	ECX, EDX		;This one?
+	JE	4$			;Yes
+	TESTL	ECX, ECX		;No - have another entry?
+	JE	10$			;No
+	LEAL	EBX, tdaWaitNext#[ECX]
+	JMP	2$
+
+;Here with the entry in the hash list
+
+4$:	MOVL	EAX, tdaWaitNext[EDX]	;Remove this TDA from the hash list
+	MOVL	[EBX], EAX
+	MOVL	tdaWaitNext#[EDX], #-1
+	MOVL	tdaWaitIndex#[EDX],#-1
+8$:	POPL	EBX
+
+	CALL	checkwait
+
+	RET	4
+
+10$:	CRASH	BPWL			;[Bad Process Wait List]
+.PAGE
+;Function to raise priority of running thread - if the process is in PQ2
+;  or PQ3 it is requeued to PQ1 - called at fork level
+;	void sysSchRaiseRun(
+;	    TDA *tda);
+
+srr_tda=!4t
+
+sysSchRaiseRun::
+	REQUIREFORK
+	MOVL	EDX, srr_tda[ESP]
+	CMPL	tdaState#[EDX], #THDS_RN2 ;In RN2 or RN3?
+	JE	4$
+	CMPL	tdaState#[EDX], #THDS_RN3
+	JNE	8$			;No - do nothing here
+4$:	PUSHL	EDX			;Yes - requeue it to RN1
+	PUSHL	THDS_RN1
+	CALL	sysSchRequeue
+8$:	RET	4
+.PAGE
+	.SBTTL	newprocess - Subroutine to create new process
+
+;Function to create new process and queue its base thread to PQ2
+;	long newprocess(
+;	    PDA **ppda);	// Address of place to store actual address
+;				//   of new PDA
+
+$$$=!0
+FRM np_pda    , 4t	;Actual address of the PDA
+FRM np_procnum, 4t	;Process number
+FRM np_sts1   , 1t	;Initial value for pdaStatus1
+FRM           , 3t
+np_SIZE=!$$$
+
+np_ppda=!20t
+
+newprocess::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	np_SIZE, 0		;Set up our stack frame
+	CMPL	knlMemAvail#, #8	;Have at least 7 pages available now?
+	JAE	4$
+	MOVL	EAX, #ER_NEMA		;No - fail
+	JMP	npdone
+
+4$:	LEAL	EAX, np_pda[EBP]
+	PUSHL	EAX
+	CALL	sysSchFindProc		;Find a free process slot
+	TESTL	EAX, EAX
+	JS	npdone			;If none available
+	MOVL	np_procnum[EBP], EAX	;OK - save process number
+
+;Allocate memory for the PDA
+
+allocpda:
+	MOVL	EDI, np_pda[EBP]	;Give the caller the PDA actual address
+	MOVL	EBX, np_ppda[EBP]
+	MOVL	[EBX], EDI
+	PUSHL	EDI			;Get memory for the PDA
+	PUSHL	#1
+	PUSHL	#MT_PDA
+	PUSHL	#0x63
+	PUSHL	EDI
+	CALL	sysMemGetPages#		;Get pages for the PDA
+	TESTL	EAX, EAX
+	JS	22$			;If error (should not happen)
+
+	CHECKES
+
+	CLRL	EAX			;Clear the pages
+	MOVL	ECX, #1024t
+	RSTOSL	[EDI]
+	MOVL	EDI, np_pda[EBP]	;Get page for the per-process page
+	ADDL	EDI, #pdaPageTbl	;  table
+	PUSHL	EDI
+	PUSHL	#1
+	PUSHL	#MT_PTBL
+	PUSHL	#0x63
+	PUSHL	np_pda[EBP]
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	22$			;Also should not have error here
+	LEAL	EAX, 0x1000[EDI]	;Get page for the page directory
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#MT_PDIR
+	PUSHL	#0x63
+	PUSHL	np_pda[EBP]
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	22$			;Also should not have error here
+
+	CHECKES
+
+	CLRL	EAX			;Clear the pages
+	MOVL	ECX, #2*1024t
+	RSTOSL	[EDI]
+
+;Set up the address space for the new process. First initialize the page
+;  directory
+
+setupaddr:
+	MOVL	ESI, #knlPda+pdaPageDir+{globalbase>20t}
+	MOVL	EDI, np_pda[EBP]
+	ADDL	EDI, #pdaPageDir+{globalbase>20t} ;Copy common page entries
+	MOVL	ECX, #0x3FF-{globalbase>22t}
+	RMOVSL	[EDI], [ESI]
+	MOVL	EAX, np_pda[EBP]	;Get linear address of the new page
+	ADDL	EAX, #pdaPageDir	;  directory
+	SHRL	EAX, #10t		;Change to offset in the page table
+	MOVL	EAX, knlPgTable#[EAX]	;Get entry for the new page directory
+	MOVL	EDX, np_pda[EBP]
+	MOVL	pdaPageDir+knlPgTableS20#[EDX], EAX
+					;And store it to create the page table
+					;  for the new process (we do this by
+					;  using the page directory as a page
+					;  table as well, which lets us easily
+	ANDL	EAX, #0xFFFFF000	;  access all of the page tables!)
+	MOVL	pdaCR3#[EDX], EAX 	;Store CR3 value for process
+
+;Initialize the per-process page table
+
+initpppgtbl:
+	ADDL	EDX, #pdaPageTbl	;Get actual address of the per-process
+					;  page table
+	SHRL	EDX, #10t		;Change to offset in the page table
+	MOVL	EAX, knlPgTable#[EDX]	;Get entry for the page table
+	MOVL	EDX, np_pda[EBP]
+	MOVL	pdaPageDir+{{knlPda>20t}&0xFFC}[EDX], EAX
+					;Store it to create the per-process
+					;  area for the new process
+	MOVL	EBX, np_pda[EBP]	;Copy the page table entries to create
+	MOVL	EDX, EBX		;  the per-process mapping of the PDA
+	SHRL	EDX, #10t
+	MOVL	EAX, knlPgTable#+0[EDX]
+	MOVL	pdaPageTbl+{{knlPda>10t}&0xFFC}[EBX], EAX
+
+	MOVL	EAX, knlPgTable#+{pdaPageTbl>10t}[EDX]
+	MOVL	pdaPageTbl+{{{knlPda+pdaPageTbl}>10t}&0xFFC}[EBX], EAX
+
+	MOVL	EAX, knlPgTable#+{pdaPageDir>10t}[EDX]
+	MOVL	pdaPageTbl+{{{knlPda+pdaPageDir}>10t}&0xFFC}[EBX], EAX
+
+;Now set up the initial contents of the PDA
+
+initpda:MOVL	EDX, np_pda[EBP]
+	MOVL	pdaLabel#[EDX], #'PDA&'	;Store label
+	MOVL	pdaAddr#[EDX], EDX
+	MOVL	EAX, procseq#		;Get the current process sequence number
+	INCL	procseq#		;Increment process sequence number
+	CMPW	procseq#, #0x7F00	;Has it overflowed?
+	JB	10$			;No
+	MOVW	procseq#, #0x0100	;Yes - reset it
+10$:	SHLL	EAX, #16t
+	MOVW	AX, np_procnum[EBP]	;Get process number
+	MOVL	pdaPid#[EBX], EAX	;Store in PDA
+	MOVB	pdaCountry#[EBX], #1	;Initialize the country code
+	MOVL	pdaHndlNum#[EBX], #32t	;Initial number of available device
+					;  handles
+;;;;	MOVL	pdaShrRetry#[EBX], #0x320003 ;Store initial file sharing values
+	CLI
+	MOVL	EAX, knlSysDateTime#+0	;Store creation date/time
+	MOVL	ECX, knlSysDateTime#+4
+	STI
+	MOVL	pdaCDateTime#+0[EBX], EAX
+	MOVL	pdaCDateTime#+4[EBX], ECX
+	MOVL	pdaFileProt#[EBX], #FP_GROUP*{FP$EXEC|FP$READ}|FP_OWNER*{FP$EXEC|FP$READ|FP$WRITE|FP$EXTEND|FP$MODIFY}
+	MOVL	pdaFileProt#[EBX], #FP_GROUP*{FP$EXEC|FP$READ}|FP_OWNER*{FP$EXEC|FP$READ|FP$WRITE|FP$EXTEND|FP$MODIFY}
+	MOVL	pdaDirProt#[EBX], #FP_NETWORK*{FP$ACCESS}|FP_WORLD*{FP$ACCESS}|FP_GROUP*{FP$ACCESS|FP$SEARCH}|FP_OWNER*{FP$ACCESS|FP$SEARCH|FP$MODIFY|FP$CREATE}
+	LEAL	EAX, 0x1000[EBX]
+	MOVL	pdaTop#[EBX], EAX
+;;;;;;	MOVL	EAX, knlPda+pdaShrRetry#
+;;;;;;	MOVL	pdaShrRetry#[EBX], EAX
+
+;Set up the spy area for the process
+
+setupspy:
+	MOVZWL	EDI, pdaPid#[EBX]	;Get address of the process spy area
+	INCL	EDI
+	SHLL	EDI, #pspy_SHIFT
+	ADDL	EDI, #procspy
+	CMPL	EDI, procspymemtop	;Is it allocated now?
+	JB	14$
+	PUSHL	EDI			;No - allocate another page now
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x63
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	22$			;If error (Should not happen since we
+					;  checked for available memory to
+					;  begin with.)
+
+	CHECKES
+
+	CLRL	EAX			;Clear the page
+	MOVL	ECX, #0x400
+	PUSHL	EDI
+	PUSHL	DS
+	POPL	ES
+	RSTOSL	[EDI]
+	POPL	EDI
+	ADDL	procspymemtop, #0x1000
+	MOVL	EBX, np_pda[EBP]
+14$:	MOVL	pdaSpy#[EBX], EDI	;Clear it out
+	MOVL	EDX, EDI
+	MOVL	ECX, #pspy_SIZE/4
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVB	pspy_type[EDX], #PDATYPE_PDA
+	MOVL	pspy_ompages[EDX], #4	;Store initial memory allocation (PDA
+					;  pages, and page directory page)
+	MOVB	pspy_state[EDX], #PSSTA_PROC ;Indicate this is an active
+					     ;  process
+	MOVL	pspy_name+0[EDX], #'***N' ;Set process name to ***NEW***
+	MOVL	pspy_name+4[EDX], #'EW**'
+	MOVL	pspy_name+8[EDX], #'*'
+	CLI
+	MOVL	EAX, knlSysDateTime#+0
+	MOVL	ECX, knlSysDateTime#+4
+	STI
+	MOVL	pspy_bgndt+0[EDX], EAX
+	MOVL	pspy_bgndt+4[EDX], ECX
+	MOVL	EAX, pdaPid#[EBX]	;Also store the PID in the process spy
+	MOVL	pspy_pid[EDX], EAX	;  area
+	MOVL	pdaTdaLimit#[EBX], #32t	;Initial thread limit
+
+	MOVL	EAX, np_procnum[EBP]
+	MOVB	knlPdaTable[EAX], #PDATYPE_PDA
+	CMPL	EAX, knlProcHigh#	;Is this a new high?
+	JBE	createbthrd		;No
+	MOVL	knlProcHigh#, EAX	;Yes - update value
+
+;Create the base thread
+
+createbthrd:
+	PUSHL	np_pda[EBP]
+	PUSHL	#TDATYPE_BASE
+	PUSHL	#THDS_RN2
+	PUSHL	#0
+	CALL	newthread
+	TESTL	EAX, EAX
+	JS	30$
+	INCL	knlProcInUse#		;Increase process count
+	MOVL	EAX, np_pda[EBP]
+	MOVL	EAX, pdaPid#[EAX]
+npdone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4			;Finished
+
+22$:	CRASH	MAER			;[Memory Allocation ERror]
+
+30$:	CRASH	CCBT			;[Can't Create Base Thread]
+.PAGE
+;Function to create a new thread - This createa a generic thread that can be
+;  used as either a user, exec, or IO thread. Must be called at main program
+;  level.
+;	long newthread(
+;	    PDA  *pda,		// Actual address of PDA
+;	    long  type,		// Thread type
+;	    long  state,	// Initial state for the thread
+;	    TDA **pptda);	// Address of pointer to receive the actual
+;				//   address of the TDA created
+;  Value returned is the thread number (positive) if normal or a negative
+;    XOS error code if error.
+
+$$$=!0
+FRM nt_gblnum, 4	;Global thread number
+FRM nt_tda   , 4	;Address of TDA for the thread
+nt_SIZE=!$$$
+
+nt_pda  =!32t
+nt_type =!28t
+nt_state=!24t
+nt_ptda =!20t
+
+newthread::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	nt_SIZE, 0
+	TOFORK
+	MOVL	EAX, knlThrdInUse#	;Have too many threads now?
+	CMPB	nt_type[EBP], #TDATYPE_IO ;Creating an IO thread?
+	JE	2$			;Yes
+	ADDL	EAX, #10t		;No - don't use the last 10 threads!
+2$:	CMPL	EAX, knlThrdLimit#
+	JAE	14$			;Yes - fail
+	CMPL	knlMemAvail#, #4	;Have at least 4 pages available now?
+	JAE	4$
+	MOVL	EAX, #ER_NEMA		;No - fail
+	JMP	ntdone
+
+;Here if have enough memory available
+
+4$:	MOVL	EBX, nt_pda[EBP]
+	MOVL	EAX, pdaTdaNum#[EBX]
+	CMPL	EAX, pdaTdaLimit#[EBX]
+	JB	6$
+	MOVL	EAX, #ER_TMTP
+	JMP	ntdone
+
+;Here if can have another thread for the process
+
+6$:	MOVL	EDX, tdafreelist	;Get a TDA from the free list
+	TESTL	EDX, EDX
+	JE	8$			;If the free list is empty
+	MOVL	EAX, [EDX]		;Remove TDA from the free list
+	MOVL	tdafreelist, EAX
+	DECL	tdafreecnt
+	MOVL	nt_tda[EBP], EDX
+	MOVL	ECX, #tdaLabel#		;Clear the first part of the TDA
+	SHRL	ECX, #2
+	MOVL	EDI, EDX
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	ECX, #0x2000
+	SUBL	ECX, #tdaPda#
+	SHRL	ECX, #2
+	LEAL	EDI, tdaPda#[EDX]
+	RSTOSL	[EDI]
+	LEAL	EAX, -tdabase[EDX]
+	SHRL	EAX, #tda_SHIFT
+	MOVL	nt_gblnum[EBP], EAX	;Store global thread number
+	JMP	ntsetup
+
+;Here if the TDA free list is empty
+
+8$:	CLRL	EAX			;No
+	MOVL	ECX, #MAXTHRDS
+	CLRL	EAX
+10$:	INCL	EAX
+	CMPB	knlTdaTable[EAX], #0	;Is this one free?
+	JE	16$			;Yes - go use it
+	LOOP	ECX, 10$		;No - continue if more to check
+14$:	MOVL	EAX, #ER_TMTS		;No more - error = Too Many Processes
+	JMP	ntdone			;  or shared Segments in System
+
+;Here with a free thread slot
+
+16$:	MOVL	nt_gblnum[EBP], EAX	;Store thread number
+	MOVL	EDI, EAX		;Get actual address for the TDA
+	SHLL	EDI, #tda_SHIFT
+	ADDL	EDI, #tdabase
+	MOVL	nt_tda[EBP], EDI	;Store address of the TDA
+	PUSHL	EDI
+	PUSHL	#2
+	PUSHL	#MT_TDA
+	PUSHL	#0x63
+	PUSHL	nt_tda[EBP]
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	ntdone			;If error
+
+	CHECKES
+
+	CLRL	EAX			;Ok - clear the pages
+	MOVL	ECX, #2*1024t
+	RSTOSL	[EDI]
+	CALL	sysMemGetGSelector#	;Get a selector for the TSS
+	JNC	18$
+	CRASH	NSEL			;This should never fail!
+
+18$:	MOVL	EDX, nt_tda[EBP]
+	MOVL	tdaTssSel#[EDX], EAX
+	PUSHL	EAX
+	ADDL	EDX, #tdaTss#		;Get linear address for his TSS
+	PUSHL	EDX
+	PUSHL	#0x6C0000+DT_BTSS+PL_0+DC_BG*0x100
+	CALL	sysMemSetGDesc#		;Set up TSS selector
+	MOVL	ECX, nt_tda[EBP]	;Copy the page table entries for the
+	SHRL	ECX, #10t		;  per-process mapping of the TDA
+	MOVL	EAX, knlPgTable#+0[ECX]
+	MOVL	EDX, nt_tda[EBP]
+	MOVL	tdaPtaPTP0[EDX], EAX	
+	MOVL	EAX, knlPgTable#+4[ECX]
+	MOVL	tdaPtaPTP1[EDX], EAX
+	MOVL	tdaAddr#[EDX], EDX
+	MOVL	tdaLabel#[EDX], #'TDA&'
+	MOVL	tdaAddr#[EDX], EDX
+.PAGE
+;Here with a TDA allocated and mapped
+
+ntsetup:MOVL	EAX, nt_gblnum[EBP]	;Mark the TDA slot as in use
+	MOVL	ECX, nt_type[EBP]
+	MOVB	knlTdaTable[EAX], CL
+	CMPL	EAX, knlThrdHigh#	;Is this a new high?
+	JBE	2$			;No
+	MOVL	knlThrdHigh#, EAX	;Yes - update value
+2$:	MOVL	EDX, nt_tda[EBP]
+	MOVB	tdaType#[EDX], CL
+	MOVL	tdaTid#[EDX], EAX
+	MOVL	EAX, thrdseq#		;Store the sequence number part of
+	MOVW	tdaTid#+2[EDX], AX	;  the TID
+	INCL	thrdseq#
+	CMPL	thrdseq#, #0x7F00
+	JB	4$
+	MOVL	thrdseq#, #1
+4$:	SHLL	ECX, #16t
+	ORL	EAX, ECX
+
+	LEAL	EAX, tdaXStkBegin#[EDX]	;Store initial exec stack pointer
+	MOVL	tdaSRegESP[EDX], EAX
+
+	LEAL	EAX, tdaXStackP#[EDX]
+	MOVL	tdaTss+tss_stk0+0[EDX], EAX
+	MOVL	tdaTss+tss_stk0+4[EDX], #GS_XDATA
+	LEAL	EAX, tdaIoBitMap#[EDX]
+	MOVL	tdaIoBMTop#[EDX], EAX
+	MOVL	EAX, #tdaIoBitMap#
+	SUBL	EAX, #tdaTss#
+	MOVW	tdaTss#+tss_bmofs[EDX], AX
+	MOVL	EBX, nt_pda[EBP]
+	MOVL	tdaPda#[EDX], EBX
+
+	MOVL	ECX, pdaTdaTail#[EBX]	;Link to the end of the process's PDA
+	MOVL	tdaPrev[EDX], ECX	;  list
+	TESTL	ECX, ECX
+	JE	5$			;If list is empty now
+	MOVL	tdaNext[ECX], EDX
+	JMP	53$
+
+5$:	MOVL	pdaTdaHead#[EBX], EDX
+53$:	MOVL	pdaTdaTail#[EBX], EDX
+	INCL	pdaTdaNum#[EBX]
+
+	MOVL	EBX, pdaSpy#[EBX]	;Also store our TID in the PDA's spy
+
+	MOVL	ECX, tdaTid#[EDX]	;  area
+;;;;	MOVL	pspy_tidtbl[EBX+EAX*4], ECX
+
+	LEAL	EAX, pspy_iothds[EBX]
+	BTL	tdaType[EDX], #0	;Increment the thread count
+	SBBL	EAX, #0
+	INCB	[EAX]
+	DECL	tdaWaitList#[EDX]	;Initialize the wait list pointer
+	DECL	tdaWaitIndex#[EDX]	;Initialize the process wait index
+	DECL	tdaWaitNext#[EDX]	;And the wait hash list pointer
+	DECL	tdaCritNext#[EDX]	;Initialize the critical region wait
+					;  list pointer
+	CMPB	nt_type[EBP], #TDATYPE_IO ;Is this an IO thread?
+	JE	8$			;Yes
+
+	MOVL	knlPgTable#+{perthrdtemp>10t}, #0 ;No
+	MOVL	EDI, #perthrdtemp
+	PUSHL	EDI			;Get a page for the per-thread data
+	PUSHL	#1
+	PUSHL	#MT_TUSER
+	PUSHL	#0x63
+	PUSHL	EDX
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JNS	6$
+	CRASH	NMEM			;But we already checked!
+
+6$:	MOVL	ECX, #0x400		;Clear the page
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	EDX, nt_tda[EBP]
+	MOVL	EAX, knlPgTable#+{perthrdtemp>10t}
+	ORL	EAX, #0x04		;Make it a user mode page
+	MOVL	tdaPtaPTPT#[EDX], EAX
+
+8$:	MOVZWL	EDI, tdaTid#[EDX]	;Get address of the thread spy area
+	SHLL	EDI, #tspy_SHIFT
+	ADDL	EDI, #thrdspy
+	CMPL	EDI, thrdspymemtop	;Is it allocated now?
+	JB	10$
+	PUSHL	EDI			;No - allocate another page now
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x63
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JNS	9$
+	CRASH	NMEM			;If error (Should not happen since we
+					;  checked for available memory to
+					;  begin with.)
+
+9$:	CHECKES
+
+	CLRL	EAX			;Clear the page
+	MOVL	ECX, #0x400
+	PUSHL	EDI
+	RSTOSL	[EDI]
+	POPL	EDI
+	ADDL	thrdspymemtop, #0x1000
+	MOVL	EDX, nt_tda[EBP]
+10$:	MOVL	tdaSpy#[EDX], EDI
+	MOVL	EBX, EDI
+	MOVL	ECX, #tspy_SIZE/4	;Clear it out
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVB	tspy_state[EBX], #TSSTA_THRD ;Indicate this is an active thread
+	CLI
+	MOVL	EAX, knlSysDateTime#+0
+	MOVL	ECX, knlSysDateTime#+4
+	STI
+	MOVL	tspy_bgndt+0[EBX], EAX
+	MOVL	tspy_bgndt+4[EBX], ECX
+	MOVL	tdaFpuState#+0[EDX], #0x037F ;Initialize the FPU state
+	MOVL	tdaFpuState#+8[EDX], #0xFFFF
+	MOVB	tdaSigMask#[EDX], #0x01	;Store initial software interrupt mask
+	MOVB	tdaSigLvl#[EDX], #8	;And initial software interrupt level
+	INCL	knlThrdInUse#		;Increase thread count
+	MOVL	EBX, nt_ptda[EBP]
+	TESTL	EBX, EBX
+	JE	14$
+	MOVL	[EBX], EDX
+14$:	MOVL	ECX, nt_state[EBP]	;Get the initial state for the thread
+	CMPL	ECX, #THDS_RUNMAX	;Is it a runnable state?
+	JA	20$			;No
+	MOVL	EAX, quetail[ECX*4]	;Yes - get tail of the queue
+	TESTL	EAX, EAX		;Is the queue empty?
+	JNE	16$			;No
+	MOVL	quehead[ECX*4], EDX	;Yes - update head pointer
+	JMP	18$
+
+;Here if queue is not empty
+
+16$:	MOVL	tdaQueNext#[EAX], EDX	;Link to previous TDA in queue
+	MOVL	tdaQuePrev#[EDX], EAX
+18$:	MOVL	quetail[ECX*4], EDX	;Update tail pointer
+
+20$:	MOVL	tdaState#[EDX], ECX
+	MOVL	EDX, tdaSpy#[EDX]
+	MOVB	tspy_quenum[EDX], CL
+	MOVL	EAX, nt_gblnum[EBP]
+ntdone:	FROMFORK
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Function to remove a thread from the system. Caller must have already made
+;  sure that no IO operations reference the thread and that the thread does
+;  not own any resources. Also any extra memory allocated for an IO bit map
+;  must have been given up. If the thread is a base thread the process is
+;  also removed. This assumes that when giving up a base thread that all
+;  other threads for the process have been removed.
+;	void removethread(
+;	    TDA *tda);
+;  No errors are indicated. Any errors (such as trying to remove a non-existant
+;   thread) will crash the system! Never returns when removing self.
+
+rmvthd_tda=!12t
+
+removethread::
+	PUSHL	EDI
+	PUSHL	EBX
+	TOFORK
+	MOVL	EDI, rmvthd_tda[ESP]
+	CMPL	EDI, knlTda+tdaAddr#	;Removing self?
+	JNE	rmvthrd			;No
+	MOVL	EAX, knlNullPda+pdaCR3#	   ;Yes - switch to the null process
+	MOVL	EDX, knlNullTda+tdaTssSel# ;  base thread
+	ANDB	gdtable+5[EDX], #0xFD	;Make sure the busy bit is not set in
+					;  the TSS descriptor
+	MOVL	ECX, knlNullTda+tdaSRegESP#
+	CLI
+	MOVL	CR3, EAX
+	LTR	DX
+	MOVL	ESP, ECX
+	STI
+
+;Remove the thread from its current queue
+
+rmvthrd:MOVL	EBX, tdaQuePrev#[EDI]	;Get previous TDA in current queue
+	MOVL	EDX, tdaQueNext#[EDI]	;Get next TDA in current queue
+	TESTL	EBX, EBX		;Is this the first TDA in the queue?
+	JNE	4$			;No
+	MOVL	EAX, tdaState#[EDI]	;Yes - update head pointer
+	MOVL	quehead[EAX*4], EDX
+	JMP	6$
+
+4$:	MOVL	tdaQueNext#[EBX], EDX	;Update forward pointer in previous TDA
+6$:	TESTL	EDX, EDX		;Is this the last PDA in the queue?
+	JNE	8$			;No
+	MOVL	EAX, tdaState#[EDI]	;Yes - update tail pointer
+	MOVL	quetail[EAX*4], EBX
+	JMP	10$
+
+8$:	MOVL	tdaQuePrev#[EDX], EBX	;Update backward pointer in next TDA
+
+;Unlink the thread (TDA) from its process (PDA)
+
+10$:	MOVL	EBX, tdaPda#[EDI]
+	MOVL	EAX, tdaNext#[EDI]
+	MOVL	ECX, tdaPrev#[EDI]
+	TESTL	ECX, ECX		;First TDA?
+	JNE	11$			;No
+	TESTL	EAX, EAX		;Yes - must also be the last!
+	JE	103$
+	CRASH	RMVB
+
+103$:	MOVL	pdaTdaHead[EBX], EAX
+	JMP	1103$
+
+;Here if not first TDA
+
+11$:	MOVL	tdaNext[ECX], EAX
+	TESTL	EAX, EAX		;Last TDA?
+	JE	1103$			;Yes
+	MOVL	tdaPrev[EAX], ECX
+	JMP	1105$
+
+1103$:	MOVL	pdaTdaTail[EBX], ECX
+1105$:
+	DECL	pdaTdaNum#[EBX]
+	JNS	12$
+	CRASH	BDTC			;[BaD Thread Count]
+
+12$:	MOVZWL	EAX, tdaTid#[EDI]
+	MOVB	knlTdaTable[EAX], #0
+	CMPL	EAX, knlThrdHigh#	;Is this the highest in use slot?
+	JB	16$			;No
+14$:	DECL	EAX
+	CMPB	knlTdaTable[EAX], #0	;Yes - find next highest in use slot
+	JBE	14$
+	MOVL	knlThrdHigh#, EAX	;Update high slot number
+16$:	DECL	knlThrdInUse#		;Reduce total thread slot count
+	MOVL	EAX, pdaSpy#[EBX]
+	LEAL	ECX, pspy_iothds[EAX]
+	BTL	tdaType[EDI], #0	;Decrement the thread count
+	SBBL	ECX, #0
+	DECB	[ECX]
+
+;;;;	MOVZBL	ECX, tdaLclNum#[EDI]	;Clear the procspy TID table
+;;;;	MOVL	pspy_tidtbl[EAX+ECX*4], #0
+
+	MOVL	EAX, tdaSpy#[EDI]
+	MOVB	tspy_state[EAX], #TSSTA_NONE
+
+	MOVL	EAX, tdaPtaPTPT#[EDI]	;Get the per-thread user page
+	TESTL	EAX, EAX
+	JE	22$			;If none
+	MOVL	tdaPtaPTPT[EDI], #0
+	PUSHL	EAX
+	CALL	sysMemGiveMP#		;Give up the page
+
+	MOVL	EAX, pdaPageDir+{{humperthrd>20t}&0xFFC}[EBX]
+	TESTB	AL, #0x01
+	JE	22$			;If hum is not mapped
+	CMPL	tdaPrev#[EDI], #0	;Is this a base thread?
+	JNE	22$			;No
+	PUSHL	EAX
+	CALL	sysMemGiveMP#
+
+;Give up the selector and memory if should, otherwise put the thread on the
+;  thread free list.
+
+22$:	PUSHL	tdaPrev#[EDI]		;So we can test for the base thread
+					;  after giving up the TDA
+	MOVL	EAX, tdafreecnt		;Should we hang on to this one?
+	CMPL	EAX, tdafreelimit
+	JAE	28$			;No
+	MOVL	EAX, tdafreelist	;Yes - put it on the free list
+	MOVL	[EDI], EAX
+	MOVL	tdafreelist, EDI
+	INCL	tdafreecnt
+	JMP	30$
+
+;Here if have enough threads on the thread free list - give this one up
+
+28$:	PUSHL	tdaTssSel#[EDI]		;Give up the TSS segment descriptor
+	CALL	sysMemGiveGSelector#
+	PUSHL	tdaPda#[EDI]		;Give up the memory pages
+	PUSHL	EDI
+	PUSHL	EDI
+	PUSHL	#2
+	CALL	sysMemGivePages#
+30$:	POPL	EAX
+	TESTL	EAX, EAX		;Was this a base thread?
+	JNE	rmvdone			;No - finished here
+.PAGE
+;Here if removing a base thread - also remove the process
+
+rmvproc:PUSHL	EBX			;Make sure no timers for the process
+	CALL	sysSchTmrCancel
+	MOVL	EDX, pdaParPda#[EBX]	;Get parent process PDA
+	TESTL	EDX, EDX
+	JE	8$			;If none!
+	LEAL	ECX, pdaChildPda#[EDX]	;Scan the parent's children looking
+					;  for this one
+4$:	MOVL	EDI, [ECX]		;Get next child
+	TESTL	EDI, EBX		;Really have another child?
+	JE	6$			;No!
+	CMPL	EDI, EBX		;Yes - is it this one?
+	JE	10$			;Yes
+	LEAL	ECX, pdaSibPda#[EDI]	;No - advance to next
+	JMP	4$			;Continue
+
+6$:	CRASH	BDCL			;[BaD Child List]
+
+;Here if no parent process - Only INIT has no parent and we don't allow it
+;  to terminate!
+
+8$:	CRASH	KL0P			;[Killing Level 0 Process]
+
+;Here when found this process in the list of its parent's children
+
+10$:	MOVL	EAX, pdaSibPda#[EbX]	;Remove from list of children
+	MOVL	[ECX], EAX
+	MOVL	EAX, pdaSpy#[EBX]
+	MOVB	pspy_state[EAX], #PSSTA_NONE
+	MOVB	pspy_type[EAX], #PDATYPE_FREE
+
+;Finally, give up the PDA memory
+
+	PUSHL	#0			;Give up the PDA pages
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	#2
+	CALL	sysMemGivePages#	;Give up the PDA pages
+	TESTL	EAX, EAX
+	JS	12$			;If error (should be impossible)
+	PUSHL	#0			;Give up the page table and the page
+	LEAL	EAX, pdaPageTbl[EBX]	;  directory pages
+	PUSHL	EAX
+	PUSHL	EBX
+	PUSHL	#2
+	CALL	sysMemGivePages#	;Give up the PDA pages
+	TESTL	EAX, EAX
+	JNS	14$			;If error (should be impossible)
+12$:	CRASH	MPLK			;[Memory Page is LocKed]
+
+;Here with all of the process's memory given up
+
+14$:	SUBL	EBX, #pdabase		;Get slot number
+	SHRL	EBX, #pda_SHIFT
+	MOVB	knlPdaTable[EBX], #PDATYPE_FREE ;Clear the PDA slot
+	CMPL	EDI, knlProcHigh#	;Is this the highest in use slot?
+	JNE	24$			;No - finished here
+22$:	DECL	EBX
+	CMPB	knlPdaTable[EBX], #0	;Yes - find next highest in use slot
+	JBE	22$
+	MOVL	knlProcHigh#, EBX	;Update high slot number
+24$:	DECL	knlProcInUse#		;Reduce total slot count
+rmvdone:CMPL	knlPda+pdaAddr#, #knlNullPda ;Removing self?
+	JE	scheduler		;Yes - find someone else to run
+	POPL	EBX			;No - just return
+	POPL	EDX
+	RET	4
+.PAGE
+;Function to find free process slot - this routine does NOT do any
+;  allocation
+;	long sysSchFindProc(
+;	    *PDA ppda);
+;  Value returned is the process number (positive) if OK or a negative XOS
+;    error code if error.
+
+fp_ppda=!4t
+
+sysSchFindProc::
+	MOVL	EAX, knlProcInUse#	;Have too many processes now?
+	CMPL	EAX, knlProcLimit#
+	JAE	4$			;Yes - fail
+	CLRL	EAX			;No
+	MOVL	ECX, #MAXPROCS
+	CLRL	EAX
+2$:	INCL	EAX
+	CMPB	knlPdaTable[EAX], #0	;Is this one free?
+	JE	6$			;Yes - go use it
+	LOOP	ECX, 2$			;No - continue if more to check
+4$:	MOVL	EAX, #ER_TMPSS		;No more - error = Too Many Processes
+	RET	4t			;  or shared Segments in System
+
+;Here with a free process slot
+
+6$:	MOVL	ECX, fp_ppda[ESP]
+	MOVL	EDX, EAX		;Get actual address for the PDA
+	SHLL	EDX, #pda_SHIFT
+	ADDL	EDX, #pdabase
+	MOVL	[ECX], EDX
+	RET
+.PAGE
+	.SBTTL	knlChkVector - Subroutine to check for valid vector number
+
+;Subroutine to check for valid vector number for a user specified vector
+;	c{EAX} = Vector number
+;	CALL	knlChkVector
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Nornal
+;	  c{EAX} = Unchanged
+
+knlChkVector::
+	CMPL	EAX, #0x30
+	JB	2$
+	CMPL	EAX, #0xFF
+	JA	2$
+	CLC
+	RET
+
+2$:	MOVL	EAX, #ER_VALUE		;No - bad number
+	STC
+	RET
+.PAGE
+	.SBTTL	rmvint - Subroutine to remove interrupt from interrupt list
+
+;Subroutine to remove interrupt from interrupt list
+;	c[ESI] = Offset of interrupt link pointer
+;	c[ES]  = Selector for PDA
+;	CALL	rmvint
+
+rmvint::CMPL	[ESI], #0FFFFFFFFh	;Is the interrupt linked?
+	JE	3$			;No - nothing needed here
+	PUSHL	EAX			;Yes
+	PUSHL	EBX
+	PUSHL	EDI
+	MOVL	EDI, #tdaL1HeadP#	;Scan all three lists
+	CALL	rmvin2
+	JE	2$
+	MOVL	EDI, #tdaL2HeadP#
+	CALL	rmvin2
+	JE	2$
+	MOVL	EDI, #tdaL3HeadP#
+	CALL	rmvin2
+	JE	2$
+	CRASH	INIL			;{Interrupt Not In List}
+
+2$:	POPL	EDI
+	POPL	EBX
+	POPL	EAX
+3$:	RET
+
+;Subroutine to remove interrupt from single interrupt list
+;	c[ESI] = Offset of interrupt link pointer
+;	c[EDI] = Offset of list head pointer in the PDA
+;	c[ES]  = Selector for the PDA
+;	CALL	rmvin2
+;	Z:set = Not found
+;	Z:clr = Found, interrupt has been removed
+
+rmvin2:	MOVL	EBX, EDI		;Remember where the head pointer is
+	CLI				;No interrupts now
+4$:	MOVL	EAX, [EDI]		;Get next item
+	TESTL	EAX, EAX
+	JE	12$			;Not there if no more
+	CMPL	EAX, ESI		;Is it this one?
+	JE	6$			;Yes
+	MOVL	EDI, EAX		;No - advance to next
+	JMP	4$			;Continue
+
+;Here with entry to remove from list
+
+6$:	MOVL	EAX, [ESI]		;Remove from list
+	MOVL	[EDI], EAX
+	TESTL	EAX, EAX
+	JNE	8$			;If not last
+	MOVL	tdaxxTP#[EBX], #0	;Last - clear the tail pointer
+8$:	STI				;Interrupts OK now
+	MOVL	[ESI], #0xFFFFFFFF	;Indicate not in list now
+	INCL	EAX			;Clear Z
+	RET
+
+;Here if not in list
+
+12$:	STI				;Allow interrupts again
+	XORB	AL, AL			;Set Z
+	RET
+.PAGE
+;Function to set up once-a-second routine - must be called with the exec
+;  memory resource
+;	long sysSchSetUpOAS(
+;	    void (*func)(void));
+
+suoas_func=!4
+
+sysSchSetUpOAS::
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#os_SIZE
+	PUSHL	EAX
+	CALL	sysMemGetXMem#		;Get exec memory
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EAX, suoas_func[ESP]	;Store address of function
+	MOVL	os_disp[EDX], EAX
+	CLI				;Make sure no interrupts here
+	MOVL	EAX, firstoas		;Link into chain of once-a-second
+	MOVL	[EDX], EAX		;  routines
+	MOVL	firstoas, EDX
+	STI				;Interrupts OK now
+	CLRL	EAX
+4$:	RET	4			;Thats all
+
+;Subroutine to unlink once-a-second routine.  The memory for the once-a-second
+;  link block is not given up.
+;	c{EBX} = Offset of once-a-second routine
+;	CALL	knlUnlinkOAS
+
+knlUnlinkOAS::
+	MOVL	EDX, #firstoas
+6$:	MOVL	ECX, [EDX]
+	CMPL	os_disp[ECX], EBX
+	JE	8$
+	MOVL	EDX, ECX
+	TESTL	EDX, EDX
+	JNE	6$
+	CRASH	CFOR			;[Can't Find Once-a-second routine]
+
+8$:	MOVL	EAX, [EBX]
+	MOVL	[EDX], EAX
+	RET
+.PAGE
+	.SBTTL	knlSetupTTAS - Subroutine to set up ten-times-a-second routine
+
+;Subroutine to set up ten-times-a-second routine - must be called with the
+;  exec memory resource
+;	c{EBX} = Offset of ten-times-a-second routine
+;	cALL	knlSetupTTAS
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetupTTAS::
+	MOVL	ECX, #os_SIZE		;Get exec memory
+	CALL	knlGetXMem#
+	JC	4$.S			;If can't get it
+	MOVL	os_disp[EDI], EBX	;Store offset of routine
+	CLI				;Make sure no interrupts here
+	MOVL	EAX, firstttas		;Link into chain of ten-times-a-second
+	MOVL	[EDI], EAX		;  routines
+	MOVL	firstttas, EDI
+	STI				;Interrupts OK now
+4$:	RET				;Thats all
+.PAGE
+	.SBTTL	knlSetupOAT - Subroutine to set up once-a-tick routine
+
+;Subroutine to set up once-a-tick routine - must be called with the exec
+;  memory resource
+;	c{EBX} = Offset of once-a-tick routine
+;	CALL	knlSetupOAT
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlSetupOAT::
+	MOVL	ECX, #os_SIZE		;Get exec memory
+	CALL	knlGetXMem#
+	JC	4$.S			;If can't get it
+	MOVL	os_disp[EDI], EBX	;Store offset of routine
+	CLI				;Make sure no interrupts here
+	MOVL	EAX, firstoat		;Link into chain of once-a-tick
+	MOVL	[EDI], EAX		;  routines
+	MOVL	firstoat, EDI
+	STI				;Interrupts OK now
+4$:	RET				;Thats all
+.PAGE
+	.SBTTL	knlSetupTimer - Subroutine to set up direct timer routine
+
+;Subroutine to set up direct timer routine - must be called with the exec
+;  memory resource
+;	c{EBX} = Offset of timer routine
+;	CALL	knlSetupOAT
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;NOTE:	The timer routine is called at interrupt level 2 at each hardware
+;	clock tick.  All registers have been saved.Interrupts are disabled
+;	when this routine is called and the interrupt state MUST NOT be
+;	changed in this routine.  Obviously, this routine should be as short
+;	as possible! Is is intented for use only in extreme situations where
+;	a hardware device must be polled as often as possible (every 5 msec).
+
+knlSetupTimer::
+	MOVL	ECX, #os_SIZE		;Get exec memory
+	CALL	knlGetXMem#
+	JC	4$.S			;If can't get it
+	MOVL	os_disp[EDI], EBX	;Store offset of routine
+	CLI				;Make sure no interrupts here
+	MOVL	EAX, firsttimer#	;Link into chain of direct timer
+	MOVL	[EDI], EAX		;  routines
+	MOVL	firsttimer, EDI
+	STI				;Interrupts OK now
+4$:	RET				;Thats all
+.PAGE
+;Function to wait for specified number of system ticks - Signals are NOT
+;  granted while waiting!  Must be called at main program level or main
+;  program level raised to fork level. Returns at the same level after the
+;  specified interval. Process waits at main program level.
+;	void sysSchTimeWait(
+;	    llong time);
+
+twt_dttm=!4
+
+sysSchTimeWait::
+	PUSHL	twt_dttm+4+0[ESP]
+	PUSHL	twt_dttm+0+4[ESP]
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	PUSHL	#timedone
+	CALL	sysSchTmrCreate
+	TESTL	EAX, EAX
+	JNS	4$
+	CRASH	CNCT			;[Can Not Create Timer]
+
+4$:	PUSHL	knlForkLvl#
+	CMPB	knlForkLvl#, #FORK_MAIN
+	JNE	8$
+	MOVB	knlForkLvl#, #FORK_DFORK
+8$:	PUSHL	knlTda+tdaAddr#
+	PUSHL	#THDS_SPND
+	CALL	sysSchRequeue
+	PUSHFL
+	CALLF	knlSchedule		;Reschedule (returnes at main program
+					;  level)
+	POPL	knlForkLvl#		;Restore fork level
+	RET	8			;And return
+
+;Function called in scheduler context at FORK_SFORK level when waiting time
+;  is up.
+;	void timedone(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+tmdn_pda  =!16t
+tmdn_hndl =!12t
+tmdn_data1=!8
+tmdn_data2=!4
+
+timedone::
+	PUSHL	tmdn_data1[ESP]
+	CALL	sysSchRunRequeue	;Requeue the process to be runable
+	RET	16t
+.PAGE
+;Function to create a system timer - May be called at any level except
+;  interrupt level.
+;	long sysSchTmrCreate
+;	    llong datetime,		// Date/time value - If value is less
+;					//   than 0x2000000000000 (about 100
+;					//   years) it is added to the current
+;					//   time. Otherwise it is used directly
+;					//   as the expiration date/time. Bit
+;					//   63 set indicates a repeated timer.
+;					//   In this case the value must be an
+;					//   incremental value.
+;	    long  data1,
+;	    long  data2,
+;	    int (*func)(PDA *pda, long hndl, long data1, long data2),
+;					// Address of timer function
+;  Value returned is the handle for the timer created (positive) or a negative
+;    XOS error code if error.
+
+;The timer function is called in scheduler context when the timer expires as
+;  follows:
+;	void func(
+;	    PDA *pda,		// Actual address of PDA
+;	    long handle,	// Alarm handle (Bit 31 is set if timer is
+;				//   repeated.)
+;	    long data1,		// First data item
+;	    long data2);	// Second data tiem
+
+tmrcr_dttm  =!20t
+tmrcr_data1 =!16t
+tmrcr_data2 =!12t
+tmrcr_func  =!8
+
+sysSchTmrCreate::
+	PUSHL	ESI
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#-XMBX_64
+	PUSHL	EAX
+	CALL	sysMemGetXmb#
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	14$
+	MOVL	tmr_label[ESI], #'TMR*'	;Store label to identify the block
+	MOVL	EAX, tmrcr_func[ESP]
+	CMPL	EAX, #codebase
+	JB	2$
+	CMPL	EAX, knlXCodePnt#
+	JB	4$
+2$:	CRASH	BTFA			;[Bad Timer Function Address
+
+4$:	MOVL	tmr_disp[ESI], EAX	;Store the function address
+	MOVL	EAX, tmrcr_dttm+0[ESP]	;Get the time value
+	MOVL	EDX, tmrcr_dttm+4[ESP]
+	ANDL	EDX, #0x7FFFFFFF	;Clear the repeat bit?
+	CMPL	EDX, #0x20000		;More than about 100 years?
+	JA	6$			;Yes - use it directly
+	CLI
+	ADDL	EAX, knlSysDateTime#+0	;No - add the current date/time
+	ADCL	EDX, knlSysDateTime#+4
+	STI
+6$:	MOVL	tmr_dttm+0[ESI], EAX
+	MOVL	tmr_dttm+4[ESI], EDX
+	CLRL	EAX			;Assume not repeated
+	CLRL	EDX
+	BTZL	tmrcr_dttm+4[ESP], #31t	;Want repeated timer?
+	JNC	8$			;No
+	MOVL	EAX, tmrcr_dttm+0[ESP]	;Yes - get the repeat interval
+	MOVL	EDX, tmrcr_dttm+4[ESP]
+8$:	MOVL	tmr_repeat+0[ESI], EAX	;Store the repeat value
+	MOVL	tmr_repeat+4[ESI], EDX
+	MOVL	EAX, knlPda+pdaAddr#	;Store the PDA address
+	MOVL	tmr_pda[ESI], EAX
+	MOVL	EAX, tmrcr_data1[ESP]	;Store the data values
+	MOVL	EDX, tmrcr_data2[ESP]
+	MOVL	tmr_data1[ESI], EAX
+	MOVL	tmr_data2[ESI], EDX
+	MOVL	EAX, tmrhandle	;Store the handle
+	INCL	tmrhandle
+	JNS	10$
+	MOVL	tmrhandle, #1
+10$:	MOVL	tmr_handle[ESI], EAX
+	PUSHL	ESI			;Insert the TMR into the timer lsit
+	TOFORK	16$
+	SLOCK	timerlist
+	CALL	timerinsert
+	SRELS	timerlist
+	FROMFORK
+12$:	MOVL	EAX, tmr_handle[ESI]	;Return the handle
+14$:	POPL	ESI
+	RET	20t
+
+16$:	SLOCK	timerlist
+	CALL	timerinsert
+	SRELS	timerlist
+	JMP	12$
+.PAGE
+;Function to insert a timer block into the timer list - Must be called with
+;  the timerlist SLOCK.
+;	void timerinsert(
+;	    TMR *tmr)
+
+ti_tmr=!12t
+
+timerinsert:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	ECX, ti_tmr[ESP]
+	MOVL	EAX, tmr_dttm+0[ECX]
+	MOVL	EDX, tmr_dttm+4[ECX]
+
+	MOVL	EBX, #timerhead
+4$:	MOVL	EDI, [EBX]		;Get next TMR in the system list
+	TESTL	EDI, EDI		;Is there another one
+	JE	10$			;No - put the new entry at the end
+	CMPL	EDX, tmr_dttm+4[EDI]	;Yes - does our new TMR go before it?
+	JB	10$			;Yes
+	JA	6$			;If our new TMR goes after it
+	CMPL	EAX, tmr_dttm+0[EDI]	;Check low 32 bits
+	JB	10$			;If it goes here
+6$:	LEAL	EBX, tmr_next[EDI]	;Does not go here - advance to next
+	JMP	4$
+
+;Here with the position in the list for the TMR being inserted
+;	c{EBX} = Address of pointer to the TMR
+;	c{EDX} = Address of next TMR (may be NULL)
+
+10$:	MOVL	tmr_next[ECX], EDI	;Link this TMR into the list
+	MOVL	[EBX], ECX
+	TESTL	EDI, EDI		;DEBUG: Make sure address of next TMR
+	JE	14$			;  is valid!
+	CMPL	tmr_label[EDI], #'TMR*'
+	JE	14$
+	CRASH	NTMR			;[Not a TMR]
+
+14$:	POPL	EBX
+	POPL	EDI
+	RET	4			;Finished
+.PAGE
+;Function to cancel a timer request - Must be called at fork level.
+;	long sysSchTmrCancel(
+;	    long handle)	// TMR handle value or PDA address
+;  Value returned is the number of timers that were canceled. Bit 30 if set
+;    if a handle was specified and the alarm that was canceled was repeated.
+
+;  If bit 31 of the argument is set it is assumed to be a PDA address and all
+;    timers for that process are canceled. If bit 31 is clear the argument is
+;    assumed to be a timer handle and that single timer is canceled
+
+;NOTE: Timer handles are a 31-bit value which is assumed unique for every
+;      timer created since the system was started. (It might wrap around in
+;      a month or so if a process did nothing but create and cancel timers
+;      but in practice it should not wrap for a year or more. Even if it does
+;      wrap, the likelyhood that there has been a timer in existance for that
+;      long is very small!)
+
+;NOTE: When canceling a non-repeated single timer, if a value of 1 is returned
+;      it is guananteed that the expiration function HAS NOT and WILL NOT be
+;      called. If a value of 0 is returned, it indicates that the expiration
+;      HAS been called. If the single timer is repeated or if multiple timers
+;      are being canceled, there is no assurance regarding when or if any
+;      expiration function has or has not been called.
+
+tmrcn_hndl=!4
+
+sysSchTmrCancel::
+	MOVL	EAX, tmrcn_hndl[ESP]	;Get the handle for the timer to remove
+	MOVL	EDX, #timerhead
+	SLOCK	timerlist
+	TESTL	EAX, EAX		;Do we have a PDA address
+	JS	20$			;Yes - cancel all timer for it
+4$:	MOVL	ECX, [EDX]
+	TESTL	ECX, ECX
+	JE	12$
+	CMPL	EAX, tmr_handle[ECX]
+	JE	6$
+	LEAL	EDX, tmr_next[ECX]
+	JMP	4$
+
+;Here with the TMR to remove
+
+6$:	MOVL	EAX, tmr_next[ECX]
+	MOVL	[EDX], EAX
+	SRELS	timerlist
+	PUSHL	#1			;Assume not repeated
+	MOVL	EAX, tmr_repeat+0[ECX]	;Was it repeated?
+	ORL	EAX, tmr_repeat+4[ECX]
+	JE	8$			;No
+	ORB	3[ESP], #0x40		;Yes - set bit 30 in the returned value
+8$:	PUSHL	ECX
+	CALL	sysMemGiveXmb#		;Give up the XMB
+	POPL	EAX
+10$:	RET	4
+
+12$:	SRELS	timerlist
+	CLRL	EAX
+	JMP	10$
+
+;Here if a PDA was specified - remove all of its timers
+
+20$:	PUSHL	EBX
+	PUSHL	#0
+	CLRL	EBX
+22$:	MOVL	ECX, [EDX]
+	TESTL	ECX, ECX
+	JE	26$
+	CMPL	EAX, tmr_pda[ECX]
+	JNE	24$
+	PUSHL	tmr_next[ECX]		;Remove it from the timer list
+	POPL	[EDX]
+	MOVL	tmr_next[ECX], EBX	;Link it to our list to give up later
+	MOVL	EBX, ECX
+	INCL	[ESP]			;Count it
+	JMP	22$
+
+24$:	LEAL	EDX, tmr_next[ECX]
+	JMP	22$
+
+;Here with everything we found removed from the system's timer list
+
+26$:	SRELS	timerlist
+30$:	TESTL	EBX, EBX		;Any more to give up?
+	JE	34$			;No
+	PUSHL	tmr_next[EBX]
+	PUSHL	EBX
+	CALL	sysMemGiveXmb#		;Give up the TMR
+	POPL	EBX
+	JMP	30$
+
+;Here with all of the TMRs given up
+
+34$:	POPL	EAX			;Get the count to return
+	POPL	EBX
+	RET	4
+.PAGE
+;Function to find the TDA address corresponding to a TID
+;	TDA *findtda(
+;	    long tid);
+;  Value returned is NULL if the TID is not valid (corresponding error code
+;    is ER_BDTID) or the address of the TDA if the TID is valid.
+
+ftda_tid=!4
+
+findtda::
+	MOVZWL	EAX, ftda_tid[ESP]	;Get the global thread number
+	TESTL	EAX, EAX		;Can't use this for the null thread
+	JE	4$
+	CMPL	EAX, knlThrdHigh#	;Is it too high?
+	JA	4$			;Yes - fail
+	CMPB	knlTdaTable[EAX], #TDATYPE_FREE ;Does the thread exist?
+	JE	4$			;No - fail
+	SHLL	EAX, #tda_SHIFT		;Get the address of the TDA
+	ADDL	EAX, #tdabase
+	MOVL	EDX, ftda_tid[ESP]	;Does the full TID match?
+	CMPL	EDX, tdaTid[EAX]
+	JE	8$			;Yes
+4$:	CLRL	EAX			;No - fail
+8$:	RET	4
+
+	END

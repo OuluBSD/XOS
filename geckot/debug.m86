@@ -1,0 +1,130 @@
+	.TITLE	$_debug
+
+;*--------------------------------------------------------------------------*
+;* debug.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This file contains code which displays various debug stuff on the console.
+;  This is intended for use when debugging GECKOT and the operation of the
+;  USB debug device. It uses the first 72 characters of the first line of the
+;  text mode screen. This only uses 72 character to preserve the crash code
+;  in the crash box.
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xosusb.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+	.INCLUD	xosinc:\xmac\xosxusbehc.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+.IF NE $$DISP
+	.ENTRY	$_PutDebugChr
+$_PutDebugChr::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVL	EAX, 12t[ESP]
+10$:	MOVL	EBX, chrpnt
+	MOVW	textdispbase[EBX], AX
+	ADDL	EBX, #2
+	CMPL	EBX, #150t
+	JB	12$
+	CLRL	EBX
+12$:	MOVW	textdispbase[EBX], #0x6000+' '
+	MOVL	chrpnt, EBX
+	POPL	EBX
+	POPL	EAX
+	RET	4
+
+dbl_chr=!16t
+dbl_val=!12t
+
+	.ENTRY	$_PutDebugLong
+$_PutDebugLong::
+	PUSHL	EAX
+	PUSHL	ECX
+	MOVL	EAX, dbl_chr[ESP]
+	CMPB	AL, #0
+	JE	14$
+	PUSHL	EAX
+	CALL	$_PutDebugChr
+	MOVL	EAX, dbl_chr[ESP]
+	MOVB	AL, #'='
+	PUSHL	EAX
+	CALL	$_PutDebugChr
+14$:	MOVL	EAX, dbl_val[ESP]
+	MOVL	ECX, #8
+16$:	ROLL	EAX, #4
+	PUSHL	EAX
+	ANDL	EAX, #0x0F
+	MOVB	AH, dbl_chr+1+4[ESP]
+	PUSHL	EAX
+	CALL	$_putdbhex
+	POPL	EAX
+	LOOP	ECX, 16$
+	MOVL	EAX, #' '
+	MOVB	AH, dbl_chr+1[ESP]
+	PUSHL	EAX
+	CALL	$_PutDebugChr
+	POPL	ECX
+	POPL	EAX
+	RET	8
+
+	.ENTRY	$_putdbhex
+$_putdbhex::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVZWL	EAX, 12t[ESP]
+	ANDL	EAX, #0xFF0F
+	ADDL	EAX, #'0'
+	CMPB	AL, #'9'
+	JBE	10$
+	ADDB	AL, #'A'-'9'-1
+	JMP	10$
+
+	.ENTRY	$_flash
+$_flash::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVL	EBX, chrpnt
+	MOVL	EAX, chrflsh
+	MOVW	textdispbase[EBX], AX
+	XORB	chrflsh+1, #0x90
+	POPL	EBX
+	POPL	EAX
+	RET
+
+chrpnt:	.LONG	0
+chrflsh:.LONG	0x6000+' '
+
+.ENDC
+
+	END

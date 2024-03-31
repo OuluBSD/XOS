@@ -1,0 +1,46 @@
+	.PROC	80386
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+
+	.SEG	sysdis_code_s, CODE, 32BIT
+	.MSECT	sysdis_code_m, sysdis_code_s, ADDR=1000
+	.PSECT	sysdis_code_p, sysdis_code_m
+	.SEG	sysdis_data_s, DATA, 32BIT
+	.MSECT	sysdis_data_m, sysdis_data_s, ADDR=1000
+	.PSECT	sysdis_stack_p, sysdis_data_m
+	.PSECT	sysdis_data_p, sysdis_data_m
+
+
+	BTL	ext#, #1A
+	ADDL	ext#, #1A
+
+	JMP	$+7.S
+
+	SHRL	EDX, CL
+
+	LEAL	EAX, -32t[EAX*4]
+
+	OUTB	[DX]
+
+
+aaa:	CMPB	1000, #13t.B		;Anything there?
+	NOP
+	NOP
+	LOOP	ECX, aaa
+
+4$:	CMPB	1000, #13t.B		;Anything there?
+	NOP
+	NOP
+	LOOP	ECX, 4$
+
+
+	.ASCII	{ESC}"[1;30;44m "{ESC}"[2;34;46m"
+	.REPT	78t
+	.BYTE	0DF
+	.ENDR
+	.ASCII	{ESC}"[2;30;44m "
+	.ASCII	" "{ESC}"[2;30;46mCmd:                               Ttl:     "
+	.ASCII	"   0.000 Sch:        0.000  I:    "{ESC}"[2;30;44m "{CR,LF}
+	.ASCII	" "{ESC}"[2;30;46m Mem =      0k/     0k             Dev:     "
+	.ASCII	"   0.000 Null:                    "{ESC}"[1;33;44m "{CR,LF}

@@ -1,0 +1,203 @@
+
+	.MACRO	GTDATA
+	.SEG	gt_DEBUG_s, 32BIT     , SELECT=GS_XCODE, CODE
+	.MSECT	gt_DEBUG_m, gt_DEBUG_s, ADDR=geckotbase
+	.PSECT	gt_DATA_p , gt_DEBUG_m, MOD=0x10
+	.ENDM
+
+	.MACRO	GTCODE
+	.SEG	gt_DEBUG_s, 32BIT     , SELECT=GS_XCODE, CODE
+	.MSECT	gt_DEBUG_m, gt_DEBUG_s, ADDR=geckotbase
+	.PSECT	gt_CODE_p , gt_DEBUG_m, MOD=4
+	.ENDM
+
+$$DISP==!1			;Debug display:
+				;  0 = No display
+				;  1 = Minimal display
+				;  2 = Full display
+.IF NE $$DISP
+ .MACRO	DISPCHR attr, chr
+	PUSHL	#{attr<8}+chr
+	CALL	$_PutDebugChr#
+ .ENDM
+
+ .MACRO	DISPLNG attr, chr, value
+	PUSHL	#{attr<8}+chr
+	PUSHL	value
+	CALL	$_PutDebugLong#
+ .ENDM
+.IFF
+ .MACRO	DISPCHR attr, chr
+ .ENDM
+
+ .MACRO	DISPLNG attr, chr, value
+ .ENDM
+.ENDC
+
+BPMAX=!32t			;Maximum number of breakpoints
+
+DBPID_SOF  =!0xA5
+DBPID_SETUP=!0x2D
+DBPID_IN   =!0x69
+DBPID_OUT  =!0xE1
+DBPID_DATA0=!0xC3
+DBPID_DATA1=!0x4B
+DBPID_ACK  =!0xD2
+DBPID_NAK  =!0x5A
+DBPID_STALL=!0x1E
+DBPID_NYET =!0x96
+DBPID_PING =!0xB4
+
+;Define offsets in the debug device data block
+
+$$$=!0
+BLK dbd_regphy , 4		;Physical address of main register block
+BLK dbd_dbgphy , 4		;Physical address of debug register block
+BLK dbd_capreg , 4		;Address of EHCI capabilities register block
+BLK dbd_opreg  , 4		;Address of EHCI operational register block
+BLK dbd_dbreg  , 4		;Address of EHCI debug register block
+BLK dbd_portreg, 4		;Address of EHCI port register for debug port
+BLK dbd_config , 4		;Configuration "address" of the EHCI
+BLK dbd_inpep  , 1		;Debug input endpoint
+BLK dbd_outep  , 1		;Debug output endpoint
+BLK dbd_usbrdy , 1		;Debug port/device state:
+				;  0 = EHCI not initialized
+				;  1 = EHCI initialized, no debug device
+				;  2 = Debug device ready
+BLK dbd_portnum, 1		;Debug port number
+dbd_SIZE=!$$$
+
+
+DBBUFRSZ=!2052t
+
+;Define debug entry types
+
+DBRQ_NOOP   =!0x00
+DBRQ_STATE  =!0x01
+DBRQ_LKELIST=!0x02
+DBRQ_RDMEM  =!0x03
+DBRQ_WRTMEM =!0x04
+DBRQ_RDREG  =!0x05
+DBRQ_WRTREG =!0x06
+DBRQ_RDIO   =!0x07
+DBRQ_WRTIO  =!0x08
+DBRQ_BPCTRL =!0x09
+DBRQ_BPLIST =!0x0A
+DBRQ_WPCTRL =!0x0B
+DBRQ_WPLIST =!0x0C
+DBRQ_XCTRL  =!0x0D
+DBRQ_GETVA  =!0x0E
+DBRQ_GETPA  =!0x0F
+DBRQ_RDPCI  =!0x10
+DBRQ_WRTPCI =!0x11
+DBRQ_ERROR  =!0x1F
+
+;Define debug unsolisited response types
+
+DBRP_USSTATE=!0x21
+DBRP_USRDMEM=!0x23
+DBRP_ERROR  =!0x3F
+
+;Define sub-types for the DBRP_ENTRY unsolisited response
+
+ENTTP_CALLED  =!1
+ENTTP_BKPT    =!2
+ENTTP_WTPT    =!3
+ENTTP_SINGLE  =!4
+ENTTP_UXBKPT  =!5
+ENTTP_UXWTPT  =!6
+ENTTP_UXTTRP  =!7
+
+;Define flag bits for the DBRP_ENTRY unsolisited response
+
+ENTFG_INIT=!0x80
+
+P_PCI1ADDR=!0x0CF8		;Type 1 configuration address register (32-bit)
+P_PCI1DATA=!0x0CFC		;Type 1 configuration data register (32-bit)
+
+
+;Define item size values for the RDMEM request
+
+RDMSZ_BYTE =!0
+RDMSZ_WORD =!1
+RDMSZ_LONG =!2
+RDMSZ_LLONG=!3
+
+;Define value for the "type" item in the RDMEM response
+
+SGTP_CODE =!0x04	;Code segment
+SGTP_DATA =!0x02	;Data segment
+SGTP_16BIT=!0x01	;16-bit segment or real-mode address
+
+
+REG_EAX =!1
+REG_EBX =!2
+REG_ECX =!3
+REG_EDX =!4
+REG_ESP =!5
+REG_EBP =!6
+REG_EDI =!7
+REG_ESI =!8
+REG_CS  =!9
+REG_SS  =!10t
+REG_DS  =!11t
+REG_ES  =!12t
+REG_FS  =!13t
+REG_GS  =!14t
+REG_EIP =!15t
+REG_EFR =!16t
+
+REG_LDTR=!17t
+REG_TR  =!18t
+REG_GDTR=!19t
+REG_IDTR=!20t
+REG_CR0 =!21t
+REG_CR2 =!22t
+REG_CR3 =!23t
+REG_CR4 =!24t
+REG_MSW =!25t
+REG_DR0 =!26t
+REG_DR1 =!27t
+REG_DR2 =!28t
+REG_DR3 =!29t
+REG_DR6 =!30t
+REG_DR7 =!31t
+REG_TR6 =!32t
+REG_TR7 =!32t
+REG_ST0 =!34t
+REG_ST1 =!35t
+REG_ST2 =!36t
+REG_ST3 =!37t
+REG_ST4 =!38t
+REG_ST5 =!39t
+REG_ST6 =!40t
+REG_ST7 =!41t
+
+;Define offsets in the breakpoint table
+
+$$$=!0
+BLK bpt_addr , 4
+BLK          , 2
+BLK bpt_inst , 1
+BLK bpt_flags, 1
+BLK bpt_pid  , 4
+BLK bpt_count, 4
+bpt_SIZE=!$$$
+
+;Define offsets in the watchpoint table
+
+$$$=!0
+BLK wpt_addr , 4
+BLK wpt_num  , 1
+BLK wpt_type , 1
+BLK wpt_size , 1
+BLK          , 1
+BLK wpt_pid  , 4
+BLK wpt_count, 4
+wpt_SIZE=!$$$
+
+;Define values for $_tracestate
+
+TS_NONE  =!0
+TS_SINGLE=!1
+TS_RUN   =!2

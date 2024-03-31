@@ -1,0 +1,914 @@
+	.TITLE	rect
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Subroutine to draw a rectangle with the specified line width and color
+;	void xwsDrawRect(
+;	    WIN *win,
+;	    long xpos,		// X position
+;	    long ypos,		// Y position
+;	    long width,		// Width
+;	    long height,	// Height
+;	    long linewid,	// Line width
+;	    long color);	// Color
+
+;This function uses the Pascal calling sequence
+
+;The arguments specify the outside dimensions of the rectangle.
+
+$$$=!0
+FRM dr_left  , 4
+FRM dr_right , 4
+FRM dr_top   , 4
+FRM dr_bottom, 4
+dr_SIZE=!$$$
+
+dr_win    =!36t
+dr_xpos   =!32t
+dr_ypos   =!28t
+dr_width  =!24t
+dr_height =!20t
+dr_linewid=!16t
+dr_color  =!12t
+
+	.ENTRY	xwsDrawRect
+xwsDrawRect::
+	PUSHL	EBX
+	ENTER	dr_SIZE, 0
+	MOVL	EBX, dr_win[EBP]
+
+;First get the scaled locations for each edge
+
+	MOVL	EAX, dr_xpos[EBP]
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	MOVL	dr_left[EBP], EAX
+	MOVL	EAX, dr_width[EBP]
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	DECL	EAX
+	MOVL	dr_right[EBP], EAX
+	MOVL	EAX, dr_ypos[EBP]
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	MOVL	dr_top[EBP], EAX
+	MOVL	EAX, dr_height[EBP]
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	DECL	EAX
+	MOVL	dr_bottom[EBP], EAX
+
+;Now draw the rectangle
+
+	PUSHL	EBX			;Draw the top line
+	PUSHL	dr_left[EBP]
+	PUSHL	dr_top[EBP]
+	PUSHL	dr_right[EBP]
+	PUSHL	dr_top[EBP]
+	MOVL	EAX, dr_linewid[EBP]
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	MOVL	dr_linewid[EBP], EAX
+	ORL	EAX, #LINE$BELOW
+	PUSHL	EAX
+	PUSHL	dr_color[EBP]
+	CALL	xwsdrawlinens#
+	PUSHL	dr_win[EBP]		;Draw the bottom line
+	PUSHL	dr_left[EBP]
+	PUSHL	dr_bottom[EBP]
+	PUSHL	dr_right[EBP]
+	PUSHL	dr_bottom[EBP]
+	MOVL	EAX, dr_linewid[EBP]
+	ORL	EAX, #LINE$ABOVE
+	PUSHL	EAX
+	PUSHL	dr_color[EBP]
+	CALL	xwsdrawlinens#
+	PUSHL	dr_win[EBP]		;Draw the left side line
+	PUSHL	dr_left[EBP]
+	PUSHL	dr_top[EBP]
+	PUSHL	dr_left[EBP]
+	PUSHL	dr_bottom[EBP]
+	MOVL	EAX, dr_linewid[EBP]
+	ORL	EAX, #LINE$TORIGHT
+	PUSHL	EAX
+	PUSHL	dr_color[EBP]
+	CALL	xwsdrawlinens#
+	PUSHL	dr_win[EBP]		;Draw the right side line
+	PUSHL	dr_right[EBP]
+	PUSHL	dr_top[EBP]
+	PUSHL	dr_right[EBP]
+	PUSHL	dr_bottom[EBP]
+	MOVL	EAX, dr_linewid[EBP]
+	ORL	EAX, #LINE$TOLEFT
+	PUSHL	EAX
+	PUSHL	dr_color[EBP]
+	CALL	xwsdrawlinens#
+	LEAVE
+	POPL	EBX
+	RET	28t
+.PAGE
+;Subroutine to fill a rectangle with the specified color
+;	void xwsFillRectWithColor(
+;	    WIN *win,
+;	    long xpos,		// X position
+;	    long ypos,		// Y position
+;	    long width,		// Width
+;	    long height,	// Height
+;	    long color);	// Color
+
+;This function uses the Pascal calling sequence
+
+ffr_win   =!40t
+ffr_xpos  =!36t
+ffr_ypos  =!32t
+ffr_width =!28t
+ffr_height=!24t
+ffr_color =!20t
+
+	.ENTRY	xwsFillRectWithColor
+xwsFillRectWithColor::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, ffr_win[EBP]	;Get the address of the WIN
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	14$			;Yes
+	MOVL	EAX, ffr_xpos[EBP]	;Scale the x position
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	MOVL	ffr_xpos[EBP], EAX
+	MOVL	EAX, ffr_width[EBP]	;Scale the width
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	SUBL	EAX, ffr_xpos[EBP]
+	MOVL	ffr_width[EBP], EAX
+	MOVL	EAX, ffr_ypos[EBP]	;Scale the y position
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVL	ffr_ypos[EBP], EAX
+	MOVL	EAX, ffr_height[EBP]	;Scale the height
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	SUBL	EAX, ffr_ypos[EBP]
+	MOVL	ffr_height[EBP], EAX
+	JMP	2$
+
+	.ENTRY	xwsfillrectns
+xwsfillrectns::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, ffr_win[EBP]	;Get the address of the WIN
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	14$			;Yes
+2$:	CMPL	ffr_color[EBP], #COLOR_TRANS
+	JNE	3$
+	PUSHL	#badcol
+	PUSHL	#0
+	CALL	xwsFail#
+
+3$:	MOVL	EAX, win_basxorg[EDI]	;No
+	ADDL	ffr_xpos[EBP], EAX
+	MOVL	EAX, win_basyorg[EDI]
+	ADDL	ffr_ypos[EBP], EAX
+	MOVL	ESI, win_bascliprgn[EDI] ;Get the address of the clipping RGN
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL ;Null region?
+	JE	14$			;Yes - nothing to do here
+	MOVL	EAX, ffr_xpos[EBP]	;Get left edge
+	MOVL	EBX, ffr_width[EBP]	;Get right edge
+	ADDL	EBX, EAX
+	DECL	EBX
+	CMPL	EBX, EAX		;Valid values?
+	JL	14$			;No - do nothing
+	MOVL	EDX, ffr_ypos[EBP]	;Get top edge
+	MOVL	ECX, ffr_height[EBP]	;Get bottom edge
+	ADDL	ECX, EDX
+	DECL	ECX
+	CMPL	ECX, EDX		;Valid values?
+	JL	14$			;No - do nothing
+	CMPL	EAX, rgn_right[ESI]	;Is rectangle completely outside of the
+					;  mask region?
+	JG	14$			;Yes
+	CMPL	EBX, rgn_left[ESI]	;Maybe
+	JL	14$			;Yes
+	CMPL	EDX, rgn_bottom[ESI]	;Maybe
+	JG	14$			;Yes
+	CMPL	ECX, rgn_top[ESI]
+	JL	14$
+
+;Here if the rectangle is not completely outside of the clipping region - now
+;  reduce it to be completely within the bounding box of the clipping region
+
+	CMPL	EAX, rgn_left[ESI]
+	JGE	4$
+	MOVL	EAX, rgn_left[ESI]
+	MOVL	ffr_xpos[EBP], EAX
+4$:	CMPL	EBX, rgn_right[ESI]
+	JLE	6$
+	MOVL	EBX, rgn_right[ESI]
+6$:	SUBL	EBX, EAX
+	INCL	EBX
+	MOVL	ffr_width[EBP], EBX
+	CMPL	EDX, rgn_top[ESI]
+	JGE	8$
+	MOVL	EDX, rgn_top[ESI]
+	MOVL	ffr_ypos[EBP], EDX
+8$:	CMPL	ECX, rgn_bottom[ESI]
+	JLE	10$
+	MOVL	ECX, rgn_bottom[ESI]
+10$:	SUBL	ECX, EDX
+	INCL	ECX
+	MOVL	ffr_height[EBP], ECX
+	PUSHL	EDI
+	PUSHL	ffr_xpos[EBP]
+	PUSHL	ffr_ypos[EBP]
+	PUSHL	ffr_width[EBP]
+	PUSHL	ffr_height[EBP]
+	PUSHL	ffr_color[EBP]
+	MOVL	EAX, win_basdrw[EDI]
+	MOVL	EAX, drw_funcdsp[EAX]
+	CALLI	gfx_rectfillsc[EAX]
+14$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+
+badcol:	.ASCIZ	"Filling with invalid color (TRANS)"
+.PAGE
+;Function to fill a rectangle with a solid color for a memory context or for
+;  a non-accelerated display - This function is only called from the dispatch
+;  above so there is no need to save any registers.
+
+$$$=!0
+FRM mfr_begin, 4
+FRM mfr_scnt , 4
+FRM mfr_span , 4
+FRM mfr_rgn  , 4
+FRM mfr_right, 4
+mfr_SIZE=!$$$
+
+mfr_win   =!28t
+mfr_xpos  =!24t
+mfr_ypos  =!20t
+mfr_width =!16t
+mfr_height=!12t
+mfr_color =!8
+
+	.ENTRY	xwsmemrectfillsc
+xwsmemrectfillsc::
+	ENTER	mfr_SIZE, 0
+	MOVL	EDI, mfr_win[EBP]
+	MOVL	ESI, win_bascliprgn[EDI] ;Get the address of the clipping RGN
+	MOVL	EBX, win_basdrw[EDI]
+	MOVL	EAX, mfr_ypos[EBP]	;Get starting position in display buffer
+	IMULL	EAX, drw_pixelspan[EBX]
+	ADDL	EAX, mfr_xpos[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	mfr_begin[EBP], EAX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, mfr_color[EBP]	;Convert the color to internal format
+	TESTL	EAX, EAX		;  if necessary
+	JS	2$
+	MOVL	EDX, drw_funcdsp[EBX]
+	CALLI	gfx_getcolor[EDX]
+2$:	MOVL	EDX, EAX		;Get it in both halves of EAX
+	SHLL	EAX, #16t
+	MOVW	AX, DX
+	MOVL	EDX, drw_bytespan[EBX]
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Simple region?
+	JNE	mfrcmplx		;No
+	SHRL	mfr_width[EBP], #1t
+	JC	14$			;If width is odd
+
+;Here if width is even
+
+4$:	JE	frdone			;If 0 width, nothing to do
+	TESTB	mfr_begin[EBP], #02h	;Starting on long boundry?
+	JNE	8$			;No
+
+;Here if width is even and line starts on long boundry
+
+6$:	MOVL	EDI, mfr_begin[EBP]	;Yes
+	MOVL	ECX, mfr_width[EBP]
+	RSTOSL	[EDI]
+	ADDL	mfr_begin[EBP], EDX
+	DECL	mfr_height[EBP]
+	JNE	6$
+	JMP	frdone
+
+;Here if width is even and line does not start on long boundry
+
+8$:	DECL	mfr_width[EBP]
+10$:	MOVL	EDI, mfr_begin[EBP]	;Yes
+	MOVL	ECX, mfr_width[EBP]
+	STOSW	[EDI]
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	ADDL	mfr_begin[EBP], EDX
+	DECL	mfr_height[EBP]
+	JNE	10$
+	JMP	frdone
+
+;Here if width is odd
+
+14$:	JNE	18$			;If width is greater than 1
+
+;Here if width of the rectangle is 1
+
+	MOVL	EDI, mfr_begin[EBP]
+16$:	MOVW	[EDI], AX
+	ADDL	EDI, EDX
+	DECL	mfr_height[EBP]
+	JNE	16$
+	JMP	frdone
+
+;Here if width is odd and greater than 1
+
+18$:	TESTB	mfr_begin[EBP], #02h	;Starting on long boundry?
+	JNE	22$			;No
+
+;Here if width is even and line starts on long boundry
+
+20$:	MOVL	EDI, mfr_begin[EBP]	;Yes
+	MOVL	ECX, mfr_width[EBP]
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	ADDL	mfr_begin[EBP], EDX
+	DECL	mfr_height[EBP]
+	JNE	20$
+	JMP	frdone
+
+;Here if width is even and line does not start on long boundry
+
+22$:	MOVL	EDI, mfr_begin[EBP]	;Yes
+	MOVL	ECX, mfr_width[EBP]
+	STOSW	[EDI]
+	RSTOSL	[EDI]
+	ADDL	mfr_begin[EBP], EDX
+	DECL	mfr_height[EBP]
+	JNE	22$
+frdone:	LEAVE
+	RET	24t
+.PAGE
+;Here to fill a rectangle using a complex clipping region
+
+mfrcmplx:
+	MOVL	mfr_span[EBP], EDX	;Store the byte span value
+	MOVL	mfr_rgn[EBP], ESI	;Store offset of the RGN
+	MOVL	EDX, mfr_xpos[EBP]	;Store right edge position
+	ADDL	EDX, mfr_width[EBP]
+	DECL	EDX
+	MOVL	mfr_right[EBP], EDX
+	MOVL	ECX, mfr_ypos[EBP]	;Get offset of first y-table entry
+	SUBL	ECX, rgn_top[ESI]	;  to use
+	LEAL	ESI, rgn_ytable[ESI+ECX*4]
+
+;Here for the next scan line in the region
+
+4$:	MOVL	EBX, [ESI]
+	ADDL	ESI, #4t
+	TESTL	EBX, EBX
+	JE	34$			;If this line is not included in the
+					;  region
+	ADDL	EBX, mfr_rgn[EBP]
+6$:	MOVL	ECX, [EBX]		;Get number of segments in line
+	MOVL	mfr_scnt[EBP], ECX
+	ADDL	EBX, #4t
+8$:	MOVL	ECX, 4[EBX]		;This segment completely left?
+	CMPL	ECX, mfr_xpos[EBP]
+	JGE	10$			;No
+	ADDL	EBX, #8t		;Yes
+	DECL	mfr_scnt[EBP]		;More segments?
+	JNE	8$			;Yes - continue
+	JMP	34$			;No - go on to next line
+
+;Here with first segment that is not completely left of the rectangle
+
+10$:	MOVL	EDX, [EBX]		;Does segment start to left of the
+	CMPL	EDX, mfr_xpos[EBP]	;  rectangle?
+	JGE	14$			;No
+	MOVL	EDX, mfr_xpos[EBP]	;Yes - get correct left edge position
+	JMP	14$			;Continue
+
+;Here for additional segments after the first
+
+12$:	MOVL	EDX, [EBX]		;Get left edge of segment
+	MOVL	ECX, 4[EBX]		;Get right edge of segment
+14$:	CMPL	EDX, mfr_right[EBP]	;Is segment completely right of the
+					;  rectangle?
+	JG	34$			;Yes - finished with this line
+	CMPL	ECX, mfr_right[EBP]	;No - does segment extend to right of
+					;  the rectangle?
+	JLE	18$			;No
+	MOVL	ECX, mfr_right[EBP]	;Yes - get cororect right edge position
+18$:	MOVL	EDI, mfr_begin[EBP]	;Get lenght of line to draw - 1
+	SUBL	ECX, EDX
+	JG	22$			;Is segment is more than 1 pixel long
+
+;Here if segment is 1 pixel long
+
+	SUBL	EDX, mfr_xpos[EBP]
+	MOVW	[EDI+EDX*2], AX
+	JMP	32$
+
+;Here if segment is more than 1 pixel long
+
+22$:	SUBL	EDX, mfr_xpos[EBP]
+	LEAL	EDI, [EDI+EDX*2]
+	SHRL	ECX, #1
+	JNC	26$			;If odd number of pixels in segment
+
+;Here if have an even number of pixels in the segment
+
+	TESTL	EDI, #02h		;Does it start on a long boundry?
+	JNE	24$			;No
+	INCL	ECX
+	JMP	30$			;Yes
+
+;Here if have an even number of pixels and the segment does not start on a
+;  long boundry
+
+24$:	STOSW	[EDI]
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	JMP	32$
+
+;Here if have an odd number of pixels
+
+26$:	TESTL	EDI, #02h		;Does it start on a long boundry?
+	JNE	28$			;No
+	RSTOSL	[EDI]			;Yes
+	STOSW	[EDI]
+	JMP	32$
+
+;Here if have an odd number of pixels and the segment does not start on a
+;  long boundry
+
+28$:	STOSW	[EDI]
+30$:	RSTOSL	[EDI]
+32$:	ADDL	EBX, #8t		;Advance to next segment
+	DECL	mfr_scnt[EBP]		;More segments?
+	JNE	12$			;Yes - continue
+
+;Here at end of line
+
+34$:	MOVL	EDX, mfr_span[EBP]
+	ADDL	mfr_begin[EBP], EDX
+	DECL	mfr_height[EBP]		;More lines?
+	JNE	4$			;Yes - continue
+	JMP	frdone
+.PAGE
+;Function to fill a rectangle with a monochrome pattern. This is mainly
+;  intented as a crude way to get gray regions on a monochrome printer
+;  although it also can be used with the display.
+;	void xwsFillRectWithMonoPattern(
+;	    WIN *win,
+;	    long  xpos,		// X position
+;	    long  ypos,		// Y position
+;	    long  width,	// Rectangle Width
+;	    long  height,	// Rectangle Height
+;	    long *pattern,	// Address of the pattern array
+;	    long  patxofs	// Pattern X starting offset (not used)
+;	    long  patyofs	// Pattern Y starting offset (not used)
+;	    long  patwidth,	// Pattern width (pixels)
+;	    long  patheight,	// Pattern height (pixels)
+;	    long  color0,	// Color for 0 bits
+;	    long  color1);	// Color for 1 bits
+
+;This function uses the Pascal calling sequence
+
+fmpr_win      =!64t
+fmpr_xpos     =!60t
+fmpr_ypos     =!56t
+fmpr_width    =!52t
+fmpr_height   =!48t
+fmpr_pattern  =!44t
+fmpr_patxofs  =!40t
+fmpr_patyofs  =!36t
+fmpr_patwidth =!32t
+fmpr_patheight=!28t
+fmpr_color0   =!24t
+fmpr_color1   =!20t
+
+	.ENTRY	xwsFillRectWithMonoPattern
+xwsFillRectWithMonoPattern::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0, 0
+	MOVL	EDI, fmpr_win[EBP]	;Get the address of the WIN
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	14$			;Yes
+	MOVL	EAX, fmpr_xpos[EBP]	;Scale the x position
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	MOVL	fmpr_xpos[EBP], EAX
+	MOVL	EAX, fmpr_width[EBP]	;Scale the width
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	SUBL	EAX, fmpr_xpos[EBP]
+	MOVL	fmpr_width[EBP], EAX
+	MOVL	EAX, fmpr_ypos[EBP]	;Scale the y position
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVL	fmpr_ypos[EBP], EAX
+	MOVL	EAX, fmpr_height[EBP]	;Scale the height
+	ADDL	EAX, ECX
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	SUBL	EAX, fmpr_ypos[EBP]
+	MOVL	fmpr_height[EBP], EAX
+	JMP	2$
+
+	.ENTRY	xwsfillrectwithmonopatternns
+xwsfillrectwithmonopatternns::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, fmpr_win[EBP]	;Get the address of the WIN
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	14$			;Yes
+2$:	MOVL	EAX, win_basxorg[EDI]	;No
+	ADDL	fmpr_xpos[EBP], EAX
+	MOVL	EAX, win_basyorg[EDI]
+	ADDL	fmpr_ypos[EBP], EAX
+	MOVL	ESI, win_bascliprgn[EDI] ;Get the address of the clipping RGN
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL ;Null region?
+	JE	14$			;Yes - nothing to do here
+	MOVL	EAX, fmpr_xpos[EBP]	;Get left edge
+	MOVL	EBX, fmpr_width[EBP]	;Get right edge
+	ADDL	EBX, EAX
+	DECL	EBX
+	CMPL	EBX, EAX		;Valid values?
+	JL	14$			;No - do nothing
+	MOVL	EDX, fmpr_ypos[EBP]	;Get top edge
+	MOVL	ECX, fmpr_height[EBP]	;Get bottom edge
+	ADDL	ECX, EDX
+	DECL	ECX
+	CMPL	ECX, EDX		;Valid values?
+	JL	14$			;No - do nothing
+	CMPL	EAX, rgn_right[ESI]	;Is rectangle completely outside of the
+					;  mask region?
+	JG	14$			;Yes
+	CMPL	EBX, rgn_left[ESI]	;Maybe
+	JL	14$			;Yes
+	CMPL	EDX, rgn_bottom[ESI]	;Maybe
+	JG	14$			;Yes
+	CMPL	ECX, rgn_top[ESI]
+	JL	14$
+
+;Here if the rectangle is not completely outside of the clipping region - Now
+;  reduce it to be completely within the bounding box of the clipping region.
+;	c{EAX} = Left edge of rectangle
+;	c{EBX} = Right edge of rectangle
+;	c{ECX} = Top edge of rectangle
+;	c{EDX} = Bottom edge of rectangle
+;	c{ESI} = Address of the RGN for the clipping region
+
+	CMPL	EAX, rgn_left[ESI]	;Are we starting to the left of the
+					;  region?
+	JGE	4$			;No
+
+	INT3
+
+	PUSHL	ECX
+	PUSHL	EDX
+	MOVL	EDX, rgn_left[ESI]	;Yes
+	MOVL	fmpr_xpos[EBP], EDX
+	SUBL	EDX, EAX		;Get amount to skip
+	MOVL	EAX, EDX		;Modulo the width of the pattern
+	CLRL	EDX
+	IDIVL	fmpr_patwidth[EBP]
+	ADDL	fmpr_patxofs[EBP], EDX
+	POPL	EDX
+	POPL	ECX
+4$:	CMPL	EBX, rgn_right[ESI]
+	JLE	6$
+	MOVL	EBX, rgn_right[ESI]
+6$:	SUBL	EBX, fmpr_xpos[EBP]
+	INCL	EBX
+	MOVL	fmpr_width[EBP], EBX
+	CMPL	EDX, rgn_top[ESI]
+	JGE	8$
+	MOVL	EAX, rgn_top[ESI]	;Yes
+	MOVL	fmpr_ypos[EBP], EAX
+	SUBL	EAX, EDX		;Get amount to skip
+	CLRL	EDX			;Modulo the height of the pattern
+	IDIVL	fmpr_patheight[EBP]
+	ADDL	fmpr_patyofs[EBP], EDX
+8$:	CMPL	ECX, rgn_bottom[ESI]
+	JLE	10$
+	MOVL	ECX, rgn_bottom[ESI]
+10$:	SUBL	ECX, fmpr_ypos[EBP]
+	INCL	ECX
+	MOVL	fmpr_height[EBP], ECX
+	PUSHL	EDI
+	PUSHL	fmpr_xpos[EBP]
+	PUSHL	fmpr_ypos[EBP]
+	PUSHL	fmpr_width[EBP]
+	PUSHL	fmpr_height[EBP]
+	PUSHL	fmpr_pattern[EBP]
+	PUSHL	fmpr_patxofs[EBP]
+	PUSHL	fmpr_patyofs[EBP]
+	PUSHL	fmpr_patwidth[EBP]
+	PUSHL	fmpr_patheight[EBP]
+	PUSHL	fmpr_color0[EBP]
+	PUSHL	fmpr_color1[EBP]
+	MOVL	EAX, win_basdrw[EDI]
+	MOVL	EAX, drw_funcdsp[EAX]
+	CALLI	gfx_rectfillmp[EAX]
+14$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	48t
+.PAGE
+;Function to fill a rectangle with a monochrome pattern for a memory context
+;  or for a non-accelerated display - This function is only called from the
+;  dispatch above.
+
+$$$=!0
+FRM mfrp_begin  , 4
+FRM mfrp_scnt   , 4
+FRM mfrp_span   , 4
+FRM mfrp_rgn    , 4
+FRM mfrp_right  , 4
+FRM mfrp_patspan, 4
+FRM mfrp_patll  , 4	;Lines left in pattern
+FRM mfrp_linenum, 4
+FRM mfrp_ytbl   , 4
+mfrp_SIZE=!$$$
+
+mfrp_win      =!64t
+mfrp_xpos     =!60t
+mfrp_ypos     =!56t
+mfrp_width    =!52t
+mfrp_height   =!48t
+mfrp_pattern  =!44t
+mfrp_patxofs  =!40t
+mfrp_patyofs  =!36t
+mfrp_patwidth =!32t
+mfrp_patheight=!28t
+mfrp_color0   =!24t
+mfrp_color1   =!20t
+
+	.ENTRY	xwsmemrectfillmp
+xwsmemrectfillmp::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	mfrp_SIZE, 0
+	MOVL	EDI, mfrp_win[EBP]
+	MOVL	ESI, win_bascliprgn[EDI] ;Get the address of the clipping RGN
+	MOVL	EBX, win_basdrw[EDI]
+	MOVL	EAX, mfrp_ypos[EBP]	;Get starting position in display buffer
+	IMULL	EAX, drw_pixelspan[EBX]
+	ADDL	EAX, mfrp_xpos[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	mfrp_begin[EBP], EAX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, mfrp_color0[EBP]	;Convert the colors to internal format
+	TESTL	EAX, EAX		;  if necessary
+	JS	2$
+	MOVL	EDX, drw_funcdsp[EBX]
+	CALLI	gfx_getcolor[EDX]
+	MOVL	mfrp_color0[EBP], EAX
+2$:	MOVL	EAX, mfrp_color1[EBP]	;Convert the colors to internal format
+	TESTL	EAX, EAX		;  if necessary
+	JS	4$
+	MOVL	EDX, drw_funcdsp[EBX]
+	CALLI	gfx_getcolor[EDX]
+	MOVL	mfrp_color1[EBP], EAX
+4$:
+	MOVL	EAX, drw_bytespan[EBX]
+	MOVL	mfrp_span[EBP], EAX
+
+	MOVL	EAX, mfrp_patwidth[EBP]
+	SHRL	EAX, #3
+	ADDL	EAX, #0x03
+	ANDL	EAX, #0xFFFFFFFC
+	MOVL	mfrp_patspan[EBP], EAX
+
+	MOVL	EDX, drw_bytespan[EBX]
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Simple region?
+	JNE	mfrpcmplx		;No
+
+	MOVL	EAX, mfrp_patheight[EBP]
+	MOVL	EBX, mfrp_patyofs[EBP]
+	SUBL	EAX, EBX
+	MOVL	mfrp_patll[EBP], EAX
+	IMULL	EBX, mfrp_patspan[EBP]
+	ADDL	EBX, mfrp_pattern[EBP]
+	MOVL	ECX, mfrp_width[EBP]
+
+;Here to start a scan line
+
+10$:	MOVL	EDI, mfrp_begin[EBP]
+	MOVL	EDX, mfrp_patxofs[EBP]
+12$:	MOVL	EAX, mfrp_color0[EBP]
+	BTL	[EBX], EDX
+	JNC	14$
+	MOVL	EAX, mfrp_color1[EBP]
+14$:	MOVW	[EDI], AX
+	DECL	ECX			;More pixels in this line?
+	JE	20$			;No
+	ADDL	EDI, #2			;Yes
+	INCL	EDX
+	CMPL	EDX, mfrp_patwidth[EBP]	;At end of pattern line?
+	JL	12$			;No
+	CLRL	EDX			;Yes - restart the line
+	JMP	12$
+
+;Here at the end of a line
+
+20$:	DECL	mfrp_height[EBP]	;More lines to do?
+	JE	frpdone			;No - finished
+	MOVL	EAX, mfrp_span[EBP]	;Advance to next display line
+	ADDL	mfrp_begin[EBP], EAX
+	MOVL	ECX, mfrp_width[EBP]
+
+	ADDL	EBX, mfrp_patspan[EBP]	;Advance to next pattern line
+
+	DECL	mfrp_patll[EBP]		;Do we have another pattern line?
+	JNE	10$			;Yes
+	MOVL	EBX, mfrp_pattern[EBP]	;No - reset to start of pattern
+	MOVL	EAX, mfrp_patheight[EBP]
+	MOVL	mfrp_patll[EBP], EAX
+	JMP	10$
+.PAGE
+;Here to fill with a rectangle with a monchrome pattern using a complex
+;  clipping region
+
+mfrpcmplx:
+
+	INT3
+
+	MOVL	mfrp_rgn[EBP], ESI	;Store address of the RGN (We need the
+					;  register!)
+	MOVL	EDX, mfrp_xpos[EBP]	;Store rectangle's right edge position
+	ADDL	EDX, mfrp_width[EBP]
+	DECL	EDX
+	MOVL	mfrp_right[EBP], EDX
+	MOVL	ECX, mfrp_ypos[EBP]	;Get address of first y-table entry
+	SUBL	ECX, rgn_top[ESI]	;  to use
+	LEAL	ESI, rgn_ytable[ESI+ECX*4]
+	MOVL	mfrp_ytbl[EBP], ESI
+	MOVL	mfrp_linenum[EBP], #0
+
+;Here to start a new scan line
+
+4$:	MOVL	EBX, mfrp_ytbl[EBP]
+	MOVL	EBX, [EBX]
+	ADDL	mfrp_ytbl[EBP], #4t
+	TESTL	EBX, EBX
+	JE	34$
+	ADDL	EBX, mfrp_rgn[EBP]
+
+;Get the address of the pattern line for this scan line
+
+	MOVL	EAX, mfrp_linenum[EBP]
+	ADDL	EAX, mfrp_patyofs[EBP]
+	CLRL	EDX
+	IDIVL	mfrp_patwidth[EBP]
+	IMULL	EDX, mfrp_patspan[EBP]
+	ADDL	EDX, mfrp_pattern[EBP]
+	MOVL	ESI, EDX
+
+	MOVL	ECX, [EBX]		;Get number of segments in line
+	MOVL	mfrp_scnt[EBP], ECX
+	ADDL	EBX, #4t
+8$:	MOVL	ECX, 4[EBX]		;This segment completely left?
+	CMPL	ECX, mfrp_xpos[EBP]
+	JGE	10$			;No
+	ADDL	EBX, #8t		;Yes
+	DECL	mfrp_scnt[EBP]		;More segments?
+	JNE	8$			;Yes - continue
+	JMP	34$			;No - go on to next line
+
+;Here with first segment that is not completely left of the rectangle
+
+10$:	MOVL	EDX, [EBX]		;Does segment start to left of the
+	CMPL	EDX, mfrp_xpos[EBP]	;  rectangle?
+	JGE	14$			;No
+	MOVL	EDX, mfrp_xpos[EBP]	;Yes - get correct left edge position
+	JMP	14$			;Continue
+
+;Here for additional segments after the first
+
+12$:	MOVL	EDX, [EBX]		;Get left edge of segment
+	MOVL	ECX, 4[EBX]		;Get right edge of segment
+
+
+14$:	CMPL	EDX, mfrp_right[EBP]	;Is segment completely right of the
+					;  rectangle?
+	JG	34$			;Yes - finished with this line
+	CMPL	ECX, mfrp_right[EBP]	;No - does segment extend to right of
+					;  the rectangle?
+	JLE	18$			;No
+	MOVL	ECX, mfrp_right[EBP]	;Yes - get correct right edge position
+
+;Here with a line segment to fill - First determine the starting offset in
+;  the pattern. This is the distance from the left edge of the rectangle to
+;  the left edge of the segment modulo the width of the pattern plus the
+;  specified starting offset.
+;	c{EDX} = Left edge of the segment
+;	c{ECX} = Right edge of the segment
+
+18$:
+	INT3
+
+;;;	CMPL	ECX, mfrp_right[EBP]	;Get position of the end of the line
+;;;	JLE	20$
+;;;	MOVL	ECX, mfrp_right[EBP]
+20$:	SUBL	ECX, EDX		;Get length of the line to draw
+	MOVL	EDI, mfrp_begin[EBP]	;Get address of first pixel in line
+	MOVL	EAX, EDX
+	SUBL	EAX, mfrp_xpos[EBP]
+	LEAL	EDI, [EDI+EAX*2]
+	ADDL	EAX, mfrp_patxofs[EBP]	;Get starting pixel offset in the
+	CLRL	EDX			;  pattern
+	IDIVL	mfrp_patwidth[EBP]
+24$:	MOVL	EAX, mfrp_color0[EBP]
+	BTL	[ESI], EDX
+	JNC	26$
+	MOVL	EAX, mfrp_color1[EBP]
+26$:	MOVW	[EDI], AX
+	DECL	ECX			;More pixels in this segment?
+	JE	30$			;No
+	ADDL	EDI, #2			;Yes
+	INCL	EDX
+	CMPL	EDX, mfrp_patwidth[EBP]	;At end of pattern?
+	JL	24$			;No
+	CLRL	EDX			;Yes - restart the line
+	JMP	24$
+
+;Here when finished with a segment
+
+30$:	ADDL	EBX, #8t		;Advance to next segment
+	DECL	mfrp_scnt[EBP]		;More segments?
+	JNE	12$			;Yes - continue
+
+;Here at end of line
+
+34$:	MOVL	EDX, mfrp_span[EBP]
+	ADDL	mfrp_begin[EBP], EDX
+	INCL	mfrp_linenum[EBP]
+	DECL	mfrp_height[EBP]		;More lines?
+	JNE	4$			;Yes - continue
+frpdone:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	48t
+
+	.END

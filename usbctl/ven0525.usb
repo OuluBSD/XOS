@@ -1,0 +1,11 @@
+# This file defines the Ajays USB debug device
+DEV:127A
+FNC:generic
+DRV:bulkcls,usbbulkalnk
+CLS:BULK
+NAME:DEBUG
+dtp:USBA
+BI:1,1
+BO:1,1
+UNB:0
+UNB:1

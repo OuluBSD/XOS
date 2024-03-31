@@ -1,0 +1,124 @@
+	.TITLE	fseek - Function to set IO position for stream
+	.SBTTL	STDC run-time library for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\STDIO.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to set IO position for stream
+;	FILE *stream;		/* Stream pointer */
+;	long  offset;		/* Desired offset in file */
+;	long  mode;		/* Mode: 0 = Relative to beginning of file */
+;				/*	 1 = Relative to current position */
+;				/*	 2 = Relative to end of file */
+;	(long)value = fseek(stream, offset, mode);
+
+	.ENTRY	fseek
+fseek:	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, 12t[ESP]		;Get stream pointer
+	TESTL	ESI, ESI
+	JE	2$
+	TESTL	iob_flag[ESI], #IOB$READ|IOB$WRITE ;No - is the file open?
+	JNE	4$			;Yes
+2$:	PUSHL	#-ER_BDDVH		;No - error
+errrtn:	POPL	errno#
+errrt2:	MOVL	EAX, #-1
+	POPL	ESI
+	POPL	EDI
+	RET
+
+;Here with file open
+
+4$:	BTL	iob_flag[ESI], #IOB%IONBF ;Unbuffered device?
+	JC	goodrtn			;Yes - this is a no-op
+	MOVL	EDI, 16t[ESP]		;No - get offset value
+	MOVL	EAX, 20t[ESP]		;Get mode
+	CMPL	EAX, #2t		;Valid value?
+	JA	6$			;No
+	JB	8$			;If not relative to EOF
+	ADDL	EDI, iob_length[ESI]	;Relative to EOF - adjust offset
+	JMP	10$
+
+;Here if illegal mode
+
+6$:	PUSHL	#-ER_PARMV
+	JMP	errrtn
+
+;Here if not relative to EOF
+
+8$:	DECL	EAX
+	JS	10$			;If relative to start of file
+	ADDL	EDI, iob_offset[ESI]	;Relative to current position - adjust
+	ADDL	EDI, iob_bsize[ESI]	;  offset
+	SUBL	EDI, iob_count[ESI]
+10$:	TESTL	EDI, EDI		;Can't go before beginning of file
+	JNS	14$
+	CLRL	EDI
+14$:	MOVL	EAX, iob_count[ESI]	;Have we extended this block?
+	CMPL	iob_endcnt[ESI], EAX
+	JBE	18$			;No
+	MOVL	iob_endcnt[ESI], EAX	;Yes - update EOF count
+	MOVL	EDX, iob_bsize[ESI]	;And update the file length
+	SUBL	EDX, EAX
+	ADDL	EDX, iob_offset[ESI]
+	MOVL	iob_length[ESI], EDX
+18$:	MOVL	EDX, EDI
+	ANDL	EDX, #~0x1FF
+	ANDL	EDI, #0x1FF
+	CMPL	EDX, iob_offset[ESI]	;Are we at the right block now?
+	JE	22$			;Yes
+	PUSHL	EDX			;No - write current block to disk if
+	PUSHL	ESI			;  need to
+	CALL	__dumpblk#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	30$
+	MOVL	iob_offset[ESI], EDX	;Set new block
+	PUSHL	ESI
+	CALL	__thisblk#		;Read the new block
+	TESTL	EAX, EAX
+	JS	30$			;If error
+22$:	MOVL	EAX, iob_bsize[ESI]
+	SUBL	EAX, EDI
+	CMPL	iob_endcnt[ESI], EAX	;Are we positioning beyond end?
+	JBE	24$			;No
+	PUSHL	#-ER_EOF
+	JMP	errrtn
+
+;Here if not positioning beyond of file
+
+24$:	MOVL	EAX, iob_bsize[ESI]	;Set byte count
+	SUBL	EAX, EDI
+	MOVL	iob_count[ESI], EAX
+	ADDL	EDI, iob_buffer[ESI]	;Set pointer
+	MOVL	iob_pnt[ESI], EDI
+goodrtn:CLRL	EAX
+30$:	POPL	ESI
+	POPL	EDI
+	RET
+
+	.END

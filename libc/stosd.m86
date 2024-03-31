@@ -1,0 +1,35 @@
+	.TITLE	__STOSD
+
+	.PROC	80386
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to store longs in memory
+;	c{EAX} = Offset
+;	c{ECX} = Number of longs to store
+;	c{EDX} = Value to store
+;	CALL	__STOSD
+;	C{EAX} = Offset of next long
+
+	.ENTRY	__STOSD
+__STOSD::
+	MOVL	[EAX], EDX
+	ADDL	EAX, #4t.B
+	DECL	ECX
+	JNE	__STOSD.S
+	RET
+
+	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+
+	.END

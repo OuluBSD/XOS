@@ -1,0 +1,460 @@
+	.TITLE	lke - Routines to support loadable kernel extensions
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+
+	CODE
+
+	.SBTTL	svcSysLoadLke - SVC to load LKE
+
+;Here for the svcSysLoadLke SVC - Load LKE
+;	long svcSysLoadLke(
+;	    LKEARG *argblk;	// Address of argument block
+;  Value returned is 0 if normal or negative error code if error
+
+;The sequence to load an LKE is as follows:
+;	1 - Read the .LKE file and determine the names of all referenced
+;	      common data areas.
+;	2 - Initialize the argument block and issue the svcSysLoadLke call
+;	      - address of code msect data must be supplied - this call will
+;	      always return without waiting.
+;	3 - Use the relocation information returned to relocate the code and
+;	      data msects, fill in count and address fields in the argument
+;	      block, issue the svcSysLoadLke call again (do not change the
+;	      lla_state field) - this call may wait if IO is done by the
+;	      LKE's initialization routine - the calling process is
+;	      interruptable during this wait.
+
+;Warning: None of the arguments block fields marked s must be modified after
+;	  the initial SvcSysLoadLKe call and before the second svcSysLoadLke
+;	  call returns.
+
+;The load may be aborted before the second svcSysLoadLke call by setting the
+;  lla_init field to 0 and calling svcSysLoadLke.
+
+;Following is the format of the argument block:
+;     Name   Offset Size *       Description
+;  lla_state	  0   4 us State
+;  lla_value      4   4  s Returned value
+;  lla_doffset	  8   4  s Offset for data msect
+;  lla_dsize	 12   4  s Final size for data msect
+;  lla_dcount	 16   4 u  Size of data msect data
+;  lla_ddata	 20   8 u  Address of data for data msect
+;  lla_coffset	 28   4  s Offset for code msect
+;  lla_csize	 32   4  s Final size for code msect
+;  lla_ccount	 36   4 u  Size of code msect data
+;  lla_cdata	 40   8 u  Address of data for code msect
+;  lla_init	 48   4 u  Offset of initialiation routine
+;  lla_char	 52   8 u  Address of characteristics list
+;  lla_xcount	 60   4 u  Size of exported symbol table data
+;  lla_xdata	 64   8 u  Address of data for exported symbol table
+;  lla_soffset   68   4  s Offset for debugger symbol table msect
+;  lla_ssize     72   4  s Final size for deebugger symbol table msect
+;  lla_scount	 76   4 u  Size of debuggersymbol table data
+;  lla_sdata	 80   8 u  Address of data for debigger symbol table
+
+;* u = set by user, s = set by system
+
+;The LKE initialization runs in scheduled kernel context. It is called as
+;  follows:
+;	c{EDX} = Address of characteristics list
+;	CALL	initroutine
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Nornal
+;	  c{ECX} = Final size of code msect
+;	  c{EDX} = Final size of data msect
+;If the error return is indicated, ALL memory for both the code and data msects
+;  is given up!
+
+;Warning: The first call to svcSysLkeLoad obtains the exec memory allocate
+;	  resource, which is given up by the second call.  Keeping this
+;	  resource for an extended time may cause many system operations to
+;	  hang, so the second call should be made as soon as possible!
+
+;If the initialization routine requires extended fork context for IO, it should
+;  call xffbegin to create the extended fork context and wait by calling
+;  schedule (which is an uninterruptable wait) until the extended fork
+;  terminates.
+
+;The debugger symbol table is stored in the data msect immediately before the
+;  LKE's loaded data. If an init-only LKE gives up all of its data, the
+;  debugger symbol table is also given up. If it retains any data, the debugger
+;  table is left in memory but is not available to the debugger. Until this
+;  dehavior is changed, init-only LKEs which leave data should generally be
+;  loaded without symbols except when that LKE is being debugged.
+
+$$$=!0
+FRM sll_lla    , 4		;Address of argument blck
+FRM sll_ctop   , 4
+FRM sll_dtop   , 4
+FRM sll_initfnc, 4
+sll_SIZE=!$$$
+
+psvcSysLoadLke::
+	ENTER	sll_SIZE, 0
+	MOVL	EDX, knlTda+tdaArg1#	;Get address of argument block
+	MOVL	sll_lla[EBP], EDX
+	MOVL	EAX, [EDX]		;Get state
+	DECL	EAX
+	JS	lkebegin
+	JE	lkeload
+	MOVL	EAX, #ER_FUNC
+	RET
+.PAGE
+;Here to begin loading an LKE
+
+lkebegin:
+	CALL	knlGetXRes#		;Get exec memory resource
+	MOVL	EDX, sll_lla[EBP]
+	MOVL	ESI, lla_cdata[EDX]	;Get address of code msect data
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EBX, firstlke#		;Point to first LKE in memory
+	PUSHL	EDI
+4$:	TESTL	EBX, EBX		;Have another?
+	JE	lkebegin2		;No - go on
+	LEAL	EDI, lke_name[EBX]	;Yes - point to its name
+	MOVL	ECX, #4
+	PUSHL	ESI
+	ADDL	ESI, #lke_name		;Point to LKE name
+	RECMPSL	[EDI], [ESI]		;Compare names
+	POPL	ESI
+	JE	6$			;Fail if name is the same
+	MOVL	EBX, lke_next[EBX]	;Different - advance to next LKE
+	JMP	4$			;Continue
+
+;Here if already have an LKE with this name loaded
+
+6$:	POPL	EDI
+	MOVL	EAX, #ER_LKEAL
+	JMP	lkefail
+
+lkebegin2:
+	POPL	EDI
+	MOVL	EAX, knlXDataPnt#	;Get offset for symbol table msect
+	MOVL	lla_soffset[EDX], EAX
+	MOVL	ECX, lla_scount[EDX]	;Get offset for data msect
+	ADDL	ECX, #3
+	ANDL	ECX, #0xFFFFFFFC
+	ADDL	EAX, ECX
+	MOVL	lla_doffset[EDX], EAX
+	MOVL	EAX, knlXCodePnt#	;Get offset for code msect
+	MOVL	lla_coffset[EDX], EAX
+	MOVL	[EDX], #LLS_LOAD	;Update the state
+	CLRL	EAX			;Return 0
+	LEAVE
+	RET
+.PAGE
+;Here if error after the new LKE has been linked into the LKE list - we
+;  must first remove it from the list (we link it into the list before calling
+;  the initialization routine so debugger symbols will be available in the
+;  initialization routine)
+
+lkefailul:
+	CLRL	ECX
+	MOVL	EDX, lastlke#		;Get offset of this LKE
+	MOVL	EBX, firstlke#		;Find entry before this one
+	CMPL	EBX, EDX		;Is this the only one?
+	JNE	10$			;No
+	MOVL	lastlke#, ECX		;Yes - just clear head and tail
+	MOVL	firstlke#, ECX		;  pointers
+	JMP	14$
+
+;Here if this is not the only LKE
+
+10$:	CMPL	lke_next[EBX], EDX	;Is this the previous one?
+	JE	12$			;Yes
+	MOVL	EBX, lke_next[EBX]	;No - advance to next
+	JMP	10$			;Continue
+
+;Here with previous LKE
+
+12$:	MOVL	lke_next[EBX], ECX	;Unlink the new one
+	MOVL	lastlke#, EBX
+14$:	DECL	lkecount#
+
+;Here with error with LKE not linked into the LKE list
+
+lkefail:PUSHL	EAX
+	MOVL	EBX, knlSvDataPnt#	;Give up any exec memory we have
+	CALL	knlGiveXMem#		;  allocated
+	MOVL	EBX, knlSvCodePnt#
+	CALL	knlGiveXCode#
+	CALL	knlGiveXRes#		;Give up the exec memory resource
+	POPL	EAX
+	LEAVE
+	RET
+.PAGE
+;Here to load LKE data and terminate load
+
+1$:	CRASH	XMEM
+
+lkeload:MOVL	EAX, knlPda+pdaAddr#
+	CMPL	knlXResPda#, EAX
+	JNE	1$
+	MOVL	symdata, #0
+	PUSHL	EDX
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	lla_ccount[EDX]
+	PUSHL	EAX
+	CALL	sysMemGetXCode#		;Get memory for exec code
+	POPL	EDI
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	lkefail
+	MOVL	ECX, EAX
+	MOVL	EDX, sll_lla[EBP]
+	MOVL	EBX, lla_cdata[EDX]	;Get address of code msect data
+	MOVL	ESI, EBX
+	PUSHL	DS
+	POPL	ES
+	SHRL	ECX, #2
+	CLD
+	PUSHL	EDI
+	RMOVSL	[EDI], [ESI]		;Copy his data
+	POPL	EDI
+	MOVL	EAX, lke_initfnc[EDI]	;Get the address of his init function
+	MOVL	sll_initfnc[EBP], EAX	;  (if any)
+	CLRL	EAX			 ;Assume no symbols (Need to clear these
+	MOVL	lke_symtblsize[EDI], EAX ;  here before linking in the LKE to
+	MOVL	lke_symtbladdr[EDI], EAX ;  keep from messing up Gecko!)
+	MOVL	EAX, lastlke#		;Link into the LKE list
+	TESTL	EAX, EAX		;Is this the first one?
+	JNE	2$			;No
+	MOVL	firstlke#, EDI		;Yes
+	JMP	4$
+
+2$:	MOVL	lke_next[EAX], EDI
+4$:	MOVL	lastlke#, EDI
+	INCL	lkecount#
+	MOVL	EAX, lkenumber#
+	MOVW	lke_number[EDI], AX
+	INCL	lkenumber#
+	MOVL	ECX, lla_scount[EDX]	;Get amount of debugger symbol data
+					;  to load
+	JREGZ	ECX, 6$			;If no symbol data
+	CALL	knlGetXMem#		;Get memory for debugger symbols
+	JC	lkefailul
+	MOVL	lla_ssize[EDX], ECX	;Store actual size for user
+	MOVL	EBX, lastlke#
+	MOVL	lke_symtblsize[EBX], ECX ;Store size in the LKE header
+	MOVL	lke_symtbladdr[EBX], EDI ;Store address in the LKE header
+	MOVL	EBX, lla_sdata[EDX]	;Get address of debugger symbol table
+	MOVL	ESI, EBX		;  data
+	PUSHL	DS
+	POPL	ES
+	SHRL	ECX, #2
+	CLD
+	RMOVSL	[EDI], [ESI]		;Copy his debugger symbol data
+	MOVL	EAX, knlSvDataPnt#	;Protect the symbol data
+	MOVL	symdata, EaX
+	MOVL	EAX, knlXDataPnt#	;Protect the symbol data
+	MOVL	knlSvDataPnt#, Eax
+
+;Here with the debugger symbol table loaded if necessary
+
+6$:	MOVL	ECX, lla_dcount[EDX]	;Get amount of data to load
+	JREGZ	ECX, 8$			;If no data to load
+	CALL	knlGetXMem#		;Get memory for exec data
+	JC	lkefailul
+	MOVL	EBX, lla_ddata[EDX]	;Get address of data msect data
+	MOVL	ESI, EBX
+	PUSHL	DS
+	POPL	ES
+	SHRL	ECX, #2
+	CLD
+	RMOVSL	[EDI], [ESI]		;Copy his data
+
+;The LKE initialization function (if any) is called as follows:
+;  The following global values are set:
+;    c{tdaBuffer2} = Address of the characteristics list
+;    c{tdaParm}    = 0
+;	long lkeinit(
+;	    void **pctop,	// Address of place to store highest code
+;				//   address
+;	    void **pdtop);	// Address of place to store highest data
+;				//   address
+;  Value returned is a positive return value or a negative XOS error code if
+;    error. If an error is indiciated, the LKE, including its debugger symbol
+;    table is removed. Otherwise the ctop and dtop values are used to determine
+;    how much memory to keep. In either case, the value returned is returned
+;    to the caller as the returned value for the svcSysLoadLke SVC. If there
+;    is no initialization function, the returned value for the SVC (assuming
+;    no other errors) is 0.
+;  The initialization function does NOT need to preserve ANY registers other
+;    than ESP and EBP.
+
+8$:	CLRL	EAX
+	MOVL	sll_ctop[EBP], EAX
+	MOVL	sll_dtop[EBP], EAX
+	CMPL	sll_initfnc[EBP], #0	;Does it have an initialization routine?
+	JE	10$			;No
+lkeinit::
+	MOVL	EAX, lla_char[EDX]	;Yes - set up the arguments
+	MOVL	knlTda+tdaBuffer2#, EAX
+	MOVL	knlTda+tdaParm#, #0
+	LEAL	EAX, sll_ctop[EBP]	;Call it
+	PUSHL	EAX
+	LEAL	EAX, sll_dtop[EBP]
+	PUSHL	EAX
+	CALLI	sll_initfnc[EBP]
+	TESTL	EAX, EAX
+	JNS	10$			;If OK
+	MOVL	EDX, knlSvCodePnt#	;Error - give it all up!
+	MOVL	sll_ctop[EBP], EDX
+	MOVL	EDX, knlSvDataPnt#
+	MOVL	sll_dtop[EBP], EDX
+10$:	MOVL	EBX, knlPda+pdaAddr#	;Still have the exec memory resource?
+	CMPL	knlXResPda#, EBX
+	JE	11$			;Yes
+	CRASH	XMEM
+
+11$:	MOVL	EBX, knlTda+tdaArg1#	;Get address of argument block
+	MOVL	ECX, sll_ctop[EBP]	;Did he specify the code msect top?
+	TESTL	ECX, ECX
+	JNE	12$			;Yes
+	MOVL	ECX, knlXCodePnt#	;No - keep it all
+12$:	CMPL	ECX, #-1
+	JNE	14$
+	MOVL	ECX, knlSvCodePnt#
+14$:	SUBL	ECX, knlSvCodePnt#	;Calculate size
+	ADDL	ECX, #3			;Round up to number of longs
+	ANDL	ECX, #0xFFFFFFFC
+	MOVL	lla_csize[EBX], ECX	;Store size of code msect
+	MOVL	EDX, sll_dtop[EBP]
+	CMPL	EDX, #-1		;Does he want to give up all data?
+	JNE	16$			;No
+	MOVL	EDX, knlSvDataPnt#	;Yes - assume keeping debugger symbols
+	TESTL	ECX, ECX		;Also giving up all code?
+	JNE	16$			;No
+	MOVL	lla_ssize[EBX], #0
+	MOVL	lla_soffset[EBX], #0
+	MOVL	EDX, symdata		;Yes - give up the symbols too
+	MOVL	knlSvDataPnt#, EDX
+16$:	TESTL	EDX, EDX		;Did he specify the data msect top?
+	JNE	18$			;Yes
+	MOVL	EDX, knlXDataPnt#	;No - keep it all
+18$:	MOVL	ESI, EDX
+	SUBL	EDX, knlSvDataPnt#	;Yes - calculate size
+	JNS	20$			;Might be negative if not keeping
+	CLRL	EDX			;  debugger symbols
+
+;;;;;	SUBL	EDX, lla_ssize[EBX]
+
+20$:	MOVL	lla_dsize[EBX], EDX	;Store size of data msect
+	MOVL	[EBX], #LLS_DONE	;Update state
+	TESTL	EAX, EAX		;Error?
+	JS	lkefailul		;Yes - go handle that
+	MOVL	EDX, knlTda+tdaArg1#	;No - get address of argument block
+	MOVL	lla_value[EDX], EAX	;Store argument value
+	CMPL	lla_csize[EDX], #0	;Is this an init only LKE?
+	JNE	22$			;No - go on
+	MOVL	knlSvDataPnt#, ESI	;Yes - keep any data memory the LKE
+					;  wants kept
+	JMP	lkefailul		;Go remove the LKE
+
+;Here if this is not an init-only LKE
+
+22$:	MOVL	ESI, knlSvCodePnt#	;Get address of start of code msect
+	MOVL	EBX, lla_csize[EDX]	;Get final size of code msect
+	MOVL	lke_codesize[ESI], EBX	;Store final code size
+	ADDL	EBX, ESI		;Calculate new top of code msect
+	JC	24$			;If error
+	CMPL	EBX, knlXCodePnt#	;Is this valid?
+	JBE	26$			;No
+24$:	CRASH	LKEC
+
+26$:	PUSHL	EDX
+	PUSHL	ESI
+	CALL	knlGiveXCode#		;Give up any extra space
+	POPL	ESI
+	POPL	EDX
+	MOVL	EAX, lla_dsize[EDX]	;Get final size of data msect
+	MOVL	EBX, EAX
+	ADDL	EAX, lla_ssize[EDX]	;Plus size of symbol table msect
+	SUBL	EAX, lke_symtblsize[ESI]
+	MOVL	lke_datasize[ESI], EAX	;Store final data size
+
+	ADDL	EBX, knlSvDataPnt#	;Calculate new top of data msect
+	JC	28$			;If error
+	CMPL	EBX, knlXDataPnt#	;Is this valid?
+	JBE	30$			;No
+28$:	CRASH	LKED
+
+30$:	PUSHL	EDX
+	CALL	knlGiveXMem#		;Give up any extra space
+	POPL	EDX
+	CALL	knlGiveXRes#		;Give up the exec memory resource
+	MOVL	ECX, lla_xcount[EDX]	;Have any exported symbol data?
+	TESTL	ECX, ECX
+	JE	36$			;No - finished now
+	MOVL	EBX, exportnext#	;Yes - see now may more pages we need
+	ADDL	EBX, #0x0FFF
+	ADDL	ECX, EBX
+	ANDL	EBX, #0xFFFFF000
+	ANDL	ECX, #0xFFFFF000
+	SUBL	ECX, EBX
+	JLE	34$			;If don't need any more memory
+	SARL	ECX, #12t
+	PUSHL	EBX			;Get the additional memory pages for
+	PUSHL	ECX			;  the symbol table
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	38$
+34$:	MOVL	EDX, sll_lla[EBP]
+	MOVL	ECX, lla_xcount[EDX]	;Get size of table
+	MOVL	ESI, lla_xdata[EDX]	;Get address of the data
+	MOVL	EDI, exportnext#	;Get place to put it
+	MOVL	EBX, EDI
+	ADDL	ECX, #3
+	SHRL	ECX, #2
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]		;Copy the data
+	MOVL	exportnext#, EDI
+	MOVL	EDX, exportlink#
+	MOVL	[EDX], EBX
+	MOVL	exportlink#, EBX
+	MOVL	ECX, EDI		;Clear the rest of the last memory
+	NEGL	ECX			;  page
+	ANDL	ECX, #0xFFF
+	SHRL	ECX, #2t
+	RSTOSL	[EDI]
+36$:	CLRL	EAX			;Return 0
+38$:	LEAVE
+	RET
+.PAGE
+	DATA
+
+symdata:.LONG	0
+
+	END

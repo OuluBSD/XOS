@@ -1,0 +1,1357 @@
+	.TITLE	sched2 - Scheduling SVC functions for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD XOSINC:\XMAC\PCAT.PAR
+
+	CODE
+
+;NOTE: THIS VERSION OF XOS ONLY IMPLEMENTS A SINGLE USER THREAD PER PROCESS
+;      WHICH IS THE BASE THREAD. THERE IS SOME CODE PRESENT TO DEAL WITH
+;      MULTIPLE USER THREADS. IT DOES SUPPORT MULTIPLE IO THREADS.
+
+;Function to get actual address of PDA for process
+;	PDA *getpda(
+;	    ulong pid);
+;  Value return is actual address of the PDA for the process if OK or NULL
+;    if error. (Error is ER_BDPID).
+
+gpda_pid=!4
+
+getpda::MOVL	EDX, gpda_pid[ESP]
+	CMPL	EDX, #-1		;Self?
+	JE	10$			;Yes
+	MOVZWL	EAX, DX
+	TESTL	EAX, EAX
+	JE	6$
+	CMPL	EAX, #MAXPROCS		;No - valid process number?
+	JA	12$			;No
+	CMPB	knlPdaTable#[EAX], #PDATYPE_PDA ;Yes - active process?
+	JNE	12$			;No
+	SHLL	EAX, #pda_SHIFT
+	ADDL	EAX, #pdabase
+	CMPL	pdaLabel#[EAX], #'PDA&'	;Really a process?
+	JNE	14$			;No
+	CMPL	pdaPid#[EAX], EDX	;Yes - does the PID really match?
+	JNE	12$			;No
+6$:	RET	4			;Yes
+
+;Here if self
+
+10$:	MOVL	EAX, knlPda+pdaAddr#
+	JMP	6$
+
+;Here if not a valid PID
+
+12$:	CLRL	EAX
+	JMP	6$
+
+14$:	CRASH	NPDA
+.PAGE
+;Function to get actual address of TDA for thread
+;	TDA *gettda(
+;	    ulong tid);
+;  Value return is actual address of the TDA for the thread if OK or NULL
+;    if error. (Error is ER_BDTID).
+
+gtda_pda=!8
+gtda_tid=!4
+
+gettda::MOVL	EDX, gtda_tid[ESP]
+	TESTL	EDX, EDX		;Want base thread?
+	JS	10$			;Yes
+	JE	12$			;If self
+	MOVZWL	EAX, DX
+	CMPL	EAX, #MAXTHRDS		;No - valid thread number?
+	JA	12$			;No
+	TESTB	knlTdaTable#[EAX], #0x01 ;Valid user thread?
+	JE	14$			;No
+	SHLL	EAX, #tda_SHIFT		;Yes - get address
+	ADDL	EAX, #tdabase
+	CMPL	tdaLabel#[EAX], #'TDA&'	;Really a TDA?
+	JE	2$
+	CRASH	NTDA
+
+2$:	CMPL	tdaTid#[EAX], EDX	;Yes - does the TID really match?
+	JNE	14$			;No
+6$:	RET	4			;Yes
+
+;Here if wants base thread
+
+10$:	INCL	EDX			;Make sure really -1
+	JNE	14$
+	MOVL	EAX, knlPda+pdaTdaHead#
+	JMP	6$
+
+;Here if wants self
+
+12$:	MOVL	EAX, knlTda+tdaAddr#
+	JMP	6$
+
+;Here if not a valid TID
+
+14$:	CLRL	EAX
+	JMP	6$
+.PAGE
+;Here for the svcSchThread SVC - Create user thread
+
+;	long svcSchThread(
+;	    long  bits,		  // Argument bits:
+;				  //   Bit 0 set if high priority thread
+;	    long *stkpntr,	  // Initial stack pointer
+;	    long  xxx,		  // Reserved, must be 0
+;	    long (*thdfunc)(...), // Address of the thread function
+;	    long *args,		  // Address of the argument array
+;	    long  argnum);	  // Number of arguments in args
+
+;  Value returned is the thread ID (positive) if normal or a negative XOS
+;    error code if error.
+;  The stack pointer must point to allocated memory. Some or all of the
+;    stack space may be virually allocated.
+
+;  The argument array is copied to the thread's initial stack. Element 0 is
+;  pushed first, element 1 second, etc. The thread may terminate by returning
+;  from the thread function or by calling svcSchExit. When executed by a
+;  created thread, svcSchExit terminates only that thread. When executed by
+;  the base thread it terminates the process.
+
+psvcSchThread::
+	CMPL	knlTda+tdaArg6#, #32t	;Is the number of arguments reasonable?
+	JA	14$			;No - fail
+	CMPL	knlTda+tdaArg2#, #0x100	;Yes - is the stack pointer valid?
+	JB	14$			;No - fail
+	CMPL	knlTda+tdaArg2#, #systembase ;Maybe
+	JA	14$			;No
+	PUSHL	#0			;Yes - create a thread
+	MOVL	EAX, ESP
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#TDATYPE_USER
+	PUSHL	#THDS_RN0
+	PUSHL	EAX
+	CALL	newthread#
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	10$
+
+	MOVL	EAX, tdaTid#[EDI]
+	MOVL	perthrdtemp+hpt_tid, EAX
+
+	MOVL	EAX, knlTda+tdaArg4#	;Get address of the thread function
+	MOVL	tdaURegEIP#[EDI], EAX
+	MOVL	tdaURegCS#[EDI], #GS_UCODE|0x03
+	MOVL	tdaURegEFR#[EDI], #0x0200
+	MOVL	EAX, #GS_UDATA|0x03
+	MOVL	tdaURegDS#[EDI], EAX
+	MOVL	tdaURegSS#[EDI], EAX
+	MOVL	tdaURegES#[EDI], EAX
+	MOVL	EBX, knlTda+tdaArg2#	;Get the thread's stack pointer
+	MOVL	ECX, knlTda+tdaArg6#	;Get the number of arguments
+	MOVL	EAX, ECX
+	NEGL	EAX
+	LEAL	EAX, -4[EBX+EAX*4]
+	MOVL	tdaURegESP[EDI], EAX	;Store his stack pointer
+	TESTL	ECX, ECX		;Have any arguments?
+	JE	6$			;No
+	CMPL	EBX, #humPerThrd#	;Yes - is his stack in the per-thread
+					;  page?
+	JB	2$			;No
+	CMPL	EBX, #humPerThrd#+0x1000 ;Maybe
+	JA	12$			;Can't be above it
+
+;Here if the user's stack is in the per-thread page
+
+	CMPL	EAX, #humPerThrd#	;Does it extend out of it?
+	JBE	12$			;Yes - fail!
+	SUBL	EBX, #humPerThrd#-perthrdtemp ;OK - get the corresponding
+					      ;  address in the page were we
+					      ;  can access it
+2$:	MOVL	EDX, knlTda+tdaArg5#	;Get address of the argument list
+	LEAL	EDX, -4[EDX+ECX*4]
+	IFFAULT	12$
+4$:	MOVL	EAX, [EDX]
+	SUBL	EDX, #4
+	SUBL	EBX, #4
+	IFFAULT	12$
+	MOVL	[EBX], EAX
+	LOOP	ECX, 4$
+6$:	SUBL	EBX, #4
+	MOVL	[EBX], #thrdterminate#	;Store "return" address
+	MOVL	EAX, tdaTid#[EDI]	;Return the thread's TID
+10$:	RET
+
+;Here if page fault while setting up the thread's stack - We must destroy
+;  the thread we just created before returning.
+
+	FAULTHDR
+12$:	PUSHL	EDI
+	CALL	removethread#
+	MOVL	EAX, #ER_ADRER
+	RET
+
+;Here if too many arguments
+
+14$:	MOVL	EAX, #ER_VALUE
+	RET
+.PAGE
+;Here for the svcSchDismiss SVC - Dismiss signal - The user stack has the
+;  following format (The same format is used in real (V86) and protected
+;  modes.):
+;	c{{ESP}+0}  = New user GS
+;	c{{ESP}+4}  = New user FS
+;	c{{ESP}+8}  = New user ES
+;	c{{ESP}+12} = New user DS
+;	c{{ESP}+16} = New user EIP
+;	c{{ESP}+20} = New user CS
+;	c{{ESP}+24} = New user EFR
+;	c[{ESP}+28] = Number of data items on stack (each item is 32 bits)
+;	c[{ESP}+30] = Software interrupt number
+;	c{{ESP}+32} = First data item
+;	....
+;	c{{ESP}+..} = New user ESP (These 2 items are normally only present when
+;	c{{ESP}+..} = New user SS     changing between real and protected modes)
+;	INT	0x84
+;  This call never returns to the caller!
+
+;The EFR value has the following format:
+;	Bits 31-30 - Not used (should be 0)
+;	Bit  29    - If 1 dda_dpmilckrsflg is set to 0
+;	Bit  28    - 0
+;	Bit  27    - If 1 dda_dpmilpsflg is set to 0
+;	Bit  26    - not used (should be 0)
+;	Bit  25    - If 1 SS:ESP is always restored from the stack, even if not
+;		       switching modes
+;	Bit  24    - If 1 interrupt level is not changed
+;	Bit  23    - If 1 interrupt level is restored DOS style
+;	Bits 22-19 - Not used (should be 0)
+;	Bit  18    - AC flag (alignment check - 486 and above only)
+;	Bit  17    - VM flag
+;	Bit  16    - RF
+;	Bit  15    - 0
+;	Bits 14-12 - Low 3 bits of signal level
+;	Bit  11    - OF
+;	Bit  10    - DF
+;	Bit   9    - Complement of bit 3 of signal level
+;	Bit   8    - TF
+;	Bit   7    - SF
+;	Bit   6    - ZF
+;	Bit   5    - 0
+;	Bit   4    - AF
+;	Bit   3    - 0
+;	Bit   2    - PF
+;	Bit   1    - 1
+;	Bit   0    - CF	
+
+;This is called directly with an INT 0x84 instruction in both protected and
+;  real modes.
+
+dismiss::
+	PUSHAL				;Save registers in the standard places
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EDX, #GS_XDATA
+	MOVL	DS, EDX
+	TESTB	knlTda+tdaURegEFR#+2, #0x02 ;Really from V86 mode ? (This will
+					    ;  be the case if in V86 mode at
+					    ;  IOPL 3!)
+	JE	2$			;No
+	MOVZWL	EBX, knlTda+tdaURegESP#	;Yes - point to his stack
+	MOVZWL	EAX, knlTda+tdaURegSS#
+	SHLL	EAX, #4
+	ADDL	EBX, EAX
+	MOVL	ES, EDX
+	JMP	4$
+
+;Here if from protected mode
+
+	IFFCALL	badusrstk#		;Point to his stack
+2$:	LESL	EBX, knlTda+tdaURegESP#
+4$:	ANDB	knlPda+pdaStatus1#, #~P1$SETUP ;Indicate process is not in
+					       ;  "set up" mode any longer
+	IFFCALL	badusrstk#
+	TESTB	ES:24t+2[EBX], #02	;Returning to real mode?
+	JNE	tov86			;Yes
+	IFFCALL	badusrstk#
+	ORB	ES:20t[EBX], #03	;No - make sure user level CS
+	IFFCALL	badusrstk#		;Restore his segment registers
+	MOVL	EAX, ES:[EBX]
+	MOVL	knlTda+tdaURegGS#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:4t[EBX]
+	MOVL	knlTda+tdaURegFS#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:8t[EBX]
+	MOVL	knlTda+tdaURegES#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:12t[EBX]
+	MOVL	knlTda+tdaURegDS#, EAX
+	JMP	8$
+
+;Here if returning to real (V86) mode
+
+	IFFCALL	badusrstk#		;Restore his segment registers
+tov86:	MOVL	EAX, ES:[EBX]
+	MOVL	knlTda+tdaURegVGS#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:4t[EBX]
+	MOVL	knlTda+tdaURegVFS#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:8t[EBX]
+	MOVL	knlTda+tdaURegVES#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:12t[EBX]
+	MOVL	knlTda+tdaURegVDS#, EAX
+	CLRL	EAX
+	MOVL	knlTda+tdaURegGS#, EAX
+	MOVL	knlTda+tdaURegFS#, EAX
+	MOVL	knlTda+tdaURegES#, EAX
+	MOVL	knlTda+tdaURegDS#, EAX
+	IFFCALL	badusrstk#
+8$:	MOVL	EAX, ES:16t[EBX]	;Get his return EIP
+	MOVL	knlTda+tdaURegEIP#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:20t[EBX]	;And his return CS
+	MOVL	knlTda+tdaURegCS#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EDI, ES:24t[EBX]	;And his return EFR
+	BTL	EDI, #27t		;Want to clear dda_dpmilckpsflg?
+	JNC	10$			;No
+	IFFAULT	10$			;Yes
+	MOVB	dda_dpmilckpsflg, #0
+	FAULTHDR
+10$:	MOVL	EDX, EDI		;Save his new EFR value for later
+	ANDL	EDI, #0x30FFF		;Clear unwanted hardware bits
+	BTSL	EDI, #9			;Always set IF
+	XCHGL	knlTda+tdaURegEFR#, EDI
+	MOVZWL	EAX, ES:28t[EBX]	;Get data item count
+	LEAL	EAX, 32t[EAX*4]
+	ADDL	knlTda+tdaURegESP#, EAX	;Adjust his stack pointer
+	ADDL	EBX, EAX		;Also adjust EBX in case changeing modes
+					;  and have to use the save ES:ESP
+
+;Always restore the signal level from the user's stack
+
+rstsiglvl::
+	MOVL	EAX, EDX		;Get his new signal level
+	SHRL	EAX, #12t
+	ANDL	EAX, #0x07
+	SHRL	EDX, #6
+	ANDL	EDX, #0x08
+	XORL	EDX, #0x08
+	ORL	EAX, EDX
+	MOVB	knlTda+tdaSigLvl#, AL	;Make this his new signal level
+	MOVB	AL, masktbl[EAX]	;Get new interrupt mask value
+	MOVB	knlTda+tdaSigMask#, AL
+18$:	XORL	EDI, knlTda+tdaURegEFR# ;Are we changing modes?
+	BTL	EDI, #17t
+	JC	modechg			;Yes
+	BTL	EDX, #25t		;No - forcing stack switch?
+	JC	24$			;Yes
+	TOFORK
+	JMP	knlSignalChk#		;No - finished here
+
+;Here if changing modes
+
+modechg:MOVL	EAX, knlTda+tdaURegESP#	;Get his previous stack pointer
+	ADDL	EAX, #8t
+	TESTB	knlTda+tdaURegEFR#+2, #0x02 ;Returning to protected mode?
+	JE	frmv86			;Yes
+frmprot:IFFCALL	badusrstk#
+	MOVL	dda_dpmicurpESP, EAX	;No
+	MOVL	EAX, knlTda+tdaURegSS#
+	MOVL	dda_dpmicurpSS, EAX
+
+	ORB	knlTda+tdaURegEFR#+1, #0x30 ;TEMP - Set IOPL to 3!!!!!
+
+	MOVL	EAX, #tdaXStackV#	;Set up to use the V86 starting value
+	JMP	24$			;  for the exec stack
+
+;Here if returning to protected mode from real mode
+
+frmv86:
+
+;;;;;	IFFCALL	badusrstk#
+;;;;;	MOVL	rmda_vmESP, EAX
+;;;;;	MOVL	EAX, knlTda+tdaURegSS#
+;;;;;	MOVL	rmda_vmSS, EAX
+
+	MOVL	EAX, #tdaXStackP#	;Set up to use the normal protected mode
+24$:	ADDL	EAX, knlTda+tdaAddr#	;  staring value for the exec stack
+	MOVL	knlTda+tdaTss#+tss_stk0, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:[EBX]		;Store stack pointer for the new mode
+	MOVL	knlTda+tdaURegESP#, EAX
+	IFFCALL	badusrstk#
+	MOVL	EAX, ES:4[EBX]
+	MOVL	knlTda+tdaURegSS#, EAX
+	TOFORK
+	JMP	knlSignalChk#
+.PAGE
+;Interrupt mask table
+
+masktbl::
+	.BYTE	0FFh		;Level 0
+	.BYTE	7Fh		;Level 1
+	.BYTE	3Fh		;Level 2
+	.BYTE	1Fh		;Level 3
+	.BYTE	0Fh		;Level 4
+	.BYTE	07h		;Level 5
+	.BYTE	03h		;Level 6
+	.BYTE	01h		;Level 7
+	.BYTE	01h		;Level 8 (disabled)
+	.BYTE	01h		;      9
+	.BYTE	01h		;      A
+	.BYTE	01h		;      B
+	.BYTE	01h		;      C
+	.BYTE	01h		;      D
+	.BYTE	01h		;      E
+	.BYTE	01h		;      F
+.PAGE
+	.SBTTL	svcSysDateTime - Get or set system date and time
+
+;Here for the svcSysDateTime SVC - Get or set system date and time
+;  software interrupt level associated with fixed interrupts
+;	long svcSysDateTime(
+;	    int   function,	// Function:
+;				//   1 = Get current date and time (XOS format)
+;				//   2 = Get current date and time (DOS format)
+;				//   3 = Get current date and time with time
+;				//	   zone information (XOS format)
+;				//   4 = Get current date and time with time
+;				//	   zone information (DOS format)
+;				//   5 = Reserved
+;				//   6 = Get process elapsed time (XOS format)
+;				//   7 = Get session elapsed time (XOS format)
+;				//   8 = Get process CPU time (XOS format)
+;				//   9 = Convert date/time to XOS format
+;				//  10 = Convert date/time from XOS format
+;				//  11 = Get current HR date and time (XOS
+;				//	   format)
+;				//  12 = Get process HR elapsed time (XOS
+;				//	   format)
+;				//  13 = Get session HR elapsed time (XOS
+;				//	   format)
+;				//  14 = Get current HR date and time with time
+;				//	   zone information (XOS format)
+;				//  15 = Get RTC date and time (DOS format)
+;				//	   (requires admin priv)
+;				//  16 = Set system date and time (XOS format)
+;				//	   (requires admin priv)
+;				//  17 = Set RTC date and time (DOS format)
+;				//	   (requires admin priv)
+;				//  18 = Get time zone information
+;				//  19 = Set time zone information
+;	    void *dttm);	// Address of argument structure (format depends
+;				//   on function)
+;  Value returned is 0 if normal or negative error code if error
+
+psvcSysDateTime::
+	MOVL	EDI, knlTda+tdaArg2#
+	CMPL	EDI, #systembase
+	JAE	knlRtnAdrEr#
+	MOVL	EAX, knlTda+tdaArg1#
+	CMPL	EAX, #DATEMXF		;Legal function?
+	JAE	knlBadFunc#		;No
+	JMPIL	datedsp[EAX*4]		;Yes - dispatch on the function
+
+;Date/time function dispatch table
+
+	DATA
+
+datedsp:.LONG	knlBadFunc#	; 0 = Illegal
+	.LONG	gtsysdate	; 1 = Get current date and time (system format)
+	.LONG	gtdosdate	; 2 = Get current date and time (DOS format)
+	.LONG	gtsysdatetz	; 3 = Get current date and time with time zone
+				;	information (system format)
+	.LONG	gtdosdatetz	; 4 = Get current date and time with time zone
+				;	information (DOS format)
+	.LONG	knlBadFunc#	; 5 = Reserved
+	.LONG	gtpcstime	; 6 = Get process elapsed time (system format)
+	.LONG	gtgrptime	; 7 = Get session elapsed time (system format)
+	.LONG	gtcputime	; 8 = Get process CPU time (system format)
+	.LONG	conv2sys	; 9 = Convert date/time to system format
+	.LONG	convfrmsys	;10 = Convert date/time from system format
+	.LONG	gthrdate	;11 = Get HR date and time (system format)
+	.LONG	gthrptime	;12 = Get HR process elapsed time (system
+				;	format)
+	.LONG	gthrstime	;13 = Get HR session elapsed time (system
+				;	format)
+	.LONG	gthrdatetz	;14 = Get HR date and time with time zone
+				;	information (system format)
+	.LONG	gtrtc#		;15 = Get RTC date and time (DOS format)
+	.LONG	stdate		;16 = Set system date and time (system format)
+	.LONG	strtc#		;17 = Set RTC date and time (DOS format)
+	.LONG	gttzone		;18 = Get time zone data
+	.LONG	sttzone		;19 = Set time zone data
+	.LONG	gtdays		;20 = Convert system date to days since
+				;       1-Jan-0001
+DATEMXF=!{$-datedsp}/4
+
+	CODE
+.PAGE
+
+;Here to get number of days since 1-Jan-0001
+;  Value returned is number of days
+
+	IFFAULT	knlRtnAdrEr#
+gtdays:	MOVL	EAX, [EDI]		;Get date value (we need all 64 bits)
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EDX, 4[EDI]
+	JMP	knlSys2Days#		;Change to days
+
+;Here to get current system date and time in system format
+;  Format of data returned:
+;	unsigned long time;
+;	unsigned long date;
+
+gtsysdate:
+	MOVL	ECX, #8			;Make sure buffer is writable
+gtsysdt:PUSHL	EDI
+	PUSHL	ECX
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	6$
+	CLI
+	MOVL	EAX, knlSysDateTime#+0	;Get current date
+	MOVL	EDX, knlSysDateTime#+4
+	STI
+	JMP	4$
+
+;Here to get current system date and time with time zone information in
+;  system format
+;  Format of data returned:
+;	unsigned long  time;
+;	unsigned long  date;
+;		 short tzone;
+;		 short dlst;
+
+gtsysdatetz:
+	MOVL	ECX, #12t
+	CALL	gtsysdt
+	JC	6$
+rtntz:	MOVL	EAX, dlststate#
+	TESTL	EAX, EAX
+	JE	2$
+	MOVL	EAX, dlstoffset#
+2$:	SHLL	EAX, #16t
+	MOVW	AX, timezone#
+	IFFAULT	knlRtnAdrEr#
+	MOVL	8t[EDI], EAX
+	CLRL	EAX
+	RET
+
+;Here to get current high resolution system date and time in system format
+;  Format of data returned:
+;	unsigned long time;
+;	unsigned long date;
+
+gthrdate:
+	MOVL	ECX, #8			;Make sure buffer is writable
+gthrdt:	PUSHL	EDI
+	PUSHL	ECX
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	6$
+	CALL	knlGetSysHRDtTm#
+	IFFAULT	knlRtnAdrEr#
+4$:	MOVL	[EDI], EAX		;Store time in user buffer
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4[EDI], EDX		;Store date too
+	CLRL	EAX			;Return 0
+6$:	RET
+
+;Here to get current high resolution system date and time with time zone
+;  information in system format
+;  Format of data returned:
+;	unsigned long  time;
+;	unsigned long  date;
+;		 short tzone;
+;		 short dlst;
+
+gthrdatetz:
+	MOVL	ECX, #12t		;Make sure buffer is writable
+	CALL	gthrdt
+	JMP	rtntz
+
+;Here to get current system date and time in DOS format
+;  Format of data returned:
+;	unsigned short millisecond;	// 0 - 999
+;	unsigned short second;		// 0 - 59
+;	unsigned short minute;		// 0 - 59
+;	unsigned short hour;		// 0 - 23
+;	unsigned short day_of_month;	// 1 - 31
+;	unsigned short month;		// 1 - 12
+;	unsigned short year;		// > 1600
+;	unsigned short day_of_week;	// 0 - 6, 0 = Sunday
+;	unsigned short day_of_year;	// 0 - 365
+
+gtdosdate:
+	MOVL	ECX, #18t		;Make sure buffer is writable
+gtdosdt:PUSHL	EDI
+	PUSHL	ECX
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	6$
+	CLI				;No interrupts here
+	MOVL	ECX, knlDosDate#	;Get DOS format date
+	MOVL	EBX, knlSysDate#+0	;Get system format date too (for day of
+	MOVL	ESI, knlSysDate#+4	;  the week calculation below)
+	MOVL	EAX, knlSysTime#+0	;Get tick count
+	MOVL	EDX, knlSysTime#+4
+	STI				;Interrupts OK now
+	DIVL	knlLit10000#		;Get millseconds since midnight
+	CLRL	EDX
+	DIVL	lit3600000#		;Get hours
+	IFFAULT	knlRtnAdrEr#
+	MOVW	6[EDI], AX
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit60000#		;Get minutes
+	IFFAULT	knlRtnAdrEr#
+	MOVW	4[EDI], AX
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit1000#		;Get seconds
+	IFFAULT	knlRtnAdrEr#
+	MOVW	2[EDI], AX
+	MOVW	[EDI], DX
+	MOVL	EAX, ECX		;Get day of month
+	ANDL	EAX, #0x1F
+	IFFAULT	knlRtnAdrEr#
+	MOVW	8[EDI], AX
+	SHRL	ECX, #5			;Get month
+	MOVL	EAX, ECX
+	ANDL	EAX, #0x0F
+	IFFAULT	knlRtnAdrEr#
+	MOVW	10t[EDI], AX
+	IFFAULT	knlRtnAdrEr#
+	MOVW	16t[EDI], #0		;For now, don't return day in year!
+	SHRL	ECX, #4			;Get year
+	ANDL	ECX, #0x7F
+	ADDL	ECX, #1980t
+	IFFAULT	knlRtnAdrEr#
+	MOVW	12t[EDI], CX
+	MOVL	EAX, EBX
+	MOVL	EDX, ESI
+	CALL	knlSys2Days		;Get days since 1-jan-0001
+	INCL	EAX			;Get day of the week
+	CLRL	EDX
+	DIVL	lit7#
+	IFFAULT	knlRtnAdrEr
+	MOVW	14t[EDI], DX
+	CLRL	EAX			;Return 0
+	RET
+
+;Here to get current system date and time with time zone information in
+;  DOS format
+;  Format of data returned:
+;	unsigned short millisecond;	// 0 - 999
+;	unsigned short second;		// 0 - 59
+;	unsigned short minute;		// 0 - 59
+;	unsigned short hour;		// 0 - 23
+;	unsigned short day_of_month;	// 1 - 31
+;	unsigned short month;		// 1 - 12
+;	unsigned short year;		// > 1600
+;	unsigned short day_of_week;	// 0 - 6, 0 = Sunday
+;	unsigned short day_of_year;	// 0 - 365
+;	         short timezone;
+;	         short dlst;
+
+gtdosdatetz:
+	MOVL	ECX, #22t		;Make sure buffer is writable
+	CALL	gtdosdt
+	ADDL	EBX, #10t
+	JMP	rtntz
+.PAGE
+;Here to set system date and time - system date and time are always set using
+;  system format
+;  Format of data supplied by caller:
+;	llong datetime			// 64-bit date-time value
+
+;We must set the date and time in several places:
+;  knlSysTime     (64-bits) - TIme only in system ticks
+;  knlSysDate     (64-bits) - Date only in system ticks
+;  knlSysDateTime (64-bits) - Combinded date and time in system ticks
+;  knlDayDate     (32-bits) - Days since 1-Jan-0001
+;  knlDosDate     (32-bits) - Date in packed DOS format
+;  knlCntTime     (64-bits) - Clock counts since midnight
+;  knlSchCounts   (32-bits) - Scheduler periods since midnight
+;  knlDosTime     (32-bits) - DOS ticks since midnight
+;These all must be set atomicly to ensure consistancy. Also, we must adjust
+;  the time for all active timers.
+
+stdate:	BTL	knlPda+pdaActPriv#, #PP%SYSADMIN ;Can he do this?
+	JNC	knlPrivFail#		;No - fail
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, [EDI]		;Get date value (we need all 64 bits)
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EDX, 4[EDI]
+	CALL	knlSys2DosDate#		;Get it in DOS format
+	JC	ret008			;If bad date
+	MOVL	ECX, EAX
+	MOVL	EAX, [EDI]		;Get just the date part
+	MOVL	EDX, 4[EDI]
+	CALL	knlSysDateOnly#
+	PUSHL	EDX
+	PUSHL	EAX
+	MOVL	EAX, [EDI]		;Get just the time part
+	MOVL	EDX, 4[EDI]
+	CALL	knlSysTimeOnly#
+	PUSHL	EDX
+	PUSHL	EAX
+	DIVL	knlLitTICKPERSP#	;Change ticks to scheduler counts
+	MOVL	EBX, EAX
+	MULL	litDTPERDAY#		;Calculate DOS tick count
+	DIVL	knlLitSPPERDAY#
+	IMULL	EBP, EBX, #CCPERSP
+	MOVL	ESI, [EDI]
+	MOVL	EDX, 4[EDI]
+	MOVL	EAX, [EDI]		;Get days since 1-Jan-0001
+	MOVL	EDX, 4[EDI]
+	CALL	knlSys2Days#
+	PUSHL	EDX
+	PUSHL	EAX
+	MOVL	EDX, 4[EDI]
+
+;Here with all needed values:
+;	c{EAX}      = knlDosTime value
+;	c{{ESP}+8}  = knlSySTime value (64-bits)
+;	c{{ESP}+16} = knlSysDate value (64-bits)
+;	c{ESI,EDX}  = knlSysDateTime value (64-bits)	
+;	c{EBX}      = knlSchCounts value
+;	c{ECX}      = knlDosDate value
+;	c{{ESP}+0}  = knlDayDate value
+;	c{EBP}      = knlCntTime value
+
+	TOFORK
+	CLI
+	XCHGL	knlSysDateTime#+0, ESI
+	XCHGL	knlSysDateTime#+4, EDX
+	SUBL	ESI, knlSysDateTime#+0
+	SBBL	EDX, knlSysDateTime#+4
+	POPL	knlDayDate#+0
+	POPL	knlDayDate#+4
+	POPL	knlSysTime#+0
+	POPL	knlSysTime#+4
+	POPL	knlSysDate#+0
+	POPL	knlSysDate#+4
+	MOVL	knlSchCounts#, EBX
+	MOVL	knlDosTime#, EAX
+	MOVL	knlDosDate#, ECX
+	STI
+	MOVL	EBX, timerhead#
+6$:	TESTL	EBX, EBX
+	JE	8$
+	SUBL	tmr_dttm+0[EBX], ESI
+	SBBL	tmr_dttm+4[EBX], EDX
+	MOVL	EBX, tmr_next[EBX]
+	JMP	6$
+
+8$:	FROMFORK
+	CLRL	EAX
+ret008:	RET				;Thats all
+.PAGE
+;Here to get the time zone data
+;  Format of data returned to caller:
+;	ulong tzone;		// Offset from GMT (minutes)
+;	ulong begintime;	// Daylight savings beginning time
+;				//   (fractional days)
+;	ulong beginday;		// Daylight savings beginning day
+;	ulong endtime;		// Daylight savings ending time
+;				//   (fractional days)
+;	ulong endday;		// Daylight savings ending day
+;	long  offset;		// Daylight savings offset (minutes) 
+
+;Note that the system's daylight savings time offset is always returned by
+;  this function, even if daylight savings time is not in effect.
+
+gttzone:PUSHL	EDI			;Make sure buffer is writable
+	PUSHL	#24t
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	ret008
+	MOVL	EAX, timezone#		;Give him the time zone offset
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EDI], EAX
+	MOVL	EAX, dlstbgntime#	;Give him the daylight savings beginning
+;;;;;	CALL	knlTick2SysTime#	;  date and time
+	ADDL	EAX, dlstbgnday#+0
+	ADCL	EDX, dlstbgnday#+4
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4t[EDI], EAX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	8t[EDI], EDX
+	MOVL	EAX, dlstendtime#	;Give him the daylight savings ending
+;;;;;	CALL	knlTick2SysTime#	;  date and time
+	ADDL	EAX, dlstendday#+0
+	ADCL	EDX, dlstendday#+4
+	IFFAULT	knlRtnAdrEr#
+	MOVL	12t[EDI], EAX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	16t[EDI], EDX
+	MOVL	EAX, dlstoffset+0	;Give him the daylight savings offset
+	MOVL	EDX, dlstoffset+4
+;;;;;	IDIVL	lit2D82D8#		;Convert to minutes
+	IFFAULT	knlRtnAdrEr#
+	MOVL	20t[EDI], EAX
+	CLRL	EAX
+	RET
+
+;Here to set the time zone data
+;  Format of data supplied by caller:
+;	unsigned long  tzone;		// Offset from GMT (minutes)
+;	unsigned long  begintime;	// Daylight savings beginning time
+;					//   (fractional days)
+;	unsigned long  beginday;	// Daylight savings beginning day
+;	unsigned long  endtime;		// Daylight savings ending time
+;					//   (fractional days)
+;	unsigned long  endday;		// Daylight savings ending day
+;	         long  offset;		// Daylight savings offset (minutes) 
+
+sttzone:BTL	knlPda+pdaActPriv#, #PP%SYSADMIN ;Can he do this?
+	JNC	knlPrivFail#		;No - fail
+	IFFAULT	knlRtnAdrEr#		;Yes
+	MOVL	EAX, [EDI]		;Get time zone offset
+	MOVL	timezone#, EAX		;Save it
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, 4t[EDI]		;Get the daylight savings begining time
+;;;;;;	MULL	knlLitTPD#		;Change to ticks
+	MOVL	dlstbgntime#, EDX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, 8t[EDI]		;Get the daylight savings begining date
+	MOVL	dlstbgnday#, EAX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, 12t[EDI]		;Get the daylight savings ending time
+;;;;;;	MULL	knlLitTPD#		;Change to ticks
+	MOVL	dlstendtime#, EAX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, 16t[EDI]		;Get the daylight savings ending date
+	MOVL	dlstendday#, EAX
+	MOVL	EAX, 20t[EDI]		;Get the daylight savings offset
+;;;;;;	IMULL	lit2D82D8#		;Change to fractional days
+	MOVL	dlstoffset#+0, EAX
+	MOVL	dlstoffset#+4, EDX
+setdlst::
+	CLI
+	MOVL	EDX, yearday#		;Get current day in year
+	MOVL	EAX, knlSysTime#	;Get current time in ticks
+	STI
+	CMPB	dlststate, #0		;Is daylight savings active now?
+	JE	4$			;No
+	SUBL	EAX, dlstoffset#	;Yes - adjust for it
+	SBBL	EDX, #0
+4$:	CMPL	EDX, dlstbgnday#	;Before beginning?
+	JB	6$			;Yes - not active
+	CMPL	EAX, dlstbgntime#	;Maybe
+	JB	6$			;Yes
+	CMPL	EDX, dlstendday#	;Past end?
+	JA	6$			;Yes - not active
+	CMPL	EAX, dlstendtime#	;Maybe
+	JA	6$			;Yes
+	MOVB	AL, #1			;Indicate daylight savings time active
+	JMP	8$
+
+6$:	MOVB	AL, #0			;Indicate daylight savings time not
+8$:	MOVB	dlststate, AL
+	CLRL	EAX
+ret010:	RET
+.PAGE
+;Here to get low resolution process elapsed time
+
+gtpcstime:
+	PUSHL	EBX
+	PUSHL	#8			;Make sure buffer is writable
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	ret010
+	CLI
+	MOVL	EAX, knlSysDateTime#+0	;Get current date and time
+	MOVL	EDX, knlSysDateTime#+4
+	STI
+	JMP	4$
+
+;Here to get high resolution process elapsed time (system format)
+
+gthrptime:
+	PUSHL	EBX
+	PUSHL	#8			;Make sure buffer is writable
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	ret010
+	CALL	knlGetSysHRDtTm#
+2$:	SUBL	EAX, knlPda+pdaCDateTime#+0 ;Minus when process created
+	SBBL	EDX, knlPda+pdaCDateTime#+4
+	JMP	6$
+
+;Here to get low resolution session elapsed time in system format
+
+gtgrptime:
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	#8			;Make sure buffer is writable
+	CALL	sysIoBufrCheck#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	ret010
+	CLI
+	MOVL	EAX, knlSysDateTime#+0	;Get current date and time
+	MOVL	EDX, knlSysDateTime#+4
+	STI
+	JMP	4$
+
+;Here to get high resolution session elapsed time in system format
+
+gthrstime:
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	#8			;Make sure buffer is writable
+	CALL	sysIoBufrCheck#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	ret010
+	CALL	knlGetSysHRDtTm#
+4$:	MOVL	EBX, knlPda+pdaSesPda#	;Point to session PDA
+	SUBL	EAX, pdaCDateTime#+0[EDI] ;Minus when session was created
+	SBBL	EDX, pdaCDateTime#+4[EDI]
+6$:	JGE	20$
+	CLRL	EAX
+	CLRL	EDX
+	JMP	20$
+
+;Here to get process CPU time
+
+gtcputime:
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	#8			;Make sure buffer is writable
+	CALL	sysIoBufrCheck#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	ret012
+	TOFORK
+	CALL	updatethrdtime#		;Make sure the time value is current
+	MOVL	EAX, knlTda+tdaRunTime#+0 ;Get current run time for process
+	MOVL	EDX, knlTda+tdaRunTime#+4
+	FROMFORK
+
+;;;; NEED TO CONVERT TO SYSTEM TICKS HERE !!!!
+
+	IFFAULT	knlRtnAdrEr#
+20$:	MOVL	[EBX], EAX		;Give him the value
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4[EBX], EDX
+	CLRL	EAX			;Return 0
+ret012:	RET
+.PAGE
+;Here to convert broken down date and time to system format
+;  Format of data buffer (first two items are modified, rest are only read)
+;	unsigned long  systime;
+;	unsigned long  sysdate;
+;	unsigned short millisecond;	// 0 - 999
+;	unsigned short second;		// 0 - 59
+;	unsigned short minute;		// 0 - 59
+;	unsigned short hour;		// 0 - 23
+;	unsigned short day_of_month;	// 1 - 31
+;	unsigned short month;		// 1 - 12
+;	unsigned short year;		// > 1600
+
+conv2sys:
+	PUSHL	EDI
+	PUSHL	#8			;Make sure first 2 items are writable
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	ret012
+	IFFAULT	knlRtnAdrEr#
+	MOVZWL	ECX, 8+6t[EDI]		;Get hours
+	CMPL	ECX, #24t		;Legal value?
+	JAE	2$			;No
+	IMULL	ECX, #60t		;Yes
+	IFFAULT	knlRtnAdrEr#
+	MOVZWL	EAX, 8+4t[EDI]		;Get minutes
+	CMPL	EAX, #60t		;Legal value?
+	JAE	2$			;No
+	ADDL	ECX, EAX		;Yes
+	IMULL	ECX, #60t
+	IFFAULT	knlRtnAdrEr#
+	MOVZWL	EAX, 8+2t[EDI]		;Get seconds
+	CMPL	EAX, #60t		;Legal value?
+	JAE	2$			;No
+	ADDL	ECX, EAX		;Yes
+	IMULL	ECX, #1000t
+	IFFAULT	knlRtnAdrEr#
+	MOVZWL	EAX, 8+0t[EDI]		;Get milliseconds
+	CMPL	EAX, #1000t		;Legal value?
+2$:	JAE	knlBadValue#		;No
+	ADDL	EAX, ECX		;Yes
+	MULL	knlLit10000#		;Convert to system ticks
+	PUSHL	EDX
+	PUSHL	EAX
+	IFFAULT	10$
+	MOVZWL	EAX, 8+12t[EDI]		;Get year
+	TESTL	EAX, EAX		;Can't be 0
+	JE	2$
+	CMPL	EAX, #9999t		;Too large?
+	JA	2$
+	SHLL	EAX, #4			;No
+	IFFAULT	10$
+	MOVZWL	ECX, 8+10t[EDI]		;Get month
+	TESTL	ECX, ECX		;Legal value?
+	JE	2$			;No
+	CMPL	ECX, #12t		;Maybe
+	JA	2$			;No
+	ORL	EAX, ECX		;Yes
+	SHLL	EAX, #5
+	IFFAULT	10$
+	MOVZWL	ECX, 8+8t[EDI]		;Get day
+	TESTL	ECX, ECX		;Legal value?
+	JE	2$			;No
+	CMPL	ECX, #31t		;Maybe
+	JA	2$			;No
+	ORL	EAX, ECX		;Yes
+	CALL	knlBdv2SysDate#		;Convert to system date
+	POPL	ECX			;Restore and add in the time part
+	ADDL	EAX, ECX
+	POPL	ECX
+	ADCL	EDX, ECX
+	MOVL	[EDI], EAX		;Store value
+	MOVL	4[EDI], EDX
+	CLRL	EAX			;Return 0
+ret016:	RET
+
+	FAULTHDR
+10$:	POPL	EAX
+	POPL	EDX
+	JMP	knlRtnAdrEr#
+.PAGE
+;Here to convert system format date and time to broken down format
+;  Format of data buffer (first two items are only read, rest are modified)
+;	unsigned long  systime;
+;	unsigned long  sysdate;
+;	unsigned short millisecond;	// 0 - 999
+;	unsigned short second;		// 0 - 59
+;	unsigned short minute;		// 0 - 59
+;	unsigned short hour;		// 0 - 23
+;	unsigned short day_of_month;	// 1 - 31
+;	unsigned short month;		// 1 - 12
+;	unsigned short year;		// > 1600
+;	unsigned short day_of_week;	// 0 - 6, 0 = Sunday
+;	unsigned short day_of_year;	// 0 - 365
+
+convfrmsys:
+	PUSHL	EDI
+	PUSHL	#26t			;Make sure entire buffer is writable
+	CALL	sysIoBufrCheck#
+	TESTL	EAX, EAX
+	JS	ret016
+	MOVL	EAX, [EDI]		;Get date value
+	MOVL	EDX, 4[EDI]
+	CALL	knlSys2BdvDate#		;Convert the date
+	MOVW	8+16t[EDI], DX		;Store day in year
+	MOVL	ECX, EAX
+	SHRL	ECX, #5
+	ANDL	EAX, #0x1F
+	MOVW	8+8[EDI], AX		;Store day of month
+	MOVL	EAX, ECX
+	SHRL	ECX, #4
+	ANDL	EAX, #0x0F
+	MOVW	8+10t[EDI], AX		;Store month
+	MOVW	8+12t[EDI], CX		;Store year
+	MOVL	EAX, [EDI]		;Get date value again
+	MOVL	EDX, 4[EDI]
+	CALL	knlSys2Days#		;Change to days
+	INCL	EAX
+	CLRL	EDX			;Get the day of the week
+	DIVL	lit7#
+	MOVW	8+14t[EDI], DX
+	MOVL	EAX, [EDI]		;Get time value
+	MOVL	EDX, 4[EDI]
+	CALL	knlSysTimeOnly#		;Remove date part
+	DIVL	knlLit10000#		;Get millseconds since midnight
+	CLRL	EDX
+	DIVL	lit3600000#		;Get hours
+	MOVW	8+6[EDI], AX		;Store hours
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit60000#		;Get minutes
+	MOVW	8+4[EDI], AX		;Store minutes
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit1000#		;Get seconds and milliseconds
+	MOVW	8+2[EDI], AX		;Store seconds
+	MOVW	8+0[EDI], DX		;Store milliseconds
+	CLRL	EAX
+	RET
+.PAGE
+;Here for the svcSchSuspend SVC - Suspend process until time limit expires
+;	long svcSchSuspend(flag, time);
+;	    long *flag;		// Address of flag item - If the valued pointed
+;				//   to is 0 the call returns immediately. This
+;				//   pointer may be NULL, in which case the
+;				//   call always waits. This can be used to
+;				//   provide a race-free wakeup by a signal
+;				//   function (see below).
+;	    llong timeout;	// Time to suspend (system ticks,
+;	    			//   0xFFFFFFFFFFFFFFFF means to suspend
+;				//   forever. A value less than 0x10000000000000
+;				//   (about 15 years) indicates the length of
+;				//   time to suspend. A value greater than this
+;				//   indicates the absolute date/time at which
+;				//   to wake up. A value in the past is taken
+;				//   to be 0 and the call returns immediately.
+;  Value returned is 0 or a negative XOS error code if error. The wait is
+;    interruptable by signals. Interruptions by signals do not change the
+;    total length of the delay, however, the flag item is checked after each
+;    interruption and the call will return immediately if it is 0.
+
+psvcSchSuspend::
+	MOVL	EDI, knlTda+tdaArg1#	;Get address of flag word
+	TESTL	EDI, EDI		;Did he specify a flag word?
+	JE	4$			;No
+	CLRL	EAX
+	IFFAULT	knlRtnAdrEr#
+	CMPL	[EDI], #0		;Yes - is his flag value zero?
+	JE	6$			;Yes - just return now
+
+4$:	TOFORK
+	PUSHL	#-8			;Argument offset
+	CALL	setuptimeout
+	TESTL	EAX, EAX
+	JG	8$			;If need to wait
+	FROMFORK
+6$:	RET
+
+;Here for the svcSchSleep SVC - Suspend forever (allows signals)
+;	rtn = svcSchSleep();
+;  Never returns
+
+psvcSchSleep::
+	TOFORK
+8$:	PUSHL	knlTda+tdaAddr#		;Requeue current process to the suspend
+	PUSHL	#THDS_SPND		;  queue
+	CALL	sysSchRequeue#
+	MOVB	knlSchedReq#, #1	;Request scheduling now
+	FROMFORK
+	MOVL	EAX, #SVC$REDOREQ
+	RET
+.PAGE
+;Here for the svcSchWake SVC = Wake up a suspended thread.
+;	long svcSchWake(
+;	    long tid);		// Thread ID for thread to wake up - 0 means
+;				//   the current process's base thread. Only
+;				//   threads in the current process are valid.
+;  Value returned is 1 if the specified thread was suspended and has been
+;    rescheduled, 0 if it was not suspended or a negative XOS error code if
+;    error.
+
+psvcSchWake::
+	TOFORK
+	MOVL	EAX, knlTda+tdaArg1#	;Get the address of the TDA
+	TESTL	EAX, EAX		;Want to wake up the base thread?
+	JNE	2$			;No
+	MOVL	EAX, knlPda+pdaTdaHead#	;Yes
+	JMP	4$
+
+2$:	PUSHL	EAX
+	CALL	sysSchGetTda
+	TESTL	EAX, EAX
+	JE	12$
+4$:	MOVL	EDX, knlTda+tdaPda#	;Is it one of our threads?
+	CMPL	EDX, tdaPda#[EAX]
+	JNE	12$			;No - fail
+	CMPL	tdaState#[EAX], #THDS_SPND ;Yes - is it suspended now?
+	JNE	14$			;No - just return 0
+	PUSHL	EAX			;Yes - make it runable
+	CALL	sysSchRunRequeue#
+	PUSHL	#1			;Return 1
+10$:	FROMFORK
+	POPL	EAX
+	RET
+
+;Here if bad TID
+
+12$:	PUSHL	#ER_BDTID
+	JMP	10$
+
+;Here if thread was not suspended
+
+14$:	PUSHL	#0
+	JMP	10$
+.PAGE
+;Function to set up to wait before returning from an SVC
+;	long setupwait(
+;	    long arg,		// Argument offset for time value (0 = arg1,
+;				//   -4 = arg2, etc.)
+;  Value returned is 0 if don't want to wait, 1 if need to wait, or a negative
+;    XOS error code if error.
+
+suto_arg=!12t
+
+setuptimeout:
+	PUSHL	EDI
+	PUSHL	EBX
+	CMPL	knlTda+tdaWakeTmr#, #0
+	JE	2$
+	CRASH	WTER			;[WaKe Timer ERror]
+
+2$:	MOVL	EDI, suto_arg[ESP]
+	ADDL	EDI, knlTda+tdaArgPnt#
+	IFFAULT	14$
+	MOVL	EAX, [EDI] 		;Get timeout argument
+	IFFAULT	14$
+	MOVL	EDX, 4[EDI]
+	MOVL	ECX, EAX		;Want to wait at all?
+	ORL	ECX, EDX
+	JE	8$			;No
+	MOVL	ECX, EAX		;Yes - wait forever?
+	ANDL	ECX, EDX
+	INCL	ECX
+	JE	6$			;Yes
+	CLI				;No - get current date/time
+	MOVL	EBX, knlSysDateTime#+0
+	MOVL	ECX, knlSysDateTime#+4
+	STI
+	CMPL	EDX, #0x20000		;Is this an increment?
+	JAE	4$			;No
+	ADDL	EAX, EBX		;Yes - get absolute wakeup date/time
+	ADCL	EDX, ECX
+	IFFAULT	14$			;Replace the caller's incremental value
+	MOVL	0[EDI], EAX		;  with the absolute value
+	IFFAULT	14$
+	MOVL	4[EDI], EDX
+
+;Here with the absolute wake-up date/time in EAX,EDX
+
+4$:	SUBL	EBX, EAX		;Is it really in the future?
+	SBBL	ECX, EDX
+	JNS	8$			;No - don't wait
+	PUSHL	EDX			;Yes - start a timer
+	PUSHL	EAX
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	PUSHL	#waitdone
+	CALL	sysSchTmrCreate#
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	knlTda+tdaWakeTmr#, EAX
+6$:	MOVL	EAX, #1			;Indicate need to wait
+	JMP	10$
+
+8$:	CLRL	EAX			;Indicate should not wait
+10$:	POPL	EBX
+	POPL	EDI
+	RET	4
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Here in scheduler context at fork level when waiting time is up
+;	void waitdone(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+wtdn_pda  =!16t
+wtdn_hndl =!12t
+wtdn_data1=!8
+wtdn_data2=!4
+
+waitdone::
+	MOVL	EDX, wtdn_data1[ESP]
+	MOVL	tdaWakeTmr#[EDX], #0
+	PUSHL	EDX
+	CALL	sysSchRunRequeue#	;Requeue the thread to a run queue
+	RET	16t
+.PAGE
+	.SBTTL	svcSchWaitProc - Wait for process to terminate
+
+;Here for the svcSchWaitProc SVC - Wait for process to terminate
+;	long svcSchWaitProcTrm(
+;	    long process,	// Process ID of process to wait for
+;	    long timeout_hi,	// Time to suspend (system ticks,
+;	    long timeout_lo);	//   0xFFFFFFFFFFFFFFFF means to wait
+;				//   forever, 0 means to return immediately
+;  Value returned is 0 if normal or negative error code if error - note that
+;    the normal return is given if the process specified does not exist
+
+psvcSchWaitProc::
+	MOVL	EBX, knlTda+tdaArg1#	;Get process ID
+
+	CRASH	????
+
+;;;;;	CALL	getproc			;Get PDA selector
+	JC	4$			;Give good return if no such process
+;;;;;	CALL	chkkil2			;Can't wait for process we can't kill!
+	JC	6$			;If error
+
+
+	MOVL	EBP, #-12t		;OK - set up timeout value
+;;;;;	CALL	settimeout
+	JBE	6$			;If error or if should not wait
+	TOFORK
+	MOVZWL	EAX, knlPda+pdaPid#	;Use process number as wait index
+	PUSHL	EAX
+	PUSHL	knlTda+tdaArg2#
+	PUSHL	knlTda+tdaArg3#
+	PUSHL	#THDS_PROC
+	CALL	sysSchSetUpToWait#
+;;;;;	JMP	svcredow		;Go wait
+
+;Here if bad process ID - just give normal return
+
+4$:	CLRL	EAX
+6$:	RET
+.PAGE
+;Function to get a TDA given its TID
+;	TDA *sysSchGetTda(
+;	    long tid);
+;  Value returned is the actual address of the TDA if normal or NULL if the
+;    TID is not valid.
+
+gtda_tid=!4
+
+sysSchGetTda::
+	MOVL	EDX, gtda_tid[ESP]
+	MOVZWL	EAX, DX			;Does the target TDA still exist?
+	TESTB	knlTdaTable#[EAX], #0x01
+	JE	6$			;No
+	SHLL	EAX, #tda_SHIFT		;Maybe
+	ADDL	EAX, #tdabase
+	CMPL	tdaLabel#[EAX], #'TDA&'	;Debug check!
+	JE	4$
+	CRASH	NTDA
+
+4$:	CMPL	EDX, tdaTid#[EAX]	;Is it the same TDA?
+	JNE	6$			;No
+	TESTB	tdaTSts1#[EAX], #T1$KILL ;Yes - Is it being terminated?
+	JE	10$			;No - it's OK
+6$:	CLRL	EAX			;If the TID is not valid
+10$:	RET	4
+
+	END

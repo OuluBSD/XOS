@@ -1,0 +1,398 @@
+	.TITLE	errtbl	Error message table
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+
+	USERCODE
+
+;This table is generated here using the assembler because the C preprocessor
+;  is not smart enough to create the table and check for entires being in
+;  the proper order based on the value of the ER_xxx items.
+
+	.MACRO	MSGTBL
+	MX	{NOERR}, {No error indicated}
+	MX	{EOF  }, {End of file}
+	MX	{SVC  }, {Illegal SVC function}
+	MX	{FUNC }, {Illegal function}
+	MX	{FUNCM}, {Illegal function for current mode}
+	MX	{VALUE}, {Illegal value specified}
+	MX	{PARMI}, {Illegal parameter index}
+	MX	{PARMV}, {Illegal parameter value}
+	MX	{PARMS}, {Illegal parameter value size}
+	MX	{PARMT}, {Illegal parameter type}
+	MX	{PARMF}, {Illegal parameter function}
+	MX	{PARMM}, {Required parameter missing}
+	MX	{CHARN}, {Illegal characteristic name}
+	MX	{CHARV}, {Illegal characteristic value}
+	MX	{CHARS}, {Illegal characteristic value size}
+	MX	{CHART}, {Illegal characteristic type}
+	MX	{CHARF}, {Illegal characteristic function}
+	MX	{CHARM}, {Required characteristic missing}
+	MX	{BDNAM}, {Illegal process or segment name}
+	MX	{BDPID}, {Illegal process ID}
+	MX	{BDTID}, {Illegal thread ID}
+	MX	{PRIV }, {Privilege failure}
+	MX	{ACSDN}, {Access denied}
+	MX	{NEMA }, {Not enough memory available}
+	MX	{MACFT}, {Memory allocation conflict}
+	MX	{MAERR}, {Memory allocation error}
+	MX	{NODCB}, {No disk cache buffer available}
+	MX	{NOBUF}, {No system buffer available}
+	MX	{ACT  }, {Device is active}
+	MX	{BDSPC}, {Illegal device/file specification}
+	MX	{NSDEV}, {No such device}
+	MX	{DEVIU}, {Device or file in use}
+	MX	{DEVIO}, {Device is open}
+	MX	{DEVNO}, {Device is not open}
+	MX	{00034}, {Undefined error code = -34}
+	MX	{DEVFL}, {Device full}
+	MX	{TMDVP}, {Too many devices open for process}
+	MX	{DFDEV}, {Different device for rename}
+	MX	{FILNF}, {File not found}
+	MX	{FILEX}, {File exists}
+	MX	{BUSY }, {Device or file is busy}
+	MX	{FILAD}, {File access denied}
+	MX	{DIRNF}, {Directory not found}
+	MX	{DIRFL}, {Directory full}
+	MX	{DIRNE}, {Directory not empty}
+	MX	{DIRTD}, {Directory level too deep}
+	MX	{DATER}, {Data error}
+	MX	{IDFER}, {Record ID field error}
+	MX	{SEKER}, {Seek error}
+	MX	{RNFER}, {Record not found}
+	MX	{LSTER}, {Lost data error}
+	MX	{WRTER}, {Write error}
+	MX	{WPRER}, {Write protect error}
+	MX	{DEVER}, {Device error}
+	MX	{DATTR}, {Data truncated}
+	MX	{NORSP}, {Device did not respond}
+	MX	{BDDBK}, {Bad disk block number}
+	MX	{BDDVH}, {Bad device handle}
+	MX	{NOOUT}, {Output not allowed}
+	MX	{NOIN }, {Input not allowed}
+	MX	{ADRER}, {Address out of bounds}
+	MX	{IRFT }, {Illegal RUN file type}
+	MX	{IRFF }, {Illegal RUN file format}
+	MX	{IRFRD}, {Illegal relocation in RUN file}
+	MX	{RELTR}, {Relocation truncation in RUN file}
+	MX	{NOSAD}, {No starting address in RUN file}
+	MX	{NOSTK}, {No stack specified in RUN file}
+	MX	{IFDEV}, {Illegal function for device}
+	MX	{ICDEV}, {Illegal byte count for device}
+	MX	{IADEV}, {Illegal buffer address for device}
+	MX	{MDCHG}, {Media changed}
+	MX	{RTOBG}, {Record too big}
+	MX	{NACT }, {Device or request is not active}
+	MX	{FMTER}, {Format error}
+	MX	{NTRDY}, {Device not ready}
+	MX	{NTDIR}, {File is not a directory}
+	MX	{ISDIR}, {File is a directory}
+	MX	{NTTRM}, {Device is not a terminal}
+	MX	{ICMDV}, {Illegal command for device}
+	MX	{BPIPE}, {Pipe error}
+	MX	{DLOCK}, {Deadlock condition}
+	MX	{FBFER}, {FIB format error}
+	MX	{FBPER}, {FIB pointer error}
+	MX	{FBRER}, {Error reading FIB}
+	MX	{FBWER}, {Error writing FIB}
+	MX	{HMFER}, {Home block format error}
+	MX	{HMRER}, {Error reading home block}
+	MX	{STFER}, {Storage allocation table format error}
+	MX	{STRER}, {Error reading storage allocation table}
+	MX	{STWER}, {Error writing storage allocation table}
+	MX	{DRFER}, {Directory block format error}
+	MX	{DRRER}, {Directory block read error}
+	MX	{DRWER}, {Directory block write error}
+	MX	{NTFIL}, {Device is not file structured}
+	MX	{IATTR}, {Illegal file attribute change}
+	MX	{NTDSK}, {Device is not a disk}
+	MX	{DQUOT}, {Disk quota exceeded}
+	MX	{FSINC}, {File system is inconsistent}
+	MX	{NTDEF}, {Not defined}
+	MX	{BDLNM}, {Expanded logical name too long}
+	MX	{WLDNA}, {Wild-card name not allowed}
+	MX	{NTLNG}, {Name is too long}
+	MX	{TMUSR}, {Too many users}
+	MX	{TMPSS}, {Too many processes or shared segments in system}
+	MX	{PDTYP}, {Physical device is illegal type}
+	MX	{PDNAV}, {Physical device not available}
+	MX	{PDADF}, {Physical device already defined}
+	MX	{DUADF}, {Device unit already defined}
+	MX	{NSCLS}, {No such device class}
+	MX	{CLSAD}, {Device class already defined}
+	MX	{XFRBK}, {Data transfer blocked}
+	MX	{TMDVC}, {Too many devices open for class}
+	MX	{NPERR}, {Network protocol error}
+	MX	{NPRNO}, {Network port not open}
+	MX	{NPRIU}, {Network port in use}
+	MX	{NILPR}, {Illegal network port number}
+	MX	{NILAD}, {Illegal network address}
+	MX	{NILRF}, {Illegal network request format}
+	MX	{NILPC}, {Illegal network protocol type}
+	MX	{NPCIU}, {Network protocol type in use}
+	MX	{NCONG}, {Network congestion}
+	MX	{NRTER}, {Network routing error}
+	MX	{NSNOD}, {No such network node}
+	MX	{NTTIM}, {Network time-out}
+	MX	{NCLST}, {Network connection lost}
+	MX	{NHSNA}, {Network host not available}
+	MX	{NCCLR}, {Network connection cleared}
+	MX	{NCRFS}, {Network connection refused}
+	MX	{NNNDF}, {Network name is not defined}
+	MX	{NNSNC}, {Network name server not capable}
+	MX	{NNSRF}, {Network name server refused request}
+	MX	{NNSNA}, {Network name server not available}
+	MX	{NNSRQ}, {Network name server bad request format}
+	MX	{NNSRS}, {Network name server bad response format}
+	MX	{NNSER}, {Network name server error}
+	MX	{NNMTD}, {Network name mapping is too deep}
+	MX	{NRTNA}, {Network router not available}
+	MX	{NNCON}, {No connection established}
+	MX	{NDRTL}, {Network data rejected - too long}
+	MX	{NPSQE}, {Network protocol sequencing error}
+	MX	{NOMEM}, {Memory not allocated}
+	MX	{ALDEF}, {Already defined}
+	MX	{NCOMP}, {Not compatible}
+	MX	{NOPAP}, {Printer is out of paper}
+	MX	{IMEMA}, {Illegal memory address}
+	MX	{NSTYP}, {No such device type}
+	MX	{CHNNA}, {DMA channel not available}
+	MX	{BDLA }, {Bad linear address}
+	MX	{TMRNC}, {Too many requests for network connection}
+	MX	{DVRMV}, {Device removed}
+	MX	{ABORT}, {IO operation aborted}
+	MX	{CANCL}, {IO operation canceled}
+	MX	{SELNA}, {Segment selector not allocated}
+	MX	{BDSEL}, {Bad segment selector value}
+	MX	{DOSMC}, {DOS memory allocation data corrupted}
+	MX	{NDOSD}, {No DOS IO data block available}
+	MX	{IDEVC}, {Incorrect device class}
+	MX	{DTINT}, {Data transfer interrupted}
+	MX	{IOSAT}, {IO saturation}
+	MX	{IDREN}, {Invalid directory rename operation}
+	MX	{LKEAL}, {LKE already loaded}
+	MX	{CDAAD}, {LKE common data area already defined}
+	MX	{CDAND}, {LKE common data area not defined}
+	MX	{ININU}, {Interrupt number in use}
+	MX	{DIFER}, {Device interface error}
+	MX	{DVDER}, {Device driver error}
+	MX	{FINTR}, {Function interrupted}
+	MX	{NTIMP}, {Not implemented}
+	MX	{ERROR}, {Unspecified general error}
+	MX	{IOINU}, {IO register block in use}
+	MX	{DOURN}, {Data overrun or underrun}
+	MX	{FUNCS}, {Illegal function for current state}
+	MX	{BFRTS}, {Buffer is too short}
+	MX	{TMIOM}, {Too many IO requests for memory page}
+	MX	{TMIOP}, {Too many IO request pointers}
+	MX	{MPILK}, {Memory page is locked}
+	MX	{TMIOQ}, {Too many IO requests queued}
+	MX	{TMUDV}, {Too many users for device}
+	MX	{TMDDV}, {Too many device units for device}
+	MX	{NTLCL}, {Not local}
+	MX	{DOSPB}, {Permanent DOS process is busy}
+	MX	{ICMIO}, {Incomplete IO operation}
+	MX	{NSLP }, {Not a session level process}
+	MX	{LOCK }, {File record lock violation}
+	MX	{CAASP}, {Close action already specified}
+	MX	{CAERR}, {Close action error}
+	MX	{00186}, {Undefined error code = -186}
+	MX	{TMTS }, {Too many threads in system}
+	MX	{TMTP }, {Too many threads for process}
+	MX	{TMRQB}, {Too many requests for buffer}
+	MX	{CCMSS}, {Cannot change memory section size}
+	MX	{NNOPC}, {No network protocol specified}
+	MX	{IPDIR}, {Illegal pointer in directory}
+	MX	{MSNPR}, {Msect is not private}
+	MX	{INVST}, {Invalid segment type}
+	MX	{NLKNA}, {Network link not available}
+	MX	{EVRES}, {Event is reserved}
+	MX	{EVNRS}, {Event is not reserved}
+	MX	{EVSET}, {Event is set}
+	MX	{CPDNR}, {Child process did not respond}
+	MX	{STKER}, {Stack error}
+	MX	{DIVER}, {Divide error}
+	MX	{ILLIN}, {Illegal instruction}
+	MX	{UNXSI}, {Unexpected software interrupt}
+	MX	{NWPA }, {No watchpoint available}
+	MX	{BDALM}, {Bad alarm handle}
+	MX	{TMALM}, {Too many alarms for process}
+	MX	{DPMIC}, {DPMI environment corrupted}
+	MX	{MEMLX}, {Memory limit exceeded}
+	MX	{VECNS}, {Signal vector not set up}
+	MX	{TRMNA}, {Terminal is not attached}
+	MX	{STIIU}, {SCSI target ID is in use}
+	MX	{SLKCE}, {SCSI linked command error}
+	MX	{STDNR}, {SCSI target did not respond}
+	MX	{SDLNE}, {SCSI data length error}
+	MX	{SUXBF}, {SCSI unexpected bus free state}
+	MX	{STBPS}, {SCSI target bus phase sequence failure}
+	MX	{STARI}, {SCSI target number is illegal}
+	MX	{SLUNI}, {SCSI logical unit number is illegal}
+	MX	{SSUNI}, {SCSI sub-unit number is illegal}
+	MX	{SDVTI}, {SCSI device type is incompatible}
+	MX	{BLANK}, {Media is blank}
+	MX	{NBLNK}, {Media is not blank}
+	MX	{EOS  }, {End of set}
+	MX	{EOM  }, {End of media}
+	MX	{IRFSU}, {Illegal RUN file symbol - undefined}
+	MX	{IRFSL}, {Illegal RUN file symbol - name too long}
+	MX	{IFXST}, {Illegal format in exported symbol table}
+	MX	{OUTNE}, {Output is not enabled}
+	MX	{NOACK}, {Output has not been acknowleged}
+	MX	{TMORQ}, {Too many output requests}
+	MX	{NMBTS}, {Name buffer is too small}
+	MX	{IINUM}, {Illegal interrupt number}
+	MX	{IDSPC}, {Illegal destination file specification}
+	MX	{TYPAD}, {Device type already defined}
+	MX	{NEDMA}, {Not enough device memory available}
+	MX	{PWUSR}, {Incorrect user name or password}
+	MX	{NNPA }, {No network port available}
+	MX	{SCTNA}, {Section not available}
+	MX	{TMDVS}, {Too many devices open for system}
+	MX	{IONTC}, {IO operation not complete}
+	MX	{MDICN}, {Modem is connected}
+	MX	{MDNCN}, {Modem not connected}
+	MX	{NSSRV}, {No such server}
+	MX	{ISREQ}, {Illegal server request}
+	MX	{ISRSP}, {Illegal server response}
+	MX	{SIOER}, {Server IO error}
+	MX	{IDFMT}, {Illegal data format}
+	MX	{NAPER}, {Network application protocol error}
+	MX	{MSGNF}, {Message not found}
+	MX	{MSGFE}, {Message format error}
+	MX	{NPNIU}, {Network port not in use}
+	MX	{NNDFP}, {No destination for network protocol}
+	MX	{TMMBK}, {Too many physical memory blocks}
+	MX	{NTINS}, {Not installed}
+	MX	{00255}, {Undefined error code -255}
+	MX	{NIYT }, {Not implemented yet}
+	MX	{MATH }, {Math library routine error}
+	MX	{RANGE}, {Math library argument out of range}
+	MX	{TMTHD}, {Too many threads}
+	MX	{THDNS}, {Thread is not suspended}
+	MX	{NODAT}, {No data in file}
+	MX	{BDFMT}, {Bad file format}
+	MX	{BDPFX}, {Bad prefixed value}
+	MX	{REC2L}, {Record is too long}
+	MX	{REC2S}, {Record is too short}
+	MX	{INCBL}, {Incorrect Block length}
+	MX	{BDPRH}, {Bad parent handle}
+	MX	{BDWNH}, {Bad window handle}
+	MX	{NRMTE}, {Error reported by remote system}
+	MX	{NOCON}, {Console device is not available}
+	MX	{NPS2L}, {Network packet size is too large}
+	MX	{NKA2S}, {Network keep-alive time is too small}
+	MX	{TEMP} , {Resource temporarily unavailable}
+	MX	{FIL2L}, {File is too long}
+	MX	{INTRP}, {Function interrupted}
+	MX	{TMLNK}, {Too many links}
+	MX	{BDLNK}, {Bad link}
+	MX	{NOLCK}, {No lock available}
+	MX	{ARG2L}, {Argument is too long}
+	MX	{USBTA}, {Too many USB device addresses in use}
+	MX	{USBTH}, {Too many USB hubs}
+	MX	{USBTL}, {USB descriptor is too long}
+	MX	{USBDF}, {USB descriptor format error}
+	MX	{USBBC}, {Unsupported USB device configuration}
+	MX	{USBST}, {USB device stalled}
+	MX	{USBBD}, {USB babble detected}
+	MX	{USBBE}, {USB bus error}
+	MX	{USBBS}, {USB bit stuff error}
+	MX	{USBCN}, {USB client not found}
+	MX	{USBNR}, {USB device did not respond}
+	MX	{USBMM}, {USB controller missed microframe}
+	MX	{USBNH}, {Not a high speed USB device}
+	MX	{BFRER}, {Invalid buffer address or size}
+	MX	{NOARG}, {Required argument is missing}
+	MX	{UNSPL}, {Unsupported printer language}
+	MX	{PMDNA}, {Printer mode not available}
+	MX	{SRBRK}, {Serial line break detected}
+	MX	{DK2LG}, {Disk is too large}
+	MX	{IVMBR}, {Invalid Master Boot Record}
+	MX	{NTSEL}, {Not selected}
+	MX	{CFGER}, {Device configuration is invalid}
+	MX	{CODER}, {Codec error}
+	MX	{IVMSG}, {Invalid message}
+	MX	{IDLEN}, {Invalid data length}
+	MX	{TMDGC}, {Too many devices being given to child}
+	MX	{NSPMP}, {Not a simple private memory page}
+	MX	{LKENA}, {Required LKE is not available}
+	MX	{NOSEN}, {No sense data available}
+	MX	{LNMTD}, {Logical name mapping is too deep}
+	MX	{BADVN}, {Invalid vector number}
+	MX	{DMDNA}, {Display mode not available}
+	MX	{BDQUE}, {Invalid queue for target thread}
+	MX	{DOM  }, {Value domain error}
+	MX	{IVFLN}, {Invalid file length}
+	MX	{NTFND}, {Not found}
+	MX	{BDENV}, {Invalid environment area}
+	MX	{HVBFR}, {Buffer already set up}
+	MX	{NOBFR}, {No buffer is set up}
+	MX	{HVCHN}, {DMA channel already set up}
+	MX	{NOCHN}, {No DMA channel set up}
+	MX	{DIREX}, {Directory exists}
+	MX	{CBLCK}, {Disk cache buffer is locked}
+	MX	{CBDIS}, {Disk cache buffer has been discarded}
+	MX	{DNREN}, {Duplicate name for rename}
+	MX	{RSRMV}, {Resource has been removed}
+	MX	{RESNA}, {Resource is not available}
+	MX	{BDPOS}, {Invalid position for IO}
+	MX	{SENSE}, {Sense command error}
+	MX	{UNEXP}, {Unexpected response received}
+	MX	{PDVNF}, {Parent device not found}
+	MX	{NAUNR}, {Network address is unreachable}
+	.ENDM
+
+;Generate message table
+
+	.MACRO	MX   code,msg
+.IF NB {code}
+  .IF NE $$$er+ER_'code
+	.ERROR	Message {code} is out of order
+  .ENDC
+.ENDC
+	.LONG	txt'code
+$$$er=!$$$er+1
+	.ENDM
+
+$$$er=!0
+errtbl::MSGTBL
+errmax==!{$-errtbl-1}/4
+
+;Generate message text strings
+
+	.MACRO	MX  code,msg
+txt'code:
+	.ASCIZ	"code"
+	.ASCIZ	"msg"
+	.ENDM
+
+	MSGTBL
+
+;;;badmsg:	.ASCIZ	"{UNDEF} "
+;;;	.ASCIZ	"Undefined error code = "
+;;;badend:
+
+	END

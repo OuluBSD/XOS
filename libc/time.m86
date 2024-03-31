@@ -1,0 +1,31 @@
+	.TITLE	time
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	time
+time:	SUBL	ESP, #8t
+	MOVL	EAX, ESP
+	PUSHL	#1
+	PUSHL	EAX
+	CALL	svcSysDateTime##
+	MOVL	EAX, [ESP]		;Get system ticks since 1-Jan-1970
+	MOVL	EDX, 4[ESP]
+	SUBL	EAX, #0xF7B58000
+	SBBL	EDX, #0x089F7FF5
+	DIVL	tckpsec			;Change to seconds
+	MOVL	ECX, 12t[ESP]		;Get the caller's pointer
+	TESTL	ECX, ECX
+	JE	4$
+	MOVL	[ECX], EAX
+4$:	ADDL	ESP, #8t
+	RET
+
+	.MOD	4
+tckpsec:.LONG	10000000t
+
+	.END

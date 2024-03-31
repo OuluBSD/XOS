@@ -1,0 +1,446 @@
+	.TITLE	iothread - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosdisk.par
+	.INCLUD	xosinc:\xmac\xosxdisk.par
+
+	CODE
+
+;Function to wait for IO when TDA address will be used to resume the thread.
+;  Must be called at main program level raised to fork level.
+;	si32 sysIoWait(
+;	    ui64 timeout,
+;	    ui32 queue);
+;  Value returned is 0 or positive if normal or a negative error code if error.
+;    Returns lowered to main program level.
+
+waitto_to =!12t
+waitto_que=!8
+
+sysIoWait::
+	REQUIREFORK			;For debugging!
+	PUSHL	EBX
+	CMPL	knlTda+tdaWakeTmr#, #0
+	JE	2$
+	CRASH	WTER			;[Wake Timer ERror]
+
+2$:	MOVL	EAX, knlTda+tdaAddr#
+	MOVL	EBX, knlTda+tdaDcb#
+	CMPL	dcb_outtda[EBX], EAX
+	JE	4$
+	CMPL	dcb_inptda[EBX], EAX
+	JE	4$
+	CRASH	BIOF			;[Bad IO Frame]
+
+4$:	MOVL	EAX, waitto_to+0[ESP]	;Want to wait at all?
+	ORL	EAX, waitto_to+4[ESP] 
+	JE	10$			;No - just fail immediately!
+	PUSHL	#-1
+	PUSHL	waitto_to+4+4[ESP]
+	PUSHL	waitto_to+0+8[ESP]
+	PUSHL	waitto_que+12t[ESP]	;Yes
+	CALL	sysSchSetUpToWait#
+	CLRL	EAX
+	PUSHFL
+	CALLF	knlSchedule#
+	MOVL	EAX, knlTda+tdaRtnValue0#
+8$:	POPL	EBX
+	RET	12t
+
+;Here if don't want to wait at all
+
+10$:	FROMFORK
+	MOVL	EAX, #ER_NORSP		;Error = NO ReSPonse
+	JMP	8$
+.PAGE
+;Here when sysIoWait times out
+;	void xfwdone(
+;	    PDA *pda,		// Address of PDA
+;	    long handle,	// Timer handle
+;	    long data1,
+;	    long data2);
+
+xwd_tmr  =!16t
+xwd_hndl =!12t
+xwd_data1=!8
+xwd_data2=!4
+
+xfwdone::
+	MOVL	EDX, xwd_data1[ESP]	;Get address of the TDA
+	CMPL	tdaDcb#[EBX], #0	;Still have a DCB?
+	JE	20$			;No - forget it
+	PUSHL	EDX			;Yes - wake him up
+	PUSHL	#ER_NORSP		;Error = NO ReSPonse
+	CALL	sysIoResumeThread	;Tell it it has timed-out
+20$:	RET	16t
+.PAGE
+;Function to resume input - Must be called from fork level or main program
+;  level raised to fork level.
+;	void sysIoResumeInput(
+;	    DCB *dcb,		// Address of DCB
+;	    long value);	// Return value
+;  Fork level is unchanged.
+
+xri_dcb  =!8
+xri_value=!4
+
+sysIoResumeInput::
+	MOVL	EDX, xri_dcb[ESP]	
+	MOVL	EDX, dcb_inptda[EDX]	;Get actual address of fork frame
+	JMP	4$
+
+;Function to resume output - Must be called from fork level or main program
+;  level raised to fork level.
+;	void sysIoResumeOutput(
+;	    DCB *dcb,		// Address of DCB
+;	    long value);	// Return value
+;  Fork level is unchanged.
+
+xro_dcb  =!8
+xro_value=!4
+
+sysIoResumeOutput::
+	MOVL	EDX, xro_dcb[ESP]	
+	MOVL	EDX, dcb_outtda[EDX]	;Get actual address of fork frame
+4$:	TESTL	EDX, EDX
+	JNE	6$
+	JMP	10$
+
+;Function to resume thread given address of the thread's TDA - Must be called
+;  from fork level or main program level raised to fork level.
+;	void sysIoResumeThead(
+;	    Tda *tda,		// Actual address of TDA
+;	    long value);	// Return value
+;  Fork level is unchanged
+
+;NOTE: This is a relatively short function which (in spite of effecting
+;      scheduling) does not do a context switch. It may be called from
+;      withing a spin-locked critical section.
+
+xr_tda  =!8
+xr_value=!4
+
+sysIoResumeThread::
+	MOVL	EDX, xr_tda[ESP]
+6$:	REQUIREFORK
+
+;Start of debug code
+
+.IF NE 0
+	MOVL	ECX, resumepnt
+	MOVL	EAX, [ESP]
+	MOVL	[ECX], EAX
+	MOVL	4[ECX], EDX
+	MOVL	EAX, xr_value[ESP]
+	MOVL	8[ECX], EAX
+	MOVL	EAX, knlSchTtl#
+	MOVL	12t[ECX], EAX
+	ADDL	ECX, #0x10
+	CMPL	ECX, #resumetop
+	JB	7$
+	MOVL	ECX, #resumering
+7$:	MOVL	[ECX], #0xF0F0F0F0
+	MOVL	resumepnt, ECX
+.ENDC
+
+;End of debug code
+
+	CMPL	tdaRtnValue0#[EDX], #0	;Already have an error value?
+	JS	8$			;Yes - don't change it
+	MOVL	EAX, xr_value[ESP]	;No - store this one
+	MOVL	tdaRtnValue0#[EDX], EAX
+8$:	PUSHL	EDX			;Wake him up
+	CALL	sysSchRunRequeue#
+10$:	RET	8			;Finished here
+.PAGE
+;Function to queue an IO request - Must be called at main program level.
+;  The caller must store the DCB offset of either dcb_outtda or dcb_inptda
+;  in tdaFrame before calling this function. This function determines if
+;  queued or direct IO is to be done. If queued IO and the device is idle
+;  an IO thread is started to do the request. If queued IO and the device is
+;  busy a request is queued to the current IO thread. If direct IO and the
+;  device is idle the function point to by tdaRoutine is called on the
+;  current thread. If direct IO and the device is busy, an ER_BUSY error is
+;  returned. This function is called to start ALL IO operations except for
+;  devices that support ONLY direct IO. Currently this only includes the
+;  once-only console and disk devices and IPM output.
+;	long sysIoQueueThread(void);
+;  Value returned is a negative error code if error or 0 if OK.
+
+sysIoQueueThread::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EBX, knlTda+tdaHandle#	;Has this handle been disabled?
+	TESTL	knlPda+pdaHndlTbl+4[EBX*8], #XO$NOQUE|XO$OPNCLS
+	JNE	4$			;Yes - fail
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVZBL	EBX, knlTda+tdaFrame#	;Get queue pointer offset
+	CMPL	EBX, #dcb_outtda	;Starting output?
+	JNE	chkinp			;No
+	TESTB	dcb_dsp[EDI], #DS$QOUT	;Yes - can device do queued output
+	JE	dodirect		;No - must do direct output
+	TESTB	knlTda+tdaFunc#+1, #QFNC$QIO>8 ;Yes - forcing queued output?
+	JNE	doqueued		;Yes
+	TESTB	knlTda+tdaFunc#+1, #QFNC$DIO>8 ;No - forcing direct output?
+	JNE	dodirect		;Yes
+	TESTB	dcb_dsp[EDI], #DS$DOUTDFT ;Is direct output the default?
+	JE	doqueued		;No - do queued output
+
+;Here to do direct IO
+
+dodirect:
+	CMPL	[EDI+EBX], #0
+	JNE	4$
+	MOVL	EAX, knlTda+tdaAddr#	;Create an IO frame for this thread
+	MOVL	[EDI+EBX], EAX
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	JMPIL	knlTda+tdaRoutine#	;Go directly to the IO routine
+
+4$:	MOVL	EAX, #ER_BUSY
+	JMP	10$
+
+6$:	CRASH	BIOF			;[Bad IO Frame value]
+
+;Here to determine which kind of input to do
+
+chkinp:	CMPL	EBX, #dcb_inptda	;Starting input?
+	JNE	6$			;No
+	TESTB	dcb_dsp[EDI], #DS$QIN	;Yes - can device do queued input
+	JE	dodirect		;No - must do direct input
+	TESTB	knlTda+tdaFunc#+1, #QFNC$QIO>8 ;Yes - forcing queued input?
+	JNE	doqueued		;Yes
+	TESTB	knlTda+tdaFunc#+1, #QFNC$DIO>8 ;No - forcing direct input?
+	JNE	dodirect		;Yes
+	TESTB	dcb_dsp[EDI], #DS$DINDFT ;Is direct input the default?
+	JNE	dodirect		;Yes - do that
+
+;Here to do queued IO
+
+doqueued:
+	ORB	knlTda+tdaStatus#+1, #QSTS$QUEUED>8 ;Indicate doing queued IO
+	CMPL	[EDI+EBX], #0		;Is there a current queued request?
+	JNE	12$			;Yes - queue the request
+	PUSHL	#sysIoFinishQueue#	;No - start an IO thread for the
+	CALL	sysIoBeginThread	;  request
+8$:	MOVB	knlTda+tdaFrame#, #0
+10$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+
+;Here if need to queue the request
+
+;;; THIS IS NOT YET SUPPORTED IN THIS VERSION!!!
+
+12$:	MOVL	EAX, #ER_NIYT
+	JMP	10$
+
+.IF NE 0
+	MOVL	EBX, [EDI+EBX]
+	MOVB	AL, tdaIoQCnt#[EBX]	;No - can we queue another one?
+	CMPB	AL, dcb_outqlmt-dcb_outtda[EDI+EBX]
+	JAE	20$			;No
+	INCB	tdaIoQCnt#[EBX]		;Yes - count it
+
+;;;; CREATE AND SET UP THE IOQB HERE
+
+	CRASH	????
+
+	MOVL	EAX, tdaIoQTail#[EBX]	;Get tail of list
+	TESTL	EAX, EAX		;Is list empty?
+	JNE	16$			;No
+	MOVL	tdaIoQHead#[EBX], ESI	;Yes - setup a list
+	JMP	18$
+
+16$:	MOVL	[EAX], ESI		;Link into list
+18$:	MOVL	tdaIoQTail#[EBX], ESI
+	CLRL	EAX
+	MOVL	[ESI], EAX
+	JMP	8$
+
+;Here if can't queue another request for the device
+
+20$:
+
+;;;;; NEED TO UNLOCK MEMORY HERE !!!!!
+
+
+	MOVL	EAX, #ER_TMIOQ		;Get error code
+	JMP	8$
+.ENDC
+.PAGE
+;Function to create an IO thread to execute a function for a device. Must
+;  be called from main program level raided to fork level.
+;	long sysIoBeginThread(
+;	    FUNC *finish);
+;  Value returned is a negative error code if error or 0 if OK. Fork level is
+;    unchanged.
+
+iotb_finish=!4t
+
+sysIoBeginThread::
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#TDATYPE_IO
+	PUSHL	#THDS_RN0
+	PUSHL	EAX
+	CALL	newthread#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	6$
+	PUSHL	EDX
+	PUSHL	#knlTda+tdaIoqb#
+	PUSHL	knlTda+tdaDcb#
+	PUSHL	knlTda+tdaHandle#
+	PUSHL	iotb_finish+16t[ESP]
+	PUSHL	EDX
+	CALL	threadsetup
+	ORB	knlTda+tdaStatus#+1, #QSTS$QUEUED>8
+	POPL	EAX
+	CMPL	queheadRN0#, EAX	;Will our new thread run next?
+	JNE	4$			;No
+	TOFORK
+	PUSHFL				;Yes - let it run now (This should
+	CALLF	knlSchedule#		;  save at least one context switch
+4$:	CLRL	EAX			;  later!)
+6$:	RET	4
+
+;Here when the IO thread is executed.
+;	c{EBX} = Address of the termination routine
+;	c{EDX} = Address of the IO routine
+
+thrdstart:
+	MOVL	EDI, knlTda+tdaDcb#
+	PUSHL	EBX			;Put our return address on the stack
+	JMPIL	EDX
+.PAGE
+;Function to set up the contains of an IO thread's TDA
+;	void threadsetup(
+;	    IOQB *ioqb,
+;	    DCB  *dcb,
+;	    long  handle,
+;	    FUNC *finish,
+;	    TDA  *tda);
+
+tset_ioqb  =!32t
+tset_dcb   =!28t
+tset_handle=!24t
+tset_finish=!20t
+tset_tda   =!16t
+
+threadsetup:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, tset_ioqb[ESP]
+	MOVL	EBX, tset_tda[ESP]
+	MOVL	EDI, tset_dcb[ESP]
+	MOVL	tdaDcb#[EBX], EDI	;Store address of DCB
+	TESTL	EDI, EDI		;Do we have a DCB?
+	JE	6$			;No
+	MOVZBL	EDX, ioqb_frame[ESI]	;Yes - get DCB queue offset
+	TESTL	EDX, EDX		;Do we have a frame?
+	JE	2$			;No
+	MOVL	[EDI+EDX], EBX		;Yes - store address in the DCB
+2$:	MOVZWL	EAX, tset_handle[ESP]	;Get handle
+	TESTL	EAX, EAX
+	JE	6$			;If no handle
+	CMPL	knlPda+pdaHndlTbl#[EAX*8], EDI ;Make sure the handle is right!
+	JE	4$			;OK
+	CRASH	BDHT			;[BaD Handle Table]
+
+4$:	MOVL	EAX, knlPda+pdaHndlTbl#+4[EAX*8] ;Get device command bits
+	MOVL	tdaCmd#[EBX], EAX	;Store them in the TDA
+6$:	MOVL	EAX, ioqb_routine[ESI]
+	MOVL	tdaURegEDX#[EBX], EAX
+
+	MOVL	tdaURegEIP#[EBX], #thrdstart
+	MOVL	tdaURegCS#[EBX], #GS_XCODE
+	MOVL	tdaURegEFR#[EBX], #0x0200
+	MOVL	EAX, #GS_XDATA
+	MOVL	tdaURegDS#[EBX], EAX
+	MOVL	tdaURegES#[EBX], EAX
+	MOVL	EAX, tset_finish[ESP]	;Put the address of the termination
+	MOVL	tdaURegEBX#[EBX], EAX	;  routine in this EBX
+	LEAL	EDI, tdaIoqb#[EBX]	;Copy the IOQB items to the TDA
+	MOVL	ECX, #ioqb_NUMCOPY
+	RMOVSL	[EDI], [ESI]
+	MOVL	EAX, knlTda+tdaAddr#
+	MOVL	tdaUserTda#[EBX], EAX
+	MOVL	tdaTimeOut#+0[EBX], #0xFFFFFFFF
+	MOVL	tdaTimeOut#+4[EBX], #0xFFFFFFFF
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	20t
+.PAGE
+;We are now finished with this IO thread.  First we unlock any memory we have
+;  locked for this IO operation.  Then we check to see if the operation just
+;  completed was cancelled or aborted.  If so, we handle this and wake up anyone
+;  waiting using the device handle as a wait index.  Then we see if there is
+;  a queue associated with the IO thread.  If there is a request queued we use
+;  this same thread for it.
+
+	FAULTHDR
+sysIoFinishThread::
+	CALL	sysIoThreadClean
+	PUSHL	knlTda+tdaAddr#
+	CALL	removethread#
+	CRASH	SCHD
+.PAGE
+
+sysIoThreadClean::
+	CMPL	knlTda+tdaWakeTmr#, #0
+	JE	4$
+	CRASH	WTER			;[Wake Timer ERror]
+
+;;;;;;; FIXTHIS
+
+4$:	TESTB	knlTda+tdaQSts1#, #XF1$ABTINP|XF1$ABTOUT|XF1$CANINP|XF1$CANOUT
+					;Cancel?
+	JE	10$			;No - go on
+6$:	TOFORK
+	PUSHL	#'CNCL'			;Yes - wake up whoever is waiting for
+	CALL	sysSchEndWaitAll#	;  this
+	FROMFORK
+10$:	RET
+.PAGE
+.IF NE 0
+	DATA
+
+resumepnt::
+	.LONG	resumering
+resumering::
+	.BLKL	16t*16t
+resumetop::
+	.LONG	0xFFFFFFFF
+
+.ENDC
+	END

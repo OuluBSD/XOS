@@ -1,0 +1,539 @@
+	.TITLE	iocopy - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD XOSINC:\XMAC\XOSXDISK.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD XOSINC:\XMAC\PCAT.PAR
+
+	CODE
+
+;Function to copy all of a processe's devices to a new process
+;	long xferalldevs(
+;	    PDA *pda);		// Actual address of PDA for new process
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;This function assumes that the destination process's device table is empty.
+;  The source handles are copied to the corresponding destination handles. If
+;  any are in use in the destination this function will fail without copying
+;  any devices.
+
+$$$=!0
+FRM cadv_num , 4t
+FRM cadv_list, 32t*8
+cadv_SIZE=!$$$
+
+cadv_pda=!16t
+
+copyalldevs::
+	PUSHL	EDI
+	PUSHL	EDI
+	ENTER	cadv_SIZE, 0
+
+;First scan our handle table count devices
+
+	MOVL	cadv_num[EBP], #0
+	CLRL	EBX
+4$:	INCL	EBX
+	CMPL	knlPda+pdaHndlTbl#[EBX*8], #0
+	JNS	6$
+	TESTL	knlPda+pdaHndlTbl#+4[EBX*8], #XO$NOQUE|XO$OPNCLS
+	JNE	6$	
+	INCL	cadv_num[EBP]
+6$:	CMPL	EBX, knlPda+pdaHndlNum#
+	JB	4$
+	CMPL	cadv_num[EBP], #32t
+	JB	8$
+	MOVL	cadv_num[EBP], #32t
+8$:	MOVL	EDI, cadv_pda[EBP]
+	LEAL	ESI, cadv_list[EBP]
+	MOVL	ECX, cadv_num[EBP]
+	CLRL	EBX
+
+;Construct a device list containing all of our handles
+
+10$:	INCL	EBX
+	CMPL	knlPda+pdaHndlTbl#[EBX*8], #0
+	JNS	10$
+	TESTL	knlPda+pdaHndlTbl#+4[EBX*8], #XO$NOQUE|XO$OPNCLS
+	JNE	10$
+	CMPL	pdaHndlTbl#[EDI+EBX*8], #0
+	JNE	cadvbh
+	MOVW	[ESI], BX
+	MOVW	2[ESI], BX
+	MOVL	4[ESI], #0
+	ADDL	ESI, #8
+	DECL	ECX
+	JNE	10$
+
+;Copy the devices
+
+	PUSHL	cadv_pda[EBP]
+	LEAL	EAX, cadv_list[EBP]
+	PUSHL	EAX
+	PUSHL	cadv_num[EBP]
+	CALL	copydev2
+14$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	4t
+
+cadvbh:	MOVL	EAX, #ER_BDDVH
+	JMP	14$
+.PAGE
+;Function to copy selected devices to new process using a device list
+;	long copydevs(
+;	    PDA  *pda,		// Actual address of PDA for new process
+;	    long *list,		// Address of device list
+;	    long  length);	// Length of device list (bytes)
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;The device list contains a series of items, each consisting of 3 longs as
+;  follows:
+;    Source handle      - (16 bits) Current handle for device.
+;    Destination handle - (16 bits) Value for handle for destination process.
+;			  0 means to allocate any available handle in which
+;			  case this field is updated to contain the handle
+;			  allocated. The destination process's handle table
+;			  is not expanded by this function. If the handle
+;			  requested does not fit in the current table or if
+;			  allocation is requested and the table is full this
+;			  function will
+;			  fail. In his case no devices are copied.
+;    Command bits       - (32 bits) Bit 31 is set if should transfer ownership
+;			  of the device to the child. Bits 30 to 3 are ignored.
+;			  The svcIoRun code uses bit 30 to indicate that a
+;			  device should be closed after it is transfered. The
+;			  close is done by the svcIoRun code, not by this
+;			  function. If bit 2 is set, bits 1 and 0 supply the
+;			  values for XO$IN and XO$OUT. If bit 2 is 0, these bits
+;			  are unchanged. All other bits are always taken for
+;			  the device's current command bits.
+;  A maximum of 16 devices can be transfered. The list is terminated when the
+;  byte count runs out.
+
+;This function is only intended to be used to transfer devices to a process
+;  that has just been created. It assumes the device table for the receiving
+;  process exists but that the process is not executing.  It first builds a
+;  list of DCBs to transfer in the destination device table.  Bit 0 is a copy
+;  of bit 31 from the command bits entry in the device list.  Bit 31 is always
+;  cleared to indicate that this device table entry is not fully set up for
+;  the process. Once this list is complete, an exec signal is requested which
+;  will execute in the context of the receiving process. This routine finishes
+;  transfering the devices. The calling process waits (in an uninterruptable
+;  wait) until all devices have been initialized.
+
+$$$=!0
+FRM cdv_cnt , 4t
+FRM cdv_list, 32t*8
+cdv_SIZE=!$$$
+
+cdv_pda    =!24t
+cdv_devlist=!20t	;Address of device list
+cdv_length =!16t
+
+;;;ALLOW=!XO$IN|XO$OUT|XO$NORDAH|XO$NODFWR ;Allowed device bits
+;;;ALLOW=!ALLOW|XO$CONTIG|XO$CRIT|XO$NOHOLD|XO$FNR|XO$PARTIAL|XO$NOINH
+
+copydevs::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	cdv_SIZE, 0
+	MOVL	ESI, cdv_devlist[EBP]
+	CMPL	ESI, #systembase
+	JAE	cdvae
+	CLRL	EAX
+	MOVL	ECX, cdv_length[EBP]
+	SHRL	ECX, #3
+	CMPL	ECX, #32t		;Is the list too long?
+	JA	cdvtm
+	JE	cdvdone
+	MOVL	cdv_length[EBP], ECX
+	MOVL	cdv_cnt[EBP], ECX
+	ADDL	ECX, ECX
+	LEAL	EDI, cdv_list[EBP]	;Copy the device list
+	PUSHL	DS
+	POPL	ES
+	CLD
+	IFFAULT	cdvae
+	RMOVSL	[EDI], [ESI]
+
+;Make a first scan through the device list and verify that the source handles
+;  are valid, verify that specified destination handles are not in use, and
+;  allocate handles in the destination process.
+
+	LEAL	ESI, cdv_list[EBP]
+	MOVL	EDI, cdv_pda[EBP]
+cdvlp1:	MOVZWL	EBX, [ESI]		;Get source handle
+	ORL	EBX, EBX		;Valid handle?
+	JE	cdvbh			;No
+	CMPL	EBX, knlPda+pdaHndlNum#	;Maybe
+	JA	cdvbh			;No - fail
+	MOVL	EAX, knlPda+pdaHndlTbl#[EBX*8] ;Yes - is it in use?
+	TESTL	EAX, EAX
+	JNS	cdvbh			;No - fail
+	TESTL	knlPda+pdaHndlTbl#+4[EBX*8], #XO$NOQUE|XO$OPNCLS
+	JNE	cdvbh			;Fail if opening or closing the device
+					;OK - handle is available to copy
+	MOVZWL	ECX, 2[ESI]		;Get destination handle
+	TESTL	ECX, ECX		;Valid destination handle?
+	JE	cdvbh			;No
+	CMPL	ECX, pdaHndlNum#[EDI]	;Maybe
+	JA	cdvbh			;No
+	CMPL	pdaHndlTbl#[EDI+ECX*8], #0 ;Is it in use?
+	JNE	cdvbh			;Yes - fail
+	LEAL	EBX, 8[ESI]		;No - check for duplicate specified
+	MOVL	EDX, cdv_cnt[EBP]	;  destination handle
+6$:	DECL	EDX
+	JE	10$
+	MOVL	EAX, [EBX]
+	TESTL	EAX, EAX
+	JE	10$
+	SHRL	EAX, #16t
+	CMPL	EAX, ECX
+	JE	cdvbh
+	ADDL	EBX, #8
+	JMP	6$
+
+;Here if destination handle is usable
+
+10$:	ADDL	ESI, #8
+	DECL	cdv_cnt[EBP]
+	JNE	cdvlp1
+	PUSHL	cdv_pda[EBP]
+	LEAL	EAX, cdv_list[EBP]
+	PUSHL	EAX
+	PUSHL	cdv_length[EBP]
+	CALL	copydev2
+cdvdone:LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+cdvtm:	MOVL	EAX, #ER_VALUE
+	JMP	cdvdone
+
+cdvbh:	MOVL	EAX, #ER_BDDVH
+	JMP	cdvdone
+
+	FAULTHDR
+cdvae:	MOVL	EAX, #ER_ADRER
+	JMP	cdvdone
+.PAGE
+
+;	long copydev2(
+;	    PDA  *pda,		// Actual address of PDA for new process
+;	    long *list,		// Address of device list
+;	    long  length);	// Number of device list entries
+
+;WARNING: This function changes EDI and ESI. It is only called where this is
+;         known to be OK.
+
+cd2_pda   =!12t
+cd2_list  =!8		;Address of device list
+cd2_length=!4
+
+copydev2:
+	MOVL	ESI, cd2_list[ESP]
+cd2lp2:	MOVZWL	EBX, [ESI]		;Get source handle
+	MOVL	EDX, knlPda+pdaHndlTbl#[EBX*8] ;Get the address of the DCB
+	MOVL	EAX, EDX
+	BTZL	EAX, #31t		;Clear bit 31 to indicate not set up yet
+	BTL	4[ESI], #31t		;Should we transfer ownership?
+	JNC	2$			;No
+	MOVL	EDX, dcb_sespda[EDX]	;Yes - do we own it now?
+	CMPL	EDX, knlPda+pdaSesPda#
+	JNE	2$			;No - forget it!
+	BTSL	EAX, #1t		;Yes
+2$:	MOVZWL	ECX, 2[ESI]		;Get destination handle
+	MOVL	pdaHndlTbl#[EDI+ECX*8], EAX ;Store modified address of the DCB
+	MOVL	EAX, knlPda+pdaHndlTbl#+4[EBX*8] ;Get current command bits
+	BTL	4[ESI], #2		;Want to modify XO$IN and XO$OUT?
+	JNC	4$			;No
+	ANDL	EAX, #~{XO$OUT|XO$IN}	;Yes
+	MOVL	EDX, 4[ESI]
+	ANDL	EDX, #XO$OUT|XO$IN
+	ORL	EAX, EDX
+4$:	MOVL	pdaHndlTbl#+4[EDI+ECX*8], EAX
+	ADDL	ESI, #8
+	DECL	cd2_length[ESP]
+	JNE	cd2lp2
+	MOVL	knlTda+tdaResponse#, #1
+	TOFORK
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#1
+	PUSHL	#copydevrcv
+	PUSHL	cd2_pda+12t[ESP]
+	CALL	sysSchReqXSig#
+	ADDL	ESP, #16t
+8$:	PUSHL	knlTda+tdaAddr#
+	PUSHL	#THDS_PROC
+	CALL	sysSchRequeue#		;Requeue to the process wait queue
+	PUSHFL
+	CALLF	knlSchedule#		;Call the scheduler (this is an
+	MOVL	EAX, knlTda+tdaResponse# ;  uninterruptable wait!)
+	TESTL	EAX, EAX
+	JLE	10$			;Go on if finished
+	TOFORK				;Need to wait some more
+	JMP	8$
+
+10$:	RET	12t
+.PAGE
+;Function to finish transfering initial devices.  This function is called as
+;  an exec signal function for the destination process.
+;	void copydevrcv(
+;	    SLB *slb);		// Address of the SLB
+
+$$$=!0
+FRM cdvrv_error, 4t
+FRM cdvrv_owner, 4t
+FRM cdvrv_count, 4t
+cdvrv_SIZE=!$$$
+
+cdvrv_slb=!20t
+
+copydevrcv:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	knlTda+tdaDcb#
+	ENTER	cdvrv_SIZE, 0
+	CLRL	ESI
+	MOVL	EAX, knlPda+pdaHndlNum#
+	MOVL	cdvrv_count[EBP], EAX
+	MOVL	cdvrv_error[EBP], #0
+4$:	INCL	ESI
+	MOVL	EDI, knlPda+pdaHndlTbl#[ESI*8]
+	TESTL	EDI, EDI		;Is this a new DCB?
+	JLE	10$			;No
+	CMPL	EDI, #0x1000		;Maybe
+	JB	10$			;No - go on
+	BTZL	EDI, #1			;Yes
+	SETC	cdvrv_owner[EBP]
+	BTSL	EDI, #31t
+	MOVL	knlPda+pdaHndlTbl#[ESI*8], EDI
+	MOVL	knlTda+tdaHandle#, ESI
+	CLRL	EAX
+	MOVL	knlTda+tdaOption#, EAX
+	MOVL	ECX, knlPda+pdaHndlTbl#+4[ESI*8]
+	MOVL	knlTda+tdaCmd#, ECX
+	INCL	dcb_opencnt[EDI]	;Bump the open count
+	MOVL	knlTda+tdaDcb#, EDI
+	MOVL	EAX, dcb_sdisp[EDI]
+	CALLI	sd_opena[EAX]		;Call the open additional routine
+	TESTL	EAX, EAX
+	JNS	6$			;OK - continue
+	MOVL	cdvrv_error[EBP], EAX	;Error - save error code
+	DECL	dcb_opencnt[EDI]	;Reduce the open count
+	CLRL	EAX			;Clear the handle table
+	MOVL	knlPda+pdaHndlTbl#+0[ESI*8], EAX
+	MOVL	knlPda+pdaHndlTbl#+4[ESI*8], EAX
+	JMP	10$
+
+6$:	CMPB	cdvrv_owner[EBP], #0	;Should we change ownership?
+	JE	10$			;No
+	MOVL	EDX, knlPda+pdaSesPda#	;Yes
+	MOVL	dcb_sespda[EDI], EDX
+10$:	DECL	cdvrv_count[EBP]
+	JNE	4$
+	MOVL	EBX, cdvrv_slb[EBP]
+	MOVL	EBX, slb_data[EBX]
+	MOVL	EAX, cdvrv_error[EBP]
+	MOVL	tdaResponse#[EBX], EAX
+	TOFORK
+	PUSHL	EBX
+	CALL	sysSchRunRequeue#
+	FROMFORK
+	LEAVE
+	POPL	knlTda+tdaDcb#
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+	.SBTTL	svcIoDupHandle - Duplicate device handle
+
+;Here for the svcIoDupHandle SVC - Duplicate device handle
+;	long oldhandle;			// Old handle to duplicate - if bit
+;					//   31 is set, the handle is closed
+;					//   after it is duplicated	
+;	long newhandle;			// New handle - if -1, a new handle
+;					//   is allocated - otherwise this
+;					//   handle is used - if it is in use
+;					//   the call fails
+;	rtn = svcIoDupHandle(oldhandle, newhandle);
+;  Value returned is the new handle if normal or negative error code if error
+
+psvcIoDupHandle::
+rsvcIoDupHandle::
+	MOVL	EAX, knlTda+tdaArg1#	;Get old handle
+	MOVL	EBX, knlTda+tdaArg2#	;Get new handle
+					;Fall into duphandle on next page
+.PAGE
+	.SBTTL	duphandle - Subroutine to duplicate XOS device handle
+
+;Subroutine to duplicate XOS device handle
+;	c{EAX} = Old handle
+;	c{EBX} = New handle
+;	CALL	duphandle
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = New handle assigned
+
+$$$=!0
+FRM duph_oldhndl, 4t		;Old handle
+FRM duph_newhndl, 4t		;New handle
+FRM duph_cmd    , 4t		;Command bits
+duph_SIZE=!$$$
+
+duphandle::
+	ENTER	duph_SIZE, 0
+	MOVL	duph_oldhndl[EBP], EAX
+	BTZL	EAX, #31t
+	MOVL	duph_newhndl[EBP], EBX
+
+	CRASH	????
+
+;;;;;;;	CALL	knlGetDcb#		;Get the DCB
+	JC	6$			;If error
+	MOVL	duph_cmd[EBP], ECX	;Save the command bits
+	PUSHL	EDI			;Save the DCB offset
+	MOVL	EBX, duph_newhndl[EBP]	;Get the new handle
+	BTSL	EBX, #31t		;Did he give us one?
+	JNC	4$			;Yes
+	MOVL	EBX, #DH_FV		;No - start at the standard place
+4$:	CALL	gethandle#		;Allocate a new handle
+	POPL	EDI
+	JC	6$			;If error
+	MOVL	duph_newhndl[EBP], EBX
+	BTZL	duph_oldhndl[EBP], #31t ;Want to give up old handle?
+	JC	dupnewhndl		;Yes
+	CALL	knlGetQel#		;No - get an IORB
+6$:	JC	12$			;If error
+	MOVL	EAX, duph_cmd[EBP]
+	MOVL	knlTda+tdaOption#, EAX	;Store new command bits 
+	CLRL	EAX			;Clear some fields
+
+
+	MOVL	EAX, duph_oldhndl[EBP]
+
+	CRASH	????
+
+;;;;;;	MOVW	iorb_handle[ESI], AX
+	MOVL	EAX, duph_newhndl[EBP]
+;;;;;;	MOVL	iorb_count[ESI], EAX		;Store offset of termination
+
+;;;;;;	MOVL	iorb_finish[ESI], #sysIoFinishThread# ;  routine
+
+;;;;;;	MOVL	iorb_routine[ESI], #duphandle1 ;Store offset of extended fork
+					       ;  context rouitne
+	MOVL	knlTda+tdaResponse#, #0x80000000 ;Indicate no response yet
+	PUSHL	#sysIoFinishThread#
+	CALL	sysIoBeginThread#	;Start extended fork context (this
+					;  returns at device fork level)
+	TESTL	EAX, EAX
+	JS	10$
+8$:	MOVL	EAX, knlTda+tdaResponse# ;Finished yet?
+	CMPL	EAX, #80000000h
+	JNE	10$			;Yes
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#THDS_IOCP
+	CALL	sysSchRequeue#		;Requeue to the suspend queue
+	PUSHFL
+	CALLF	knlSchedule#		;Call the scheduler (this is an
+	JMP	8$			;  uninterruptable wait!)
+
+10$:	FROMFORK
+	BTL	EAX, #31t
+12$:	LEAVE
+	RET
+
+;Here if transfering device to a new handle - this is easy since all we have
+;  to do is change the handle table and tell the device about any changed
+;  command bits
+
+dupnewhndl:
+	MOVL	ESI, duph_oldhndl.B[EBP]
+	SHLL	ESI, #5t
+	ADDL	ESI, knlPda+pdaHndlTbl#	;Point to the handle table entry
+	CLRL	EAX
+	PUSHL	4t[ESI]			;Save command bits
+
+
+	MOVL	[ESI], EAX		;Clear old entry
+	MOVL	4[ESI], EAX
+	MOVL	EAX, duph_newhndl[EBP]
+	MOVL	ESI, EAX
+	SHLL	ESI, #5t
+	ADDL	ESI, pdaHndlTbl#
+	MOVL	ECX, duph_cmd.B[EBP]
+	MOVL	[ESI], EDI		;Set up new handle
+	ANDL	ECX, #0007FFFFh
+	MOVL	4[ESI], ECX
+	POPL	4[ESI]			;Store command bits ???????
+	LEAVE
+	RET
+
+;Here if have error after a new handle is assigned but before it has been used
+
+20$:	MOVL	ESI, duph_newhndl.B[EBP] ;Get the new handle
+	SHLL	ESI, #5t
+	ADDL	ESI, knlPda+pdaHndlTbl#	;Clear it out
+	CLRL	EDX
+	MOVL	[ESI], EDX
+	MOVL	4[ESI], EDX
+	LEAVE
+	STC
+	RET
+.PAGE
+;Extended fork context routine to finish duplicating a device handle
+
+duphandle1:
+	INCL	dcb_opencnt.B[EDI]
+	MOVL	ECX, knlTda+tdaOption#
+	MOVL	knlTda+tdaCmd#, ECX
+	MOVL	EBX, dcb_sdisp.B[EDI]	;Tell the device about this
+	CALLI	sd_opena.B[EBX]
+	JC	4$			;If error
+	MOVL	ESI, knlTda+tdaHandle#	;Get the old handle
+	SHLL	ESI, #3t
+	ADDL	ESI, knlPda+pdaHndlTbl#
+
+	MOVL	EAX, knlTda+tdaCount#	;Get new handle
+	MOVL	knlTda+tdaHandle#, EAX
+	MOVL	ESI, EAX
+	SHLL	ESI, #3t		 ;Get offset of corresponding handle
+	ADDL	ESI, #knlPda+pdaHndlTbl# ;  table entry
+	MOVL	[ESI], EDI		;Set up new handle
+	MOVL	ECX, knlTda+tdaCmd#
+	ANDL	ECX, #0x0007FFFF
+	MOVL	4[ESI], ECX
+2$:	MOVL	knlTda+tdaResponse#, EAX
+
+	CRASH	????
+
+;;;;	JMP	knlRunRequeue#
+
+;Here if error on the open/additional call to the device driver
+
+4$:	DECL	dcb_opencnt[EDI]	;Fix up the open count
+	JMP	2$			;And return the error

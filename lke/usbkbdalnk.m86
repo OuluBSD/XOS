@@ -1,0 +1,1518 @@
+	.TITLE	usbkbdalnk - USB keyboard link driver (terminal class device)
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This link driver implements an input only terminal class device which
+;  supports a USB keyboard. There is a special link to the TRM0: (console)
+;  device so that any input from a USB keyboard that has not been opened
+;  for input appears in the TRM0: input stream. Data is merged at the
+;  make-code/break-code level which can lead to some unusual behavior if
+;  more than one such keyboard is used at the same time.
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosxtrm.par
+	.INCLUD	xosinc:\xmac\xosxkbd.par
+	.INCLUD xosinc:\xmac\xosxusb.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	USBKBDALNK, MAJV, MINV, EDITNUM, LKETYPE_LINK
+
+;Define fork function codes
+
+FF_RDATA  =!0t		;Received data
+FF_LINESTS=!4t		;Line status report
+FF_MODMSTS=!8t		;Modem status report
+
+;Define offsets for device dependent part of the DCB for USB keyboards
+
+$$$=!dcb_kbddep
+BLK dcb_kbuacharin, 4
+BLK dcb_kbuaclb   , 4		;Address of CLB
+BLK dcb_kbuatchar , 4
+BLK dcb_kbuagport , 4		;Global port number
+BLK dcb_kbuapcb0  , 4
+BLK dcb_kbuapcbiin, 4
+BLK dcb_kbuaspec  , 2
+BLK dcb_kbuaaddr  , 1
+BLK dcb_kbuaep0mx , 1
+
+BLK dcb_kbuaspeed , 1		;Device speed
+BLK dcb_kbuaepiin , 1		;Interrupt input endpoint
+BLK dcb_kbuaintrf , 1		;Interface number
+BLK dcb_kbuaiinrr , 1		;Request interrupt rate
+
+BLK dcb_kbuaiinar , 1		;Actual interrupt rate
+BLK dcb_kbuaklreq , 1		;Requested desired keyboard light state
+BLK dcb_kbuaklsnt , 1		;Last keyboard light state sent to the keyboard
+BLK dcb_kbuaklact , 1		;TRUE if doing output to the lights
+
+BLK dcb_kbuaklbfr , 1		;Output buffer for updating lights
+BLK dcb_kbuarptsc , 1		;Scan code which is repeating
+BLK               , 2
+
+BLK dcb_kbuarptwb , 4
+BLK dcb_kbuaiinmax, 2		;Maximum input packet size
+BLK dcb_kbuaven   , 2		;Vendor ID
+BLK dcb_kbuadev   , 2		;Device ID
+BLK dcb_kbuarel   , 2		;Release
+BLK dcb_kbuailist , bl_SIZE	;Buffer list for interrupt input
+BLK dcb_kbuaibufr , 8		;Data buffer for interrupt input
+
+BLK dcb_kbuaihist , 8		;Last input data
+
+BLK dcb_kbuamnfctr, 44t	;Manufacturer string
+BLK dcb_kbuaprod  , 44t	;Product string
+BLK dcb_kbuasernm , 44t	;Serial number string
+
+dcb_kbuaSIZE=!$$$
+XMBINDEX dcb_kbuaINDEX, dcb_kbuaSIZE
+
+;BLK dcb_kbcakblast , 1		;Last keyboard character (polled keyboards)
+;BLK dcb_kbcakbthis , 1		;Current keyboard character (polled keyboards)
+;BLK dcb_kbcakbcount, 1		;Keyboard release count (polled keyboards)
+
+
+;Keyboard function dispatch table for USB keyboards
+
+kbuakeydsp:
+	.LONG	kbuakeynull	;kfx_open    =  0
+	.LONG	kbuakeylites	;kfx_tolites =  4 - Update keyboard lites
+	.LONG	kbuakeynull	;kfx_beep    =  8 - Beep
+	.LONG	kbuakeycdcb	;kfx_cdcb    = 12 - Clear DCB
+
+;Device characteristics for KBUA devices
+
+	.MOD	4
+kbuadctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##   , knlDcGetClass##, knlDcSetClass## , 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##    , knlDcGet4Byte##, 0               , dcb_typename
+ CHARENT  USBGPORT, HEXV, ,  4, xosusbMsgGPort##  , knlDcGet4Byte##, 0               , dcb_kbuagport
+ CHARENT  USBADDR , DECV, ,  4, xosusbMsgBusAddr##, knlDcGet1Byte##, 0               , dcb_kbuaaddr
+ CHARENT  USBSPEC , STR , ,  8, xosusbMsgUsbSpec##, kbuagetspec    , 0               , 0
+ CHARENT  USBSPEED, TEXT, ,  8, xosusbMsgSpeed##  , kbuagetspeed   , 0               , 0
+ CHARENT  USBINTRF, DECV, ,  4, xosusbMsgIntrf##  , knlDcGet4Byte##, 0               , dcb_kbuaintrf
+ CHARENT  USBEP0MX, DECV, ,  4, xosusbMsgEP0Max## , knlDcGet1Byte##, 0               , dcb_kbuaep0mx
+ CHARENT  USBIINEP, DECV, ,  4, msgepin           , knlDcGet1Byte##, 0               , dcb_kbuaepiin
+ CHARENT  USBIINMX, DECV, ,  4, msginpktmax       , knlDcGet2Byte##, 0               , dcb_kbuaiinmax
+ CHARENT  USBIINRR, DECV, ,  4, msgiinreqrate     , knlDcGet1Byte##, 0               , dcb_kbuaiinrr
+ CHARENT  USBIINAR, DECV, ,  4, msgiinactrate     , knlDcGet1Byte##, 0               , dcb_kbuaiinar
+ CHARENT  USBVEN  , HEXV, ,  4, xosusbMsgVendor## , knlDcGet2Byte##, 0               , dcb_kbuaven
+ CHARENT  USBDEV  , HEXV, ,  4, xosusbMsgDevice## , knlDcGet2Byte##, 0               , dcb_kbuadev
+ CHARENT  USBREL  , STR , ,  8, xosusbMsgRelease##, kbuagetrel     , 0               , 0
+ CHARENT  USBMNFTR, STR , , 44, knlDcMsgManufctr##, knlDcGetStr##  , 0               , dcb_kbuamnfctr
+ CHARENT  USBPROD , STR , , 44, knlDcMsgProduct## , knlDcGetStr##  , 0               , dcb_kbuaprod
+ CHARENT  USBSERNM, STR , , 44, knlDcMsgSerialNm##, knlDcGetStr##  , 0               , dcb_kbuasernm
+ CHARENT  CHARIN  , DECV, ,  4, knlTrmMsgCharIn## , knlDcGet4Byte##, knlTrmSet4Byte##, dcb_kbuacharin
+ CHAREND
+
+msgepin:      CHARINFO  {Interrupt input endpoint}
+msginpktmax:  CHARINFO  {Maximum packet size for interrupt input}
+msgiinreqrate:CHARINFO  {Requested interrupt rate}
+msgiinactrate:CHARINFO  {Actual interrupt rate}
+.PAGE
+	INITSUB	usbkbdainit
+
+usbkbdainit:
+	PUSHL	#kbuaname
+	PUSHL	#kbuaaddunit
+	PUSHL	#xoskbdCcb##
+	CALL	sysIoDriverRegister##
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+8$:	RET	lkei_ADJ
+
+	CODE
+
+ret006:	RET
+.PAGE
+	.SBTTL	kbuaaddunit - Subroutine to add USB keyboard unit
+
+;Subroutine to add USB keyboard unit
+;	long kbuaaddunit(
+;	    int   unit);
+;  Value returned is 0 if normal or a negative XOS error if error
+;  Must be called at main program level. Returns at device fork level.
+
+;The ADDUNIT function must specify all of the details describing how the
+;  USB device is connected. This includes the controller name, port on the
+;  controller, USB bus address, bus speed, maximum packet sizes and endpoints
+;  to use. Normally this function is issued by the USBCTL symbiont which
+;  provices this information.
+
+	.MOD	4
+kbuaaublk:			;Characteristics description block
+ CHARBGN  3, 0			;  for addunit
+ CHARENT  TYPE    , TEXT, ,  8, 0, 0, knlRtnZero##, 0
+ CHARENT  UNIT    , DECV, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  DISPLAY , STR , , 16, 0, 0, knlRtnZero##, 0
+ CHARENT  USBGPORT, DECV, ,  4, 0, 0, augport     , 0
+ CHARENT  USBADDR , DECV, ,  4, 0, 0, auaddr      , 0
+ CHARENT  USBSPEC , HEXV, ,  4, 0, 0, auvalue     , au_spec
+ CHARENT  USBSPEED, TEXT, ,  8, 0, 0, auspeed     , 0
+ CHARENT  USBINTRF, DECV, ,  4, 0, 0, auvalue     , au_intrf
+ CHARENT  USBEP0MX, DECV, ,  4, 0, 0, auep0max    , 0
+ CHARENT  USBIIN  , DECV, ,  4, 0, 0, auepiin     , 0
+ CHARENT  USBPKTMX, DECV, ,  4, 0, 0, aupktmax    , 0
+ CHARENT  USBRATE , DECV, ,  4, 0, 0, auepirate   , 0
+ CHARENT  USBVEN  , HEXV, ,  4, 0, 0, auvalue     , au_ven
+ CHARENT  USBDEV  , HEXV, ,  4, 0, 0, auvalue     , au_dev
+ CHARENT  USBREL  , HEXV, ,  4, 0, 0, auvalue     , au_rel
+ CHARENT  USBMNFTR, STR , , 42, 0, 0, autext      , au_mnftr
+ CHARENT  USBPROD , STR , , 42, 0, 0, autext      , au_prod
+ CHARENT  USBSERNM, STR , , 42, 0, 0, autext      , au_sernm
+ CHARENT  INLBS   , DECV, ,  4, 0, 0, auvalue     , au_inlbs
+ CHAREND
+
+au_unit=!16t
+
+$$$=!0
+FRM au_inlbs  , 4		;Line buffer size
+FRM au_gport  , 4		;Global port
+FRM au_spec   , 4
+FRM au_addr   , 4		;USB address
+FRM au_intrf  , 4		;Interface number
+FRM au_epiin  , 4		;Input end-point number
+FRM au_epirate, 4		;Input end-point rate
+FRM au_iinmax , 4
+FRM au_clb    , 4		;Offset of USB CLB
+FRM au_ep0max , 4
+FRM au_speed  , 4
+FRM au_ven    , 4
+FRM au_dev    , 4
+FRM au_rel    , 4
+FRM au_devname, 16t
+FRM au_mnftr  , 44t
+FRM au_prod   , 44t
+FRM au_sernm  , 44t
+au_SIZE=!$$$
+
+kbuaaddunit:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	au_SIZE, 0
+	CLRL	EAX
+	MOVL	au_mnftr[EBP], EAX
+	MOVL	au_prod[EBP], EAX
+	MOVL	au_sernm[EBP], EAX
+	DECL	EAX
+	MOVL	au_gport[EBP], EAX
+	MOVL	au_addr[EBP], EAX
+	MOVL	au_spec[EBP], EAX
+	MOVL	au_speed[EBP], EAX
+	MOVL	au_epiin[EBP], EAX
+	MOVL	au_epirate[EBP], EAX
+	MOVL	au_ep0max[EBP], EAX
+	MOVL	au_iinmax[EBP], EAX
+	MOVL	au_intrf[EBP], EAX
+	MOVL	au_inlbs[EBP], #120t
+	MOVL	EDX, knlTda+tdaBuffer2##
+	PUSHL	#0
+	PUSHL	#kbuaaublk
+	CALL	sysIoCharValues##	;Process characteristics
+	TESTL	EAX, EAX
+	JS	audone			;If error
+	MOVL	EAX, au_gport[EBP]	;Did we get the required
+	ORL	EAX, au_addr[EBP]	;  characteristics?
+	ORL	EAX, au_speed[EBP]
+	ORL	EAX, au_epiin[EBP]
+	ORL	EAX, au_epirate[EBP]
+	ORL	EAX, au_iinmax[EBP]
+	ORL	EAX, au_ep0max[EBP]
+	ORL	EAX, au_intrf[EBP]
+	INCL	EAX
+	JNE	4$			;OK
+	MOVL	EAX, #ER_CHARM
+	JMP	audone
+
+;Here with all required characteristics
+
+4$:	MOVL	au_devname+0[EBP], #'KBD' ;Construct the device name (KBDn)
+	CLRL	EAX
+	MOVL	au_devname+4[EBP], EAX
+	MOVL	au_devname+8[EBP], EAX
+	MOVL	au_devname+12t[EBP], EAX
+	LEAL	EBX, au_devname+3[EBP]
+	MOVL	EAX, au_unit[EBP]	;Put in the unit number
+	CALL	knlPutDecNmbr##		;Create the DCB
+	PUSHL	#0
+	MOVL	EAX, ESP
+	LEAL	EDX, au_devname[EBP]
+	PUSHL	EDX
+	PUSHL	#DS$DUPLEX|DS$PHYS|DS$REMOVE
+	PUSHL	#-dcb_kbuaINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	audone
+	PUSHL	EDI
+	PUSHL	#xoskbdCcb##
+	CALL	sysIoLinkDcb##
+	TESTL	EAX, EAX
+	JS	linkerr
+
+;Here with a DCB
+
+	MOVL	dcb_devchar[EDI], #kbuadctbl ;Store offset of devchar table
+	MOVL	dcb_sdisp[EDI], #xoskbdSDisp##
+	MOVL	dcb_kbddisp[EDI], #kbuakeydsp
+	MOVL	dcb_typename[EDI], #'KBUA'
+	MOVL	EAX, au_unit[EBP]	;Store unit number in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVL	EAX, au_gport[EBP]
+	MOVL	dcb_kbuagport[EDI], EAX
+	MOVL	EAX, au_ep0max[EBP]
+	MOVW	dcb_kbuaep0mx[EDI], AX
+	MOVL	EAX, au_addr[EBP]
+	MOVB	dcb_kbuaaddr[EDI], AL
+	MOVL	EAX, au_epiin[EBP]
+	MOVB	dcb_kbuaepiin[EDI], AL
+	MOVL	EAX, au_epirate[EBP]
+	MOVB	dcb_kbuaiinrr[EDI], AL
+	MOVL	EAX, au_iinmax[EBP]
+	MOVW	dcb_kbuaiinmax[EDI], AX
+	MOVL	EAX, au_speed[EBP]
+	MOVB	dcb_kbuaspeed[EDI], AL
+	MOVL	EAX, au_intrf[EBP]
+	MOVB	dcb_kbuaintrf[EDI], AL
+	MOVL	EAX, au_spec[EBP]
+	MOVW	dcb_kbuaspec[EDI], AX
+	MOVL	EAX, au_ven[EBP]
+	MOVW	dcb_kbuaven[EDI], AX
+	MOVL	EAX, au_dev[EBP]
+	MOVW	dcb_kbuadev[EDI], AX
+	MOVL	EAX, au_rel[EBP]
+	MOVW	dcb_kbuarel[EDI], AX
+	LEAL	EBX, au_mnftr[EBP]	;Store our text strings in the TDB
+	MOVL	EDX, #dcb_kbuamnfctr
+	CALL	copytext
+	LEAL	EBX, au_prod[EBP]
+	MOVL	EDX, #dcb_kbuaprod
+	CALL	copytext
+	LEAL	EBX, au_sernm[EBP]
+	MOVL	EDX, #dcb_kbuasernm
+	CALL	copytext
+
+;Link to the USB device
+
+	PUSHL	EDI			;CDB (really our DCB)
+	PUSHL	au_gport[EBP]		;Global port
+	PUSHL	au_addr[EBP]		;USB bus address
+	PUSHL	au_speed[EBP]		;USB device speed
+	PUSHL	#removed		;Address of "removed" function
+	LEAL	EAX, dcb_kbuaclb[EDI]	;Address of place to store address of
+	PUSHL	EAX			;  the CLB
+	CALL	xosusbLinkToDev##	;Link to the USB device
+	TESTL	EAX, EAX
+	JS	linkerr
+
+;Create the USB endpoints
+
+	PUSHL	dcb_kbuaclb[EDI]	;Create the control endpoint
+	PUSHL	#0
+	PUSHL	au_ep0max[EBP]
+	LEAL	EAX, dcb_kbuapcb0[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	PUSHL	dcb_kbuaclb[EDI]	;Create the interrupt input endpoint
+	MOVZBL	EAX, au_epirate[EBP]
+	SHLL	EAX, #16t
+	ORL	EAX, au_epiin[EBP]
+	ORL	EAX, #PCB$XT_INT|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_iinmax[EBP]
+	LEAL	EAX, dcb_kbuapcbiin[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	MOVL	EBX, dcb_kbuapcbiin[EDI] ;Copy the actual interrupt rate to
+	MOVZBL	EAX, pcb_actrate[EBX]	 ;  the DCB
+	MOVB	dcb_kbuaiinar[EDI], AL
+	MOVL	EAX, knlTda+tdaAddr##
+	MOVL	dcb_outtda[EDI], EAX
+	MOVB	knlTda+tdaFrame##, #dcb_outtda
+	MOVL	knlTda+tdaDcb##, EDI
+	MOVL	dcb_kbuailist+bl_length[EDI], #8
+	LEAL	EAX, dcb_kbuaibufr[EDI]		 ;Construct the buffer list
+	MOVL	dcb_kbuailist+bl_vaddr[EDI], EAX ; for interrupt input
+	MOVL	dcb_kbuailist+bl_paddr[EDI], #0
+	MOVL	dcb_kbuailist+bl_pid[EDI], #USBPID_IN
+	MOVB	dcb_kbuaklsnt[EDI], #0xFF ;Force initial keyboard light update
+	MOVB	dcb_kbuaklact[EDI], #0
+	TOFORK
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	kbuakeylites
+	PUSHL	EDI			;Start interrupt input
+	PUSHL	dcb_kbuapcbiin[EDI]
+	LEAL	EAX, dcb_kbuailist[EDI]	;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#kbuahaveinput		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Timeout value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##
+	FROMFORK
+	TESTL	EAX, EAX
+	JS	10$
+	PUSHL	#knlConDhdb##		;Ok - connect to the console terminal
+	PUSHL	EDI			;  (this version always connects to the
+	CALL	xosconConnectKeyboard##	;  standard console device)
+	MOVL	knlTda+tdaAmount##, #1
+	MOVL	EAX, #QSTS$DONE
+audone:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if error - remove the device
+
+10$:	PUSHL	dcb_kbuaclb[EDI]
+	CALL	removed
+	POPL	EAX
+	JMP	4$
+.PAGE
+;Here if error creating a pipe
+
+pipeerr:PUSHL	EAX
+	PUSHL	dcb_kbuaclb[EDI]
+	CALL	xosusbUnlinkFromDevBgn##
+	POPL	EAX
+
+linkerr:PUSHL	EAX
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	POPL	EAX
+	JMP	audone
+.PAGE
+copytext:
+	ADDL	EDX, EDI
+4$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	EBX
+	LOOP	ECX, 4$
+6$:	MOVB	[EDX], #0
+	RET
+.PAGE
+;Subroutine called by addunitchar for the USBADDR characteristic
+
+auaddr:	CMPL	EAX, #127t		;Valid value?
+	JA	12$			;No
+	MOVL	au_addr[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+;Subroutine called by addunitchar for the USBEPIN characteristic
+
+auepiin:CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	MOVL	au_epiin[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+12$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Subroutine called by addunitchar for the USBGPORT characteristic
+
+augport:MOVL	au_gport[EBP], EAX
+16$:	RET
+
+;Subroutine called by addunitchar for the USBSPEED characteristic
+
+auspeed:CALL	xosusbCheckSpeed##
+	JC	16$
+	MOVL	au_speed[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBEP0MX characteristic
+
+auep0max:
+	MOVL	au_ep0max[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBPKTMX characteristic
+
+aupktmax:
+	MOVL	au_iinmax[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBRATE characteristic
+
+auepirate:
+	CMPL	EAX, #255t
+	JL	18$
+	MOVL	EAX, #255t
+18$:	TESTL	EAX, EAX
+	JNE	19$
+	INCL	EAX
+19$:	MOVL	au_epirate[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBMFCTR, USBMODE, and USBERNO
+;   characteristics
+
+autext:	ADDL	EDX, EBP
+20$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	22$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 20$
+22$:	CLRL	EAX
+	MOVB	[EDX], AL
+	RET
+
+auvalue:MOVL	0[EBP+EBX], EAX
+	CLC
+	RET
+.PAGE
+kbuagetspec:
+	MOVL	EAX, dcb_kbuaspec[EDI]
+	JMP	knlDcGetBCDVer##
+
+kbuagetrel:
+	MOVZWL	EAX, dcb_kbuarel[EDI]
+	JMP	knlDcGetBCDVer##
+
+kbuagetspeed:
+	MOVZBL	EAX, dcb_kbuaspeed[EDI]
+	JMP	xosusbRtnSpeed##
+.PAGE
+;"Removed" callback function - This is called in the context of the process
+;  running USBCTL. Removing a keyboard device presents some special problems
+;  since there are links to the device independent of if the DCB is actually
+;  open as a device. Almost all data transfers are done through these
+;  "backdoor" links rather when by normal device IO. Fortunately, almost all
+;  IO is input from the device, thus we don't have to worry about any of
+;  these transfers starting after the device is removed. The one exception
+;  is the command to change the keyboard lights which originates here. The
+;  code that processes keyboard input that knows about the DCB is all at device
+;  fork level so is basically single threaded. The code that links a console
+;  device to a keyboard uses an array of pointers rather than a linked list
+;  so we can scan the list correctly even if a keyboard is removed while we
+;  are scanning it. It would be quite complex to fully interlock adding and
+;  removing keyboards. Instead, we simply delay removing a keyboard DCB for
+;  at least 1 second after removing the DCB from the console's list. Since all
+;  console access to the keyboard (the time during which there might be
+;  pointers to the DCB in registers) is very short, this should be safe.
+;	void removed(
+;	    CLB *clb)		// Client link block
+
+rmvd_clb=!12t
+
+removed:PUSHL	EDI
+	PUSHL	knlTda+tdaDcb##
+	MOVL	EDX, rmvd_clb[ESP]	;Get address of the CLB
+	MOVL	EDI, clb_cdb[EDX]	;Get address of our DCB (which is also
+	MOVL	knlTda+tdaDcb##, EDI	;  the CDB)
+	PUSHL	EDI			;Disconnect from the console device
+	CALL	xosconRemoveKeyboard##
+	PUSHL	EDI			;Unlink the DCB
+	CALL	sysIoUnlinkDcb##
+	PUSHL	rmvd_clb[ESP]		 ;Start disconnecting from the USB
+	CALL	xosusbUnlinkFromDevBgn## ;  controller
+	PUSHL	#0			;Start a timer
+	PUSHL	#ST_SECOND		;1 second
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#remove2
+	CALL	sysSchTmrCreate##
+	POPL	knlTda+tdaDcb##
+	POPL	EDI
+	RET	4
+
+;Timer function called 1 second after device is removed
+;	void remove2(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+rmv2_pda  =!20t
+rmv2_hndl =!16t
+rmv2_data1=!12t
+rmve_data2=!8
+
+remove2:PUSHL	EDI
+	MOVL	EDI, rmv2_data1[ESP]
+	CMPL	dcb_opencnt[EDI], #0	;Is the device in use?
+	JNE	8$			;Yes
+	PUSHL	dcb_kbuaclb[EDI]	 ;No - finishing unlinking from the
+	CALL	xosusbUnlinkFromDevFin## ;  USB interface
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB (this completely
+	JMP	10$			;  removes the device from the system)
+
+;Here if the device is in use
+
+8$:	ORB	dcb_sts1[EDI], #D1$RMVRDY ;Indicate ready to remove the DCB
+10$:	POPL	EDI			  ;  when it is free
+	RET	16t
+.PAGE
+;Callback function for interrupt input - This is called at device fork level
+;  when interrupt input is available. If everything is normal, this routine
+;  converts the input values into XOS keyboard scan codes, calls xoskbdInpAvl
+;  for each key state change, and restarts interrupt input.
+;	void kbuahaveinput(
+;	    PCB *pcb,
+;	    TDB *dcb,
+;	    long code,
+;	    long amount);
+
+kuahi_pcb   =!28t
+kuahi_dcb   =!24t
+kuahi_code  =!20t
+kuahi_amount=!16t
+
+$$$=!0
+FRM kuahi_last, 4t		;Last make keycode input
+FRM kuahi_bits, 4t
+FRM kuahi_hinx, 4t
+FRM kuahi_minx, 4t
+kuahi_SIZE=!$$$
+
+kbuahaveinput:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	kuahi_SIZE, 0
+	MOVL	kuahi_last[EBP], #-1
+	MOVL	EDI, kuahi_dcb[EBP]
+	CMPL	kuahi_code[EBP], #0	;Error?
+	JNS	2$			;No - go on
+	CMPL	kuahi_code[EBP], #ER_CANCL ;Yes - cancelling?
+	JE	48$			;Yes - must be removing the device
+	JMP	kbin2			;No - just try again (Really should
+					;  do something better there!!)
+
+2$:	CMPL	kuahi_amount[EBP], #8	;Is the size correct?
+	JNE	kbin2			;No ignore it
+
+;Here with valid data
+
+;NOTE - THIS VERSION ALWAYS SENDS INPUT TO THE CONSOLE!!!
+
+	MOVL	ESI, #knlConDhdb##	;Get the DHDB
+	MOVZBL	EAX, dcb_kbuaihist+0[EDI] ;Have any shift bits changed?
+	XORB	AL, dcb_kbuaibufr+0[EDI]
+	JE	10$			;No - go on
+	MOVL	kuahi_bits[EBP], EAX
+4$:	BSFL	ECX, kuahi_bits[EBP]	;Get first bit that changed
+	JE	10$
+	BTZL	kuahi_bits[EBP], ECX	;Clear the bit
+	MOVZBL	EAX, keytbl+0xE0[ECX]	;Get the XOS scan code
+	BTL	dcb_kbuaihist+0[EDI], ECX ;Was it set?
+	JNC	6$			;No - this is a make
+	ORL	EAX, #KB$RELEASE	;Yes - this is a release code
+	JMP	8$
+
+6$:	MOVL	kuahi_last[EBP], EAX	;Make - remember the scan code (we
+					;  will not repeat on this but it
+					;  might stop somethinh else repeating)
+	INCL	dcb_kbuatchar[EDI]
+8$:	PUSHL	#knlConDhdb##
+	PUSHL	EAX
+	CALL	xoskbdScanCode##
+	JMP	4$
+
+;Here with all shift key changes handled - Now check other keys. The
+;  keyboard gives us a 6-byte array containing up to 6 keycodes for keys
+;  that are pressed. We first check to see if the keycodes in our history
+;  array are still pressed. If not, we remove them from the history array
+;  and generate a break code. Then we check to see if any new keycodes are
+;  indicated we generate make codes for them and add them to our history
+;  array.
+
+10$:	MOVL	kuahi_hinx[EBP], #0
+12$:	MOVL	EDX, kuahi_hinx[EBP]
+	MOVZBL	EAX, dcb_kbuaihist+2[EDI+EDX]
+	TESTL	EAX, EAX
+	JE	30$			;0 means no more in array
+
+;Here if have a keycode in our key history. Scan the current message to
+;  see if it is still pressed.
+
+	MOVL	kuahi_minx[EBP], #0
+14$:	MOVL	ECX, kuahi_minx[EBP]
+	CMPB	dcb_kbuaibufr+2[EDI+ECX], #0
+	JE	16$
+	CMPB	dcb_kbuaibufr+2[EDI+ECX], AL
+	JE	24$			;If still pressed
+	INCL	kuahi_minx[EBP]
+	CMPL	kuahi_minx[EBP], #5	;Not this one - more to check?
+	JBE	14$			;Yes - go on
+
+;Here with a key that has been released
+
+16$:	MOVZBL	EAX, keytbl[EAX]	;Get our scan code value
+	TESTL	EAX, EAX
+	JE	20$
+	CMPB	dcb_kbuarptsc[EDI], AL	;Are we repeating this scan code?
+	JNE	20$			;No
+	PUSHL	dcb_kbuarptwb[EDI]	;Yes - stop the timer
+	MOVL	dcb_kbuarptwb[EDI], #0
+	CALL	sysSchTmrCancel##
+	MOVB	dcb_kbuarptsc[EDI], #0
+	POPL	EAX
+20$:	ORL	EAX, #KB$RELEASE	;Indicate released
+	PUSHL	#knlConDhdb##
+	PUSHL	EAX
+	CALL	xoskbdScanCode##
+24$:	INCL	kuahi_hinx[EBP]		;Advance to next history byte
+	CMPL	kuahi_hinx[EBP], #5	;More to check?
+	JBE	12$			;Yes - continue
+
+;Here with all break codes Generated. Now check for make codes.
+
+30$:	MOVL	kuahi_minx[EBP], #0
+32$:	MOVL	ECX, kuahi_minx[EBP]
+	MOVZBL	EAX, dcb_kbuaibufr+2[EDI+ECX]
+	TESTL	EAX, EAX
+	JE	40$
+
+;Here with a keycode from the message. Scan the history array to see if
+;  it is a new one.
+
+	MOVL	kuahi_hinx[EBP], #0
+34$:	MOVL	EDX, kuahi_hinx[EBP]
+	CMPB	dcb_kbuaihist+2[EDI+EDX], #0
+	JE	36$
+	CMPB	dcb_kbuaihist+2[EDI+EDX], AL
+	JE	38$			;If not new
+	INCL	kuahi_hinx[EBP]
+	CMPL	kuahi_hinx[EBP], #5
+	JBE	34$
+
+;Here with a key that has been pressed
+
+36$:	CMPB	AL, #0x46		;Might this be the Gecko escape?
+	JE	49$			;Yes
+37$:	MOVZBL	EAX, keytbl[EAX]	;No - get our scan code value
+	MOVL	kuahi_last[EBP], EAX	;Remember the scan code
+	INCL	dcb_kbuatchar[EDI]
+	PUSHL	#knlConDhdb##
+	PUSHL	EAX
+	CALL	xoskbdScanCode##
+38$:	INCL	kuahi_minx[EBP]		;Advance to next byte
+	CMPL	kuahi_minx[EBP], #5	;More to check?
+	JBE	32$			;Yes - continue
+
+;Here with all make and break codes generated - now update our history
+
+40$:	MOVL	EAX, dcb_kbuaibufr+0[EDI]
+	MOVL	dcb_kbuaihist+0[EDI], EAX
+	MOVL	EAX, dcb_kbuaibufr+4[EDI]
+	MOVL	dcb_kbuaihist+4[EDI], EAX
+
+;Here to post a new input request
+
+kbin2:	PUSHL	EDI
+	PUSHL	dcb_kbuapcbiin[EDI]
+	LEAL	EAX, dcb_kbuailist[EDI] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#kbuahaveinput		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Time value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##
+	TESTL	EAX, EAX		;Forget it if error starting the
+	JS	48$			;  transfer - That will hang the device
+					;  but that's better than a tight loop!
+	CMPL	kuahi_last[EBP], #-1	;Did we generate any make codes
+	JE	48$			;No - finihsed here
+
+;Here if we generated at least one make code
+
+	CMPL	dcb_kbuarptwb[EDI], #0
+	JE	42$
+	PUSHL	dcb_kbuarptwb[EDI]	;Stop the repeat timer if it's running
+	MOVL	dcb_kbuarptwb[EDI], #0
+	CALL	sysSchTmrCancel##
+42$:	MOVB	dcb_kbuarptsc[EDI], #0
+44$:	MOVL	EAX, kuahi_last[EBP]
+	CMPB	rpttbl[EAX], #0		;Should this key repeat?
+	JE	48$			;No
+	MOVB	dcb_kbuarptsc[EDI], AL	;Yes
+	PUSHL	#0			;Start a timer
+	PUSHL	#500t*ST_MILLISEC
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#rptdone
+	CALL	sysSchTmrCreate##
+	TESTL	EAX, EAX
+	JS	48$
+	MOVL	dcb_kbuarptwb[EDI], EAX
+48$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if might have the Gecko escape
+
+49$:	CMPL	knlGeckoSig##, #'GECK'	;Is gecko present?
+	JNE	37$			;No
+	MOVL	EDX, knlConDhdb##+dhdb_curtdb ;Probably, assume yes
+	TESTB	tdb_keysts0[EDX], #KS0$LALT|KS0$RALT ;ALT pressed?
+	JE	37$			;No
+sys_intkey_usb::
+	INT3				;Yes - wants to enter Gecko
+	JMP	38$
+.PAGE
+;Here when the repeat timer runs out
+;	long rptdone(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+rptd_pda  =!20t
+rptd_hndl =!16t
+rptd_data1=!12t
+rptd_data2=!8
+
+rptdone:PUSHL	EDI
+	MOVL	EDI, rptd_data1[ESP]
+	MOVL	dcb_kbuarptwb[EDI], #0
+	INCL	dcb_kbuatchar[EDI]
+	MOVZBL	EAX, dcb_kbuarptsc[EDI] ;Repeat the scan code
+	PUSHL	#knlConDhdb##
+	PUSHL	EAX
+	CALL	xoskbdScanCode##
+	PUSHL	#0			;Start another timer
+	PUSHL	#50t*ST_MILLISEC
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#rptdone
+	CALL	sysSchTmrCreate##
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	dcb_kbuarptwb[EDI], EAX
+6$:	POPL	EDI
+	RET	16t
+
+;Here if error entering timer
+
+8$:	MOVB	dcb_kbuarptsc[EDI], #0	;Just stop repeating
+	JMP	6$
+.PAGE
+kbuakeynull:
+	RET	8
+.PAGE
+;Here for the kfx_cdcb function - Clear DCB
+;	c{EDI} = Address of the DCB
+
+kbuakeycdcb:
+	TESTB	dcb_sts1[EDI], #D1$RMVRDY ;Are we ready to give up this device?
+	JE	10$			;No
+	PUSHL	dcb_kbuaclb[EDI]	;Yes - finish unlinking it
+	CALL	xosusbUnlinkFromDevFin##
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+10$:	RET
+.PAGE
+;Function to update keyboard lites - Must be called at device fork level.
+;  Normally called through the ks_tolites dispatch.
+;	void kbuakeylites(
+;	    DCB *dcb,
+;	    long data);
+
+;Since USB output cannot be started from device fork level, we request an
+;  exec signal which will send the command to the keyboard.
+
+tol_dcb =!12t
+tol_data=!8t
+
+kbuakeylites:
+	PUSHL	EDI
+	MOVL	EDI, tol_dcb[ESP]
+	MOVL	EDX, tol_data[ESP]
+	CLRL	EAX			;Assume no lites wanted
+	BTL	EDX, #KS0%SCLLK		;Want scroll lock lite on?
+	ADCL	EAX, #0
+	ADDL	EAX, EAX
+	BTL	EDX, #KS0%CAPLK		;Want CAP lock lite on?
+	ADCL	EAX, #0
+	ADDL	EAX, EAX
+	BTL	EDX, #KS0%NUMLK		;Want NUM lock lite on?
+	ADCL	EAX, #0
+	MOVB	dcb_kbuaklreq[EDI], AL
+	CMPB	dcb_kbuaklsnt[EDI], AL	;Has the state changed since we sent it?
+	JE	8$			;No - nothing needed here
+	MOVB	dcb_kbuaklreq[EDI], AL	;Yes
+	CMPB	dcb_kbuaklact[EDI], #0	;Output busy now?
+	JNE	8$			;Yes - forget it for now (we will
+					;  check for changes when output is
+					;  done)
+	PUSHL	dcb_id[EDI]		;Request an exec signal
+	PUSHL	#1
+	PUSHL	#kbuakeylitesxs
+	PUSHL	#knlInitPda
+	CALL	sysSchReqXSig##
+	ADDL	ESP, #16t
+8$:	POPL	EDI
+	RET	8
+.PAGE
+;Exec signal routine called in the context of the base thread for the INIT
+;  process to send a command to the keyboard to set the state of the keyboard
+;  lights. Since this is always called in the same thread, it is single
+;  threaded.
+
+
+lites_slb=!12t
+
+kbuakeylitesxs:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, lites_slb[ESP]
+	PUSHL	slb_data+0[ESI]
+	CALL	sysIoGetDcbFromId##
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	EDI, EAX
+	CMPB	dcb_kbuaklact[EDI], #0	;Already active?
+	JNE	8$			;Yes
+	MOVZBL	EAX, dcb_kbuaklreq[EDI]	;No - get the current desired state
+	CMPB	dcb_kbuaklsnt[EDI], AL	;Have we sent it already?
+	JE	8$			;Yes - don't send it again
+	MOVB	dcb_kbuaklsnt[EDI], AL	;No - send it now
+	MOVB	dcb_kbuaklbfr+0[EDI], AL
+	MOVB	dcb_kbuaklact[EDI], #1	;Indicate active
+	PUSHL	dcb_id[EDI]		;"Address" of DCB
+	PUSHL	dcb_kbuapcb0[EDI]	;Address of PCB
+	MOVZBL	EAX, dcb_kbuaintrf[EDI]	;SETUP data - SET_REPORT (21 09 0200
+	ORL	EAX, #0x00010000	;  INTF 0001)
+	PUSHL	EAX
+	PUSHL	#0x02000921
+	LEAL	EAX, dcb_kbuaklbfr[EDI]	;Address of data buffer
+	PUSHL	EAX
+	PUSHL	#1			;Data length
+	PUSHL	#litesdone		;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	TESTL	EAX, EAX
+	JNS	8$
+	MOVB	dcb_kbuaklact[EDI], #0
+8$:	POPL	ESI
+	POPL	EDI
+	CLRL	EAX
+	RET	4
+.PAGE
+;Callback function called when output to update the keyboard lights is
+;  complete. This is called at device fork level.
+;	void litesdone(
+;	    PCB *pcb,
+;	    TDB *tdb,
+;	    long code,
+;	    long amount);
+
+;There are a number of possibilities for races here, but they are all "safe".
+;  They are unlikely and each would result in an extra exec signal which would
+;  do no harm to the system.
+
+ldn_pcb   =!16t
+ldn_tdb   =!12t
+ldn_code  =!8t
+ldn_amount=!4t
+
+litesdone:
+	PUSHL	ldn_tdb[ESP]
+	CALL	sysIoGetDcbFromId##
+	TESTL	EAX, EAX
+	JE	10$
+	MOVB	dcb_kbuaklact[EAX], #0	;Not active now
+	CMPL	ldn_code[ESP], #0	;Any errors?
+	JS	10$			;Yes - just forget it! (Otherwise we
+					;  are likely to get in a loop retrying
+					;  this!)
+	MOVZBL	EDX, dcb_kbuaklreq[EAX]	;No - any changes while we were doing
+	CMPB	DL, dcb_kbuaklsnt[EAX]	;  output?
+	JE	10$			;No - finished here
+	PUSHL	EAX			;Yes - send the new state to the
+	PUSHL	EDX			;  keyboard
+	CALL	kbuakeylites
+10$:	RET	16t
+.PAGE
+;Here for the tfx_open dispatch - Open device
+;	c{ESI} = Offset of TDB
+;	CALL	kbuaopen
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+kbuaopen:
+	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+	.MOD	4
+kbuaname: .LONG  'KBUA', 0
+kbuafdcb: .LONG  0		;Offset of first USB keyboard interface DCB
+kbualdcb: .LONG  0		;Offset of last USB keyboard interface DCB
+
+;Table which translates from the USB keycodes (usage page 7 values) to
+;  XOS internal scan codes
+
+keytbl:	.BYTE	0		;00 - 
+	.BYTE	0		;01 - Rollover error
+	.BYTE	0		;02 - Post failure
+	.BYTE	0		;03 - Undefined error
+	.BYTE	ISC_A		;04 - A
+	.BYTE	ISC_B		;05 - B
+	.BYTE	ISC_C		;06 - C
+	.BYTE	ISC_D		;07 - D
+	.BYTE	ISC_E		;08 - E
+	.BYTE	ISC_F		;09 - F
+	.BYTE	ISC_G		;0A - G
+	.BYTE	ISC_H		;0B - H
+	.BYTE	ISC_I		;0C - I
+	.BYTE	ISC_J		;0D - J
+	.BYTE	ISC_K		;0E - K
+	.BYTE	ISC_L		;0F - L
+	.BYTE	ISC_M		;10 - M
+	.BYTE	ISC_N		;11 - N
+	.BYTE	ISC_O		;12 - O
+	.BYTE	ISC_P		;13 - P
+	.BYTE	ISC_Q		;14 - Q
+	.BYTE	ISC_R		;15 - R
+	.BYTE	ISC_S		;16 - S
+	.BYTE	ISC_T		;17 - T
+	.BYTE	ISC_U		;18 - U
+	.BYTE	ISC_V		;19 - V
+	.BYTE	ISC_W		;1A - W
+	.BYTE	ISC_X		;1B - X
+	.BYTE	ISC_Y		;1C - Y
+	.BYTE	ISC_Z		;1D - Z
+	.BYTE	ISC_1		;1E - 1
+	.BYTE	ISC_2		;1F - 2
+	.BYTE	ISC_3		;20 - 3
+	.BYTE	ISC_4		;21 - 4
+	.BYTE	ISC_5		;22 - 5
+	.BYTE	ISC_6		;23 - 6
+	.BYTE	ISC_7		;24 - 7
+	.BYTE	ISC_8		;25 - 8
+	.BYTE	ISC_9		;26 - 9
+	.BYTE	ISC_0		;27 - 0
+	.BYTE	ISC_ENT		;28 - ENTER
+	.BYTE	ISC_ESC		;29 - ESCAPE
+	.BYTE	ISC_BS		;2A - BACKSPACE
+	.BYTE	ISC_HT		;2B - TAB
+	.BYTE	ISC_SPACE	;2C - SPACE
+	.BYTE	ISC_MINUS	;2D - - or _
+	.BYTE	ISC_EQUAL	;2E - = or +
+	.BYTE	ISC_LBRKT	;2F - [ or {
+	.BYTE	ISC_RBRKT	;30 - ] or }
+	.BYTE	ISC_BSLSH	;31 - \ or |
+	.BYTE	0		;32 - Non-US Grave or ~ (?)
+	.BYTE	ISC_SEMI	;33 - ; or :
+	.BYTE	ISC_QUOTE	;34 - ' or "
+	.BYTE	ISC_GRAVE	;35 - Gravve or ~
+	.BYTE	ISC_COMMA	;36 - , or <
+	.BYTE	ISC_PER		;37 - . or >
+	.BYTE	ISC_SLSH	;38 - / or ?
+	.BYTE	ISC_CAPLCK	;39 - CAPS LOCK
+	.BYTE	ISC_F1		;3A - F1
+	.BYTE	ISC_F2		;3B - F2
+	.BYTE	ISC_F3		;3C - F3
+	.BYTE	ISC_F4		;3D - F4
+	.BYTE	ISC_F5		;3E - F5
+	.BYTE	ISC_F6		;3F - F6
+	.BYTE	ISC_F7		;40 - F7
+	.BYTE	ISC_F8		;41 - F8
+	.BYTE	ISC_F9		;42 - F9
+	.BYTE	ISC_F10		;43 - F10
+	.BYTE	ISC_F11		;44 - F11
+	.BYTE	ISC_F12		;45 - F12
+	.BYTE	ISX_PRTSCN	;46 - PRINT SCREEN
+	.BYTE	ISC_SCLLCK	;47 - SCROLL LOCK
+	.BYTE	ISC_PAUSE	;48 - PAUSE
+	.BYTE	ISC_INS		;49 - INSERT
+	.BYTE	ISC_HOME	;4A - HOME
+	.BYTE	ISC_PGUP	;4B - PAGE UP
+	.BYTE	ISX_DELETE	;4C - DELETE
+	.BYTE	ISC_END		;4D - END
+	.BYTE	ISC_PGDN	;4E - PAGE DOWN
+	.BYTE	ISC_RTARW	;4F - Right arrow
+	.BYTE	ISC_LTARW	;50 - Left arrow
+	.BYTE	ISC_DNARW	;51 - Down arrow
+	.BYTE	ISC_UPARW	;52 - Up Arrow
+	.BYTE	ISC_NUMLCK	;53 - NUM LOCK
+	.BYTE	ISC_KPSLSH	;54 - Keypad /
+	.BYTE	ISC_KPSTAR	;55 - Keypad *
+	.BYTE	ISC_KPMINUS	;56 - Keypad minua
+	.BYTE	ISC_KPPLUS	;57 - Keypad +
+	.BYTE	ISC_KPENT	;58 - Keypad ENTER
+	.BYTE	ISC_KP1		;59 - Keypad 1
+	.BYTE	ISC_KP2		;5A - Keypad 2
+	.BYTE	ISC_KP3		;5B - Keypad 3
+	.BYTE	ISC_KP4		;5C - Keypad 4
+	.BYTE	ISC_KP5		;5D - Keypad 5
+	.BYTE	ISC_KP6		;5E - Keypad 6
+	.BYTE	ISC_KP7		;5F - Keypad 7
+	.BYTE	ISC_KP8		;60 - Keypad 8
+	.BYTE	ISC_KP9		;61 - Keypad 9
+	.BYTE	ISC_KP0		;62 - Keypad 0
+	.BYTE	ISX_KPDELETE	;63 - Keypad DELETE
+	.BYTE	0		;64 - Keypad ????
+	.BYTE	ISC_WIN		;65 - WIN
+	.BYTE	ISC_POWER	;66 - POWER
+	.BYTE	ISC_EQUAL	;67 - Keypad = (?)
+	.BYTE	0		;68 - F13
+	.BYTE	0		;69 - F14
+	.BYTE	0		;6A - F15
+	.BYTE	0		;6B - F16
+	.BYTE	0		;6C - F17
+	.BYTE	0		;6D - F18
+	.BYTE	0		;6E - F19
+	.BYTE	0		;6F - F20
+	.BYTE	0		;70 - F21
+	.BYTE	0		;71 - F22
+	.BYTE	0		;72 - F23
+	.BYTE	0		;73 - F24
+	.BYTE	0		;74 - Execute
+	.BYTE	0		;75 - Help
+	.BYTE	0		;76 - Menu
+	.BYTE	0		;77 - Select
+	.BYTE	0		;78 - Stop
+	.BYTE	0		;79 - Again
+	.BYTE	0		;7A - Undo
+	.BYTE	0		;7B - Cut
+	.BYTE	0		;7C - Copy
+	.BYTE	0		;7D - Paste
+	.BYTE	0		;7E - Find
+	.BYTE	ISC_MUTE	;7F - Mute
+	.BYTE	ISC_VOLUP	;80 - Volume up
+	.BYTE	ISC_VOLDN	;81 - Volume down
+	.BYTE	0		;82 - Locking CAPS LOCK
+	.BYTE	0		;83 - Locking NUM LOCK
+	.BYTE	0		;84 - Locking SCROLL LOCK
+	.BYTE	0		;85 - Keypad comma
+	.BYTE	0		;86 - Keypad equal sign
+	.BYTE	0		;87 - Internatinal
+	.BYTE	0		;88 - Internatinal
+	.BYTE	0		;89 - Internatinal
+	.BYTE	0		;8A - Internatinal
+	.BYTE	0		;8B - Internatinal
+	.BYTE	0		;8C - Internatinal
+	.BYTE	0		;8D - Internatinal
+	.BYTE	0		;8E - Internatinal
+	.BYTE	0		;8F - Internatinal
+	.BYTE	0		;90 - LANG
+	.BYTE	0		;91 - LANG
+	.BYTE	0		;92 - LANG
+	.BYTE	0		;93 - LANG
+	.BYTE	0		;94 - LANG
+	.BYTE	0		;95 - LANG
+	.BYTE	0		;96 - LANG
+	.BYTE	0		;97 - LANG
+	.BYTE	0		;98 - LANG
+	.BYTE	0		;99 - LANG
+	.BYTE	0		;9A - Alternate erase
+	.BYTE	0		;9B - Cancel
+	.BYTE	0		;9C - Clear
+	.BYTE	0		;9D - Prior
+	.BYTE	0		;9E - Return
+	.BYTE	0		;9F - Separator
+	.BYTE	0		;A0 - Out
+	.BYTE	0		;A1 - Oper
+	.BYTE	0		;A2 - Clear/Again
+	.BYTE	0		;A3 - CrSet/Props
+	.BYTE	0		;A4 - ExSel
+	.BYTE	0		;A5
+	.BYTE	0		;A6
+	.BYTE	0		;A7
+	.BYTE	0		;A8
+	.BYTE	0		;A9
+	.BYTE	0		;AA
+	.BYTE	0		;AB
+	.BYTE	0		;AC
+	.BYTE	0		;AD
+	.BYTE	0		;AE
+	.BYTE	0		;AF
+	.BYTE	0		;B0
+	.BYTE	0		;B1
+	.BYTE	0		;B2
+	.BYTE	0		;B3
+	.BYTE	0		;B4
+	.BYTE	0		;B5
+	.BYTE	0		;B6
+	.BYTE	0		;B7
+	.BYTE	0		;B8
+	.BYTE	0		;B9
+	.BYTE	0		;BA
+	.BYTE	0		;BB
+	.BYTE	0		;BC
+	.BYTE	0		;BD
+	.BYTE	0		;BE
+	.BYTE	0		;BF
+	.BYTE	0		;C0
+	.BYTE	0		;C1
+	.BYTE	0		;C2
+	.BYTE	0		;C3
+	.BYTE	0		;C4
+	.BYTE	0		;C5
+	.BYTE	0		;C6
+	.BYTE	0		;C7
+	.BYTE	0		;C8
+	.BYTE	0		;C9
+	.BYTE	0		;CA
+	.BYTE	0		;CB
+	.BYTE	0		;CC
+	.BYTE	0		;CD
+	.BYTE	0		;CE
+	.BYTE	0		;CF
+	.BYTE	0		;D0
+	.BYTE	0		;D1
+	.BYTE	0		;D2
+	.BYTE	0		;D3
+	.BYTE	0		;D4
+	.BYTE	0		;D5
+	.BYTE	0		;D6
+	.BYTE	0		;D7
+	.BYTE	0		;D8
+	.BYTE	0		;D9
+	.BYTE	0		;DA
+	.BYTE	0		;DB
+	.BYTE	0		;DC
+	.BYTE	0		;DD
+	.BYTE	0		;DE
+	.BYTE	0		;DF
+	.BYTE	ISC_LFTCTL	;E0 - Left control
+	.BYTE	ISC_LFTSHF	;E1 - Left shift
+	.BYTE	ISC_LFTALT	;E2 - Left ALT
+	.BYTE	ISC_LFTGUI	;E3 - Left GUI
+	.BYTE	ISC_RHTCTL	;E4 - Right control
+	.BYTE	ISC_RHTSHF	;E5 - Right shift
+	.BYTE	ISC_RHTALT	;E6 - Right ALT
+	.BYTE	ISC_RHTGUI	;E7 - Right GUI
+	.BYTE	0		;E8
+	.BYTE	0		;E9
+	.BYTE	0		;EA
+	.BYTE	0		;EB
+	.BYTE	0		;EC
+	.BYTE	0		;ED
+	.BYTE	0		;EE
+	.BYTE	0		;EF
+	.BYTE	0		;F0
+	.BYTE	0		;F1
+	.BYTE	0		;F2
+	.BYTE	0		;F3
+	.BYTE	0		;F4
+	.BYTE	0		;F5
+	.BYTE	0		;F6
+	.BYTE	0		;F7
+	.BYTE	0		;F8
+	.BYTE	0		;F9
+	.BYTE	0		;FA
+	.BYTE	0		;FB
+	.BYTE	0		;FC
+	.BYTE	0		;FD
+	.BYTE	0		;FE
+	.BYTE	0		;FF
+
+;Table which indicates which scan codes are repeatable
+
+rpttbl:	.BYTE	0		;00
+	.BYTE	1		;01 - F1 key
+	.BYTE	1		;02 - F2 key
+	.BYTE	1		;03 - F3 key
+	.BYTE	1		;04 - F4 key
+	.BYTE	1		;05 - F5 key
+	.BYTE	1		;06 - F6 key
+	.BYTE	1		;07 - F7 key
+	.BYTE	1		;08 - F8 key
+	.BYTE	1		;09 - F9 key
+	.BYTE	1		;0A - F10 key
+	.BYTE	1		;0B - F11 key
+	.BYTE	1		;0C - F12 key
+	.BYTE	0		;0D
+	.BYTE	0		;0E
+	.BYTE	0		;0F
+	.BYTE	1		;10 - Escape
+	.BYTE	1		;11 - Insert
+	.BYTE	1		;12 - Home
+	.BYTE	1		;13 - Page up
+	.BYTE	1		;14 - Delete
+	.BYTE	1		;15 - End
+	.BYTE	1		;16 - Page down
+	.BYTE	1		;17 - Up arrow
+	.BYTE	1		;18 - Left arrow
+	.BYTE	1		;19 - Down arrow
+	.BYTE	1		;1A - Right arrow
+	.BYTE	0		;1B
+	.BYTE	0		;1C
+	.BYTE	0		;1D
+	.BYTE	0		;1E
+	.BYTE	0		;1F
+	.BYTE	1		;20 - Keypad 0
+	.BYTE	1		;21 - Keypad 1
+	.BYTE	1		;22 - Keypad 2
+	.BYTE	1		;23 - Keypad 3
+	.BYTE	1		;24 - Keypad 4
+	.BYTE	1		;25 - Keypad 5
+	.BYTE	1		;26 - Keypad 6
+	.BYTE	1		;27 - Keypad 7
+	.BYTE	1		;28 - Keypad 8
+	.BYTE	1		;29 - Keypad 9
+	.BYTE	1		;2A - Keypad .
+	.BYTE	1		;2B - Keypad /
+	.BYTE	1		;2C - Keypad *
+	.BYTE	1		;2D - Keypad - (!!!)
+	.BYTE	1		;2E - Keypad +
+	.BYTE	1		;2F - Keypad enter
+	.BYTE	0		;30
+	.BYTE	0		;31
+	.BYTE	0		;32
+	.BYTE	0		;33
+	.BYTE	0		;34
+	.BYTE	0		;35
+	.BYTE	0		;36
+	.BYTE	0		;37
+	.BYTE	1		;38 - Enter
+	.BYTE	1		;39 - Line feed
+	.BYTE	1		;3A - Backspace
+	.BYTE	1		;3B - Tab
+	.BYTE	1		;3C - DEL
+	.BYTE	0		;3D
+	.BYTE	0		;3E
+	.BYTE	0		;3F
+	.BYTE	1		;40 - Grave or ~
+	.BYTE	1		;41 - 1 or !
+	.BYTE	1		;42 - 2 or @
+	.BYTE	1		;43 - 3 or #
+	.BYTE	1		;44 - 4 or $
+	.BYTE	1		;45 - 5 or %
+	.BYTE	1		;46 - 6 or ^
+	.BYTE	1		;47 - 7 or &
+	.BYTE	1		;48 - 8 or *
+	.BYTE	1		;49 - 9 or (
+	.BYTE	1		;4A - 0 or )
+	.BYTE	1		;4B - - or _
+	.BYTE	1		;4C - = or +
+	.BYTE	1		;4D - Q
+	.BYTE	1		;4E - W
+	.BYTE	1		;4F - E
+	.BYTE	1		;50 - R
+	.BYTE	1		;51 - T
+	.BYTE	1		;52 - Y
+	.BYTE	1		;53 - U
+	.BYTE	1		;54 - I
+	.BYTE	1		;55 - O
+	.BYTE	1		;56 - P
+	.BYTE	1		;57 - [ or {
+	.BYTE	1		;58 - ] or }
+	.BYTE	1		;59 - \ or |
+	.BYTE	1		;5A - A
+	.BYTE	1		;5B - S
+	.BYTE	1		;5C - D
+	.BYTE	1		;5D - F
+	.BYTE	1		;5E - G
+	.BYTE	1		;5F - H
+	.BYTE	1		;60 - J
+	.BYTE	1		;61 - K
+	.BYTE	1		;62 - L
+	.BYTE	1		;63 - ;
+	.BYTE	1		;64 - ' or "
+	.BYTE	1		;65 - Z
+	.BYTE	1		;66 - X
+	.BYTE	1		;67 - C
+	.BYTE	1		;68 - V
+	.BYTE	1		;69 - B
+	.BYTE	1		;6A - N
+	.BYTE	1		;6B - M
+	.BYTE	1		;6C - , or <
+	.BYTE	1		;6D - . or >
+	.BYTE	1		;6E - / or ?
+	.BYTE	1		;6F - Space
+	.BYTE	0		;70 - WIN
+	.BYTE	0		;71 - Left GUI
+	.BYTE	0		;72 - Right GUI
+	.BYTE	0		;73 - Scroll lock
+	.BYTE	0		;74 - Num lock
+	.BYTE	0		;75 - Caps lock
+	.BYTE	0		;76 - Left shift
+	.BYTE	0		;77 - Right shift
+	.BYTE	0		;78 - Left Alt
+	.BYTE	0		;79 - Right Alt
+	.BYTE	0		;7A - Left control
+	.BYTE	0		;7B - Right control
+	.BYTE	0		;7C - Print screen
+	.BYTE	0		;7D - Break
+	.BYTE	0		;7E - Pause
+	.BYTE	0		;7F - System shift
+	.BYTE	0		;80
+	.BYTE	0		;81
+	.BYTE	0		;82
+	.BYTE	0		;83
+	.BYTE	0		;84
+	.BYTE	0		;85
+	.BYTE	0		;86
+	.BYTE	0		;87
+	.BYTE	0		;88
+	.BYTE	0		;89
+	.BYTE	0		;8A
+	.BYTE	0		;8B
+	.BYTE	0		;8C
+	.BYTE	0		;8D
+	.BYTE	0		;8E
+	.BYTE	0		;8F
+	.BYTE	0		;90
+	.BYTE	0		;91
+	.BYTE	0		;92
+	.BYTE	0		;93
+	.BYTE	0		;94
+	.BYTE	0		;95
+	.BYTE	0		;96
+	.BYTE	0		;97
+	.BYTE	0		;98
+	.BYTE	0		;99
+	.BYTE	0		;9A
+	.BYTE	0		;9B
+	.BYTE	0		;9C
+	.BYTE	0		;9D
+	.BYTE	0		;9E
+	.BYTE	0		;9F
+	.BYTE	0		;A0
+	.BYTE	0		;A1
+	.BYTE	0		;A2
+	.BYTE	0		;A3
+	.BYTE	0		;A4
+	.BYTE	0		;A5
+	.BYTE	0		;A6
+	.BYTE	0		;A7
+	.BYTE	0		;A8
+	.BYTE	0		;A9
+	.BYTE	0		;AA
+	.BYTE	0		;AB
+	.BYTE	0		;AC
+	.BYTE	0		;AD
+	.BYTE	0		;AE
+	.BYTE	0		;AF
+	.BYTE	0		;B0
+	.BYTE	0		;B1
+	.BYTE	0		;B2
+	.BYTE	0		;B3
+	.BYTE	0		;B4
+	.BYTE	0		;B5
+	.BYTE	0		;B6
+	.BYTE	0		;B7
+	.BYTE	0		;B8
+	.BYTE	0		;B9
+	.BYTE	0		;BA
+	.BYTE	0		;BB
+	.BYTE	0		;BC
+	.BYTE	0		;BD
+	.BYTE	0		;BE
+	.BYTE	0		;BF
+	.BYTE	0		;C0
+	.BYTE	0		;C1
+	.BYTE	0		;C2
+	.BYTE	0		;C3
+	.BYTE	0		;C4
+	.BYTE	0		;C5
+	.BYTE	0		;C6
+	.BYTE	0		;C7
+	.BYTE	0		;C8
+	.BYTE	0		;C9
+	.BYTE	0		;CA
+	.BYTE	0		;CB
+	.BYTE	0		;CC
+	.BYTE	0		;CD
+	.BYTE	0		;CE
+	.BYTE	0		;CF
+	.BYTE	0		;D0
+	.BYTE	0		;D1
+	.BYTE	0		;D2
+	.BYTE	0		;D3
+	.BYTE	0		;D4
+	.BYTE	0		;D5
+	.BYTE	0		;D6
+	.BYTE	0		;D7
+	.BYTE	0		;D8
+	.BYTE	0		;D9
+	.BYTE	0		;DA
+	.BYTE	0		;DB
+	.BYTE	0		;DC
+	.BYTE	0		;DD
+	.BYTE	0		;DE
+	.BYTE	0		;DF
+	.BYTE	0		;E0
+	.BYTE	0		;E1
+	.BYTE	0		;E2
+	.BYTE	0		;E3
+	.BYTE	0		;E4
+	.BYTE	0		;E5
+	.BYTE	0		;E6
+	.BYTE	0		;E7
+	.BYTE	0		;E8
+	.BYTE	0		;E9
+	.BYTE	0		;EA
+	.BYTE	0		;EB
+	.BYTE	0		;EC
+	.BYTE	0		;ED
+	.BYTE	0		;EE
+	.BYTE	0		;EF
+	.BYTE	0		;F0 - ISX_IGNORE
+	.BYTE	0		;F1 - ISX_SYSSHF
+	.BYTE	1		;F2 - ISX_KEYSTR
+	.BYTE	1		;F3 - ISX_DELETE
+	.BYTE	1		;F4 - ISX_KPDELETE
+	.BYTE	0		;F5
+	.BYTE	0		;F6
+	.BYTE	0		;F7
+	.BYTE	0		;F8
+	.BYTE	0		;F9
+	.BYTE	0		;FA
+	.BYTE	0		;FB
+	.BYTE	0		;FC
+	.BYTE	0		;FD
+	.BYTE	0		;FE
+	.BYTE	0		;FF
+
+	LKEEND

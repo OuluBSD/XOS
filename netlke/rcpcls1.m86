@@ -1,0 +1,2165 @@
+	.TITLE	rcpcls1 - RCP routines for XOS (part 1)
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXIPS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXUDP.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXRCP.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+;This module implements the RCP transport level protocol.
+
+;2 types of passive opens are supported:
+
+;  Type 1: The TCP device is opened specifying * as the network address (for
+;          example, TCP0:*::. The open does not complete until there is an
+;          incomming connection on the port.  Multiple opens can be active
+;          at the same time to allow over lapped processing of multiple
+;          connections.  This has the disadvantage that each active open
+;          ties up a DCB and an extended fork frame.
+
+;  Type 2: The TCP device is opened specifying a non-zero value for the
+;          IOPAR_NETCONLIMIT IO parameter.  This specifies the maximum
+;          number of incomming connections which will queued on the port.
+;          This open completes immediately.  Another open is done specifing
+;          the handle returned by the first open as the value of the
+;          IOPAR_NETCONHNDL IO parameter.  This open does not complete
+;          until there is an incoming connection.  Up to the number of
+;          incoming connections specified in the first open will be queued
+;          by the TCP driver allowing overlapped processing of incoming
+;          connections. Two DCBs and one extended fork frame are tied up when
+;          doing this.  This provides a resonable compromise in resource usage
+;          between methods 1 and 2 and is easier to use and is much more
+;          compatable with the Berkley Sockets method of accepting connections.
+
+;Type 1 opens are deprecated when used to accept multiple connections.  They
+;  are still considered current for cases where a program wishes to accept
+;  exactly 1 incoming connection.  All new code should use type 2 opens except
+;  when accepting exactly 1 incoming connection.
+
+MAJV   =!2t
+MINV   =!1t
+EDITNUM=!0t
+
+;1.0.1 - 21-Apr-95
+;	Added IOPAR_NETLCLNETA IO parameter.
+;1.0.3 - 12-Oct-95
+;	Changed keep-alive value to 2 bytes.
+;1.0.4 - 1-Apr-96
+;	Fixed problem with trying to retransmit a packet which was being
+;	output when something ACKed.
+;2.1.0 - 10-Sep-04
+;	Added support for "type 2" passive opens and removed support for IPM
+;	based passive open handling.
+
+	LKEHEAD	RCPCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosrcpAcceptCon
+	.EXPORT	xosrcpAuRcpDev
+	.EXPORT	xosrcpChkFin
+	.EXPORT	xosrcpGiveDcb
+	.EXPORT	xosrcpClear
+	.EXPORT	xosrcpConnect
+	.EXPORT	xosrcpDevInfo
+	.EXPORT	xosrcpDfltPort
+	.EXPORT	xosrcpGetInputPkt
+	.EXPORT	xosrcpGetRcpDev
+	.EXPORT	xosrcpGetPort
+	.EXPORT	xosrcpGivePort
+	.EXPORT	xosrcpMsgRcpDev
+	.EXPORT	xosrcpPutConWait
+	.EXPORT	xosrcpRmvConWait
+	.EXPORT	xosrcpSendCONACK
+	.EXPORT	xosrcpTpdbHead
+
+	CODE
+
+	.SBTTL	SVC dispatch table for RCP devices
+
+;SVC dispatch table for RCP devices
+
+rcpdsp::.LONG	knlRtnZero##	;sd_mount     =  0 - Mount
+	.LONG	xosrcpGiveDcb	;sd_cleardcb  =  4 - Clear DCB
+	.LONG	rcpopena	;sd_opena     =  8 - Open additional
+	.LONG	rcpopen1	;sd_open1     = 12 - Open device/file
+	.LONG	rcpdevparm	;sd_devparm   = 16 - Device parameters
+	.LONG	knlIFnDev##	;sd_delete    = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename    = 24 - Rename file
+	.LONG	rcpinpblk	;sd_inblock   = 28 - Input block
+	.LONG	rcpoutblk	;sd_outblock  = 32 - Output block
+	.LONG	rcpoutstr	;sd_outstring = 36 - Output string
+	.LONG	knlRtnMOne##	;sd_getiosts  = 40 - Get input/output status
+	.LONG	knlIFnDevTF##	;sd_special   = 44 - Special device function
+	.LONG	rcpclose	;sd_close     = 48 - Close file
+	.LONG	knlNullLabel##	;sd_label     = 52 - Get device label
+	.LONG	knlNullQioTF##	;sd_commit    = 56 - Commit data to disk
+	.LONG	xosrcpDevInfo	;sd_devinfo   = 60 - Get device info
+RCPDSPSZ=!{$-rcpdsp}/4
+
+;Class function dispatch table for RCP class devices
+
+	.LONG	RCPCLSFMX
+rcpcls::.LONG	rcpaddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	rcpunitinfo	;CF_PUNITS  =  9 - Get information about
+				;                    physical units
+	.LONG	knlIFnDevTF##	;CF_AUNITS  = 10 - Get information about active
+				;                    units
+RCPCLSFMX=!{$-rcpcls}/4
+.PAGE
+;Device characteristics tables for the RCP devices
+
+	DATA
+
+	.MOD	4
+rcpdctbl::
+ DCHARBGN  1, knlDCharValCom##
+ DCHARENT  CLASS  , TEXT, , 8, knlDcMsgClass##  , knlDcGetClass##    , knlDcSetClass##    , 0
+ DCHARENT  UDPDEV , TEXT, ,16, msgudpdev        , getudpdev          , 0                  , 0
+ DCHARENT  RETRY1 , DECV, , 1, xosipsMsgRetry1##, xosipsGetTpdbByte##, xosipsSetTpdbByte##, tpdb_rcpretry1
+ DCHARENT  RETRY2 , DECV, , 1, xosipsMsgRetry2##, xosipsGetTpdbByte##, xosipsSetTpdbByte##, tpdb_rcpretry2
+ DCHARENT  ACCESS , TEXT, , 4, knlDcMsgAccess## , xosipsGetTpdbData##, setaccess          , tpdb_rcpaccess
+ DCHARENT  PKTIN  , DECV, , 4, xosnetMsgPktIn## , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntpktin
+ DCHARENT  BYTEIN , DECV, , 4, knlDcMsgByteIn## , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntbytein
+ DCHARENT  PKTOUT , DECV, , 4, xosnetMsgPktOut##, xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntpktout
+ DCHARENT  BYTEOUT, DECV, , 4, knlDcMsgByteOut##, xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntbyteout
+ DCHARENT  NODST  , DECV, , 4, xosipsMsgNoDst## , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntnodst
+ DCHARENT  BADHDR , DECV, , 4, xosipsMsgBadHdr##, xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntbadhdr
+ DCHARENT  BADCONT, DECV, , 4, msgbadcont       , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntbadcont
+ DCHARENT  PSLTMN , DECV, , 4, xosipsMsgPSLtMn##, xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntpsltmn
+ DCHARENT  OUTSEQ , DECV, , 4, msgoutseq        , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntoutseq
+ DCHARENT  OUTWIN , DECV, , 4, msgoutwin        , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntoutwin
+ DCHARENT  FLOWOVR, DECV, , 4, msgflowovr       , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntflowovr
+ DCHARENT  UNXTYPE, DECV, , 4, msgunxtype       , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntunxtype
+ DCHARENT  OOSNUM , DECV, , 4, msgoosnum        , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntoosnum
+ DCHARENT  OOSMAX , DECV, , 4, msgoosmax        , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntoosmax
+ DCHARENT  REXMIT , DECV, , 4, msgrexmit        , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntrexmit
+ DCHARENT  RSTSENT, DECV, , 4, msgrstsent       , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntrstsent
+ DCHARENT  RSTRCVD, DECV, , 4, msgrstrcvd       , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntrstrcvd
+ DCHARENT  CLOST  , DECV, , 4, msgclost         , xosipsGetTpdbData##, xosipsSetTpdbData##, tpdb_rcpcntclost
+
+	CODE
+
+msgudpdev:      DCHARINFO  {UDP device}
+msgbadcont:     DCHARINFO  {Discarded - bad packet contents}
+msgconmsgdst:   DCHARINFO  {Message dest for connect to port}
+msgoutseq:      DCHARINFO  {Discarded - out of sequence packets}
+msgoutwin:      DCHARINFO  {Discarded - out of window packets}
+msgflowovr:     DCHARINFO  {Discarded - flow control overrun}
+msgunxtype:     DCHARINFO  {Number of packets of unexpected type}
+msgoosnum:      DCHARINFO  {Number of out-of-seq packets queued}
+msgoosmax:      DCHARINFO  {Maximum out-of-seq packets queued}
+msgrexmit:      DCHARINFO  {Number of retransmitted packets}
+msgclost:       DCHARINFO  {Number of lost connections}
+msgrstsent:     DCHARINFO  {Number of resets sent}
+msgrstrcvd:     DCHARINFO  {Number of resets received}
+xosrcpMsgRcpDev:DCHARINFO  {RCP device}
+.PAGE
+;Device parameter table for RCP open
+
+	.MOD	4
+	.LONG	OPARMMAX
+rcpopnparms:
+	.LONG	rcpopngenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	rcpopnnetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+;;;;	.LONG	0		 ;IOPAR_IPMxxx = 06xx - IPM IO parameters
+;;;;	.LONG	rcpmsgparms	 ;IOPAR_MSGxxx = 07xx - Message IO parameters
+OPARMMAX=!{$-rcpopnparms}/4
+
+	.LONG	OPARMGENMAX	;Size of table
+rcpopngenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopDummyN##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIopDummyS##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	0		;IOPAR_INPSTS      = 0008h
+	.LONG	0		;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT     = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT     = 000Bh
+	.LONG	rcpiopdiscvect	;IOPAR_SIGVECT1    = 000Ch
+	.LONG	rcpiopintpvect	;IOPAR_SIGVECT2    = 000Dh
+	.LONG	rcpiopvectdata	;IOPAR_SIGDATA     = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	knlIopBufrLmt##	;IOPAR_BUFRLMT	   = 0010h
+OPARMGENMAX=!{$-rcpopngenparms}/4
+
+	.LONG	OPARMNETMAX
+rcpopnnetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+	.LONG	0		;IOPAR_NETPROTOCOL = 0502h
+	.LONG	rcpioplclport	;IOPAR_NETLCLPORT  = 0503h
+	.LONG	0		;IOPAR_NETRMTHWAS  = 0504h
+	.LONG	0		;IOPAR_NETRMTHWAR  = 0505h
+	.LONG	rcpioprmtnetas	;IOPAR_NETRMTNETAS = 0506h
+	.LONG	rcpioprmtnetar	;IOPAR_NETRMTNETAR = 0507h
+	.LONG	rcpioprmtports	;IOPAR_NETRMTPORTS = 0508h
+	.LONG	rcpioprmtportr	;IOPAR_NETRMTPORTR = 0509h
+	.LONG	0		;IOPAR_NETDSTNAME  = 050Ah
+	.LONG	0		;IOPAR_NETSMODE    = 050Bh
+	.LONG	0		;IOPAR_NETCMODE    = 050Ch
+	.LONG	0		;IOPAR_NETRCVWIN   = 050Dh
+	.LONG	rcpioplclneta	;IOPAR_NETLCLNETA  = 050Eh
+	.LONG	rcpiopkatime	;IOPAR_NETKATIME   = 050Fh
+	.LONG	knlIopDummyN##	;IOPAR_NETCONLIMIT = 0510h
+	.LONG	knlIopDummyN##	;IOPAR_NETCONHNDL  = 0511h
+	.LONG	rcpioppktmax	;IOPAR_NETPKTMAX   = 0512h
+OPARMNETMAX=!{$-rcpopnnetparms}/4
+.PAGE
+	.LONG	PARMMAX
+rcpioparms:
+	.LONG	rcpiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	rcpionetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+PARMMAX=!{$-rcpioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+rcpiogenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIoxFilOptn##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIoxFilSpec##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	0		;IOPAR_INPSTS      = 0008h
+	.LONG	0		;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT     = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT     = 000Bh
+	.LONG	rcpiopdiscvect	;IOPAR_SIGVECT1    = 000Ch
+	.LONG	rcpiopintpvect	;IOPAR_SIGVECT2    = 000Dh
+	.LONG	rcpiopvectdata	;IOPAR_SIGDATA     = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	knlIopBufrLmt##	;IOPAR_BUFRLMT	   = 0010h
+PARMGENMAX=!{$-rcpiogenparms}/4
+
+	.LONG	PARMNETMAX
+rcpionetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+	.LONG	0		;IOPAR_NETPROTOCOL = 0502h
+	.LONG	rcpxplclport	;IOPAR_NETLCLPORT  = 0503h
+	.LONG	0		;IOPAR_NETRMTHWAS  = 0504h
+	.LONG	0		;IOPAR_NETRMTHWAR  = 0505h
+	.LONG	0		;IOPAR_NETRMTNETAS = 0506h
+	.LONG	rcpioprmtnetar	;IOPAR_NETRMTNETAR = 0507h
+	.LONG	0		;IOPAR_NETRMTPORTS = 0508h
+	.LONG	rcpioprmtportr	;IOPAR_NETRMTPORTR = 0509h
+	.LONG	0		;IOPAR_NETDSTNAME  = 050Ah
+	.LONG	0		;IOPAR_NETSMODE    = 050Bh
+	.LONG	0		;IOPAR_NETCMODE    = 050Ch
+	.LONG	0		;IOPAR_NETRCVWIN   = 050Dh
+	.LONG	rcpioplclneta	;IOPAR_NETLCLNETA  = 050Eh
+PARMNETMAX=!{$-rcpionetparms}/4
+
+;;;;	.LONG	PARMDGMAX
+;;;;ipmmsgparms:
+;;;;	.LONG	0		;		   = 0700h
+;;;;	.LONG	lcladdr		;IOPAR_MSGLCLADDR  = 0701h
+;;;;	.LONG	rmtaddrs	;IOPAR_MSGRMTADDRS = 0702h
+;;;;	.LONG	rmtaddrr	;IOPAR_MSGRMTADDRR = 0703h
+;;;;PARMDGMAX=!{$-ipmmsgparms}/4
+.PAGE
+	.SBTTL	rcpinit - Initialization routine
+
+	INITSUB	rcpinit
+
+;The command for installing RCPCLS is:
+;	LKELOAD RCPCLS
+
+rcpinit:
+	MOVL	EBX, #rcpoas#		;Set up our once-a-second routine
+	CALL	knlSetupOAS##
+	MOVL	EDI, #rcpchk		;Install the RCP class
+	MOVL	EBX, #rcpcls		;Offset of class function dispatch table
+	CLRL	ECX
+	MOVL	EAX, #'RCP'
+	CLRL	EDX
+	MOVL	ESI, #rcpccb
+	JMP	knlNewClass##
+
+	CODE
+.PAGE
+	.SBTTL	rcpaddunit - Subroutine to add RCP unit
+
+;Subroutine to add RCP unit - this implements a RCP protocol device for a
+;  single UDP device.  Multiple RCP units can be implemented for a single
+;  UDP device, but there is not point in this, since they all share the UDP
+;  device's port space.
+;	c{ES:EDI} = Address of data block
+;	CALL	rcpaddunit
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+
+$$$=!0
+FRM rcpau_snapnum, 4t		;Number of SNAP devices specified
+FRM rcpau_unit   , 4t		;Unit number
+FRM rcpau_netnum , 4t
+FRM rcpau_count  , 4t
+FRM rcpau_tpdb   , 4t		;Offset of UDP TPDB
+rcpau_SIZE=!$$$
+
+	DATA
+
+	.MOD	4
+rcpaublk:				;Parameter description block for
+ DCHARBGN  3, knlDCharValCom##		;  adduparms
+ DCHARENT  UNIT  , DECV, ,  1, 0, 0, rcpauunit  , 0
+ DCHARENT  UDPDEV, TEXT, , 16, 0, 0, rcpauudpdev, 0
+
+	CODE
+
+	IFFAULT	8$
+rcpaddunit:
+	LFSL	EDX, iorb_buffer2[ESI]
+	ENTER	rcpau_SIZE, 0		;Allocate our stack frame
+	CLRL	EAX
+	LEAL	EDI, -rcpau_SIZE[EBP]	;Clear our stack frame
+	MOVL	ECX, #rcpau_SIZE/4
+	PUSHL	SS
+	POPL	ES
+	CLD
+	RSTOSL	[EDI]
+	DECL	rcpau_unit[EBP]		;Indicate illegal unit number
+	MOVL	EBX, #rcpaublk
+	MOVB	AL, #0			;Fail on bad names
+	CALL	knlAddUnitChar##	;Process the characteristics
+	JC	4$			;If error
+	CMPL	rcpau_tpdb[EBP], #0	;Was a UDP device specified?
+	JE	2$			;No
+	CMPL	rcpau_unit[EBP], #0	;Yes - was a unit number specified?
+	JGE	10$			;Yes
+2$:	MOVL	EAX, #ER_CHARM		;No - fail
+4$:	CLRL	ECX
+6$:	MOVL	EBX, #QSTS$DONE
+	LEAVE
+	TOFORK
+	RET
+		
+;Here if address error with the IORB
+
+	FAULTHDR
+8$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+
+;Here with characteristics processed
+
+10$:	PUSHL	rcpau_unit[EBP]
+	PUSHL	#tpdb_rcpSIZE
+	PUSHL	#'RCP'
+	PUSHL	#dcb_rcpINDEX
+	PUSHL	#256t*4
+	PUSHL	#tpdb_rcprcvhash
+	PUSHL	#rcprcv#
+	PUSHL	#rcpccb
+	MOVL	EAX, rcpau_tpdb[EBP]
+	PUSHL	tpdb_pdb[EAX]
+	PUSHL	#xosrcpTpdbHead
+	CALL	xosipsNewTransProt##	;Set up the new transport protocol
+	JC	4$			;If error
+	IMULL	EAX, knlSchTime##, #1Dch ;Get a mostly random number as the
+					 ;  initial sequence number
+	MOVL	EDX, rcpau_tpdb[EBP]	;Get first underlying UDP TPDB
+	MOVB	tpdb_rcpretry1[EDI], #RETRY_TRN1 ;Initialize default retry
+	MOVB	tpdb_rcpretry2[EDI], #RETRY_TRN2 ;  levels
+	MOVL	tpdb_rcpdfltport[EDI], #401h ;Initialize default port number
+	MOVL	tpdb_tpdb[EDI], EDX
+	MOVL	EDX, tpdb_nextd[EDX]
+	MOVL	tpdb_rcpseqnumber[EDI], EAX
+	CLRL	EAX
+	MOVL	ECX, #1			;Finished
+	JMP	6$
+.PAGE
+;Subroutine called by adduparms for the "UNIT" parameter
+
+rcpauunit:
+	CMPL	EAX, #99t		;Valid value?
+	JA	knlBadCharV##		;No - fail
+	MOVL	rcpau_unit[EBP], EAX	;Yes - store it
+	CLC
+	RET
+
+;Subroutine called by adduparms for the "UDPDEV" parameter
+
+rcpauudpdev:
+	MOVL	EAX, rcpau_tpdb[EBP]	;Get current UDP TPDB offset
+	CALL	xosudpAuUdpDev##	;Get UDP TPDB offset
+	JC	2$			;If error
+	MOVL	rcpau_tpdb[EBP], EDI	;OK - store UDP TPDB offset
+2$:	RET
+.PAGE
+	.SBTTL	xosrcpAuRcpDev - Subroutine to process RCPDEV addunit characteristic
+
+;Subroutine to process RCPDEV addunit characteristic for devices which use RCP
+;  as their underlying protocol
+;	c{EAX} = Current RCP TPDB offset
+;	CALL	xosrcpAuRcpDev
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of RCP TPDB
+
+xosrcpAuRcpDev:
+	ORL	EAX, EAX		;Alreay have a RCP TPDB?
+	JNE	2$			;Yes - fail
+	MOVL	EBX, #knlDcValue##	;No
+	PUSHL	12t[EBX]
+	PUSHL	8[EBX]
+	PUSHL	4[EBX]
+	MOVL	EAX, [EBX]
+	PUSHL	EAX
+	ANDL	EAX, #0FFFFFFh
+	CMPL	EAX, #'RCP'
+	JNE	4$
+	LEAL	ECX, 3[ESP]
+	MOVL	EDI, xosrcpTpdbHead	;Get offset of first TPDB
+	CALL	xosnetSrchBlock##	;Find the correct TPDB
+	JNE	4$			;If can't find it
+	CMPB	SS:[ECX], #0		;Did he specify a specific network?
+	JNE	4$			;Yes - fail
+	ADDL	ESP, #16t
+	RET
+
+;Here if more than one RCP device specified
+
+2$:	MOVL	EAX, #ER_TMDDV
+	STC
+	RET
+
+;Here if cannot find requested RCP device
+
+4$:	ADDL	ESP, #16t
+	MOVL	EAX, #ER_NSDEV
+	STC
+	RET
+.PAGE
+	.SBTTL	setaccess - Set value of the ACCESS characteristic
+
+;Here ot set the value of the ACCESS characteristic
+
+setaccess:
+	ADDL	EBX, dcb_ipstpdb[EDI]
+	JMP	knlSetAccess##
+.PAGE
+	.SBTTL	rcpunitinfo - RCP get phyical unit information function
+
+;Here for the get physical unit information class function (CL_PUNITS) for the
+;  RCP class
+;	c{EBX} = Offset of CCB
+;	c{ESI} = Offset of IORB
+;	CALL	rcpunitinfo
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+;  A zero count (iorb_count) requests that the number of units only be returned
+;    in qab_amount.  A non-zero count indicates that a buffer is available for
+;    that many unit names (8 characters each, null padded).
+
+rcpunitinfo:
+	MOVL	EAX, #ER_NIYT
+	MOVL	EBX, #QSTS$DONE
+	CLRL	ECX
+	RET
+.PAGE
+	.SBTTL	getudpdev - Get value of UDPDEV device characteristic
+
+;Here to get the value of the UDPDEV device characteristic
+
+getudpdev:
+	MOVL	EAX, dcb_ipstpdb[EDI]	;Get offset of our TPDB
+	MOVL	EAX, tpdb_tpdb[EAX]	;Get offset of underlying TPDB
+	ADDL	EAX, #tpdb_name		;Get offset of name
+	RET
+.PAGE
+	.SBTTL	xosrcpGetRcpDev - Here to get value of RCPDEV characteristic
+
+;Here to the the value of the RCPDEV characteristic for an application protocol
+;  level device
+
+xosrcpGetRcpDev:
+	MOVL	EAX, dcb_ipstpdb[EDI]	;Get offset of TPDB
+	ADDL	EAX, #tpdb_name+0	;Get offset of name
+	RET
+.PAGE
+;Device check routine for RCP class devices
+;	c{SS:EBX} = Address of device name (16 characters)
+;	CALL	rcpchk
+;	C:set = Error (match found)
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = Match found
+;	    c{EDI} = Offset of DCB
+;	  Z:clr = Not found
+;  EBX and ESI are preserved
+
+rcpchk:	MOVL	EAX, SS:[EBX]
+	ANDL	EAX, #0FFFFFFh
+	CMPL	EAX, #'RCP'		;Is this RCP*?
+	JNE	6$			;No
+	MOVL	EDI, xosrcpTpdbHead	;Yes - get offset of first RCP TPDB
+	LEAL	ECX, 3[EBX]		;Get offset of 1st unit number character
+	MOVL	EDX, #DS$DUPLEX		;Get description bits
+	CALL	xosipsFindDev##		;Find matching network device
+	JC	4$			;If error
+	JNE	4$			;Or if not a match
+	CMPL	dcb_sdisp[EDI], #0	;Is this DCB already set up?
+	JNE	2$			;Yes
+	MOVL	dcb_sdisp[EDI], #rcpdsp ;Store offset of SVC dispatch table
+	MOVL	EDX, dcb_ipstpdb[EDI]
+	MOVW	AX, tpdb_rcpretry1[EDX] ;Store default retransmission
+	MOVW	dcb_rcpretry1[EDI], AX  ;  threshold values
+	MOVB	dcb_ipsprot[EDI], #IPP_UDP ;Store IP protocol value
+	MOVL	dcb_netmode[EDI], #0	;Set default modes
+	MOVL	dcb_devchar[EDI], #rcpdctbl ;Use our device characteristics
+	DECL	dcb_rcpconnext[EDI]	;Indicate not in connect list
+xosrcpChkFin:
+	MOVL	EAX, rcptwhead		;Link this DCB to our timer list
+	MOVL	dcb_rcptimenext[EDI], EAX
+	MOVL	rcptwhead, EDI
+2$:	CLRL	EAX			;Set Z
+4$:	RET				;And return
+
+6$:	CLC
+	RET
+.PAGE
+	.SBTTL	sd_cleardcb - Clear DCB
+
+;Here for the clear DCB entry
+
+xosrcpGiveDcb:
+	CMPL	dcb_rcpconnext[EDI], #-1 ;In the connect list?
+	JE	4$			;No
+	CALL	xosrcpRmvConWait	;Yes - remove it
+4$:	MOVL	EAX, #1			;Assume don't have a port
+	CMPW	dcb_ipslclport[EDI], #0 ;Right?
+	JE	6$			;Yes
+	MOVB	AL, #TIMECNT_LAN_TW	;No - assume on same sub-net
+	TESTB	dcb_rcpsts2[EDI], #RCPS2$NLCL ;Right?
+	JE	6$			;Yes
+	MOVB	AL, #TIMECNT_IN_TW	;No
+6$:	MOVL	dcb_rcptimecnt[EDI], EAX
+	MOVB	dcb_rcpstate[EDI], #RCPS_TIMEWT
+	RET				;Thats all for now
+.PAGE
+	.SBTTL	sd_devinfo - Get device information
+
+;Here for the get device information entry
+;	c{ECX}    = Length of user buffer
+;	c{ES:EDI} = Address of user buffer
+;	c{ESI}    = Offset of DCB
+;	CALL	rcpdevinfo
+
+$$$=!0
+FRM info_left  , 4t
+FRM info_amount, 4t
+info_SIZE=!$$$
+
+xosrcpDevInfo:
+	ENTER	info_SIZE, 0
+	MOVL	info_left[EBP], ECX
+	CLRL	EAX
+	MOVL	info_amount[EBP], EAX
+	CMPL	dcb_hdlb[ESI], #0
+	JE	2$.S
+	MOVB	AL, #'*'
+	CALL	knlInfoChr##
+2$:	MOVZBL	EDX, dcb_rcpstate[ESI]	;Get RCP state
+	CMPB	DL, #RCPS_LISTEN	;Is it RCPS_LISTEN?
+	JNE	4$			;No
+	CMPW	dcb_rcpconlimit[ESI], #0 ;Yes - have a connection queue?
+	JE	4$			;No
+	MOVB	DL, #12t		;Yes - fix up the state name
+4$:	LEAL	EBX, infoname[EDX*4]	;Get offset of name string
+	LEAL	EBX, infoname[EDX*4]	;Get offset of name string
+	MOVL	ECX, #4			;Its 4 characters long
+	CALL	knlInfoStr##		;Store the name
+	MOVL	EBX, #kalbl
+	CALL	knlInfoStr##
+	MOVL	EAX, dcb_rcptimecnt[ESI]
+	CALL	knlInfoDec##
+	MOVB	AL, #' '
+	CALL	knlInfoChr##
+	JMP	xosipsDevInfoLcl##
+
+	DATA
+
+	.MOD	4
+infoname:
+	.ASCII	"CLSD"		;RCPS_CLOSED =  0 - Idle
+	.ASCII	"LSTN"		;RCPS_LISTEN =  1 - Waiting for connection
+	.ASCII	"CRQR"		;RCPS_CRQRCD =  2 - CONREQ received
+	.ASCII	"CRQS"		;RCPS_CRWSNT =  3 - CONREQ sent
+	.ASCII	"CAKR"		;RCPS_CAKRCD =  4 - CONACK received
+	.ASCII	"CAKS"		;RCPS_CAKSNT =  5 - CONACK sent
+	.ASCII	"ESTB"		;RCPS_ESTAB  =  6 - Connection established
+	.ASCII	"CLRR"		;RCPS_CLRREQ =  7 - Supervisory CLRREQ sent
+	.ASCII	"KILS"		;RCPS_KILSNT =  8 - KILREQ sent
+	.ASCII	"KILA"		;RCPS_KILACK =  9 - KILACK sent
+	.ASCII	"LOST"		;RCPS_LOST   = 10 - Connection has been lost
+	.ASCII	"TMWT"		;RCPS_TIMEWT = 11 - All finished - timing out
+				;		      port
+	.ASCII	"LSTQ"
+
+kalbl:	.ASCIZ	" KA="
+lcllbl:	.ASCIZ	"L="
+rmtlbl:	.ASCIZ	" R="
+
+	CODE
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry
+;	c{EDX} = Offset of name buffer
+;	c{EDI} = Offset of DCB
+;	CALL	rcpopen
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+OX=!O$REPEAT|O$REQFILE|O$ODF|O$FAILEX|O$CREATE|O$TRUNCA|O$TRUNCW|O$APPEND
+OX=!OX|O$UNQNAME|O$CONTIG|O$FAPPEND
+
+rcpopena:
+	TESTL	SS:xffCmd##, #OX	;Check for illegal bits
+	JNE	knlIFnDev##
+	TESTL	SS:xffCmd##, #O$PHYS|O$RAW ;Physical or raw IO?
+	JNE	rcpdevparm		;Yes
+;;;;;;;	TESTB	SS:xffCmd##, #O$IN|O$OUT ;No - no IO?
+;;;;;;;	JE	rcpdevparm		;Yes
+	CMPB	dcb_rcpstate[EDI], #RCPS_CLOSED ;Is device idle?
+	JE	2$			;Yes - go on
+	CMPB	dcb_rcpstate[EDI], #RCPS_ESTAB ;No - normal connection?
+	JE	opendn			;Yes
+1$:	MOVL	EAX, #ER_BUSY		;No - say device is busy
+	STC
+	RET
+
+	.SBTTL	sd_open1 - Open device first time
+
+;Here for the open device first time entry
+;	c{EDX} = Offset of name buffer
+;	c{EDI} = Offset of DCB
+;	CALL	rcpopen1
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+rcpopen1:
+	TESTL	SS:xffCmd##, #OX	;Check for illegal bits
+	JNE	knlIFnDev##
+	TESTL	SS:xffCmd##, #O$PHYS|O$RAW ;Physical or raw IO?
+	JNE	rcpdevparm		;Yes
+;;;;;;;	TESTB	SS:xffCmd##, #O$IN|O$OUT ;No - no IO?
+;;;;;;;	JE	rcpdevparm		;Yes
+
+	CMPB	dcb_rcpstate[EDI], #RCPS_CRQRCD
+	JE	2$
+	CMPB	dcb_rcpstate[EDI], #RCPS_CLOSED
+	JE	2$
+$$$$rcp::INT3
+	JMP	1$
+
+2$:	MOVB	SS:xffQueue##, #dcb_outframe ;No - set up output queue
+	MOVW	dcb_outframe[EDI], SS
+	MOVW	dcb_inpframe[EDI], #0
+	MOVZWL	EAX, opn_katime[EBP]	;Get keep-alive time
+	MOVW	dcb_rcpkareqtm[EDI], AX
+	MOVZWL	EAX, opn_pktmax[EBP]	;Get maximum packet size
+	TESTL	EAX, EAX		;Was it specified?
+	JNE	3$			;Yes
+	MOVL	EAX, #1024t		;No - use default
+3$:	MOVW	dcb_rcppktmax[EDI], AX
+	CMPB	dcb_rcpstate[EDI], #RCPS_CRQRCD ;Is this an incoming
+						;  connection?
+	JE	rcpopenin		;Yes - go handle that
+	CMPW	opn_conhndl[EBP], #0	;No - was an incomming device handle
+					;  specified?
+	JNE	rcpopentype2		;Yes - go handle that
+	PUSHL	EDX
+	BTL	SS:xffHvValue1##, #IOV1%LCLPORT ;Local port number specified?
+	JNC	4$			;No
+	MOVL	ECX, opn_lclport[EBP]	;Yes - use it
+	CALL	xosrcpGetPort
+	JMP	6$
+
+4$:	CALL	xosrcpDfltPort
+6$:	CMPW	opn_conlimit[EBP], #0	;Was an incoming connection queue
+					;  limit specified?
+	JE	7$			;No - go on
+	POPL	EDX			;Yes - fix up the stack
+	MOVZWL	EAX, opn_conlimit[EBP]	;Save the value
+	MOVW	dcb_rcpconlimit[EDI], AX
+	CALL	rcphashsetudp#		;Set up the UDP hash list entry
+	CALL	xosrcpPutConWait	;Put this DCB in the connect wait list
+	JMP	opendn			;  (also sets state to RCPS_LISTEN)
+
+;Here if no connection limit was specified
+
+7$:	POPL	EDX
+	JC	12$			;If error setting the local port number
+	BTL	SS:xffHvValue1##, #IOV1%RMTPORTS ;Remote port number specified?
+	JNC	8$			;No
+	MOVL	EAX, opn_rmtports[EBP] ;Yes - use it
+	XCHGB	AL, AH
+	MOVW	dcb_ipsrmtport[EDI], AX
+8$:	BTL	SS:xffHvValue1##, #IOV1%RMTNETAS ;IP address specified?
+	JC	10$			;Yes - not passive
+	CMPL	SS:[EDX], #'*::'	;Is this a pasive open?
+	JE	rcpopenpas		;Yes - go handle that
+10$:	MOVL	EAX, #5t		;No
+	MOVL	ECX, #30t
+	CALL	xosrcpConnect		;Establish the RCP connection
+12$:	JC	22$
+opendn:	CMPL	SS:xffParm##, #0	;Have a parameter list?
+	JE	20$			;No
+	MOVL	EBX, #rcpopnparms	;Yes - process device parameters
+	MOVL	ECX, #knlComDPParms##	;  (IGNORE ERRORS FOR NOW!)
+	LFSL	EDX, SS:xffParm##
+	CALL	knlProcDevParm##
+	TESTL	SS:xffPVFilOpt##, #FO$NODENAME|FO$NODENUM ;Want node number?
+	JE	20$			;No
+	BTL	SS:xffPVFilOpt##, #FO%NOPREFIX ;Yes - want prefix code?
+	JC	14$			;No
+	MOVB	AL, #FS_NODENUM		;Yes
+	CALL	knlGivUChr##
+14$:	LEAL	EBX, dcb_ipsrmtaddr[EDI] ;Point to the node number
+	MOVL	ECX, #4t		;Give him 4 bytes
+16$:	MOVZBL	EAX, [EBX]		;Get byte
+	CALL	knlGivUNum##		;Give him the value?
+	DECL	ECX			;Finished?
+	JE	18$			;Yes
+	INCL	EBX			;No - bump pointer
+	MOVB	AL, #'.'		;Give him a period
+	CALL	knlGivUChr##
+	JMP	16$			;Continue
+
+;Here with node number given to the user
+
+18$:	CALL	knlGivUColon##		;Put :: after the node number
+	CALL	knlGivUColon##
+20$:	CLRL	EAX
+22$:	RET
+
+;Here for the devparm function or if physical or raw IO requested
+
+rcpdevparm:
+	ANDB	SS:xffCmd##, #~{O$IN|O$OUT} ;No IO allowed
+	JMP	opendn			;Thats all
+.PAGE
+;Here for type 2 passive open - We first find the indicated DCB.  If there
+;  is a pending CONREQ packet queued, we use it.  If not, we wait until there
+;  is one. Note that only one DCB can be waiting for a connection using a
+;  base DCB.
+
+rcpopentype2:
+	MOVZWL	EAX, opn_conhndl[EBP]
+	PUSHL	EDI
+	CALL	knlXfGetDcb##
+	MOVL	EDX, EDI
+	POPL	EDI
+	JC	4$
+	CMPL	dcb_ccb[EDX], #rcpccb	;Is this an RCP DCB?
+	JNE	4$			;No
+	MOVB	AL, dcb_punit[EDI]	;Yes - is it the same unit?
+	CMPB	AL, dcb_punit[EDX]
+	JNE	4$			;No
+	CMPB	dcb_rcpstate[EDX], #RCPS_LISTEN
+	JNE	4$
+	CMPW	dcb_rcpconlimit[EDX], #0
+	JE	4$
+	CMPL	dcb_rcpcondcb[EDX], #0
+	JE	8$
+4$:	MOVL	EAX, #ER_PARMV
+	STC
+6$:	RET
+
+;Here with a valid device for a type 2 incoming connection
+
+8$:	MOVZWL	ECX, dcb_ipslclport[EDX]
+	CMPW	CX, dcb_ipslclport[EDI]
+	JE	10$
+	BTSL	ECX, #30t
+	PUSHL	EDX
+	CALL	xosrcpGetPort
+	POPL	EDX
+	JC	6$
+10$:	MOVL	EBX, dcb_rcprcvhead[EDX] ;Is a CONREQ available now?
+	TESTL	EBX, EBX
+	JNE	14$			;Yes
+	MOVB	dcb_rcpstate[EDI], #RCPS_LISTEN ;No - update our state
+	MOVL	dcb_rcpcondcb[EDX], EDI	;Link to the base DCB
+	MOVL	dcb_rcpcondcb[EDI], EDX
+	MOVL	EAX, SS:xffTimeOut##
+	MOVL	EDX, SS:xffTimeOut##+4
+	CALL	xosnetRspWait##		;Wait for a while
+	JC	6$			;If error
+	CMPL	dcb_rcpcondcb[EDI], EDX	;Are we still linked?
+	JE	10$			;Yes - continue
+	JMP	4$			;No - fail
+
+;Here with an incoming CONREQ to use
+
+14$:	MOVL	EAX, npb_next[EBX]	;Remove packet for its list
+	MOVL	dcb_rcprcvhead[EDX], EAX
+	TESTL	EAX, EAX
+	JNE	16$
+	MOVL	dcb_rcprcvtail[EDX], EAX
+16$:	MOVL	dcb_rcprcvhead[EDI], EBX ;Save the packet in our pointer
+	CMPL	dcb_rcpcondcb[EDI], #0	;Are we linked to a base DCB?
+	JE	rcpopenin
+	CMPL	dcb_rcpcondcb[EDI], EDX	;Is the link right?
+	JNE	20$			;No - serious problem
+	CLRL	EAX			;Clear the link
+	MOVL	dcb_rcpcondcb[EDI], EAX
+	MOVL	dcb_rcpcondcb[EDX], EAX
+	JMP	rcpopenin		;Continue with the passive open
+
+20$:	CRASH	BCDL			;[Bad Connection DCB Link]
+.PAGE
+;Here for type 1 passive open to wait for an in-coming connection
+
+rcpopenpas:
+	CALL	rcphashsetudp#		;Set up the UDP hash list entry
+	CALL	xosrcpPutConWait	;Put this DCB in the connect wait list
+	MOVL	EAX, SS:xffTimeOut##	;Get time-out value
+	MOVL	EDX, SS:xffTimeOut##+4
+	CALL	xosnetRspWait##		;Wait for a connection request
+	JC	10$			;If error
+	CALL	xosrcpRmvConWait	;Remove DCB from the connect wait list
+rcpopenin:
+	CALL	xosrcpTimerRmv#		;Clear the connect timer
+	CALL	xosrcpAcceptCon		;Accept the connection
+	JC	12$			;If cannot accept it
+	MOVB	SS:xffCount##, #4-1	;Retry this 4 times
+4$:	CALL	xosrcpSendCONACK
+	JC	8$
+	MOVL	EAX, dcb_rcprxmttime[EDI] ;Get time-out value
+	CLRL	EDX
+	CALL	xosnetRspWait##		;Wait for the ACK
+	JNC	opendn			;If OK
+	CMPL	EAX, #ER_NORSP		;Did this time-out?
+	JNE	opnerr			;No
+	DECB	SS:xffCount##		;Yes - should we try again?
+	JNS	4$			;Yes
+	MOVB	AL, #ER_NCLST		;No - get right error code
+opnerr:	PUSHL	EAX			;Save error code
+	CALL	xosrcpHashClr#		;Remove DCB from the hash table
+	MOVB	dcb_rcpstate[EDI], #RCPS_CLOSED
+6$:	POPL	EAX
+	STC
+8$:	RET
+
+;Here with error while we are in the connect wait list
+
+10$:	PUSHL	EAX
+	CALL	xosrcpRmvConWait
+	JMP	6$
+
+;Here if cannot accept the connection
+
+12$:	PUSHL	EDX			;Save the XOS error code
+	CALL	xosrcpSendCONREJ
+	POPL	EAX
+	STC
+	RET
+.PAGE
+	.SBTTL	rcpiopdiscvect - Here for the IOPAR_SIGVECT1 parameter
+
+;Here for the IOPAR_SIGVECT1 parameter - this vector is used for disconnects
+
+	DPARMHDR  BOTH, HEXV
+rcpiopdiscvect:
+	LEAL	ESI, dcb_rcpdiscvect[EDI]
+	JMP	2$
+
+	.SBTTL	rcpiopintpvect - Here for the IOPAR_SIGVECT2 parameter
+
+;Here for the IOPAR_SIGVECT2 parameter - this vector is used for notification
+;  of received interrupt packets
+
+	DPARMHDR  BOTH, HEXV
+rcpiopintpvect:
+	LEAL	ESI, dcb_rcpintpvect[EDI]
+2$:	TESTB	AH, #PAR$SET		;Want to set the value?
+	JE	12$			;No
+	PUSHL	EAX
+	CALL	knlGetParm##		;Yes - get value
+	JC	18$
+	TESTL	EAX, EAX		;Clearing the vector?
+	JNE	4$			;No
+	MOVW	dcb_rcpdiscpda-dcb_rcpdiscvect[ESI], AX
+	MOVW	[ESI], AX
+	JMP	10$
+
+;Here if not clearing the vector
+
+4$:	MOVL	EDX, EAX
+	CALL	knlChkVector##		;Check for valid vector number
+	JC	16$
+	MOVW	[ESI], DX		;OK - store new value
+	MOVW	AX, SS:xffPda##
+	MOVW	dcb_rcpdiscpda-dcb_rcpdiscvect[ESI], AX
+	MOVZWL	EAX, dcb_sunit[EDI]
+	SHLL	EAX, #16t
+	MOVB	AL, dcb_punit[EDI]
+10$:	MOVL	dcb_rcpvectdata[EDI], EAX
+	POPL	EAX
+12$:	TESTB	AH, #PAR$GET		;Want to get value?
+	JE	20$			;No
+	MOVZWL	EAX, [ESI] ;Yes
+	JMP	knlStrParm4#
+
+;Here if error
+
+16$:	MOVL	EAX, #ER_PARMV
+18$:	POPL	EDX
+20$:	RET
+
+	.SBTTL	rcpiopvectdata - Here for the IOPAR_SIGDATA1 IO parameter
+
+;Here for the IOPAR_SIGDATA1 IO parameter - Get or set vector data
+
+	DPARMHDR  BOTH, HEXV
+rcpiopvectdata:
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	22$			;No
+	PUSHL	EAX
+	CALL	knlGetParm##		;Yes - get value
+	JC	18$
+	MOVL	dcb_rcpvectdata[EDI], EAX ;Store new value
+	POPL	EAX
+22$:	TESTB	AH, #PAR$GET		;Want to get value?
+	JE	20$			;No
+	MOVL	EAX, dcb_rcpvectdata[EDI] ;Yes
+	JMP	knlStrParm4#
+.PAGE
+	.SBTTL	rcpioplclport - Here for the IOPAR_NETLCLPORT parameter for open
+
+;Here for the IOPAR_NETLCLPORT parameter - Set or get local port number for open
+
+	DPARMHDR  BOTH, DECV
+rcpioplclport:
+	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	10$			;No
+2$:	MOVZWL	EAX, dcb_ipslclport[EDI] ;Yes - return current value
+	JMP	knlStrParm4##
+
+	.SBTTL	rcpxplclport - Here for the IOPAR_NETLCLPORT parameter for transfer
+
+;Here for the IOPAR_NETLCLPORT parameter - Get local port number for transfer
+
+	DPARMHDR  GET, DECV
+rcpxplclport:
+	JMP	2$
+
+	.SBTTL	rcpioprmtports - Here for the IOPAR_NETRMTPORS parameter for open
+
+;Here for the IOPAR_NETRMTPORTS parameter - Get or set remote port for open
+
+	DPARMHDR  BOTH, DECV
+rcpioprmtports:
+	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	10$			;No
+4$:	MOVZWL	EAX, dcb_ipsrmtport[EDI] ;Yes - return current value
+6$:	XCHGB	AL, AH			;Fix up the byte order
+	JMP	knlStrParm4##
+
+	.SBTTL	rcpioprmtportr - Here for the IOPAR_NETRMTPORTR parameter
+
+;Here for the IOPAR_NETRMTPORTR parameter - Get remote port number
+
+	DPARMHDR  GET, DECV
+rcpioprmtportr:
+	JMP	4$
+
+	.SBTTL	rcpioprmtnetar - Here for the IOPAR_NETRMTNETAR parameter
+
+;Here for the IOPAR_NETRMTNETAR parameter - Get remote network address
+
+	DPARMHDR  GET, DECV
+rcpioprmtnetar:
+	JMP	8$
+
+	.SBTTL	rcpioprmtnetas - Here for the IOPAR_NETRMTNETAS parameter for open
+
+;Here for the IOPAR_NETRMTNETAS parameter - Get remote network address for open
+
+	DPARMHDR  BOTH, DECV
+rcpioprmtnetas:
+	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	10$			;No
+8$:	MOVL	EAX, dcb_ipsrmtaddr[EDI] ;Yes - return current value
+	JMP	knlStrParm4##
+
+10$:	RET
+
+	.SBTTL	rcpiopkatime - Here for the IOPAR_NETKATIME parameter for open
+
+;Here for the IOPAR_NETKATIME parameter - Get keep-alive time
+
+	DPARMHDR  BOTH, DECV
+rcpiopkatime:
+	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	10$			;No
+	MOVZWL	EAX, dcb_rcpkareqtm[EDI] ;Yes - return current value
+	JMP	knlStrParm4##
+
+	.SBTTL	rcpioppktmax - Here for the IOPAR_NETPKTMAX parameter for open
+
+;Here for the IOPAR_NETPKTMAX parameter - Get maximum packet size
+
+	DPARMHDR  BOTH, DECV
+rcpioppktmax:
+	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	10$			;No
+	MOVZWL	EAX, dcb_rcppktmax[EDI] ;Yes - return current value
+	JMP	knlStrParm4##
+
+	.SBTTL	rcpioplclneta - Here for the IOPAR_NETLCLNETA
+
+;Here for the IOPAR_NETLCLNETA parameter - Get local network address
+
+	DPARMHDR  GET, DECV
+rcpioplclneta:
+	MOVL	EAX, dcb_netpdb[EDI]
+	MOVL	EAX, pdb_ipaddr[EAX]
+	JMP	knlStrParm4##
+.PAGE
+	.SBTTL	xosrcpConnect - Subroutine to establish RCP connection for open
+
+;Subroutine to establish RCP connection for open - must be called in extended
+;  fork context
+;	c{EAX} = Receive window size
+;	c{ECX} = Keep-alive time (seconds, 0 means no keep-alive)
+;	c{EDX} = Offset of name buffer (on stack)
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpConnect
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX} = Offset of next part of name
+
+;A network address may be specified after the device name.  It must be
+;  terminated with a double colon as follows:
+;	RCP0:147.23.45.67.34::
+;  The fifth byte is optional, if included, specifies the value to be used
+;  for the low order byte of the local network address.
+
+;The data in a RCP_CONREQ packet is used as follows:
+;  Offset Size    Description
+;     0     2    Maximum packet size
+;     2     2    Keep-alive time
+;     4     1    RCP version number
+;     5     3    Reserved, must be 0
+;     8     2    Maximum retransmit time (ms)
+;    10     2    Initial retransmit time (ms)
+
+$$$=!0
+FRM con_frame1, 4t
+FRM con_frame2, 4t
+FRM con_name  , 4t	;Offset of name buffer
+FRM con_retry , 4t	;Retry counter
+FRM con_bfr   , 4t	;Offset of packet buffer used to send CONREQ
+con_SIZE=!$$$
+
+xosrcpConnect:
+	ENTER	con_SIZE, 2
+	MOVL	dcb_rcprcvwina[EDI], EAX ;Store our receive window size
+	MOVL	dcb_rcprcvwinm[EDI], EAX
+	MOVL	dcb_rcpkareqtm[EDI], ECX ;Store our keep-alive time
+	MOVL	ESI, dcb_netidb[EDI]	;Get offset of our IDB
+	BTL	SS:xffHvValue1##, #IOV1%RMTNETAS ;Have an address parameter?
+	JNC	2$			;No	
+	CALL	xosnetChkNetAddr##	;Yes - skip possible address string
+	JNE	1$			;If none
+	LEAL	EDX, 1[ECX]
+1$:	MOVL	EBX, con_frame1[EBP]	;Yes - get its value
+	MOVL	EBX, SS:opn_rmtnetas[EBX]
+	JMP	gethva1			;Continue
+
+;Here if address parameter (IOPAR_RMTNETAS) not specified
+
+2$:	CALL	xosnetChkNetAddr##	;Was a network address given?
+	JNE	getpds			;No - fail
+
+;Here if a network address was given
+
+4$:	CMPB	SS:[EDX], #'A'		;Is the first character alpha?
+	JB	getipa			;No - go collect Internet address
+	CALL	xosipsDnsGetIpA##	;Yes - translate domain name
+	JNC	gethva2			;Go on if OK
+	LEAVE				;Error
+	RET
+.PAGE
+getipa:	CLRL	EBX
+	MOVL	ECX, #4			;Remote IP address may contain up to 4
+2$:	CALL	getval			;  fields
+	RORL	EBX, #8
+	CMPB	AL, #':'		;End of remote IP address?
+	JE	10$			;Yes
+	CMPB	AL, #'.'		;No - is it the separator?
+	JNE	getpds			;No - fail
+	LOOP	ECX, 2$			;Yes - continue
+getpds:	MOVL	EAX, #ER_NILAD
+6$:	STC
+	LEAVE
+	RET
+
+;Here if default host is not available
+
+8$:	MOVL	EAX, #ER_NHSNA
+	JMP	6$
+
+;Here with the internet address
+;	c{EBX} = IP address
+
+10$:	INCL	EDX			;Skip the second colon
+gethva1:CMPL	EBX, #0			;Is entire address 0?
+	JE	getpds			;Yes - fail!
+gethva2:MOVL	con_name[EBP], EDX	;Save offset of name buffer
+	MOVL	EDX, dcb_netpdb[EDI]	;Get offset of the PDB
+	TESTL	EBX, pdb_ipsubnetmask[EDX] ;Did he specify the network part?
+	JNE	12$			;Yes
+	MOVL	EAX, pdb_ipaddr[EDX]	;No - use our network address
+	ANDL	EAX, pdb_ipsubnetmask[EDX]
+	ORL	EBX, EAX
+12$:	MOVL	dcb_ipsrmtaddr[EDI], EBX ;Store IP address
+14$:	CALL	xosrcpHashSet#		;Put DCB into the RCP hash table
+	JC	rcpconf			;If error
+	MOVL	ECX, #12t		;Allocate a CONREQ packet
+	MOVB	AL, #RCPP_CONREQ
+	CALL	xosrcpGetPkt#
+	JC	rcpconf			;If no buffer available
+	MOVL	con_bfr[EBP], EBX	;OK
+	MOVL	ESI, dcb_netpdb[EDI]
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	INCL	tpdb_rcpcntpktout[EAX]	;Count the packet
+	ADDL	tpdb_rcpcntbyteout[EAX], #rcp_data+12t
+	MOVL	EAX, pdb_ipmaxpktsz[ESI] ;Get maximum packet size
+	SUBL	EAX, #rcp_data+8
+	XCHGB	AL, AH			;Fix up the byte order
+	MOVL	rcp_data+0[EDX], EAX	;Store in the packet and clear the next
+	MOVL	EAX, dcb_ipstpdb[EDI]	;  2 bytes
+	ADDL	tpdb_rcpseqnumber[EAX], #55555h
+	MOVL	EAX, tpdb_rcpseqnumber[EAX] ;Initialize the sequence number
+	MOVL	dcb_rcpsndsnum[EDI], EAX
+	DECL	EAX
+	MOVL	dcb_rcprcvanum[EDI], EAX
+	MOVL	npb_seqnum[EBX], EAX	;Store it in the header in our normal
+	XCHGB	AL, AH			;  byte order
+	RORL	EAX, #16t		;Reverse the byte order
+	XCHGB	AL, AH			;Store it in the packet in network byte
+	MOVL	rcp_seqnum[EDX], EAX	;  order
+	MOVL	EAX, dcb_rcpkareqtm[EDI] ;Store the keep-alive time
+	XCHGB	AL, AH
+	MOVW	rcp_data+2[EDX], AX
+	CLRL	EAX			;Set acknowledgement number to 0
+	MOVL	dcb_rcprcvsnum[EDI], EAX
+	MOVL	rcp_data+4[EDX], EAX	;Clear the reserved items
+	MOVL	rcp_data+8[EDX], EAX
+	CALL	rcpinittimeouts#	;Set up the time-out values
+	MOVB	dcb_rcpstate[EDI], #RCPS_CRQSNT ;Set connection state
+	MOVB	con_retry[EBP], #RETRY_CON ;Initialize retry counter
+	ANDB	dcb_ipssts1[EDI], #~IPSS1$RROUTE ;Clear removed route flag
+	CALL	rcpsetack#
+	CALL	xosipsSendSetup##	;Finish setting up the IP header
+rcpcon2:MOVL	ESI, dcb_netsdb[EDI]	;Make sure have SDB offset
+	MOVL	EAX, #xosnetOutDone##	;Output the packet
+	CALL	xossnpSendPkt##
+	JC	16$
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EAX, #-1		;Wait here so will see possible ARP
+	MOVL	EDX, EAX		;  errors
+	CALL	xosnetWaitPkt##
+16$:	JC	rcpcone			;If error
+rcpcon4:CMPL	dcb_rcprcvhead[EDI], #0 ;Do we have a response yet?
+	JNE	rcpcon6			;Yes (unusual but not impossible!)
+
+	MOVL	EAX, dcb_rcprxmttime[EDI] ;No - wait for the response
+	CLRL	EDX
+	CALL	xosnetRspWait##
+	JNC	rcpcon6			;If normal
+	MOVL	EBX, con_bfr[EBP]	;Restore pointer to our packet
+	CMPL	EAX, #ER_NORSP		;Time-out error?
+	JNE	rcpcone			;No - fail now
+	DECB	con_retry[EBP]	;Should we do it again?
+	JS	18$			;No
+	MOVL	EAX, dcb_ipstpdb[EDI]	;Yes
+	INCL	tpdb_rcpcntrexmit[EAX]	;Count the retransmission
+	JMP	rcpcon2			;Continue
+
+;Here if have tried enough
+
+18$:	TESTB	npb_sts[EBX], #NPS$USEDARP ;Did we use ARP this time?
+	JNE	20$			;Yes - fail
+	TESTB	dcb_ipssts1[EDI], #IPSS1$RROUTE ;Just to be safe, have we done
+						  ;  this before here?
+	JNE	20$			;Yes - fail!
+	ORB	dcb_ipssts1[EDI], #IPSS1$RROUTE ;No - remember we have now
+	MOVL	EAX, dcb_ipsrmtaddr[EDI] ;Remove this entry from our routing
+	PUSHL	EDI			  ;  table
+	MOVL	ESI, dcb_netsdb[EDI]	;Make sure have SDB offset
+	MOVL	EDI, dcb_netpdb[EDI]
+	MOVB	DL, #0
+	CALL	xosipsRtRmvOne##
+	POPL	EDI
+	MOVL	EBX, con_bfr[EBP]
+	JC	20$			;Forget it if error here
+	CALL	xosnetGiveBufr##	;OK - Give up the buffer
+	CALL	xosrcpHashClr#		;Remove DCB from the hash table
+	JMP	14$			;Go try again
+
+;Here if cannot find destination node
+
+20$:	MOVL	EAX, #ER_NSNOD		;Get error code
+rcpcone:CALL	xosnetGiveBufr##	;Give up our buffer
+rcpconf:MOVB	dcb_rcpstate[EDI], #RCPS_CLOSED ;Indicate idle
+	CALL	xosrcpGiveAll#		;Make sure don't have any buffers
+	PUSHL	EAX
+	CALL	xosrcpHashClr#		;Remove DCB from the hash table
+	CLRL	EAX
+	MOVL	dcb_ipsrmtaddr[EDI], EAX ;Clear remote IP address
+	POPL	EAX
+	STC				;Indicate error
+	LEAVE
+	RET
+.PAGE
+;Here when get a reply to our CONREQ packet
+
+rcpcon6:MOVL	EBX, dcb_rcprcvhead[EDI] ;Get offset of packet
+	CLRL	EDX
+	MOVL	dcb_rcprcvhead[EDI], EDX
+	MOVB	DL, npb_tpofs[EBX]	;Get offset of RCP header
+	ADDL	EDX, EBX
+	MOVL	EAX, rcp_acknum[EDX]	;Get the ACK number
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	CMPL	dcb_rcpsndsnum[EDI], EAX ;Is it right?
+	JNE	4$			;No - discard it
+	MOVL	dcb_rcprcvanum[EDI], EAX ;Yes
+	CMPB	rcp_type[EDX], #RCPP_CONACK ;CONACK?
+	JE	18$			;Yes - go on
+	CMPB	rcp_type[EDX], #RCPP_CONREJ ;CONREJ?
+	JE	10$
+	CMPB	rcp_type[EDX], #RCPP_CONBSY ;CONBSY?
+	JE	8$
+	MOVL	ECX, dcb_ipstpdb[EDI]	;No
+	INCL	tpdb_rcpcntbadhdr[ECX]	;Count this
+2$:	CALL	xosnetGiveBufr##	;And ignore the packet!
+	JMP	rcpcon4			;Continue waiting for a response
+
+;Here if packet is out of sequence
+
+4$:	MOVL	ECX, dcb_ipstpdb[EDI]
+	INCL	tpdb_rcpcntoutseq[ECX]
+	JMP	2$
+
+;Here if have CONBSY - this means the other side has a half open connection -
+;  We send a RSTREQ followed immediately by a retransmission of our CONREQ.
+
+8$:	MOVL	ECX, dcb_ipstpdb[EDI]
+	INCL	tpdb_rcpcntpktout[ECX]
+	ADDL	tpdb_rcpcntbyteout[ECX], #20t
+	CLRL	ECX
+	MOVB	AL, #RCPP_RSTREQ
+	MOVL	ESI, dcb_ipstpdb[EDI]
+	PUSHL	EDI
+	MOVL	EDI, dcb_netpdb[EDI]
+	CALL	rcpsendback#
+	POPL	EDI
+	MOVL	EBX, con_bfr[EBP]	;Restore offset of our CONREQ packet
+	JMP	rcpcon2			;Go send it again
+
+;Here if have CONREJ
+
+10$:	MOVL	EAX, #ER_NCRFS		;Get error code
+12$:	CALL	xosnetGiveBufr##
+14$:	MOVL	EBX, con_bfr[EBP]
+	JMP	rcpcone
+
+;Here with CONREQ as response to our CONREQ
+
+16$:	JMP	2$			;DO THIS SOON!!!
+
+;Here with CONACK as response to our CONREQ
+
+18$:	MOVZWL	EAX, rcp_window[EDX]	;Get window size
+	XCHGB	AL, AH
+	MOVL	dcb_rcpsndwina[EDI], EAX ;Store it
+	MOVL	dcb_rcpsndwinm[EDI], EAX
+	MOVL	EAX, rcp_seqnum[EDX]	;Initialize the remote sequence number
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	INCL	EAX
+	MOVL	dcb_rcprcvsnum[EDI], EAX
+	DECL	EAX
+	MOVL	dcb_rcprcvtnum[EDI], EAX
+	MOVZWL	EAX, rcp_window[EDX]	;Store window value
+	XCHGB	AL, AH
+	MOVL	dcb_rcpsndwina[EDI], EAX
+	MOVL	dcb_rcpsndwinm[EDI], EAX
+	MOVL	EAX, rcp_data[EDX]	;Get maximum packet size and keep-alive
+					;  time
+	XCHGB	AL, AH			;Store maximum packet size
+	MOVW	dcb_rcppktmax[EDI], AX
+	SHRL	EAX, #16t		;Get keep-alive time
+	XCHGB	AL, AH
+	MOVL	dcb_rcpkareqtm[EDI], EAX ;Store keep-alive time
+	TESTL	EAX, EAX		;If don't want keep-alive requests
+	JE	20$
+	ORB	dcb_rcpsts1[EDI], #RCPS1$KASEND ;Indicate should send
+						;  keep-alive requests
+	MOVL	dcb_rcptimecnt[EDI], EAX ;Start the keep-alive timer
+20$:	CALL	xosnetGiveBufr##	;Finished with this packet
+	MOVB	dcb_rcpstate[EDI], #RCPS_CAKRCD ;Update the connection state
+	MOVL	EBX, con_bfr[EBP]
+	CALL	xosnetGiveBufr##
+	CALL	rcpsendacknow#		;Send an ACK
+	CLRL	EAX			;Indicate success
+	MOVL	EDX, con_name[EBP]	;Get pointer to rest of name
+	LEAVE
+	RET
+.PAGE	
+;Subroutine to get value of next network address field
+;	c{EDX} = Offset of address string
+;	CALL	getval
+;	c(AL)  = Stopper character
+;	c(BL)  = Value
+;	c{EDX} = Offset of next character in address string
+
+getval:	MOVB	AL, #0
+2$:	MOVB	BL, SS:[EDX]		;Get character
+	INCL	EDX			;Bump pointer
+	CMPB	BL, #'0'		;Is it a digit?
+	JB	4$			;No
+	CMPB	BL, #'9'
+	JA	4$
+	ANDB	BL, #0Fh		;Yes - get value
+	MULB	lit10			;And add into value for field
+	ADDB	AL, BL
+	JMP	2$
+
+;Here if next character is not a digit
+
+4$:	XCHGB	AL, BL			;Get things in right registers
+	RET				;Return
+.PAGE
+	.SBTTL	sd_close - Close device
+
+;Here for the close device entry
+;	c{ECX} = Close option bits
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of device table entry
+;	CALL	rcpclose
+;	C:set = Error or not ready
+;	  c{EAX} = Error code (0 means not ready)
+;	C:clr = Normal
+
+rcpclose:
+	MOVL	EAX, SS
+	CMPW	AX, dcb_rcpdiscpda[EDI] ;Are we getting the disconnect signal?
+	JNE	2$			;No
+	MOVW	dcb_rcpdiscpda[EDI], #0	;Yes - but not any more
+2$:	CMPL	dcb_opencnt[EDI], #1	;Final close?
+	JE	10$			;Yes
+	CMPL	iorb_parm[ESI], #0	;No - have any device parameters?
+	JE	4$			;No
+	MOVL	EBX, #rcpioparms	;Yes - process parameters
+	MOVL	ECX, #knlComDPParms##
+	IFFAULT	8$
+	LFSL	EDX, iorb_parm[ESI]
+	CALL	knlProcDevParm##
+	JC	6$
+4$:	CLRL	EAX
+6$:	TOFORK				;No
+	JMP	knlCloseFin##
+
+	FAULTHDR
+8$:	MOVL	EAX, #ER_ADRER
+	JMP	6$
+
+;Here if final close
+
+10$:	PUSHL	ESI
+	CALL	sysIoCloseLock##	;Lock the QAB
+	MOVB	iorb_queue[ESI], #dcb_outframe
+	MOVL	iorb_routine[ESI], #rcpclose1
+	JMP	knlXfQueue##		;Switch to extended fork context
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	JMP	16$
+
+;Here in extended fork context
+
+rcpclose1:
+	MOVL	SS:xffTimeOut##, #30000t
+	CMPL	SS:xffParm##+0, #0
+	JE	14$
+	MOVL	EBX, #rcpioparms	;Process parameters
+	MOVL	ECX, #knlComDPParms##
+	IFFAULT	12$
+	LFSL	EDX, SS:xffParm##
+	CALL	knlProcDevParm##
+	JC	16$
+14$:	CLRL	EAX
+16$:	PUSHL	EAX
+	CALL	rcpgivercv#		;Give up any pending receive packets
+	MOVL	dcb_rcprcvwina[EDI], #10t ;Make sure we get the response
+	BTL	SS:xffOption##, #C%KILL	;Want to kill the connection?
+	JC	18$			;Yes
+	MOVL	EAX, SS:xffTimeOut##	;No
+	CALL	xosrcpClear		;Terminate our connection
+	JMP	20$
+
+18$:	CALL	xosrcpKill
+20$:	JNC	22$
+	MOVL	[ESP], EAX
+22$:	POPL	EAX
+	JMP	knlXfCloseFin##		;Go finish up
+.PAGE
+	.SBTTL	xosrcpRmvConWait - Subroutine to remove DCB from connect wait list
+
+;Subroutine to remove DCB from the connect wait list
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpRmvConWait
+
+xosrcpRmvConWait::
+	MOVL	EDX, dcb_ipstpdb[EDI]	;Point to the RCP TPDB
+	LEAL	EBX, tpdb_rcpconhead[EDX] ;Point to head pointer
+20$:	MOVL	ECX, [EBX]		;Get next DCB
+	JREGZ	ECX, 22$		;If no more
+	CMPL	ECX, EDI		;This one?
+	JE	24$			;Yes
+	LEAL	EBX, dcb_rcpconnext[ECX] ;No - advance pointer
+	JMP	20$			;Continue
+
+22$:	CRASH	BCWL			;[Bad CONREQ Wait List]
+
+;Here with DCB
+
+24$:	MOVL	EAX, dcb_rcpconnext[EDI] ;Remove from list
+	MOVL	[EBX], EAX		;Update pointer
+	TESTL	EAX, EAX		;Was this last on the list?
+	JNE	28$			;No - finished since list can't be
+					;  empty now
+	SUBL	EBX, #dcb_rcpconnext	;Assume not only one on list
+	CMPL	tpdb_rcpconhead[EDX], #0 ;Right?
+	JNE	26$			;Yes
+	CLRL	EBX			;No - list is empty now
+26$:	MOVL	tpdb_rcpcontail[EDX], EBX ;Update tail pointer
+28$:	MOVL	dcb_rcpconnext[EDI], #-1
+	RET
+.PAGE
+	.SBTTL	xosrcpPutConWait - Subroutine to put DCB into connect wait list
+
+;Subroutine to put DCB into the connect wait list - also sets connection state
+;  to RCPS_LISTEN
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpPutConWait
+
+xosrcpPutConWait::
+	MOVL	EDX, dcb_ipstpdb[EDI]	;Get offset of the TPDB
+	MOVL	ECX, tpdb_rcpcontail[EDX] ;Get tail of the CONREQ wait list
+	JREGZ	ECX, 2$			;If list is empty
+	MOVL	dcb_rcpconnext[ECX], EDI ;Not empty - link to end of list
+	JMP	4$
+
+2$:	MOVL	tpdb_rcpconhead[EDX], EDI
+4$:	MOVL	tpdb_rcpcontail[EDX], EDI
+	CLRL	EAX
+	MOVL	dcb_rcpconnext[EDI], EAX
+	MOVB	dcb_rcpstate[EDI], #RCPS_LISTEN ;Update connection state
+	RET
+.PAGE
+	.SBTTL	xosrcpAcceptCon - Subroutine to accept connection when CONREQ received
+
+;Subroutine to accept connection when CONREQ received on DCB in the RCPS_LISTEN
+;  state
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpAcceptCon
+;	Z:set = Normal
+;	Z:clr = Cannot accept connection
+;	  c{EAX} = Reason code
+;	  c{EDX} = XOS error code
+
+xosrcpAcceptCon::
+	MOVL	EBX, dcb_rcprcvhead[EDI] ;Get offset of CONREQ packet
+	CLRL	EDX
+	MOVL	dcb_rcprcvhead[EDI], EDX
+	MOVL	dcb_rcprcvhead[EDI], EDX
+	MOVB	dcb_rcpstate[EDI], #RCPS_CAKSNT ;Update connection state
+	MOVZBL	EDX, npb_npofs[EBX]	;Point to IP header in packet
+	MOVL	EAX, ip_srcipaddr[EBX+EDX] ;Get the remote IP address
+	MOVL	dcb_ipsrmtaddr[EDI], EAX
+	MOVZBL	EDX, npb_tpofs[EBX]	;Point to RCP header in packet
+	ADDL	EDX, EBX
+	MOVW	AX, [EDX]		;Get the remote port number
+	MOVW	dcb_ipsrmtport[EDI], AX
+	MOVL	EAX, rcp_seqnum[EDX]	;Get packet sequence number
+	XCHGB	AL, AH			;Fix up the byte order
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	dcb_rcprcvtnum[EDI], EAX
+	INCL	EAX			;Plus one
+	MOVL	dcb_rcprcvsnum[EDI], EAX ;Store as initial receive number
+	MOVL	dcb_rcprcvwina[EDI], #5t ;Initialize receive window amount
+	MOVL	dcb_rcprcvwinm[EDI], #5t
+	MOVZWL	EAX, rcp_window[EDX]	;Initialize send window amount
+	XCHGB	AL, AH
+	MOVL	dcb_rcpsndwina[EDI], EAX
+	MOVL	dcb_rcpsndwinm[EDI], EAX
+	MOVL	EAX, rcp_data+0[EDX]	;Get packet size and keep-alive time
+	XCHGB	AL, AH
+	CMPW	AX, dcb_rcppktmax[EDI]	;Is the packet size acceptable?
+	JA	12$			;No - reject the connection
+	MOVW	dcb_rcppktmax[EDI], AX	;Yes - store maximum packet size
+	SHRL	EAX, #16t		;Get keep-alive time
+	XCHGB	AL, AH
+	ADDL	EAX, EAX		;Times 2
+	JE	1$			;0 is always acceptable
+	CMPL	dcb_rcpkareqtm[EDI], #0	;Must be 0 if we want 0
+	JE	14$
+	CMPL	EAX, dcb_rcpkareqtm[EDI] ;Is it acceptable?
+	JB	14$			;No
+1$:	MOVL	dcb_rcpkareqtm[EDI], EAX
+	MOVB	AL, rcp_data+4[EDX]	;Get RCP protocol version number
+	MOVB	dcb_rcpversion[EDI], AL ;Store it
+	CALL	rcpinittimeouts		;Set up our standard time-outs
+	MOVL	ECX, rcp_data+8t[EDX] ;Get maximum retransmit time and
+	MOVZWL	EAX, CX			;  initial retransmit time
+	TESTL	EAX, EAX
+	JE	2$
+	ADDL	EAX, #TICKPERSP-1
+	CLRL	EDX
+	DIVL	knlLitTICKPERSP##
+	MOVL	dcb_rcprxmtmax[EDI], EAX
+2$:	MOVL	EAX, ECX		;Get initial retransmit time
+	SHRL	EAX, #16t
+	JE	4$
+	ADDL	EAX, #TICKPERSP-1
+	CLRL	EDX
+	DIVL	knlLitTICKPERSP##
+	MOVL	dcb_rcprxmttime[EDI], EAX
+	SHLL	EAX, #3t
+	MOVL	dcb_rcprxmtave[EDI], EAX
+4$:	CALL	xosnetGiveBufr##	;Give up the received packet
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	ADDL	tpdb_rcpseqnumber[EAX], #1000t
+	MOVL	EAX, tpdb_rcpseqnumber[EAX] ;Initialize the sequence number
+	MOVL	dcb_rcpsndsnum[EDI], EAX
+	MOVL	dcb_rcprcvanum[EDI], EAX
+	CMPL	dcb_ipshashnext[EDI], #-1 ;Already in the hash table?
+	JNE	10$			;Yes
+	CALL	xosrcpHashSet#		;No - put DCB into the hash table now
+10$:	CLC
+	RET
+
+;Here if the maximum packet size is not acceptable
+
+12$:	MOVL	EAX, #RCPRSN_SZ2LG
+	MOVL	EDX, #ER_NPS2L
+	JMP	16$
+
+;Here if the keep-alive time is not acceptable
+
+14$:	MOVL	EAX, #RCPRSN_KA2SM
+	MOVL	EDX, #ER_NKA2S
+16$:	CALL	xosnetGiveBufr##	;Give up the received packet
+	STC
+	RET
+.PAGE
+	.SBTTL	xosrcpSendCONACK - Subroutine to send CONACK packet
+
+;Subroutine to send CONACK packet
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpSendCONACK
+
+xosrcpSendCONACK::
+	MOVL	ECX, #12t
+	MOVB	AL, #RCPP_CONACK
+	CALL	xosrcpGetPkt#		;Get a CONACK packet
+	JC	6$			;If can't get one
+	MOVL	npb_dcb[EBX], EDI
+	MOVZBL	ECX, npb_tpofs[EBX]
+	ADDL	ECX, EBX
+	MOVL	EAX, dcb_rcpsndsnum[EDI]
+	MOVL	npb_seqnum[EBX], EAX
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	rcp_seqnum[ECX], EAX
+	MOVL	EAX, dcb_rcpkareqtm[EDI] ;Get keep-alive time
+	SHRL	EAX, #1
+	XCHGB	AL, AH
+	SHLL	EAX, #16t
+	MOVL	EDX, dcb_netpdb[EDI]
+	ORL	EAX, pdb_ipmaxpktsz[EDX] ;Get maximum packet size
+	SUBL	EAX, #rcp_data
+	XCHGB	AL, AH			;Fix up the byte order
+	MOVL	rcp_data+0[ECX], EAX	;Store keep-alive time and maximum
+	CLRL	EAX			;  packet size in the packet
+	MOVL	rcp_data+4[ECX], EAX	;Clear the remaining reserved items
+	MOVL	rcp_data+8[ECX], EAX
+	CALL	rcpsetack#		;Set up acknowlegement stuff in packet
+	CALL	xosipsSendSetup##	;Set up final IP header stuff
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	INCL	tpdb_rcpcntpktout[EAX] ;Count the packet
+	ADDL	tpdb_rcpcntbyteout[EAX], #rcp_data+12t
+	MOVL	EAX, #xosnetGiveBufr##	;Send the packet and then give up the
+	CALL	xossnpSendPkt##		;  buffer (but don't wait)
+	CLC
+6$:	RET
+.PAGE
+	.SBTTL	xosrcpSendCONREJ - Subroutine to send CONREJ packet
+
+;Subroutine to send CONREJ packet
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpSendCONREJ
+
+xosrcpSendCONREJ::
+	PUSHL	EAX
+	MOVL	ECX, #2t
+	MOVB	AL, #RCPP_CONREJ
+	CALL	xosrcpGetPkt#		;Get a CONACK packet
+	POPL	EDX
+	JC	6$			;If can't get one
+	MOVL	npb_dcb[EBX], EDI
+	MOVZBL	ECX, npb_tpofs[EBX]
+	ADDL	ECX, EBX
+	MOVL	EAX, dcb_rcpsndsnum[EDI]
+	MOVL	npb_seqnum[EBX], EAX
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	rcp_seqnum[ECX], EAX
+	XCHGB	DL, DH
+	MOVW	rcp_data[ECX], DX	;Store reason code
+	CALL	rcpsetack#		;Set up acknowlegement stuff in packet
+	CALL	xosipsSendSetup##	;Set up final IP header stuff
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	INCL	tpdb_rcpcntpktout[EAX] ;Count the packet
+	ADDL	tpdb_rcpcntbyteout[EAX], #rcp_data+2t
+	MOVL	EAX, #xosnetGiveBufr##	;Send the packet and then give up the
+	CALL	xossnpSendPkt##		;  buffer (but don't wait)
+	CLC
+6$:	RET
+.PAGE
+	.SBTTL	xosrcpClear - Subroutine to clear RCP connection
+
+;Subroutine to clear RCP connection.  This is a graceful clear - it is done
+;  by sending a RCPSF_KILREQ suppervisory packet and waiting for the other
+;  end to send a RCPP_KILLREQ in reply.  If the KILLREQ is not received in
+;  the interval specified by the value in EAX, a RCPP_KILLREQ packet is sent
+;  anyway.  In this case, an ER_NORSP error is returned.  Must be called in
+;  extended fork context
+;	c{EAX} = Time-out value
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of IDB
+;	CALL	xosrcpClear
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosrcpClear:
+	CMPL	EAX, #60000t
+	JBE	2$
+	MOVL	EAX, #60000t
+2$:	MOVZBL	EDX, dcb_rcpstate[EDI] ;Get connection state
+	JMPIL	CS:clrdsp[EDX*4]	;Dispatch on the state
+
+	.MOD	4
+clrdsp:	.LONG	clridle		;RCPS_CLOSED = 0  - Idle
+	.LONG	clridle		;RCPS_LISTEN = 1  - Waiting for CONREQ
+	.LONG	clrestab	;RCPS_CRQRCD = 2  - CONREQ received
+	.LONG	clrestab	;RCPS_CRQSNT = 3  - CONREQ sent
+	.LONG	clrestab	;RCPS_CAKRCD = 4  - CONACK received
+	.LONG	clrestab	;RCPS_CAKSNT = 5  - CONACK sent
+	.LONG	clrestab	;RCPS_ESTAB  = 6  - Connection established
+	.LONG	clridle		;RCPS_KILREQ = 7  - Supervisory KILREQ sent
+	.LONG	clridle		;RCPS_KILSNT = 8  - KILREQ sent
+	.LONG	clridle		;RCPS_KILACK = 9  - KILACK sent
+	.LONG	clridle		;RCPS_LOST   = 10 - Connection has been lost
+	.LONG	clridle		;RCPS_TIMEWT = 11 - All finished - timing out
+				;		      port
+
+;Here when clearing if already idle or quiet
+
+clridle:CALL	xosrcpGiveAll#		;Make sure don't have any buffers
+	CLRL	EAX
+	RET
+
+;Here when clearing if a connection is established.  We send a RCPSF_KILREQ
+;  supervisory packet and then wait for the other end to send a RCPP_KILLREQ
+;  packet.
+
+clrestab:
+	PUSHL	EAX
+	CALL	xosrcpChkWin		;Wait until window is open
+	JC	10$
+	MOVL	ECX, #5			;Get a 5 byte packet
+	MOVB	AL, #RCPP_SUPER
+	CALL	xosrcpGetPkt#
+	JC	10$
+	MOVB	rcp_data+0[EDX], #RCPSF_CLRREQ ;Store supervisory function
+	MOVL	rcp_data+1[EDX], #RCPKR_REQ<24t ;Store reason
+	CALL	xosrcpSendData#		;Send the packet
+	JC	10$			;If error
+	ORB	dcb_rcpsts1[EDI], #RCPS1$CLRREQ ;Remember this was sent
+6$:	MOVL	EAX, [ESP]
+	CLRL	EDX
+	CALL	rcprspwait#		;Wait for a response
+	JC	10$	
+	TESTB	dcb_rcpsts1[EDI], #RCPS1$CLRRSP
+	JE	6$
+	CLRL	EAX
+10$:	POPL	EDX			;Fix up the stack
+	PUSHL	EAX			;Save the error code
+	CALL	xosrcpKill		;Now try to kill it!
+	JNC	14$
+	MOVL	[ESP], EAX
+14$:	POPL	EAX			;Restore error code
+	BTL	EAX, #31t		;Set C if error
+	RET
+.PAGE
+	.SBTTL	xosrcpKill - Subroutine to Kill an RCP connection
+
+;Subroutine to kill an RCP connection.  This is an immediate kill.  It is done
+;  by sending an RCPP_KILREQ packet.  This will discard any unreceived data
+;  on either end.  Must be called in extended fork context
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of IDB
+;	CALL	xosrcpKill
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosrcpKill:
+	MOVZBL	EAX, dcb_rcpstate[EDI] ;Get connection state
+	JMPIL	CS:killdsp[EAX*4]	;Dispatch on the state
+
+	.MOD	4
+killdsp:.LONG	clridle		;RCPS_CLOSED =  0 - Idle
+	.LONG	clridle		;RCPS_LISTEN =  1 - Waiting for CONREQ
+	.LONG	killestab	;RCPS_CRQRCD =  2 - CONREQ received
+	.LONG	killestab	;RCPS_CRQSNT =  3 - CONREQ sent
+	.LONG	killestab	;RCPS_CAKRCD =  4 - CONREQ received
+	.LONG	killestab	;RCPS_CAKSNT =  5 - CONACK sent
+	.LONG	killestab	;RCPS_ESTAB  =  6 - Connection established
+	.LONG	killestab	;RCPS_CLRREQ =  7 - Supervisory CLRREQ sent
+	.LONG	clridle		;RCPS_KILSNT =  8 - KILREQ sent
+	.LONG	clridle		;RCPS_KILACK =  9 - KILACK sent
+	.LONG	clridle		;RCPS_LOST   = 10 - Connection has been lost
+	.LONG	clridle		;RCPS_TIMEWT = 11 - All finished - timing out
+				;		      port
+
+;Here when killing if a connection is established - we send a KILREQ and then
+;  wait for the reply KILACK
+
+killestab:
+	CALL	xosrcpGiveAll#		;Make sure no buffers allocated
+	MOVB	dcb_rcpstate[EDI], #RCPS_KILSNT ;Update state
+	CLRL	EAX			;Close our receive window
+	MOVL	dcb_rcprcvwina[EDI], EAX
+	MOVL	ECX, #4			;Get a 4 byte packet
+	MOVB	AL, #RCPP_KILREQ
+	CALL	xosrcpGetPkt#
+	JC	8$
+	MOVL	rcp_data[EDX], #RCPKR_REQ<24t ;Store reason
+	CALL	xosrcpSendData#		;Send the packet
+	JC	8$
+6$:	CALL	rcprspwait#		;Wait for a response
+	JC	8$			;If error
+	CMPB	dcb_rcpstate[EDI], #RCPS_TIMEWT
+	JNE	6$			;No - continue waiting
+	JMP	10$			;Yes
+
+;Here if error while sending a KILREQ or waiting for his KILACK
+
+8$:	MOVB	dcb_rcpstate[EDI], #RCPS_TIMEWT ;Indicate almost idle
+
+	CMPL	EAX, #ER_NORSP		;Time-out error?
+	JNE	10$			;No
+	MOVL	EAX, #ER_NCLST		;Yes - get right error code
+10$:	PUSHL	EAX			;Save error code
+	CALL	xosrcpGiveAll#		;Make sure don't have any buffers
+	POPL	EAX
+	BTL	EAX, #31t		;Set C if error
+	RET
+.PAGE
+	.SBTTL	sd_inpblock - Input block
+
+;Here for the input block entry
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	rcpinpblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Amount transfered
+
+$$$=!0
+FRM inp_amount , 4
+inp_SIZE=!$$$
+
+rcpinpblk:
+	PUSHL	ESI
+	CALL	sysIoQabLock##		;Lock the QAB
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	PUSHL	ESI
+	CALL	sysIoReadLock##		;Lock all buffer pages
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	MOVB	iorb_queue[ESI], #dcb_inpframe
+	MOVL	iorb_routine[ESI], #rcpinpblk1
+	JMP	knlXfQueue##		;Switch to extended fork context
+
+2$:	TOFORK
+	RET
+
+;Here if don't really want input
+
+6$:	CLRL	EAX
+8$:	CLRL	ECX
+	MOVL	EBX, #QSTS$DONE
+	RET
+
+;Here in extended fork context
+
+rcpinpblk1:
+	MOVL	SS:xffTimeOut##, #-1	;Default is no time-out
+	CMPL	SS:xffParm##+0, #0	;Have any device parameters?
+	JE	10$			;No
+	MOVL	EBX, #rcpioparms	;Yes - process parameters
+	MOVL	ECX, #knlComDPParms##
+	LFSL	EDX, SS:xffParm##
+	CALL	knlProcDevParm##
+	JC	8$
+10$:	CMPL	SS:xffCount##, #0	;Really want input?
+	JE	6$			;No
+	CALL	xosrcpGetInputPkt	;Yes - get an input packet
+	JC	8$
+	MOVL	EAX, ECX
+	MOVL	ECX, #QSTS$DONE
+	CMPL	EAX, SS:xffCount##	;Bigger than his buffer?
+	JBE	16$			;No
+	ORB	CL, #QSTS$TRUNC		;Yes - indicate truncation
+	MOVL	EAX, SS:xffCount##	;Only give him what fits in his buffer
+16$:	CMPB	rcp_type[EDX], #RCPP_INT ;Interrupt packet?
+	JNE	18$			;No
+	ORB	CL, #QSTS$OOBD		;Yes - tell him that
+18$:	PUSHL	ECX			;Save status bits
+	PUSHL	EAX			;Save amount
+	PUSHL	EDI
+	LESL	EDI, SS:xffBuffer1##	;Get address of his buffer
+	LEAL	ESI, rcp_data[EDX]
+	CMPL	EAX, #4t
+	JBE	20$
+	CLRL	ECX
+	SUBL	ECX, EDI
+	ANDL	ECX, #03
+	SUBL	EAX, ECX
+	RMOVSB	[EDI], [ESI]		;Copy his data from the packet (we do
+	MOVL	ECX, EAX		;  as much as we can as a long-alligned
+	SHRL	ECX, #2t		;  4-byte move)
+	RMOVSL	[EDI], [ESI]
+	ANDL	EAX, #03
+20$:	MOVL	ECX, EAX
+	RMOVSB	[EDI], [ESI]
+	POPL	EDI
+	CALL	xosnetGiveBufr##	;Give up the packet
+	INCL	dcb_rcprcvwina[EDI]	;Open our receive window
+22$:	MOVL	EBX, dcb_rcprcvhead[EDI] ;Have another packet?
+	TESTL	EBX, EBX
+	JE	24$			;No
+	MOVZBL	EDX, npb_tpofs[EBX]	;Yes
+	ADDL	EDX, EBX
+	CMPB	rcp_type[EDX], #RCPP_SUPER ;Is it a supervisory packet
+	JE	26$			;Yes
+24$:	CALL	xosrcpOpenWindow#	;No - open sender's window if need to
+	POPL	ECX			;Restore amount to return
+	POPL	EBX			;Restore status bits
+	CLRL	EAX			;Indicate OK
+	RET				;Finished
+
+;Here if have a supervisory packet
+
+26$:	MOVL	EAX, npb_next[EBX]	;Remove packet from the receive list
+	MOVL	dcb_rcprcvhead[EDI], EAX
+	TESTL	EAX, EAX
+	JNE	28$
+	MOVL	dcb_rcprcvtail[EDI], EAX
+28$:	INCL	dcb_rcprcvwina[EDI]	;Open our receive window
+	CALL	rcpprocsuper#		;Process the supervisory packet
+	JMP	22$			;Continue
+.PAGE
+	.SBTTL	sd_outstring - Output string
+
+;Here for the output string entry
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	rcpoutstr
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Amount transfered
+
+rcpoutstr:
+	PUSHL	ESI
+	CALL	sysIoQabLock##		;Lock the QAB
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	PUSHL	ESI
+	CALL	sysIoStringLock##	;Lock the string pages
+	TESTL	EAX, EAX
+	JNS	4$			;OK - go on
+2$:	TOFORK				;If error
+	RET
+
+	.SBTTL	sd_outblock - Output block
+
+;Here for the output block entry
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	rcpoutblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Amount transfered
+
+rcpoutblk:
+	MOVL	EAX, dcb_netpdb[EDI]	;Get maximum packet size
+	MOVL	EAX, pdb_ipmaxpktsz[EAX]
+	SUBL	EAX, #rcp_data
+	CMPL	iorb_count[ESI], EAX	;Is this packet too big?
+	JA	knlICnDevTF##		;Yes - fail
+	PUSHL	ESI
+	CALL	sysIoQabLock##		;No - lock the QAB
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	PUSHL	ESI
+	CALL	sysIoWriteLock##	;Lock all buffer pages
+	TESTL	EAX, EAX
+	JS	2$			;If error
+4$:	MOVB	iorb_queue[ESI], #dcb_outframe
+	MOVL	iorb_routine[ESI], #rcpoutblk1
+	JMP	knlXfQueue##		;Switch to extended fork context
+
+;Here in extended fork context
+
+rcpoutblk1:
+	MOVL	SS:xffTimeOut##, #-1	;Default is no time-out
+	CMPL	SS:xffParm##, #0	;Have any device parameters?
+	JE	8$			;No
+	MOVL	EBX, #rcpioparms	;Yes - process parameters
+	MOVL	ECX, #knlComDPParms##
+	LFSL	EDX, SS:xffParm##
+	CALL	knlProcDevParm##
+	JC	10$
+8$:	CMPL	SS:xffCount##, #0
+	JE	14$			;If nothing to output
+	MOVL	EAX, SS:xffTimeOut##	;Get time-out value
+	MOVL	EDX, SS:xffTimeOut##+4
+	CALL	xosrcpChkWin#		;Wait if window is closed
+10$:	JC	16$			;If error
+	MOVL	ECX, SS:xffCount##	;Allocate a packet
+	MOVB	AL, #RCPP_DATA
+	CALL	xosrcpGetPkt#
+	JC	16$
+	MOVL	EAX, SS:xffCount##
+	LFSL	ESI, SS:xffBuffer1##	;OK - get address of buffer
+	PUSHL	EDI
+	LEAL	EDI, rcp_data[EDX]
+	PUSHL	DS
+	POPL	ES
+	CMPL	EAX, #8t
+	JBE	12$
+	CLRL	ECX
+	SUBL	ECX, EDI
+	ANDL	ECX, #03
+	SUBL	EAX, ECX
+	RMOVSB	[EDI], FS:[ESI]		;Copy his data to the packet (we do as
+	MOVL	ECX, EAX		;  much as we can as a long-alligned
+	SHRL	ECX, #2t		;  4-byte move)
+	RMOVSL	[EDI], FS:[ESI]
+	ANDL	EAX, #03h
+12$:	MOVL	ECX, EAX
+	RMOVSB	[EDI], FS:[ESI]
+	POPL	EDI
+	CALL	xosrcpSendData#
+	JC	16$
+	CLRL	EAX			;Finished
+	MOVL	ECX, SS:xffCount##
+14$:	MOVL	EBX, #QSTS$DONE
+	RET
+
+16$:	CLRL	ECX
+	JMP	14$
+.PAGE
+	.SBTTL	xosrcpDfltPort - Subroutine to allocate default RCP port
+
+;Subroutine to get default RCP port (which is really a UDP port!)
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpDfltPort
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c[CX] = Port number stored in dcb_ipslclport
+
+xosrcpDfltPort::
+	MOVL	EBX, dcb_ipstpdb[EDI]
+	MOVL	EAX, tpdb_rcpdfltport[EBX] ;Get current default port number
+	LEAL	ECX, 80000000[EAX]	;Set the search bit
+	INCL	EAX			;Increment the number
+	TESTB	AH, #80h		;Check for wrap-around
+	JE	2$
+	MOVL	EAX, #401
+2$:	MOVL	tpdb_rcpdfltport[EBX], EAX
+					;Fall into xosrcpGetPort
+
+	.SBTTL	xosrcpGetPort - Subroutine to allocate an RCP port
+
+;Subroutine to get an RCP port (which is really a UDP port!)
+;	c{ECX} = Desired port number, bit 31 set if should increment number
+;		   if not acceptable, bit 30 set if duplicate number OK (bit 30
+;		   is tested first)
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpGetPort
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c[CX] = Port number stored in dcb_ipslclport
+
+xosrcpGetPort:
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	PUSHL	EAX			;Save the offset of the RCP TPDB
+	MOVL	EAX, tpdb_tpdb[EAX]	;Change it to be the underlying UDP TPDB
+	MOVL	dcb_ipstpdb[EDI], EAX
+	CALL	xosipsGetPort##		;Allocate the port
+	POPL	dcb_ipstpdb[EDI]	;Restore offset of our TPDB
+	RET				;Thats all
+
+	.SBTTL	xosrcpGivePort - Subroutine to give up an RCP port
+
+;Subroutine to give up an RCP port (which is really a UDP port!)
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpGivePort
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c[CX] = Port number stored in dcb_ipslclport
+
+xosrcpGivePort:
+	MOVL	EAX, dcb_ipstpdb[EDI]
+	PUSHL	EAX			;Save the offset of the RCP TPDB
+	MOVL	EAX, tpdb_tpdb[EAX]	;Change it to be the underlying UDP TPDB
+	MOVL	dcb_ipstpdb[EDI], EAX
+	CALL	xosipsGivePort##	;Allocate the port
+	POPL	dcb_ipstpdb[EDI]	;Restore offset of our TPDB
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosrcpGetInputPkt - Subroutine to get next input packet
+
+;Subroutine to get next input packet
+;	c{EDI} = Offset of DCB
+;	CALL	xosrcpGetInputPkt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Offset of packet buffer
+;	  c{ECX} = Length of data part (does not include the RCP header)
+;	  c{EDX} = Offset of start of RCP header
+
+xosrcpGetInputPkt:
+	CMPB	dcb_rcpstate[EDI], #RCPS_ESTAB ;Yes - still have a connection?
+	JE	2$			;Yes
+	CMPB	dcb_rcpstate[EDI], #RCPS_CAKRCD ;Maybe
+	JE	2$			;Yes
+	CMPB	dcb_rcpstate[EDI], #RCPS_CAKSNT ;Maybe
+	JNE	10$			;No
+2$:	MOVL	EBX, dcb_rcprcvhead[EDI] ;Yes - get a received packet
+	TESTL	EBX, EBX		;Do we have one?
+	JNE	4$			;Yes - go on
+	MOVL	EAX, SS:xffTimeOut##	;No - wait until we do
+	MOVL	EDX, SS:xffTimeOut##+4
+	CALL	xosnetRspWait#
+	JNC	xosrcpGetInputPkt	;Check again if OK
+	RET				;Give up if error while waiting
+
+;Here with a packet
+
+4$:	MOVL	EAX, npb_next[EBX]	;Remove packet from the receive list
+	MOVL	dcb_rcprcvhead[EDI], EAX
+	TESTL	EAX, EAX
+	JNE	6$
+	MOVL	dcb_rcprcvtail[EDI], EAX
+6$:	MOVZBL	EDX, npb_tpofs[EBX]
+	MOVL	ECX, npb_count[EBX]	;Get size of the packet
+	SUBL	ECX, EDX
+	ADDL	EDX, EBX		;Get offset of the RCP header
+	SUBL	ECX, #rcp_data
+	JS	14$			;If too small for the header
+	RET
+
+;Here if we have lost our connection
+
+10$:	MOVL	EAX, #ER_NCCLR
+	TESTB	dcb_rcpsts1[EDI], #RCPS1$LOST
+	JE	12$
+	MOVB	AL, #ER_NCLST&0FFh
+12$:	STC
+	RET
+
+;Here if packet is too small - this should have been caught sooner!
+
+14$:	CRASH	RCPS			;[RCP Size error]
+.PAGE
+	DATA
+
+rcpccb::       .LONG 'CCB*'	;RCP CCB
+	       .BLKB ccb_SIZE
+rcptwhead::    .LONG 0		;Head pointer for RCP timer list
+xosrcpTpdbHead:.LONG 0		;Offset of first RCP device DPDB
+temp:	       .BLKB 12t	;Buffer for destination message names
+lit10:         .LONG 10t
+
+	LKEEND

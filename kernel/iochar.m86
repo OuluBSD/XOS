@@ -1,0 +1,1236 @@
+	.TITLE	iochar - Routines to process IO characteristics
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDISK.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXDISK.PAR
+
+	CODE
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;ALL OF THE FOLLOWING IS DEPRECIATED!! SEE IOCHAR2.CX FOR THE NEW STUFF!! ;
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;Here are two different calling sequences supported for the set and get
+;  routines. The old style is deprecated and should not be used in new code.
+;  It will soon go away.
+
+;The old style set subroutine is called as follows for a short numberic value
+;  (8 bytes or less);
+;	c{EDX,EAX} = New value
+;	c{EBX}     = Data value
+;	c{ESI}     = Address of table entry
+;	CALL	setfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  NOTE: Overflow is checked before the set routine is called, and it is not
+;	 called if the data value is too big for the value size specified for
+;	 the parameter.
+
+;The old style set subroutine is called as follows for a long numberic value
+;  (longer than 8 bytes):
+;	c{EBX} = Addres of value
+;	c{ECX} = Length of value
+;	c{EDX} = Data value
+;	c{ESI} = Address of table entry
+;	CALL	setfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  NOTE: Overflow is checked before the set routine is called, and it is not
+;	 called if the data value is too big for the value size specified for
+;	 the parameter.
+
+;The old style set subroutine is called as follows for a long string value:
+;	c{EBX} = Address of new string
+;	c{ECX} = Length of new string (may be 0 if string is null terminated)
+;	c{EDX} = Data value
+;	c{ESI} = Address of table entry
+;	CALL	setfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;The old style get subroutine is called as follows for other than a long
+;  string value:
+;	c{EDX} = Data value
+;	c{ESI} = Offset of table entry
+;	CALL	getfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Value (if value is 8 bytes or less)
+;	  c{EAX}     = Offset of value buffer (if value is more than
+;			 8 bytes)
+;  NOTE: Only as large a value as is specified by the parameter table entry
+;	 need be returned - only this much is stored - if the user's value
+;	 area is longer, it is zero filled
+
+;The old style get subroutine is called as follows for a long string value:
+;	c{EBX} = Address of buffer to receive string
+;	c{ECX} = Length of buffer
+;	c{EAX} = Address of count word
+;	c{EDX} = Data value
+;	c{ESI} = Offset of table entry
+;	CALL	getfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored
+
+;The new style set function is called as follows for short (8 bytes or less)
+;  non-string values:
+;	long setfunc(
+;	    void *db,		// Address of DCB or CCB
+;	    llong value,
+;	    long  data);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+;Long non-string values (more than 8 bytes) cannot be set.
+
+;The new style get function is called as follows for short (8 bytes or less)
+;  non-string values:
+;	long getfunc(
+;	    void *db,		// Address of DCB or CCB
+;	    long  length,	// Length of value
+;	    long  data);	// Data value
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;  returned value is stored in an 8-byte static buffer at tdaCharValue.
+
+;The new style get function is called as follows for long (more than 8 bytes)
+;  non-string values and for string values:
+;	long setfunc(
+;	    void  *db,		// Address of DCB or CCB
+;	    uchar *vaddr,	// Address (in user space) to receive value
+;	    long   vlen,	// Maximum length for value
+;	    long   data)	// Data value
+;  Value returned is the positive length of the value stored (if string value),
+;  0 (if long non-string value) if normal or a negative XOS error code if error.
+
+
+;Function to process characteristics. This function is either called
+;  directory from the "values" dispatch in the characteristics table header
+;  or is called at the end of a device/class dependent "values" function.
+;  It is also called directly to process parameters for addunit routines.
+
+;  The following static arguments are used:
+;	c{tdaBuffer2} = Address of the characteristics list
+;	c{tdaParm}    = Address of the info pointer buffer
+;	c{tdaDcb}     = Address of DCB (device characteristtics only)
+
+;	long sysIoCharValues(
+;	    long  badnm,	// Non-0 if bad names are OK
+;	    CTBL *ctbl);	// Address of the characteristics table
+
+$$$=!0
+FRM iocv_amount, 4
+FRM iocv_cent  , 4
+FRM iocv_ilst  , 4
+FRM iocv_clst  , 4
+iocv_SIZE=!$$$
+
+iocv_badnm=!24t
+iocv_ctbl =!20t
+
+sysIoCharValues::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	iocv_SIZE
+	MOVL	EAX, knlTda+tdaBuffer2#
+	CMPL	EAX, #systembase
+	JAE	cvalae
+	MOVL	iocv_clst[EBP], EAX
+	MOVL	EAX, knlTda+tdaParm#
+	CMPL	EAX, #systembase
+	JAE	cvalae
+	MOVL	iocv_ilst[EBP], EAX
+	MOVL	iocv_amount[EBP], #0
+cval2:	MOVL	EDI, iocv_clst[EBP]
+	IFFAULT	cvalae
+	CMPB	[EDI], #0		;Finished?
+	JE	2$			;Yes
+	PUSHL	iocv_ctbl[EBP]
+	PUSHL	iocv_clst[EBP]
+	LEAL	EAX, iocv_cent[EBP]
+	PUSHL	EAX
+	CALL	findchar		;No - find the next characteristic
+	MOVL	EDI, iocv_clst[EBP]
+	TESTL	EAX, EAX
+	JNS	hvchar			;Go on if found it
+	CMPL	EAX, #ER_CHARN		;Bad name?
+	JNE	cvalerr			;No
+	CMPB	iocv_badnm[EBP], #0	;Yes - is this fatal?
+	JE	cvalerr			;Yes
+	JMP	nxtval
+
+;Here if finished
+
+2$:	MOVL	EAX, iocv_amount[EBP]
+cvaldn:	LEAVE	
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+cbadvl:	MOVL	EAX, #ER_CHARV
+	JMP	cvalerr
+
+cbadsz:	MOVL	EAX, #ER_CHARS
+	IFFAULT	cvalae
+cvalerr:ORB	[EDI], #PAR$ERROR
+	JMP	cvaldn
+
+	FAULTHDR
+cvalae:	MOVL	EAX, #ER_ADRER
+	JMP	cvaldn
+
+;Here with characteristic found - First determine if the requested type is
+;  compatable with the type of the characteristic and fail if not.
+
+hvchar:	MOVL	ESI, iocv_cent[EBP]
+	IFFAULT	cvalae
+	MOVZBL	EAX, [EDI]		;Get description byte
+	ANDL	EAX, #0x0F		;Get description for characteristic
+	MOVZBL	EDX, dct_desc[ESI]
+	ANDL	EDX, #0x0F
+	CMPL	EAX, #REP_DATAS		;String type?
+	SETAE	CL
+	CMPL	EDX, #REP_DATAS
+	SETAE	CH
+	CMPB	CL, CH
+	JNE	cbadvl
+chkinfo:CMPL	iocv_ilst[EBP], #0	;Want the info string?
+	JE	infodn			;No
+
+;Here if want the info string
+
+givinfo:MOVL	EBX, iocv_ilst[EBP] 	;Yes - get pointer to the info list
+	MOVL	ESI, dct_infopnt[ESI]	;Point to string for device
+	TESTL	ESI, ESI		;Is there a string?
+	JNE	18$			;Yes
+	MOVL	ESI, #nullinfo		;No - point to a null string
+18$:	MOVZBL	ECX, [ESI]		;Get length of string
+	IFFAULT	cvalae
+	MOVW	6[EBX], CX		;Give it too him
+	IFFAULT	cvalae
+	CMPW	CX, [EBX]		;Will it fit in his buffer?
+	JB	20$			;Yes
+	IFFAULT	cvalae
+	MOVW	CX, dcv_ibfrlen[EDX]	;No - just give him as much as will
+	DECL	ECX			;  fit
+	JE	24$
+	JS	26$
+20$:	INCL	ESI
+	IFFAULT	cvalae
+	MOVL	EBX, [EBX]		;Get address of his info string buffer
+22$:	LODSB	[ESI]
+	IFFAULT	cvalae
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 22$
+	IFFAULT	cvalae
+24$:	MOVB	[EBX], #0		;Put null at end
+26$:	ADDL	iocv_ilst[EBP], #8t	;Bump his info list pointer
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+
+;Here with the info string stored if necessary
+
+	IFFAULT	cvalae
+infodn:	MOVZBL	EAX, [EDI]		;Get his description byte
+	TESTB	AL, #PAR$SET		;Setting value?
+	JE	getchar2		;No
+	ANDL	EAX, #0x0F		;Yes
+	CMPL	dct_setfunc[ESI], #0	;Do we have a set subroutine?
+	JNE	30$			;Yes - go on
+	MOVL	EAX, #ER_CHARF		;No - fail
+	JMP	cvaldn
+
+30$:	CMPB	AL, #REP_DATAS		;Yes - string value?
+	JAE	setstr			;Yes
+					;No - fall into setnum on next page
+.PAGE
+;Here if setting a non-string value
+
+setnum:	CMPW	dct_length[ESI], #8	;Long value
+	JA	setlong			;Yes
+	IFFAULT	cvalae
+	MOVZBL	EAX, 1[EDI]		;No - is his value too long?
+	CMPL	EAX, #8
+	JA	cbadsz			;Yes - fail
+	JMPIL	getvdsp[EAX*4]		;No - dispatch on the value length
+
+	.MOD	4
+getvdsp:.LONG	cvaln0
+	.LONG	cvaln1
+	.LONG	cvaln2
+	.LONG	cvaln3
+	.LONG	cvaln4
+	.LONG	cvaln5
+	.LONG	cvaln6
+	.LONG	cvaln7
+	.LONG	cvaln8
+
+cvaln0:	CLRL	EAX
+	JMP	4$
+
+	IFFAULT	cvalae
+cvaln1:	MOVZBL	EAX, 10t[EDI]
+	JMP	4$
+
+	IFFAULT	cvalae
+cvaln2:	MOVZWL	EAX, 10t[EDI]
+	JMP	4$
+
+	IFFAULT	cvalae
+cvaln3:	MOVL	EAX, 10t[EDI]
+	ANDL	EAX, #0x00FFFFFF
+	JMP	4$
+
+	IFFAULT	cvalae
+cvaln4:	MOVL	EAX, 10t[EDI]
+4$:	CLRL	EDX
+	JMP	8$
+
+	IFFAULT	cvalae
+cvaln5:	MOVZBL	EDX, 14t[EDI]
+	JMP	6$
+
+	IFFAULT	cvalae
+cvaln6:	MOVZWL	EDX, 14t[EDI]
+	JMP	6$
+
+	IFFAULT	cvalae
+cvaln7:	MOVL	EDX, 14t[EDI]
+	ANDL	EDX, #0x00FFFFFF
+	JMP	6$
+
+	IFFAULT	cvalae
+cvaln8:	MOVL	EDX, 14t[EDI]
+	IFFAULT	cvalae
+6$:	MOVL	EAX, 10t[EDI]
+
+;Here with his value in EDX,EAX. See if it is too big
+
+8$:	MOVZWL	ECX, dct_length[ESI]
+	JMPIL	chkvdsp[ECX*4]
+
+	.MOD	4
+chkvdsp:.LONG	cchkl0
+	.LONG	cchkl1
+	.LONG	cchkl2
+	.LONG	cchkl3
+	.LONG	cchkl4
+	.LONG	cchkl5
+	.LONG	cchkl6
+	.LONG	cchkl7
+	.LONG	cchklok
+
+cchkl0:	TESTL	EAX, EAX
+	JE	cchkl4
+	JMP	cbadsz
+
+cchkl1:	TESTL	EAX, #0xFFFFFF00
+	JE	cchkl4
+	JMP	cbadsz
+
+cchkl2:	TESTL	EAX, #0xFFFF0000
+	JE	cchkl4
+	JMP	cbadsz
+
+cchkl3:	TESTL	EAX, #0xFF000000
+	JNE	cbadsz
+cchkl4:	TESTL	EDX, EDX
+	JE	cchklok
+	JMP	cbadsz
+
+cchkl5:	TESTL	EDX, #0xFFFFFF00
+	JE	cchklok
+	JMP	cbadsz
+
+cchkl6:	TESTL	EDX, #0xFFFF0000
+	JE	cchklok
+	JMP	cbadsz
+
+cchkl7:	TESTL	EDX, #0xFF000000
+	JNE	cbadsz
+cchklok:
+
+	MOVL	EBX, dct_data[ESI]	;Get the data value
+
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CLC
+	CALLI	dct_setfunc[ESI]	;Call the set subroutine
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr			;If error
+	JMP	getchar
+.PAGE
+;Here if setting a long numeric value. This is almost like setting a string
+;  value except that there is not length field to be filled in now or later.
+
+setlong:LEAL	EBX, 10t[EDI]		;Get address of the value
+	IFFAULT	cvalae
+	MOVZBL	ECX, 1[EDI]		;Get length of his string
+	CMPW	CX, dct_length[ESI]
+	JA	cbadsz
+	MOVL	ECX, EAX
+	MOVL	EDX, dct_data[ESI]
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CLC
+	CALLI	dct_setfunc[ESI]	;Call the set subroutine
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr			;If error
+	JMP	getchar
+.PAGE
+;Here if setting a string value. If the "string length" specified is non-0 it
+;  is used. Otherwise it is assumed that the string is null terminated with
+;  a maximum length of the "buffer length" value. If that value is also 0
+;  there is no maximum length.
+
+	IFFAULT	cvalae
+setstr:	MOVL	EBX, 10t[EDI]		;Get address of the string
+	CMPL	EBX, #systembase
+	JAE	cvalae
+	IFFAULT	cvalae
+	MOVZWL	EAX, 16t[EDI]		;Get length of his string
+	TESTL	EAX, EAX
+	JNE	4$			;If it was specified
+	PUSHL	10t[EDI]		;Get the length of the null-terminated
+	MOVZWL	EAX, 14t[EDI]		;  string
+	PUSHL	EAX
+	CALL	sysLibStrNLen#
+	TESTL	EAX, EAX
+	JS	cvalerr
+4$:	MOVZWL	EDX, dct_length[ESI]
+	CMPL	EAX, EDX
+	JA	cbadsz
+	MOVL	ECX, EAX
+	MOVL	EBX, 10t[EDI]
+	MOVL	EDX, dct_data[ESI]
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CLC
+	CALLI	dct_setfunc[ESI]	;Call the set subroutine
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr			;If error
+					;Fall into getchar on next page
+.PAGE
+;Here to get the value of a characteristic
+
+getchar:MOVL	ESI, iocv_cent[EBP]
+	MOVL	EDI, iocv_clst[EBP]
+	IFFAULT	cvalae
+	MOVZBL	EAX, [EDI]
+getchar2:
+	TESTB	AL, #PAR$GET		;Getting value?
+	JE	nxtval			;No
+	ANDL	EAX, #0x0F
+	CMPL	EAX, #REP_DATAS		;Did he give a string value?
+	JAE	getstr			;Yes
+
+;Here to get a numeric value
+
+getnum:	CMPW	dct_length[ESI], #8	;Is it a long value?
+	JA	getlong			;Yes
+	MOVL	EBX, dct_data[ESI]	;No
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CLC
+	CALLI	dct_getfunc[ESI]
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr
+	IFFAULT	cvalae
+	CMPW	dct_length[ESI], #4
+	JA	2$
+	CLRL	EDX
+2$:	MOVZBL	ECX, 1[EDI]
+	CMPL	ECX, #8
+	JB	4$
+	MOVL	ECX, #8
+4$:	JMPIL	cstrdsp[ECX*4]
+
+	.MOD	4
+cstrdsp:.LONG	cstrv0
+	.LONG	cstrv1
+	.LONG	cstrv2
+	.LONG	cstrv3
+	.LONG	cstrv4
+	.LONG	cstrv5
+	.LONG	cstrv6
+	.LONG	cstrv7
+	.LONG	cstrv8
+
+cstrv0:	ORL	EAX, EDX
+	JE	12$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv1:	MOVB	10t[EDI], AL
+	TESTL	EAX, #0xFFFFFF00
+	JE	8$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv2:	MOVW	10t[EDI], AX
+	TESTL	EAX, #0xFFFF0000
+	JE	8$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv3:	MOVW	10t[EDI], AX
+	SHRL	EAX, #16t
+	IFFAULT	cvalae
+	MOVB	12t[EDI], AL
+	TESTL	EAX, #0xFF000000
+	JE	8$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv4:	MOVL	10t[EDI], EAX
+8$:	TESTL	EDX, EDX
+	JE	12$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv5:	MOVB	14t[EDI], DL
+	TESTL	EDX, #0xFFFFFF00
+	JE	10$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv6:	MOVW	14t[EDI], DX
+	TESTL	EDX, #0xFFFF0000
+	JE	10$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv7:	MOVW	14t[EDI], AX
+	SHRL	EAX, #16t
+	IFFAULT	cvalae
+	MOVB	16t[EDI], AL
+	TESTL	EAX, #0xFF000000
+	JE	10$
+	JMP	cbadsz
+
+	IFFAULT	cvalae
+cstrv8:	MOVL	14t[EDI], EDX
+	IFFAULT	cvalae
+10$:	MOVL	10t[EDI], EAX
+	IFFAULT	cvalae
+12$:	MOVZBL	ECX, 1[EDI]		;Is his value bigger than 8 bytes?
+	SUBL	ECX, #8
+	JLE	nxtval			;No
+	ADDL	EDI, #18t		;Yes - zero the excess
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EAX
+	IFFAULT	cvalae
+	RSTOSB	[EDI]
+	JMP	nxtval
+.PAGE
+;Here if getting a long numberic value. In this case the subroutine returns
+;  a pointer to the data to return. We require that his value be at least as
+;  long as the system's value. If it is longer, the excess is zeroed.
+
+	IFFAULT	cvalae
+getlong:MOVZBL	ECX, 1[EDI]
+	CMPW	CX, dct_length[ESI]
+	JB	cbadsz
+	MOVL	EBX, dct_data[ESI]
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CALLI	dct_getfunc[ESI]
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr
+	MOVZBL	EDX, 1[EDI]
+	MOVZWL	ECX, dct_length[ESI]
+	SHRL	ECX, #2
+	MOVL	ESI, EAX
+	ADDL	EDI, #10t
+	PUSHL	DS
+	POPL	ES
+	CLD
+	IFFAULT	cvalae
+	RMOVSL	[EDI], [ESI]
+	MOVL	ESI, iocv_cent[EBP]
+	IFFAULT	cvalae
+	MOVZWL	ECX, dct_length[ESI]
+	SUBL	ECX, EDX
+	JLE	4$
+	CLRL	EAX
+	RSTOSB	[EDI]
+4$:	MOVL	EDI, iocv_clst[EBP]
+	JMP	nxtval
+.PAGE
+;Here if getting a string value. We require that his buffer be at least as long
+;  as the system's value. If it is longer that the value stored, the excess
+;  is not modified.
+
+	IFFAULT	cvalae
+getstr:	MOVZWL	ECX, 14t[EDI]		;Get length of his buffer
+	CMPW	CX, dct_length[ESI]
+	JB	cbadsz
+	MOVL	EBX, 10t[EDI]		;Get address of his buffer
+	LEAL	EAX, 16t[EDI]		;Get address of the count word
+	MOVL	EDX, dct_data[ESI]
+	PUSHL	EBP
+	MOVL	EBP, 0[EBP]
+	MOVL	EDI, knlTda+tdaDcb#
+	CALLI	dct_getfunc[ESI]
+	POPL	EBP
+	MOVL	ESI, iocv_cent[EBP]	;Restore registers
+	MOVL	EDI, iocv_clst[EBP]
+	JC	cvalerr
+	IFFAULT	cvalae
+	MOVW	16t[EDI], CX		;Give him the size
+					;Fall into nxtval on next page
+.PAGE
+	IFFAULT	cvalae
+nxtval:	MOVZBL	EAX, [EDI]
+	ANDL	EAX, #0x0F
+	CMPB	AL, #REP_DATAS
+	JAE	4$			;If this was a string
+	IFFAULT	cvalae
+	MOVZBL	EAX, 1[EDI]
+	ADDL	EAX, #10t
+	ADDL	iocv_clst[EBP], EAX
+	JMP	cval2
+
+;Here if this was a string
+
+4$:	ADDL	iocv_clst[EBP], #18t
+	JMP	cval2
+.PAGE
+;Subroutine to find device characteristic in table for device
+;	
+;	long findchar(
+;	    CTBL  *ctbl,	// Address of the characteristics table
+;	    CLST  *clst,	// Address of user's characteristic item
+;	    CENT **pcent);	// Address of pointer to receive address of
+;				//   table entry
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Offset of characteristic data
+
+$$$=!0
+FRM fndc_name, 8
+fndc_SIZE=!$$$
+
+fndc_ctbl =!16t
+fndc_clst =!12t
+fndc_pcent=!8
+
+findchar:
+	ENTER	fndc_SIZE, 0
+	MOVL	EDX, fndc_clst[EBP]
+	IFFAULT	14$
+	ANDB	[EDX], #~PAR$ERROR	;Clear user's error field
+	ADDL	EDX, #2			;Skip the type and length bytes
+	LEAL	EBX, fndc_name[EBP]
+	CLRL	EAX
+	MOVL	[EBX], EAX		;Clear the name buffer
+	MOVL	4[EBX], EAX
+	MOVL	ECX, #8			;Copy up to 8 name characters
+	IFFAULT	14$
+2$:	MOVB	AL, [EDX]		;Get character
+	INCL	EDX
+	CMPB	AL, #0			;End of name?
+	JE	6$			;Yes
+	CMPB	AL, #'a'		;No - lower case?
+	JB	4$			;No
+	SUBB	AL, #'a'-'A'		;Yes - convert to upper case
+4$:	MOVB	[EBX], AL		;Store character
+	INCL	EBX
+	LOOP	ECX, 2$			;Continue if have more
+6$:	MOVL	EAX, fndc_ctbl[EBP]	;Address of table
+	PUSHL	dch_first[EAX]
+	LEAL	EAX, fndc_name[EBP]	;Address of name buffer
+	PUSHL	EAX
+	CALL	findchar2		;Find the entry
+	TESTL	EAX, EAX
+	JE	12$
+	MOVL	EDX, fndc_pcent[EBP]
+	MOVL	[EDX], EAX
+	CLRL	EAX
+10$:	LEAVE
+	RET	12t
+
+;Here if name was not found
+
+12$:	MOVL	EDX, fndc_clst[EBP]	;Set the error bit in the item
+	IFFAULT	14$
+	ORB	[EDX], #PAR$ERROR
+	MOVL	EAX, #ER_CHARN
+	JMP	10$
+
+;Here if address error
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	10$
+.PAGE
+;Function to find name in a characteritics table
+;	CENT *findchar2(
+;	    CENT *ctbl,		// Address of first characteristics entry
+;	    char  name[8]);	// Address of name to search for (zero filled
+;				//   to 8 bytes)
+;  Value returned is the address of the characteristics entry found or 0 if
+;    none found.
+
+;This is called recursively for indirect tables.
+
+fndc2_ctbl=!8
+fndc2_name=!4
+
+findchar2:
+	MOVL	EAX, fndc2_ctbl[ESP]
+	MOVL	EDX, fndc2_name[ESP]
+	MOVL	EBX, [EDX]
+	MOVL	EDX, 4[EDX]
+2$:	TESTL	EAX, EAX
+	JE	14$
+	TESTB	dct_flags[EAX], #DCTF$INDIR
+	JNE	12$
+	CMPL	EBX, dct_name+0[EAX]	;This name?
+	JNE	6$			;No
+	CMPL	EDX, dct_name+4[EAX]	;Maybe
+	JE	14$			;Yes
+6$:	MOVL	EAX, dct_next[EAX]	;No - advance to next entry
+	JMP	2$
+
+;Here if have indirect entry
+
+12$:	PUSHL	EAX
+	PUSHL	dct_table[EAX]
+	PUSHL	fndc2_name+8[ESP]
+	CALL	findchar2
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	20$			;Not in this table - continue with the
+					;  previous
+14$:	RET	8			;Found it
+
+20$:	MOVL	EAX, EDX
+	JMP	6$
+.PAGE
+	.SBTTL	knlDcGetClass - Subroutine to get class name
+
+;Subroutine to get class name for a device
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSetClass
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX,EAX} = Class name
+
+knlDcGetClass::
+	MOVL	EDX, dcb_ccb[EDI]
+	MOVL	EAX, ccb_name+0[EDX]
+	MOVL	EDX, ccb_name+4[EDX]
+	CLC
+	RET
+
+	.SBTTL	knlDcSetClass - Subroutine to "set" class name
+
+;Subroutine to "set" class name for a device - this really verifies the class
+;  name
+;	c{EDX,EAX} = Class name
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSetClass
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlDcSetClass::
+	MOVL	EBX, dcb_ccb[EDI]
+	CMPL	EAX, ccb_name+0[EBX]
+	JNE	2$
+	CMPL	EDX, ccb_name+4[EBX]
+	JE	4$
+2$:	MOVL	EAX, #ER_IDEVC
+	STC
+4$:	RET
+.PAGE
+	.SBTTL	knlDcGet1Byte - Subroutine to get 1 byte value from the DCB
+
+;Subroutine to get 1 byte device characteristic value from the DCB
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGet1Byte
+;	c{EDX,EAX} = Value
+
+knlDcGet1Byte::
+	MOVZBL	EAX, [EDI+EBX]
+	CLRL	EDX
+	RET
+
+	.SBTTL	knlDcGet2Byte - Subroutine to get 2 byte value from the DCB
+
+;Subroutine to get 2 byte device characteristic value from the DCB
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGet2Byte
+;	c{EDX,EAX} = Value
+
+knlDcGet2Byte::
+	MOVZWL	EAX, [EDI+EBX]
+	CLRL	EDX
+	RET
+
+	.SBTTL	knlDcGet4Byte - Subroutine to get 4 byte value from the DCB
+
+;Subroutine to get 4 byte device characteristic value from the DCB
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGet4Byte
+;	c{EDX,EAX} = Value
+
+knlDcGet4Byte::
+	MOVL	EAX, [EDI+EBX]
+	CLRL	EDX
+	RET
+
+	.SBTTL	knlDcGet8Byte - Subroutine to get 8 byte value from the DCB
+
+;Subroutine to get 8 byte device characteristic value from the DCB
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGet1Byte
+;	c{EDX,EAX} = Value
+
+knlDcGet8Byte::
+	MOVL	EAX, [EDI+EBX]
+	MOVL	EDX, 4.B[EDI+EBX]
+	CLC
+	RET
+
+	.SBTTL	knlDcGetLong - Subroutine to get more than 8 byte value from the DCB
+
+;Subroutine to get more than 8 byte device characteristic value from the DCB
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGetLong
+;	c{EAX} = Offset of first byte of value
+
+knlDcGetLongDcb::
+	ADDL	EBX, EDI
+knlDcGetLong::
+	MOVL	EAX, EBX		;Get offset of value in right register
+	CLC
+	RET
+.PAGE
+
+;Subroutine to get BCD version number as string value
+;	c{EAX} = 16-bit value
+;	c{EBX} = Address of user's buffer
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGetBCDVer
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored
+
+; String stored is of the form:
+;	xx.yy
+; Where xx is taked from the high order byte and yy is taken from the low
+;   order byte.
+; The minimum size for the value must be at least 6 (This is NOT checked!)
+
+knlDcGetBCDVer::
+	MOVL	ECX, #4
+	MOVL	EDX, EAX
+	SHRL	EAX, #12t
+	ANDL	EAX, #0x0F
+	JE	4$
+	ADDL	EAX, #'0'
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL
+	INCL	EBX
+	INCL	ECX
+4$:	MOVL	EAX, EDX
+	SHRL	EAX, #8t
+	ANDL	EAX, #0x0F
+	ADDL	EAX, #'0'
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL
+	IFFAULT	knlRtnAdrEr#
+	MOVB	1[EBX], #'.'
+	MOVL	EAX, EDX
+	SHRL	EAX, #4t
+	ANDL	EAX, #0x0F
+	ADDL	EAX, #'0'
+	IFFAULT	knlRtnAdrEr#
+	MOVB	2[EBX], AL
+	MOVL	EAX, EDX
+	ANDL	EAX, #0x0F
+	ADDL	EAX, #'0'
+	IFFAULT	knlRtnAdrEr#
+	MOVB	3[EBX], AL
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4[EBX], #0
+	CLRL	EAX
+	RET
+
+;Subroutine to get string device characteristic value from the DCB
+;	c{EBX} = Address of user's buffer
+;	c{EDX} = Offset of string in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcGetStr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored
+
+knlDcGetStr::
+	ADDL	EDX, EDI		;Get offset of string
+	JMP	knlGetSysStr#		;Go give it to him
+
+;Subroutine to set string device characteristic value in the DCB
+;	c{EBX} = Address of user's buffer
+;	c{EDX} = Offset of string in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSetStr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored
+
+knlDcSetStr::
+	ADDL	EDX, EDI		;Get offset of string
+	JMP	knlSetSysStr#		;Go store it in the DCB
+.PAGE
+	.SBTTL	knlDcSet1Byte - Subroutine to set 1 byte value in the DCB
+
+;Subroutine to set 1 byte device characteristic value in the DCB
+;	c{EDX,EAX} = Value
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSet1Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlDcSet1Byte::
+	CMPL	EAX, #0FFh		;Make sure valid value
+	JA	4$.S
+	TESTL	EDX, EDX
+	JNE	4$.S
+	MOVB	[EDI+EBX], AL		;OK - store new value
+	RET
+
+;Here if bad value
+
+4$:	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+
+	.SBTTL	knlDcSet2Byte - Subroutine to set 2 byte value in the DCB
+
+;Subroutine to set 2 byte device characteristic value in the DCB
+;	c{EDX,EAX} = Value
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSet2Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlDcSet2Byte::
+	CMPL	EAX, #0FFFFh		;Make sure valid value
+	JA	4$.S
+	TESTL	EDX, EDX
+	JNE	4$.S
+	MOVL	[EDI+EBX], EAX		;OK - store new value
+	RET
+
+	.SBTTL	knlDcSet4Byte - Subroutine to set 4 byte value in the DCB
+
+;Subroutine to set 4 byte device characteristic value in the DCB
+;	c{EDX,EAX} = Value
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSet4Byte
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlDcSet4Byte::
+	TESTL	EDX, EDX		;Make sure valid value
+	JNE	4$.S
+	MOVL	[EDI+EBX], EAX		;OK - store new value
+	CLC
+	RET
+
+	.SBTTL	knlDcSetLongDcb - Subroutine to set longer than 8 byte value in the DCB
+
+;Subroutine to set longer than 8 byte device characteristic value in the DCB
+;  - value is in knlTdaCharValue
+;	c{EBX} = Offset of value in DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlDcSetLong
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlDcSetLongDcb::
+	ADDL	EBX, EDI
+knlDcSetLong::
+	MOVZBL	ECX, dct_length.B[ESI]	;Get length of value
+	MOVL	EDI, EBX		;Get offset to receive value
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, #knlTda+tdaCharValue#
+	CLD
+	RMOVSB	[EDI], [ESI]		;Copy value
+	RET
+.PAGE
+;Subroutine to see if characteristic or parameter value is "YES" or "NO"
+;	c{EAX} = First 4 characters of value
+;	c{EDX} = Second 4 characters of value
+;	CALL	knlGetYesNo
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = Value was "Y" or "YES"
+;	  Z:clr = Value was "N" or "NO"
+
+knlGetYesNo::
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	sysLibStr8ToUpper#
+	CMPL	EAX, #'YES'		;Want to set the bit?
+	JE	4$.S			;Yes
+	CMPL	EAX, #'Y'		;Maybe
+	JE	4$.S
+	CMPL	EAX, #'NO'		;No - want to clear it?
+	JE	2$.S			;Yes
+	CMPL	EAX, #'N'
+	JNE	6$.S			;No - say bad value!
+2$:	TESTL	EAX, EAX		;Yes - clear Z to indicate "NO"
+4$:	RET
+
+6$:	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+.PAGE
+	.SBTTL	knlGetDcVal1 - Subroutine to search table for device characteristics value
+
+;Subroutine to search table for device characteristics value using tight table
+;  - comparison is on the first character only or on the entire value - format
+;  of each table is entry is an 8 byte name only
+;	c{EBX}     = Offset of table
+;	c{ECX}     = Number of entries in table
+;	c{EAX,EDX} = Name (8 bytes)
+;	CALL	knlGetDcVal1
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Table index
+;	  c{EBX} = Offset of matching entry
+
+knlGetDcVal1::
+	PUSHL	EBX
+2$:	CMPB	AL, [EBX]		;Check first character
+	JE	6$			;If match
+4$:	ADDL	EBX, #8			;Not match - bump pointer
+	LOOP	ECX, 2$			;Continue if more to check
+	POPL	EBX
+	MOVL	EAX, #ER_CHARV		;Not found - report bad parameter value
+	STC
+	RET
+
+;Here with match on first character
+
+6$:	CMPB	AH, #0			;More than one character given?
+	JE	8$			;No - success
+	CMPL	EAX, [EBX]		;Yes - check it all
+	JNE	4$
+	CMPL	EDX, 4[EBX]
+	JNE	4$			;Different - continue if more to check
+8$:	POPL	EAX			;Restore original table offset
+	SUBL	EAX, EBX		;Calculate index
+	NEGL	EAX
+	SHRL	EAX, #3
+	RET				;Return success
+.PAGE
+	.SBTTL	knlGetDcVal2 - Subroutine to search table for device characteristics value
+
+;Subroutine to search table for device characteristics value using table with
+;  values - comparison is on the first character only or on the entire value
+;  - format of each table is entry is 8 byte name followed by 4 byte value
+;	c{EBX}     = Offset of table
+;	c{ECX}     = Number of entries in table
+;	c{EAX,EDX} = Name (8 bytes)
+;	CALL	knlGetDcVal2
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Value
+;	  c{EBX} = Offset of matching entry
+
+knlGetDcVal2::
+	CMPB	AL, [EBX]		;Check first character
+	JE	6$			;If match
+4$:	ADDL	EBX, #12t		;Not match - bump pointer
+	LOOP	ECX, knlGetDcVal2	;Continue if more to check
+	MOVL	EAX, #ER_CHARV		;Not found - report bad parameter value
+	STC
+	RET
+
+;Here with match on first character
+
+6$:	CMPB	AH, #0			;More than one character given?
+	JE	8$			;No - success
+	CMPL	EAX, [EBX]		;Yes - check it all
+	JNE	4$
+	CMPL	EDX, 4[EBX]
+	JNE	4$			;Different - continue if more
+8$:	MOVL	EAX, 8[EBX]		;Get value
+	RET				;Return success
+.PAGE
+	.SBTTL	knlGetDcName - Subroutine to search table for device characteristics name
+
+;Subroutine to search table for device characteristics name given its value
+;	c{EBX} = Offset of table
+;	c{ECX} = Number of entries in table
+;	c{EAX} = Value
+;	CALL	knlGetDcName
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX,EDX} = Name
+;	  c{EBX}     = Offset of matching entry
+
+knlGetDcName::
+	CMPL	EAX, 8[EBX]		;Check value
+	JE	6$			;If match
+	ADDL	EBX, #12t		;Not match - bump pointer
+	LOOP	ECX, knlGetDcName	;Continue if more to check
+4$:	MOVL	EAX, #ER_CHARV		;Not found - report bad parameter value
+	STC
+	RET
+
+;Here with match on value
+
+6$:	MOVL	EAX, [EBX]		;Get name
+	MOVL	EDX, 4[EBX]
+	RET				;Return success
+.PAGE
+;Subroutine to get "Yes" as a text value
+
+knlDcGetYES::
+	MOVL	EAX, #'Yes'
+	CLRL	EDX
+	RET
+
+;Subroutine to get "No" as a text value
+
+knlDcGetNO::
+	MOVL	EAX, #'No'
+	CLRL	EDX
+	RET
+
+;Subroutine to return a null string for a device characteristic
+
+;	c{EBX} = Address of buffer
+;	c{ECX} = Size of buffer
+;	CALL	knlGetNullS
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = 0;
+
+knlGetDcNullS::
+	JREGZ	ECX, 4$
+	MOVB	[EBX], #0
+4$:	CLRL	ECX
+	RET
+
+	.SBTTL	Data
+
+	  .MOD	4
+nullvalue:  .LONG 0, 0, 0, 0
+
+;Define some commonly used device characteristic information strings
+
+knlDcMsgOpenCnt:: CHARINFO  {Number of times device opened}
+knlDcMsgAccess::  CHARINFO  {System access class}
+knlDcMsgManufctr::CHARINFO  {Manufacturer}
+knlDcMsgProduct:: CHARINFO  {Product}
+knlDcMsgModel::   CHARINFO  {Device model}
+knlDcMsgSerialNm::CHARINFO  {Serial number or other data}
+knlDcMsgRevision::CHARINFO  {Revision}
+knlDcMsgUnit::    CHARINFO  {Unit number}
+knlDcMsgUnitType::CHARINFO  {Unit type}
+knlDcMsgUnitDesp::CHARINFO  {Unit description}
+knlDcMsgClass::   CHARINFO  {Device class}
+knlDcMsgType::    CHARINFO  {Device type}
+knlDcMsgConDesp:: CHARINFO  {Controller description}
+knlDcMsgIoReg::   CHARINFO  {Base IO register number}
+knlDcMsgMemReg::  CHARINFO  {Base memory register address}
+knlDcMsgInt::     CHARINFO  {Interrupt request number}
+knlDcMsgDma::     CHARINFO  {DMA channel number}
+knlDcMsgIndex::   CHARINFO  {Index or unit number on controller}
+knlDcMsgTimeOut:: CHARINFO  {Time-out period (in seconds)}
+knlDcMsgByteOut:: CHARINFO  {Number of bytes output}
+knlDcMsgByteIn::  CHARINFO  {Number of bytes input}
+knlDcMsgWTMax::   CHARINFO  {Write transfer limit}
+knlDcMsgRAMax::   CHARINFO  {Maximum read-ahead blocks}
+knlDcMsgDTHLimit::CHARINFO  {Data transfer hardware limit}
+knlDcMsgTDataErr::CHARINFO  {Total number of data errors}
+knlDcMsgHDataErr::CHARINFO  {Number of hard data errors}
+knlDcMsgHungErr:: CHARINFO  {Number of device time-outs}
+knlDcMsgTOvrnErr::CHARINFO  {Total number of DMA overrun errors}
+knlDcMsgHOvrnErr::CHARINFO  {Number of hard DMA overrun errors}
+knlDcMsgTDevErr:: CHARINFO  {Total number of device errors}
+knlDcMsgHDevErr:: CHARINFO  {Number of hard device errors}
+knlDcMsgPciSlot:: CHARINFO  {PCI slot number}
+knlDcMsgPciBus::  CHARINFO  {PCI bus number}
+
+nullinfo:.BYTE 0
+
+	END

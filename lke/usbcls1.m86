@@ -1,0 +1,1386 @@
+	.TITLE	usbcls1 - USB class driver for XOS
+
+;*--------------------------------------------------------------------------*
+;* USBCLS.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;* 07/26/93(brn) - Cloned from NETCLS
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This device class provides the low level interface to the USB controler. The
+;  USB class devices provide 3 services:
+;	1. Provide information to any program using device characteristics.
+;	2. Provide the interface between the low level drivers and USBCTL
+;	     (the USB control symbiont)
+;	3. Provide data transport for other device classes (clients) which
+;	     support links to USB physical devices.
+;  The data transfer functions supported by the USB class devices are limited
+;    to those needed to support USBCTL.  These are:
+;	1. Control transfers.
+;	2. Interrupt transfers (input only).
+;    Each USB class device (which corresponds to a single USB controller)
+;    supports a single pipe for bidirectional control transfers and any
+;    number of input only interrupt transfer pipes.
+;    All other data transfer functions are supported only by calls used by
+;    the various client drivers.
+
+;This file contains the general class implimentation and the routines that
+;  implement the USB class devices.
+
+;These routines have only a limited knowledge of the high level structure of
+;  a USB device. Most of this is kept track of by USBCTL in user mode. These
+;  routines mainly know about connected USB devices at the USB interface level
+;  and about pipes used to talk to the various device functions. It does NOT
+;  know explicidly about interfaces or configurations. It does keep track of
+;  the pipes created by a client. Any number of clients can be connected to
+;  a single device, normally one per supported interface, although some
+;  devices (such as mass storeage devices) support an additional level of
+;  multiplexing under the interface level. In one sense there is no real
+;  "connection" kept track of for a pipe. A pipe simply defines an address
+;  (USB bus address plus the end-point number) used to send and receive
+;  messages.
+
+;USBCTL keeps a USB class device open for each USB controller (USBn: device)
+;  with a status change signal set up. When it get a signal indicating a
+;  newly connected USB device, it uses this USBn: device to enumerate the
+;  device. Based on the information obtained from the device, For each
+;  interface it will load a driver (if necessary) and add a unit to support
+;  the device. All of the information needed to configure the device is
+;  provided by USBCTL based on the values obtained during enumeration. The
+;  actual creation of the pipe(s) needed is done by the client driver by
+;  calling xosusbLinkToDev and also calling xosusbToPipe for each pipe needed.
+
+;When a USB device is removed, USBCTL response to the status change signal
+;  by issueing a DISCONNECT special device function specifying the global
+;  port number for the device. This then calles the "removed" callback for
+;  each client connected to that global port. Each client must do whatever
+;  is needed to make the XOS device immediately invisible to new requests
+;  and to terminate current requests as quickly as possible. Before returning
+;  it must call xosusbUnlinkFromDevBgn. When all possible references to the
+;  USB device have been eliminated, but no sooner than 20ms, it must call
+;  xosusbUnlinkFromDevFin. Most device will delay on the order of 0.5 to 1
+;  second to ensure that all possible refrences have been handled.
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSUSB.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXUSB.PAR
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	USBCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosusbCcb
+	.EXPORT	xosusbCheckPktMax
+	.EXPORT	xosusbCheckPort
+	.EXPORT	xosusbCheckSpeed
+	.EXPORT	xosusbGet1Byte
+	.EXPORT xosusbGet2Byte
+	.EXPORT	xosusbGet4Byte
+	.EXPORT	xosusbGetDcb
+	.EXPORT	xosusbGetSpeed
+	.EXPORT	xosusbGetYesNo
+	.EXPORT	xosusbMsgIInActI
+	.EXPORT	xosusbMsgIInReqI
+	.EXPORT	xosusbLinkIcb
+	.EXPORT	xosusbMakeIcb
+	.EXPORT	xosusbMsgBlkMax
+	.EXPORT	xosusbMsgBIPipes
+	.EXPORT	xosusbMsgBOPipes
+	.EXPORT	xosusbMsgBusAddr
+	.EXPORT	xosusbMsgCPipes
+	.EXPORT	xosusbMsgDevice
+	.EXPORT	xosusbMsgEP0Max
+	.EXPORT	xosusbMsgGPort
+	.EXPORT	xosusbMsgIntrf
+	.EXPORT	xosusbMsgIIPipes
+	.EXPORT	xosusbMsgIOPipes
+	.EXPORT	xosusbMsgMnftr
+	.EXPORT xosusbMsgNumPorts
+	.EXPORT xosusbMsgPortAct
+	.EXPORT xosusbMsgPortCon
+	.EXPORT	xosusbMsgPortLow
+	.EXPORT	xosusbMsgProd
+	.EXPORT	xosusbMsgRelease
+	.EXPORT	xosusbMsgSerNm
+	.EXPORT	xosusbMsgSpeed
+	.EXPORT	xosusbMsgSIPipes
+	.EXPORT	xosusbMsgSOPipes
+	.EXPORT	xosusbMsgUsbSpec
+	.EXPORT	xosusbMsgVendor
+	.EXPORT	xosusbNewInterface
+	.EXPORT	xosusbNextUnit
+	.EXPORT	xosusbPortSignal
+	.EXPORT	xosusbRtnSpeed
+	.EXPORT	xosusbSet4Byte
+
+
+;This device class implements the low-level raw interface to the USB
+; interface.
+
+	.SBTTL	SVC dispatch table for USB class devices
+
+;SVC dispatch table for USB class devices
+
+	CODE
+
+usbdsp:	.LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	usbcleardcb	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	usbopen		;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDevP1##	;sd_findfile = 16 - Find file
+	.LONG	knlIFnDevP1##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDevP1##	;sd_rename   = 24 - Rename file
+	.LONG	usbinpblk	;sd_inblock  = 28 - Input block
+	.LONG	usboutblk	;sd_outblock = 32 - Output block
+	.LONG	knlIFnDev##	;sd_getiosts = 36 - Get input/output status
+	.LONG	usbspecial	;sd_special  = 40 - Special device function
+	.LONG	0		;sd_close    = 44 - Close file
+	.LONG	0		;sd_getlabel = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+USBDSPSZ=!{$-usbdsp}/4
+
+;Class function dispatch table for USB class devices
+
+	.LONG	CLSFMX
+usbcls:	.LONG	0		;CF_ADDUNIT =  8 - Add unit
+	.LONG	usbunitinfo	;CF_PUNITS  =  9 - Get information about
+				;                    physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 10 - Get information about active
+				;                    units
+CLSFMX=!{$-usbcls}/4
+.PAGE
+;Device characteristics tables for USB devices are defined in the USB
+;  interface driver modules
+
+;Class characteristics tables for the USB device class
+
+	.MOD	4
+usbcctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  NUMBER , DECV, , 4, msgnumber , knlGetSysVal##, 0             , usbdcbnum
+ CHARENT  MAXIMUM, DECV, , 4, msgmaximum, knlGetSysVal##, knlSetSysVal##, usbdcbmax
+ CHARENT  LIMIT  , DECV, , 4, msglimit  , knlGetSysVal##, knlSetSysVal##, usbdcblmt
+ CHAREND
+
+msgnumber:  CHARINFO  {Number of in use USB devices}
+msgmaximum: CHARINFO  {Maximum number of in use USB devices}
+msglimit:   CHARINFO  {Maximum number of USB devices allowed}
+
+usbmsgblkout:     CHARINFO  {Nmbr of blocks output}
+usbmsgbyteout:    CHARINFO  {Nmbr of bytes output}
+usbmsgblkin:      CHARINFO  {Nmbr of blockss input}
+usbmsgbytein:     CHARINFO  {Nmbr of bytes input}
+usbmsgparerr:     CHARINFO  {Nmbr of parity errors}
+xosusbMsgNumPorts:CHARINFO  {Nmbr of ports}
+xosusbMsgPortCon: CHARINFO  {Port connection status}
+xosusbMsgPortAct: CHARINFO  {Port active status}
+xosusbMsgPortLow: CHARINFO  {Port low speed status}
+xosusbMsgBusAddr: CHARINFO  {USB bus address}
+xosusbMsgIIPipes: CHARINFO  {Nmbr of interrupt input pipes}
+xosusbMsgIOPipes: CHARINFO  {Nmbr of interrupt output pipes}
+xosusbMsgBIPipes: CHARINFO  {Nmbr of bulk xfer input pipes}
+xosusbMsgBOPipes: CHARINFO  {Nmbr of bulk xfer output pipes}
+xosusbMsgCPipes:  CHARINFO  {Nmbr of control pipes}
+xosusbMsgSIPipes: CHARINFO  {Nmbr of isoc. input pipes}
+xosusbMsgSOPipes: CHARINFO  {Nmbr of isoc. output pipes}
+xosusbMsgBlkMax:  CHARINFO  {Max pkt size for bulk xfers}
+xosusbMsgEP0Max:  CHARINFO  {Max pkt size for endpoint 0}
+xosusbMsgIInReqI::CHARINFO  {Requested interrupt input interval}
+xosusbMsgIInActI::CHARINFO  {Actual interrupt input interval}
+xosusbMsgGPort:   CHARINFO  {Global port}
+xosusbMsgSpeed:   CHARINFO  {USB bus speed}
+xosusbMsgIntrf:   CHARINFO  {Interface number}
+xosusbMsgVendor:  CHARINFO  {Vendor code}
+xosusbMsgDevice:  CHARINFO  {Device code}
+xosusbMsgRelease: CHARINFO  {Release code}
+xosusbMsgMnftr:   CHARINFO  {Manufacturer string}
+xosusbMsgProd:    CHARINFO  {Product string}
+xosusbMsgSerNm:   CHARINFO  {Serial number string}
+xosusbMsgUsbSpec: CHARINFO  {USB specification release}
+.PAGE
+;Device parameter table for USB: opens
+
+	.MOD	4
+;Device parameter table for UDB: IO operations
+
+	.LONG	PARMMAX		;Size of table
+usbioparms:
+	.LONG	usbiogenparms	 ;IOPAR_xxxxxx = 0x00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 0x01xx - File system IO
+				 ;			    parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 0x02xx - Terminal IO parameters
+PARMMAX=!{$-usbioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+usbiogenparms:
+	.LONG	0		;	        = 0x0000
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN = 0x0001
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC = 0x0002
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS   = 0x0003
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM  = 0x0004
+	.LONG	knlIopGlbId##	;IOPAR_GLBID    = 0x0005
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPN   = 0x0006
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT  = 0x0007
+	.LONG	0		;IOPAR_INPSTS   = 0x0008
+	.LONG	0		;IOPAR_OUTSTS   = 0x0009
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT  = 0x000A
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT  = 0x000B
+	.LONG	usbsigvect1	;IOPAR_SIGVECT1 = 0x000C
+	.LONG	0		;IOPAR_SIGVECT2 = 0x000D
+	.LONG	usbsigdata	;IOPAR_SIDATA   = 0x000E
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPN   = 0x000F
+	.LONG	knlIopBufrLmt##	;IOPAR_BUFRLMT  = 0x0010
+PARMGENMAX=!{$-usbioparms}/4
+
+;Device dependent parameter table for USB: IO operations
+
+	.LONG	1
+usbddparms:
+	.LONG	usbdd0parms
+
+	.LONG	PARMDD0MAX
+usbdd0parms:
+	.LONG	knlIoparClass##	;IOPAR_CLASS        = 0x8000 - Device class
+	.LONG	usbaddress	;IOPAR_USB_ADDRESS  = 0x8001 - Specify address
+	.LONG	usbendpoint	;IOPAR_USB_ENDPNT   = 0x8001 - Specify endpoint
+	.LONG	usbpktsize	;IOPAR_USB_PKTSIZE  = 0x8003 - Transfer size
+	.LONG   usbxfertype	;IOPAR_USB_XFERTYPE = 0x8004 - Transfer type
+	.LONG	usbxferspeed	;IOPAR_USB_XFERSPD  = 0x8005 - Transfer speed
+	.LONG	usbsetup	;IOPAR_USB_SETUP    = 0x8006 - Setup token
+				;			         contents				;			       limit
+	.LONG	usbpktrate      ;IOPAR_USB_PKTRATE  = 0x8007 - Packet rate
+	.LONG	usbintlimit	;IOPAR_USB_INTLIMIT = 0x8008 - Interrupt buffer
+				;			         limit
+PARMDD0MAX=!{$-usbdd0parms}/4
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	initusb
+
+initusb:PUSHL	#xosusbCcb
+	CALL	sysIoNewClass##		;Create the USB class
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #xcodetop#
+	CLRL	EAX
+10$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	xosusbNewInterface - Subroutine to register low level USB driver
+
+;Subroutine to register low level USB driver - must be called with the
+;  exec memory resource
+;	c{EBX} = Name of driver (4 characters)
+;	c{EDX} = Offset of addunit subroutine
+;	CALL	xosusbNewInterface
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosusbNewInterface:
+	MOVL	EAX, fusbdrv
+2$:	TESTL	EAX, EAX
+	JE	6$
+	CMPL	4[EAX], EBX
+	JE	4$
+	MOVL	EAX, [EAX]
+	JMP	2$
+
+;Here if interface is defined
+
+4$:	MOVL	EAX, #ER_TYPAD
+	STC
+	RET
+
+;Here if interface not already defined
+
+6$:	MOVL	ECX, #12t
+	CALL	knlGetXMem##		;Get memory for the driver data block
+	JC	8$			;If error
+	MOVL	4[EDI], EBX		;OK - store name
+	MOVL	8[EDI], EDX		;Store offset of addunit subroutine
+	MOVL	EAX, fusbdrv		;Link into list of USB drivers
+	MOVL	[EDI], EAX
+	MOVL	fusbdrv, EDI
+	CLRL	EAX			;Make sure C is clear and return 0
+8$:	RET
+.PAGE
+xosusbGet1Byte:
+	ADDL	EBX, dcb_usbicb[EDI]
+	MOVZBL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+xosusbGet2Byte:
+	ADDL	EBX, dcb_usbicb[EDI]
+	MOVZWL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+xosusbGet4Byte:
+	ADDL	EBX, dcb_usbicb[EDI]
+	MOVL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+xosusbGetYesNo:
+	ADDL	EBX, dcb_usbicb[EDI]
+	CMPB	[EBX], #0
+	MOVL	EAX, #'Yes'
+	JNE	4$
+	MOVL	EAX, #'No'
+4$:	RET
+
+xosusbSet4Byte:
+	ADDL	EBX, dcb_usbicb[EDI]
+	MOVL	[EBX], EAX
+	CLC
+	RET
+.PAGE
+	.SBTTL	usbunitinfo - USB class get phyical unit information function
+
+;Here for the get physical unit information class function (CL_PUNITS) for the
+;  USB class
+;	c{EBX} = Offset of CCB
+;	c{ESI} = Offset of IORB
+;	CALL	usbunitinfo
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+;  A zero count (tdaCount) requests that the number of units only be returned
+;    in qab_amount.  A non-zero count indicates that a buffer is available for
+;    that many unit names (8 characters each, null padded).
+
+usbunitinfo::
+	MOVL	EAX, #ER_NIYT
+	CLRL	EAX
+	MOVL	EBX, #QSTS$DONE
+ret002:	RET
+.PAGE
+	.SBTTL	xosusbMakeIcb - Subroutine to create USB ICB
+
+;Subroutine to create USB interface control block (ICB) - must be called
+;  with the exec memory resource
+;	c{EAX} = Unit number
+;	c{EBX} = Type name
+;	c{ECX} = Size of ICB
+;	c{EDX} = Offset of device characteristics table for USB: device
+;	c{ESI} = Base IO register
+;	CALL	xosusbMakeIcb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Address of ICB just created
+
+xosusbMakeIcb::
+	PUSHL	EAX			;Save unit number
+	PUSHL	EBX			;Save type name
+	PUSHL	EDX			;Save device characteristics offset
+	PUSHL	ESI
+	CALL	knlGetXMem##		;Allocate exec memory for the ICB
+	MOVL	ESI, EDI
+	POPL	EDI
+	POPL	ECX			;Restore device characteristics offset
+	POPL	EBX			;Restore type name
+	POPL	EDX			;Restore unit number
+	JC	ret002			;If error
+	MOVL	icb_label[ESI], #'ICB*'
+	MOVL	icb_typename[ESI], EBX ;Store type name
+	MOVL	icb_devchar[ESI], ECX	;Store device characteristics offset
+	MOVL	icb_unit[ESI], EDX	;Store unit number
+	MOVL	icb_ioreg[ESI], EDI
+	LEAL	EBX, icb_name+3[ESI]	;Construct unit name
+	MOVL	EAX, #'USB'
+	MOVL	-3[EBX], EAX
+	MOVL	EAX, EDX
+	CALL	knlPutDecNmbr##
+	MOVL	ECX, #icb_next
+	MOVL	EDX, #usbfirsticb
+					;Fall into xosusbLinkIcb on next page
+.PAGE
+	.SBTTL	xosusbLinkIcb - Subroutine to link an ICB into an ICB list
+
+;Subroutine to link an ICB into an ICB list
+;	c{ESI} = Offset of ICB
+;	c{ECX} = Offset of link pointer in ICB
+;	c{EDX} = Offset of ICB list head pointer (tail pointer must be next)
+;	CALL	xosusbLinkIcb
+;	C:clr always
+
+xosusbLinkIcb:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EAX, icb_unit[ESI]	;Get this unit number
+	MOVL	EDI, EDX
+4$:	MOVL	EBX, [EDI]
+	TESTL	EBX, EBX
+	JE	8$
+	CMPL	EAX, icb_unit[EBX]
+	JB	6$
+	LEAL	EDI, [EBX+ECX]
+	JMP	4$
+
+;Here with place to insert this ICB
+
+6$:	MOVL	[ESI+ECX], EBX
+	JMP	10$
+
+;Here to insert ICB at end of list
+
+8$:	MOVL	4[EDX], ESI
+10$:	MOVL	[EDI], ESI
+	POPL	EBX
+	POPL	EDI
+	CLC
+	RET
+.PAGE
+	.SBTTL	xosusbGetDcb - Subroutine to allocate USB DCB
+
+;Subroutine to allocate USB DCB
+;	c{ESI} = Address of ICB
+;	CALL	xosusbGetDcb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Address of USB DCB allocated (all other registers are
+;		     preserved)
+
+xosusbGetDcb::
+	PUSHL	EDX
+	MOVL	EDX, usbdcbnum
+	CMPL	EDX, usbdcblmt
+	JAE	10$
+	PUSHL	ECX
+	PUSHL	icb_name+12t[ESI]	;Get the device name
+	PUSHL	icb_name+8[ESI]
+	PUSHL	icb_name+4[ESI]
+	PUSHL	icb_name+0[ESI]
+	MOVL	EDX, ESP
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	EDX
+	PUSHL	#DS$PHYS
+	PUSHL	#-dcb_usbINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JS	6$
+	PUSHL	EDI
+	PUSHL	#xosusbCcb
+	CALL	sysIoLinkDcb##
+	INCL	usbdcbnum
+	MOVL	EAX, usbdcbnum
+	CMPL	EAX, usbdcbmax
+	JB	4$
+	MOVL	usbdcbmax, EAX
+4$:	POPL	ECX
+	POPL	EDX
+	MOVL	dcb_sdisp[EDI], #usbdsp ;Store offset of SVC dispatch table
+	MOVL	EAX, icb_typename[ESI]	;Copy type name
+	MOVL	dcb_typename[EDI], EAX
+	MOVL	EAX, icb_devchar[ESI]	;Copy offset of device characteristics
+	MOVL	dcb_devchar[EDI], EAX	;  table of interface device
+	MOVL	EAX, icb_unit[ESI]	;Store unit number in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVL	dcb_usbicb[EDI], ESI	;Store ICB offset in the DCB
+	MOVL	dcb_usbintlimit[EDI], #32t ;Store default interrupt buffer limit
+	MOVB	dcb_usbspeed[EDI], #XFERSPEED_FULL
+	CLC				;Make sure C is clear
+	RET
+
+;Here if error allocating the DCB
+
+6$:	POPL	ECX
+	POPL	EDX
+	STC
+	RET
+
+;Here if no USB DCB is available
+
+10$:	MOVL	EAX, #ER_TMDVC		;Error = Too Many DVices open for
+	POPL	EDX			;  class
+	STC
+	RET
+.PAGE
+;Device check routine for USB devices
+;	long usbdevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 1 if found a match, 0 if no match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+devc_name  =!12t
+devc_path  =!8
+devc_rtndcb=!4
+
+usbdevchk:
+	MOVL	EDX, usbfirsticb	;Point to first USB ICB
+	TESTL	EDX, EDX
+	JE	6$			;If none at all
+	MOVL	ECX, devc_name[ESP]
+2$:	MOVL	EAX, icb_name[EDX]	;Does name match?
+	CMPL	[ECX], EAX
+	JNE	4$
+	MOVL	EAX, icb_name+4[EDX]	;Does name match?
+	CMPL	4[ECX], EAX
+	JNE	4$
+	MOVL	EAX, icb_name+8[EDX]
+	CMPL	8[ECX], EAX
+	JNE	4$
+	MOVL	EAX, icb_name+12t[EDX]	;Does name match?
+	CMPL	12t[ECX], EAX
+	JE	10$			;Yes - this is it!
+4$:	MOVL	EDX, icb_next[EDX]	;No - try next
+	TESTL	EDX, EDX
+	JNE	2$			;Continue if another
+6$:	CLRL	EAX			;No found - return 0
+8$:	RET	12t
+
+;Here with match on name
+
+10$:	CMPL	devc_rtndcb[ESP], #0
+	JE	12$
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, EDX
+	CALL	xosusbGetDcb		;Get a USB DCB
+	MOVL	EDX, EDI
+	POPL	ESI
+	POPL	EDI
+	JC	8$			;If error
+	MOVL	knlTda+tdaDcb##, EDX
+12$:	MOVL	EAX, #1
+	JMP	8$
+.PAGE
+;Here for the clear DCB entry
+
+usbcleardcb:
+	PUSHL	EDI
+	MOVL	EDI, knlTda+tdaDcb##
+	DECL	usbdcbnum		;Reduce in-use count
+	MOVL	ECX, dcb_usbicb[EDI]	;Was this the control DCB?
+	CMPL	icb_ctldcb[ECX], EDI
+	JNE	4$			;No
+	MOVL	icb_ctldcb[ECX], #0	;Yes - but not any more!
+4$:	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	POPL	EDI
+	RET
+.PAGE
+	.SBTTL	usbsigvect1 - Routine to process IOPAR_SIGVECT1 parameter
+
+;Routine to process IOPAR_SIGVECT1 parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbsigvect1
+
+	DPARMHDR  SET, HEXV
+usbsigvect1:
+	CALL	knlGetParm##		;Get the value
+	JC	4$			;If error
+	CMPL	EAX, #255t
+	JA	knlBadValue##
+	MOVB	dcb_usbsigvect[EDI], AL
+	MOVL	EAX, knlTda+tdaPda##
+	MOVL	dcb_usbsigpda[EDI], EAX
+	CLC
+	RET
+
+	.SBTTL	usbsigdata - Routine to process IOPAR_SIGDATA parameter
+
+;Routine to process IOPAR_SIGDATA parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbsigdata
+
+	DPARMHDR  SET, HEXV
+usbsigdata:
+	CALL	knlGetParm##		;Get the value
+	JC	4$			;If error
+	MOVL	dcb_usbsigdata[EDI], EAX
+4$:	RET
+.PAGE
+	.SBTTL	usbaddress - Routine to process IOPAR_USB_ADDRESS parameter
+
+;Routine to process IOPAR_USB_ADDRESS parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbaddress
+
+	DPARMHDR  SET, HEXV
+usbaddress:
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbaddr[EDI], AL
+	RET
+
+	.SBTTL	usbendpoint - Routine to process IOPAR_USB_ENDPOINT parameter
+
+;Routine to process IOPAR_USB_ENDPOINT parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbendpoint
+
+	DPARMHDR  SET, HEXV
+usbendpoint:
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbendpnt[EDI], AL
+	RET
+
+	.SBTTL	usbpktsize - Routine to process IOPAR_USB_PKTSIZE parameter
+
+;Routine to process IOPAR_USB_PKTSIZE parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbpktsize
+
+	DPARMHDR  SET, HEXV
+usbpktsize:
+	CALL	knlGetParm##
+	JC	10$
+	MOVL	dcb_usbpktsize[EDI], EAX
+	RET
+
+	.SBTTL	usbxfersz - Routine to process IOPAR_USB_XFERTYPE parameter
+
+;Routine to process IOPAR_USB_XFERTYPE parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbxfertype
+
+	DPARMHDR  SET, HEXV
+usbxfertype:
+	CALL	knlGetParm##
+	JC	10$
+	CMPB	dcb_usbxfertype[EDI], #0 ;Can only change this once!
+	JE	4$
+	CMPB	dcb_usbxfertype[EDI], AL
+	JNE	knlBadValue##
+	RET
+
+4$:	TESTB	AL, AL
+	JE	knlBadValue##
+	CMPB	AL, #4
+	JA	knlBadValue##
+	MOVB	dcb_usbxfertype[EDI], AL
+	CLC
+	RET
+
+	.SBTTL	usbxferspeed - Routine to process IOPAR_USB_XFERSPD parameter
+
+;Routine to process IOPAR_USB_XFERSPD parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbxferspeed
+
+	DPARMHDR  SET, HEXV
+usbxferspeed:
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbspeed[EDI], AL
+	RET
+
+	.SBTTL	usbsetup - Routine to process IOPAR_USB_SETUP parameter
+
+;Routine to process IOPAR_USB_SETUP parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbsetup
+
+	DPARMHDR  SET, HEXV
+usbsetup:
+	CMPL	ECX, #8
+	JNE	knlBadParmS##
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbhvsetup[EDI], #1
+	MOVL	dcb_usbsetup+0[EDI], EAX
+	MOVL	dcb_usbsetup+4[EDI], EDX
+10$:	RET
+
+	.SBTTL	usbpktrate - Routine to process IOPAR_USB_PKTRATE parameter
+
+;Routine to process IOPAR_USB_PKTRATE parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbpktrate
+
+	DPARMHDR  SET, HEXV
+usbpktrate:
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbpktrate[EDI], AL
+	CLC
+	RET
+
+	.SBTTL	usbintlimit - Routine to process IOPAR_USB_INTLIMIT parameter
+
+;Routine to process IOPAR_USB_INTLIMIT parameter
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	usbintlimit
+
+	DPARMHDR  SET, HEXV
+usbintlimit:
+	CALL	knlGetParm##
+	JC	10$
+	MOVB	dcb_usbintlimit[EDI], AL
+	RET
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry (sd_open)
+;	long usbopen(
+;	    char *spec);
+
+opn_spec=!4
+
+usbopen:CMPL	knlTda+tdaParm##+0, #0
+	JE	4$
+	PUSHL	#usbioparms		;Process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	opndn			;If error
+4$:	MOVL	EAX, usbdcbnum
+	CMPL	EAX, usbdcblmt
+	JAE	20$
+	INCL	EAX
+	CMPL	usbdcbmax, EAX
+	JAE	6$
+	MOVL	usbdcbmax, EAX
+6$:	MOVL	usbdcbnum, EAX
+	MOVL	EAX, opn_spec[ESP]
+	CMPL	[EAX], #'***'
+	JNE	8$
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_usbicb[EDX]
+	CMPL	icb_ctldcb[EAX], #0
+	JNE	18$
+	MOVL	icb_ctldcb[EAX], EDX
+8$:	CLRL	EAX
+opndn:	RET	4
+
+18$:	MOVL	EAX, #ER_BUSY
+	JMP	opndn
+
+;Here if have too many USB devices open
+
+20$:	MOVL	EAX, #ER_TMDVC
+	JMP	opndn
+.PAGE
+	.SBTTL	sd_inpblock - Input block
+
+;Here for the sd_inpblock entry - input block
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	usbinpblk
+;	c{EAX} = Error code
+;	c{ECX} = Amount output
+;	c{EBX} = Status bits
+
+;This can be used for either interrupt input or control input. Only one type
+;  of input is allowed per device. This is determined by the IOPAR_USB_XFERTYPE
+;  IO parameter value on the first transfer after the device is opened.  After
+;  the first transfer, the value of this parameter is ignored.  Also, if the
+;  device is doing interrupt input, the IOPAR_USB_ADDRESS, IOPAR_USB_ENDPNT,
+;  IOPAR_USB_XFERSPD, and IOPAR_USB_PKTRATE values are also ignored after the
+;  first transfer. Devices doing control input can freely change all values
+;  except the IOPAR_USB_XFERTYPE parameter. If desired, the first transfer can
+;  be null (0 length) to initialize these values without doing any IO.
+
+;This is intended to be used by USBCTL when initializing devices (control
+;  input) and when managing hubs (interrupt input).
+
+;For interrupt input, each inblock call posts one read request. The only
+;  difference in the way interrupt input and control input is handled is
+;  in how the request is scheduled by the controller. Once the interrupt
+;  request conpletes no more interrupt input will be done for the device
+;  until another inblock call is executed. Normally this function is only
+;  used by USBCTL to get status bits from hubs. USBCTL will post another read
+;  request immediately when one completes. The device will see continuous
+;  interrupts requests at the requested rate, assuming USBCTL can keep up.
+;  If it can't keep up it does not mater since that means we would not be
+;  able to process status changes any faster anyway.
+
+usbinpblk:
+	MOVL	knlTda+tdaTimeOut##, #ST_SECOND * 3
+	MOVL	knlTda+tdaTimeOut##+4, #0
+	CMPL	knlTda+tdaParm##+0, #0
+	JE	4$
+	PUSHL	#usbioparms		;Process parameters
+	PUSHL	#usbddparms
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	finerr			;If error
+4$:	MOVB	dcb_usbinput[EDI], #PCB$XT_INPUT
+doctrl:	CMPL	knlTda+tdaCount##, #0	;Really want to do input?
+	JNE	5$
+	CMPB	dcb_usbxfertype[EDI], #USB_XFERTYPE_CNTRL
+	JNE	12$
+	CMPB	dcb_usbhvsetup[EDI], #0
+	JE	12$			;No
+5$:	CMPL	dcb_usbclb[EDI], #0	;Have we set up our pipe yet?
+	JNE	10$			;Yes - go on
+
+;Here if this is the first transfer for this device - allocate a CLB and
+;  a PCB
+
+	MOVZBL	EAX, dcb_usbxfertype[EDI] ;Check the transfer type value
+	CMPB	AL, #USB_XFERTYPE_CNTRL
+	JE	6$
+	CMPB	AL, #USB_XFERTYPE_INT
+	JNE	badxvl
+	CMPL	knlTda+tdaCount##, #0
+	JNE	badxvl
+6$:	CMPB	dcb_usbendpnt[EDI], #0x0F
+	JA	badxvl
+					;Link to ourselves (this creates a CLB)
+	PUSHL	EDI			;Address of CDB (in this case, our DCB)
+	MOVZBL	EAX, dcb_punit[EDI]	;Global port (in this case this is
+	PUSHL	EAX			;  just the USB controller unit number)
+	MOVZBL	EAX, dcb_usbaddr[EDI]	;USB bus address for device
+	PUSHL	EAX
+	MOVZBL	EAX, dcb_usbspeed[EDI]	;Device speed
+	PUSHL	EAX
+	PUSHL	#0			;No status callback function
+	LEAL	EAX, dcb_usbclb[EDI]	;Place to store address of CLB
+	PUSHL	EAX
+	CALL	xosusbLinkToDev#
+	TESTL	EAX, EAX
+	JS	finerr			;If error
+					;Create a pipe to use
+	PUSHL	dcb_usbclb[EDI]		;Address of CLB
+	MOVB	AL, dcb_usbendpnt[EDI]
+	CMPB	dcb_usbxfertype[EDI], #USB_XFERTYPE_CNTRL
+	JE	8$
+	ORB	AL, #PCB$XT_INT
+8$:	PUSHL	EAX			;Transfer type + end-point
+	PUSHL	dcb_usbpktsize[EDI]	;Maximum packet size
+	LEAL	EAX, dcb_usbpcb[EDI]	;Place to store address of PCB
+	PUSHL	EAX
+	CALL	xosusbCreatePipe#
+	TESTL	EAX, EAX
+	JS	14$			;If error
+
+;Here with a link to the low level USB device
+
+10$:	MOVL	ESI, dcb_usbpcb[EDI]	;Use his current values
+	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL
+	JNE	badxvl
+	MOVL	EDX, pcb_clb[ESI]
+	MOVZBL	EAX, dcb_usbspeed[EDI]
+	MOVB	clb_speed[EDX], AL
+	MOVZBL	EAX, dcb_usbaddr[EDI]
+	MOVB	clb_addr[EDX], AL
+	MOVZBL	EAX, dcb_usbendpnt[EDI]
+	ORB	AL, dcb_usbinput[EDI]
+	MOVB	pcb_endpnt[ESI], AL
+	MOVL	EAX, dcb_usbpktsize[EDI]
+	MOVL	pcb_maxpkt[ESI], EAX
+	PUSHL	EDI			;Address of DCB
+	PUSHL	ESI			;Address of PCB
+	PUSHL	dcb_usbsetup+4[EDI]	;Setup data
+	PUSHL	dcb_usbsetup+0[EDI]
+	PUSHL	knlTda+tdaBuffer1##	;Address of data buffer
+	PUSHL	knlTda+tdaCount##	;Length of data buffer
+	PUSHL	#0			;Address of callback function
+	PUSHL	#knlTda+tdaCount##	;Address to receive data count
+	PUSHL	knlTda+tdaTimeOut##+4	;Timeout value
+	PUSHL	knlTda+tdaTimeOut##+0
+	CALL	xosusbControl#
+	TESTL	EAX, EAX
+	JS	finerr
+	MOVL	EAX, knlTda+tdaCount##
+	MOVL	knlTda+tdaAmount##, EAX
+12$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+;Here error creating a pipe
+
+14$:	PUSHL	EAX
+	PUSHL	dcb_usbclb[EDI]
+	CALL	xosusbUnlinkFromDevBgn#
+	MOVL	dcb_usbclb[EDI], #0
+	POPL	EAX
+	JMP	finerr
+
+;Here if bad transfer value
+
+badxvl:	MOVL	EAX, #ER_VALUE
+finerr:	MOVL	knlTda+tdaError#, EAX
+	JMP	12$
+.PAGE
+usboutblk:
+	MOVL	EBX, dcb_usbicb[EDI]	;Is this the control DCB?
+	CMPL	icb_ctldcb[EBX], EDI
+	JNE	knlIFnDev##		;No - can't do output!
+	MOVL	knlTda+tdaTimeOut##, #ST_SECOND * 3
+	MOVL	knlTda+tdaTimeOut##+4, #0
+	CMPL	knlTda+tdaParm##+0, #0
+	JE	4$
+	PUSHL	#usbioparms		;Process parameters
+	PUSHL	#usbddparms
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	finerr			;If error
+4$:	MOVB	dcb_usbinput[EDI], #0
+	JMP	doctrl
+.PAGE
+	.SBTTL	USB IO callback function
+.IF NE 0
+
+;USB IO callback function - Called when a device driver function completes
+;  for a USB class device
+;	void callback(
+;		PCB *pcb,	// Address of PCB for pipe
+;		DCB *dcb,	// Address of our DCB
+;		long fnc,	// Callback function
+;		long error,	// Error code
+;		long amount);	// Actual amount transfered
+
+cbf_pcb   =!32t
+cbf_dcb   =!28t
+cbf_fnc   =!24t
+cbf_error =!20t
+cbf_amount=!16t
+
+callback:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	EDI, cbf_dcb[EBP]
+	MOVL	EAX, cbf_amount[EBP]
+	MOVL	dcb_usbamount[EDI], EAX
+	MOVZBL	EDX, cbf_fnc[EBP]
+	CMPL	EDX, #4
+	JA	badcbk
+	JMPIL	cbkdsp[EDX*4]
+
+	.MOD	4
+cbkdsp:	.LONG	badcbk
+	.LONG	inpdone		;CCBF_INPDONE
+	.LONG	outdone		;CCBF_OUTDONE
+	.LONG	inpdone		;CCBF_INTDATA
+	.LONG	endit
+
+inpdone:PUSHL	EDI
+	PUSHL	cbf_error[EBP]
+	CALL	sysIoResumeInput##
+	JMP	6$
+
+outdone:PUSHL	EDI
+	PUSHL	cbf_error[EBP]
+	CALL	sysIoResumeOutput##
+6$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	20t
+
+endit:	CRASH	????
+
+badcbk:	CRASH	BDCB		;[Bad Callback]
+
+.ENDC
+
+.PAGE
+	.SBTTL	sd_special - Special device function
+
+;Here for the special device function entry
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of IORB
+;	CALL	usbspecial
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+
+usbspecial:
+	MOVL	EBX, dcb_usbicb[EDI]	;Is this the control DCB?
+	CMPL	icb_ctldcb[EBX], EDI
+	JNE	knlIFnDev##		;No - can't do this!
+	MOVL	knlTda+tdaTimeOut##, #3*ST_SECOND ;Default time-out is 3 seconds
+	MOVL	knlTda+tdaTimeOut##+4, #0
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	6$			;No
+	PUSHL	#usbioparms		;Yes - process parameters
+	PUSHL	#usbddparms
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	spcerr
+6$:	MOVL	ESI, dcb_usbicb[EDI]
+	MOVL	EBX, icb_disp[ESI]
+	MOVL	EAX, knlTda+tdaOption##	;Get function and data
+	MOVZBL	ECX, AL
+	CMPL	ECX, #6t
+	JA	knlIFnDev##
+	SHRL	EAX, #8t
+	JMPIL	spcdsp[ECX*4]
+
+	.MOD	4
+spcdsp:	.LONG	spcstart	;SDF_USB_START       = 0 - Start controller
+	.LONG	spcstop		;SDF_USB_STOP        = 1 - Stop controller
+	.LONG	spcstatus	;SDF_USB_STATUS      = 2 - Request status
+	.LONG	spcresetport	;SDF_USB_RESETPORT   = 3 - Reset port
+	.LONG	spcenableport	;SDF_USB_ENABLEPORT  = 4 - Enable port
+	.LONG	spcdisableport	;SDF_USB_DISABLEPORT = 5 - Disable port
+	.LONG   spcdisconnect	;SDF_USB_DISCONNECT  = 6 - Notify disconnected
+				;                            clients
+spcstart:
+	PUSHL	EDI
+	CALLI	usb_start[EBX]
+	JMP	spcdone
+
+spcstop:
+	PUSHL	EDI
+	CALLI	usb_stop[EBX]
+	JMP	spcdone
+
+spcresetport:
+	PUSHL	EDI
+	PUSHL	EAX
+	CALLI	usb_resetport[EBX]
+	JMP	spcdone
+
+spcenableport:
+	PUSHL	EDI
+	PUSHL	EAX
+	CALLI	usb_enableport[EBX]
+	JMP	spcdone
+
+spcdisableport:
+	PUSHL	EDI
+	PUSHL	EAX
+	CALLI	usb_disableport[EBX]
+spcdone:TESTL	EAX, EAX
+	JS	spcerr
+spcdn2:	INCL	knlTda+tdaAmount##
+10$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+;Here if error
+
+spcerr:	MOVL	knlTda+tdaError##, EAX
+	JMP	10$
+.PAGE
+;Here for the SDF_USB_STATUS function.
+
+;NOTE: The status signal is posted to the process which requested status
+;      signals, not the process issueing this call (unless they are the
+;      same, of course).
+
+spcstatus:
+	MOVL	ESI, dcb_usbicb[EDI]
+	LEAL	EDX, icb_portsts+2[ESI]
+	MOVL	EDI, #1
+4$:	TESTW	[EDX], #USBPS$PCS	;Is this port connected?
+	JE	8$			;No	
+	PUSHL	EDX			;Yes
+	TOFORK
+	PUSHL	ESI			;Address of ICB
+	PUSHL	EDI			;Port number
+	MOVZWL	EAX, [EDX]
+	PUSHL	EAX			;Status bits
+	CALL	xosusbPortSignal
+	FROMFORK
+	POPL	EDX
+8$:	ADDL	EDX, #2
+	INCL	EDI
+	CMPL	EDI, icb_numports[ESI]
+	JLE	4$
+	JMP	spcdn2
+.PAGE
+;Here for the SDF_USB_DISCONNECT function. This function does not do any
+;  IO. It calls all clients using the specified global port at their "removed"
+;  callback function. Each device MUST call xosusbUnlinkFromDevBgn before
+;  returning. Each device MUST also eventually call xosusbUnlinkFromDevFin
+;  once all possibility of references of any USB data structures by the
+;  client have been eliminated. Any attempt to start IO on a pipe ater
+;  xosusbUnlinkFromDevBgn has been called will fail with an ER_DVRMV error
+;  but will not cause any harm to the system. The client must ensure that no
+;  new references will be made. Any attempt to reference the PDB in any way
+;  after xosusbUnlinkFromDevFin has been called will probably crash the
+;  system. The "removed" callback function must remove the XOS device from
+;  the system such that an immediate attempt to recreate the device will
+;  work. Any associated data blocks may persist as long as necessary to an
+;  orderly clean-up but must not be generally visible to the system.
+
+
+;;;;It is the responsibity of each client link driver to
+;  immediately cease all USB access. All current transactions must be
+;  terminated and all links that could be used to initiate IO must be cleared
+;  or at least marked as not usable. This must be done in such a way that if
+;  a new device is connected to the port in question immediately follwing it
+;  will enumerate correctly. It may be necessary for currently open devices
+;  to persist for some time until clean-up can be completed, but these devices
+;  must be invisible to any new requests. In partictular, an immediately
+;  following attempt to create the same device should succeed.
+
+;There are two basic types of XOS devices that can be USB clients:
+;  1. Dedicated devices: These devices have a single DCB which is used by
+;     all threads which have the device open. These devices may or may not
+;     allow more than one thread to have the device open. The BULK class
+;     device is an example of this type. The USB keyboard device is a special
+;     case which is also treaded as a dedicated device.
+;  2. Multiple devices: These devices create a seperate DCB for each attempt
+;     to open the device. All DISK class devices are this type.
+
+;The value returned (in qab_amount) is the number of XOS devices terminated
+;  if normal or a negative XOS error code if error.
+
+spcdisconnect:
+	MOVL	EAX, knlTda+tdaCount##	;Get global port value
+	MOVL	EBX, EAX
+	ANDL	EAX, #0x0F		;Is it on this controller?
+	CMPB	AL, dcb_punit[EDI]
+	JE	2$			;Yes - go on
+	MOVL	EAX, #ER_IFDEV		;No - fail
+	JMP	spcdone
+
+2$:	PUSHL	#0			;OK
+4$:	MOVL	ESI, dcb_usbicb[EDI]	;Search the CLBs to find one with
+					;  a matching global port
+	MOVL	ECX, icb_fclb[ESI]	;Get first CLB
+6$:	TESTL	ECX, ECX
+	JE	12$			;If no more
+	CMPL	EBX, clb_gport[ECX]
+	JNE	10$			;Not this one
+	INCL	[ESP]			;Found one - count it
+	PUSHL	ECX			;Call its status change callback
+	CALLI	clb_removed[ECX]	;This will call xosusbUnlinkFromDevBgn
+					;  which will unlink this CLB
+	JMP	4$			;See if there are any more
+
+;Advance to next CLB
+
+10$:	MOVL	ECX, clb_next[ECX]	;Advance to next CLB
+	JMP	6$
+
+;Here when finished
+
+12$:	POPL	EAX			;Get number of matching CLBs found
+	JMP	spcdone
+.PAGE
+;Subroutine to generate port status signal
+;	void xosusbPortSignal(
+;	    ICB *icb,		// Address of ICB
+;	    long port,		// Port number
+;	    long status)	// Port status bits
+
+;The signal data provided is:
+;  Item 0:  User's signal data
+;  Item 1:  Port number
+;  Item 2:  Port status bits
+
+portsig_icb =!20t
+portsig_port=!16t
+portsig_sts =!12t
+
+xosusbPortSignal::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, portsig_icb[ESP]
+	CMPL	icb_label[ESI], #'ICB*'
+	JE	2$
+	CRASH	NICB
+
+2$:	MOVL	EDI, icb_ctldcb[ESI]	;Get address of the control DCB
+	TESTL	EDI, EDI
+	JE	4$			;If none
+	CMPW	dcb_usbsigvect[EDI], #0	;Is a signal vector set?
+	JE	4$			;No
+	PUSHL	portsig_sts[ESP]	;Yes - signal data
+	PUSHL	portsig_port+4[ESP]
+	PUSHL	dcb_usbsigdata[EDI]
+	PUSHL	#3			;There are 3 data items
+	MOVL	EAX, dcb_usbsigpda[EDI]	;PID
+	PUSHL	pdaPid##[EAX]
+	PUSHL	#0
+	PUSHL	#0
+	MOVZBL	EAX, dcb_usbsigvect[EDI]
+	PUSHL	EAX
+	CALL	sysSchReqSignal##
+	ADDL	ESP, #32t
+4$:	POPL	ESI
+	POPL	EDI
+	RET	12t
+.PAGE
+	.SBTTL	xosusbCheckPktMax - Subroutine to check for valid maximum packet size
+
+;Subroutine to check for valid maximum packet size
+;	c{EAX} = Maximum packet size
+;	c{ESI} = USB device DDB
+;	CALL	xosusbCheckPktMax
+;	C:set = Error
+;	  c{EAX} = Negative XOS error code
+;	C:clr = Normal
+;	  c{EAX = Unchanged
+
+;NEED TO ADD THIS SOON!!!
+
+xosusbCheckPktMax:
+	CLC
+	RET
+
+	.SBTTL	xosusbCheckPort - Subroutine to check for valid port number
+
+;Subroutine to check for valid port number
+;	c{ESI} = Address of USB ICB
+;	CALL	xosusbCheckPort
+;	C:set = Error
+;	  c{EAX} = Negative XOS error code
+;	C:clr = Normal
+;	  c{EAX = Unchanged
+
+;The low order 4 bits of the port number specifies the port on the host
+;  controller used. If the device is connected through one or more hubs,
+;  successive 4 bit fields each contain the port number on each hub + 1.
+
+xosusbCheckPort:
+	MOVZBL	EDX, icb_numports[ESI]
+	CMPL	EDX, EAX
+	JG	4$
+	MOVL	EAX, #ER_VALUE
+	STC
+4$:	RET
+.PAGE
+	.SBTTL	xosusbCheckSpeed - Subroutine to check for valid bus speed
+
+;Subroutine to check for valid bus speed
+;	c{EAX} = Speed name (must be "LOW", "FULL", or "HIGH")
+;	CALL	xosusbCheckSpeed
+;	C:set = Error
+;	  c{EAX} = Negative XOS error code
+;	C:clr = Normal
+;	  c{EAX = Speed code value
+
+xosusbCheckSpeed:
+	MOVL	EBX, #spdtbl+8
+	MOVL	ECX, #3
+	CALL	knlGetDcVal1##
+	JC	2$
+	INCL	EAX
+2$:	RET
+
+	.SBTTL	xosusbGetSpeed - Get value of the PORTSPD characteristic
+
+;Get value of the PORTSPD characteristic
+;	c{EDI] = Address of USB device DCB
+;	CALL	xosusbGetSpeed
+;	C:set = Error
+;	  c{EAX} = Negative XOS error code
+;	C:clr = Normal
+;	  c{EAX = Speed code value
+
+xosusbGetSpeed:
+	MOVL	ESI, dcb_usbicb[EDI]
+
+;;;;	MOVZBL	EAX, icb_portspd[ESI]
+
+	MOVL	EAX, #2
+
+	.SBTTL	xosusbRtnSpeed - Subroutine to return speed name
+
+;Subroutine to return speed name
+;	c{EAX} = Speed code
+;	CALL	xosusbRtnSpeed
+;	c{EDX,EAX} = Speed name
+
+xosusbRtnSpeed:
+	CMPL	EAX, #3
+	JBE	4$
+	CLRL	EAX
+4$:	MOVL	EAX, spdtbl[EAX*8]
+	CLRL	EDX
+	RET
+
+	.MOD	4
+spdtbl:	.LONG	'???' , 0
+	.LONG	'LOW' , 0	;XFERSPEED_LOW  = 1 - Low speed transfer
+	.LONG	'FULL', 0	;XFERSPEED_FULL = 2 - Full speed transfer
+	.LONG	'HIGH', 0	;XFERSPEED_HIGH = 3 - High speed transfer
+.PAGE
+	.SBTTL	USB class driver data
+
+	DATA
+
+usbdcbnum:   .LONG 0		;Number of in use USB DCBs
+usbdcbmax:   .LONG 0		;Maximum in use USB DCBs
+usbdcblmt:   .LONG 10000t	;Maximum number of USB DCBs allowed
+
+xosusbCcb:			;USB CCB
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'USB', 0	;ccb_name    - Name of this class
+	.LONG	0xFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'USB'		;ccb_npfxval - Name prefix part value
+	.LONG	usbdevchk	;ccb_devchk  - Address of device check routine
+	.LONG	usbcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	usbcctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+usbfirsticb::.LONG 0		;Offset of first USB ICB
+usblasticb:  .LONG 0		;Offset of last USB ICB
+fusbdrv:     .LONG 0		;Offset of first USB driver data block
+xosusbNextUnit::
+	     .LONG 1		;Next USB unit number to use
+
+xfrtypes:.BYTE	PCB$XT_CONTROL	;USB_XFERTYPE_CNTRL = 1
+	 .BYTE	PCB$XT_INT	;USB_XFERTYPE_INT   = 2
+	 .BYTE	PCB$XT_BULK	;USB_XFERTYPE_BULK  = 3
+	 .BYTE	PCB$XT_ISOC	;USB_XFERTYPE_ISOCH = 4
+
+	LKEEND

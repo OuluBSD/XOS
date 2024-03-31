@@ -1,0 +1,691 @@
+	.TITLE	$_usbinit
+
+;*--------------------------------------------------------------------------*
+;* usbinit.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This file contains the code which sets up one or more EHCI USB debug ports
+;  for use by GECKOX.
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xosusb.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+	.INCLUD	xosinc:\xmac\xosxusbehc.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+;Function to find EHCIs which have debug ports
+;	void usbinit(void);
+
+;The $_dbdtbl items are filled in for up to 4 EHCIs which have debug ports.
+;  This function does not initialize or in any way change the state of any of
+;  the EHCIs.
+
+$$$=!0
+FRM init_dbd   , 4	;Address of DBD to use
+FRM init_cfgadr, 4
+init_SIZE=!$$$
+
+	.ENTRY	$_usbinit
+$_usbinit::
+	DISPCHR	0x70, 'I'
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	init_SIZE, 0
+
+;See if we have a type 1 PCI configuration interface. We don't bother checking
+;  for type 2 since any machine with a type 2 interface is old enough that it
+;  will not support an ECHI, let alone a debug port! Besides, the current
+;  version of XOS only supports type 1!
+
+	MOVL	EDX, #P_PCI1ADDR
+	MOVL	EAX, #0x80000004	;Write a long to the PCI addrses
+	OUTL	[DX]			;  register and read it back
+	IOPAUSE
+	A2IOP	P_PCI1DATA-P_PCI1ADDR	;Read the data register in between
+	INL	[DX]			;  to discharge the bus if the PCI
+	A2IOP	P_PCI1ADDR-P_PCI1DATA	;  controller is not there
+	IOPAUSE
+	INL	[DX]
+	CMPL	EAX, #0x80000004
+	JNE	initdone		;If different we don't have it
+
+;Here if we have a type 1 configuration interface.  Initialize timer 0 to
+;  interrupt 200 times a second. We really don't care what the period is but
+;  we want to make sure it is running in mode 2. This rate is compatable with
+;  XOS. We use this timer to calibrate our CPU delay loop. We do not use this
+;  timer after this.
+
+	CLRL	EDI
+	MOVL	ESI, #10t		;Do this 10 times
+2$:	MOVB	AL, #0x34		;Initialize timer 0 to mode 2 to
+	OUTB	P_TMRCWR		;  interrupt 200 times a second
+	IOPAUSE
+	MOVB	AL, #CCPERSP&0xFF
+	OUTB	P_TMRCNT0
+	IOPAUSE
+	MOVB	AL, #CCPERSP>8
+	OUTB	P_TMRCNT0
+	MOVL	ECX, #100000t		;Delay for a time
+4$:	JMP	6$
+6$:	JMP	8$
+8$:	LOOP	ECX, 4$
+	CLRL	EAX
+	OUTB	P_TMRCWR		;Latch the counter value
+	IOPAUSE
+	INB	P_TMRCNT0		;Get low byte of the count value
+	MOVB	AH, AL
+	IOPAUSE
+	INB	P_TMRCNT0		;Get high byte
+	XCHGB	AH, AL			;Get bytes in right order
+	MOVL	EDX, #CCPERSP		;Get number of counts
+	SUBL	EDX, EAX
+	ADDL	EDI, EDX		;Add in to the total
+	DECL	ESI			;Done this enough?
+	JNE	2$			;No - continue
+	MOVL	EAX, EDI		;Calculate the constant for our delay
+	MOVL	ECX, #83808t		;  loop
+	MULL	ECX
+	MOVL	ECX, #1000000t
+	DIVL	ECX
+	MOVL	ECX, EAX
+	MOVL	EAX, #100000000t
+	CLRL	EDX
+	DIVL	ECX
+	MOVL	$_delaycnt#, EAX	;Save the delay count - this is the
+					;  numer of time around the delay loop
+					;  in 1 ms.
+.PAGE
+;Scan all devices and find up to 4 EHCIs that have a debug port. This version
+;  only looks at bus 0 because of a problem observed with the EeeBox which
+;  appears to hang in SM mode for at least 30 seconds when we attempt to access
+;  some high numbered buses. It is tempting to assume sequenial bus numbering
+;  and stop when we find a bus with no devices but gaps in bus numbering have
+;  been observed! (The EeeBox again!)
+
+	MOVL	$_dbd#, #$_dbdtbl#
+	MOVL	init_cfgadr[EBP], #0x80000000
+6$:	PUSHL	init_cfgadr[EBP]
+	CALL	chkdev			;See if this is an EHCI
+	CMPL	EAX, #0xFFFFFFFF	;Does this device exist?
+	JE	10$			;No
+	MOVL	EBX, init_cfgadr[EBP]	;Yes
+	MOVB	BL, #0x0C		;Read the header type register
+	CALL	readconfig
+	BTL	EAX, #23t		;Multi-function device?
+	JNC	10$			;No - go on to next device
+8$:	INCB	init_cfgadr+1[EBP]	;Yes - bump the function
+	TESTB	init_cfgadr+1[EBP], #0x07 ;Done with this device?
+	JE	12$			;Yes
+	PUSHL	init_cfgadr[EBP]	;Check next function
+	CALL	chkdev
+	JMP	8$			;Go on
+
+;Here if device does not exist or its not a multi-function device
+
+10$:	ADDB	init_cfgadr+1[EBP], #08h
+
+;Here when finished with a multi-function device
+
+12$:	TESTB	init_cfgadr+1[EBP], #0xF8 ;More devices on this bus?
+	JNE	6$			;Yes - continue
+
+;;;;	ADDL	init_cfgadr[EBP], #0x00010000 ;No - bump the bus number
+;;;;	CMPB	init_cfgadr+2[EBP], #0	;Finished?
+;;;;	JNE	6$			;No - continue
+
+;Here with all devices looked at
+
+initdone:
+	MOVL	$_dbd#, #0		;Indicate no debug device is set up
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+;Function to check if a device is an EHCI and to set it up for use if it is
+;  and has a debug port.
+;	long chkdev(
+;	    long cfgadr);
+;  Value returned is 0 if device exists or -1 if it does not. If the device
+;    is an EHCI with a debug port an entry in $_dbdtbl is filled in and $_dbd
+;    is incremented to point to the next $_dbdtbl entry.
+
+chk_adr=!8
+
+chkdev:	PUSHL	EDI
+	MOVL	EBX, chk_adr[ESP]
+	MOVB	BL, #00
+	CALL	readconfig
+	CMPL	EAX, #0xFFFFFFFF	;Does this device exist?
+	JE	chkdvdn			;No
+	MOVB	BL, #08			;Yes - read the class registers
+	CALL	readconfig
+	ANDL	EAX, #0xFFFFFF00	;Is this an EHCI?
+	CMPL	EAX, #0x0C032000
+	JE	hvehci			;Yes
+	JMP	chkdvok
+
+;Here if we have an ECHI
+
+hvehci:	MOVL	EDI, $_dbd#
+	CMPL	EDI, #$_dbdtbl#+4*dbd_SIZE ;Already have 4?
+	JAE	chkdvok			;Yes - can't have another!
+	MOVL	dbd_config[EDI], EBX
+	MOVB	BL, #0x10		;Get the base memory address
+	CALL	readconfig
+	ANDL	EAX, #0xFFFFFFF8
+	MOVL	dbd_regphy[EDI], EAX
+	MOVL	EDX, #debugpg1
+	CALL	mapmemory
+	MOVL	dbd_capreg[EDI], EAX
+	MOVL	ESI, dbd_capreg[EDI]
+	MOVZBL	EAX, [ESI]		;Get address of the operational
+	ADDL	EAX, ESI		;  registers
+	MOVL	dbd_opreg[EDI], EAX
+	MOVL	EAX, CR_SPARAMS[ESI]	;Get the debug port number
+	SHRL	EAX, #20t
+	ANDL	EAX, #0x0F
+	JE	noport2
+
+;;;;	DISPLNG	0x70, 'P', dbd_regphy[EDI]
+;;;;	DISPLNG 0x70, 0, EAX
+
+	MOVB	dbd_portnum[EDI], AL
+	SHLL	EAX, #2			;Times 4	
+	ADDL	EAX, dbd_opreg[EDI]
+	ADDL	EAX, #OR_PORTSC1-4
+	MOVL	dbd_portreg[EDI], EAX	;Save address of the debug port's reg
+	MOVB	BL, #4			;Do we have a capabilities list?
+	CALL	readconfig
+	BTL	EAX, #20t
+	JNC	noport3			;No
+	MOVB	BL, #0x34		;Yes - get the address of the first
+	CALL	readconfig		;  entry
+	MOVB	BL, AL
+12$:	CMPB	BL, #0
+	JE	16$
+	CALL	readconfig		;Read a capabilities header
+	CMPB	AL, #0x0A		;Is it ours?
+	JE	hvport			;Yes
+	MOVB	BL, AH			;No
+	JMP	12$			;Yes - keep looking if more
+
+;Here if can't use this EHCI for some reason (usually because it does not
+;  have a debug port)
+
+noport5:DISPCHR	0x47, 'x'
+noport4:DISPCHR	0x47, 'x'
+noport3:DISPCHR	0x47, 'x'
+noport2:DISPCHR	0x47, 'x'
+noport1:DISPCHR	0x47, 'x'
+	MOVL	dbd_capreg[EDI], #0
+chkdvok:CLRL	EAX
+chkdvdn:POPL	EDI
+	RET	4
+
+;Here if we could not find our capabiities item - check for an entry at 0x58
+;  in case the entry for an Intel EHCI has been hiden by the BIOS! (We have
+;  seen this on a CyberNet machine. Its EHCI was still usable by GeckoT.)
+
+16$:	MOVB	BL, #0x58
+	CALL	readconfig
+	CMPB	AL, #0x0A
+	JNE	noport1
+
+;Here with our entry. We map the memory for the debug registers on a seperate
+;  page although this is probably not necessary. The spec says the physical
+;  address for the debug registers comes for a different BAR. In every EHCI
+;  we have seen, it is in the same page as the other registers!
+
+hvport:	MOVL	EDX, EAX
+	SHRL	EAX, #16t
+	MOVL	ECX, EAX		;Get offset of registers
+	ANDL	ECX, #0x0FFF
+	SHRL	EAX, #11t		;Get the BAR to use
+	ANDL	EAX, #0x1C
+	ADDL	EAX, #0x0C
+	MOVB	BL, AL
+	CALL	readconfig		;Get the physical address
+	ANDL	EAX, #0xFFFFFFF8
+	ADDL	EAX, ECX
+	MOVL	dbd_dbgphy[EDI], EAX
+	MOVL	EDX, #debugpg2
+	CALL	mapmemory
+	MOVL	dbd_dbreg[EDI], EAX
+	ADDL	$_dbd#, #dbd_SIZE
+	DISPCHR	0x07, '1'
+
+;Now grab the EHCI from the BIOS if it has it
+
+	MOVL	ECX, #5
+22$:	MOVL	EBX, dbd_config[EDI]	;Get the base memory address
+	MOVL	EAX, dbd_capreg[EDI]
+	MOVB	BL, CR_CPARAMS+1[EAX]	;Get the address of the EECP registers
+	CALL	readconfig		;Read the first EECP register
+
+	DISPLNG	0x07, 'O', EAX
+
+	BTL	EAX, #16t		;Does the BIOS own the controller now?
+	JNC	24$			;No - strange but probably possible if
+					;  BIOS legacy USB support was disabled
+	BTL	EAX, #24t		;Yes - is our bit also set?
+	JNC	26$			;No - go on
+
+;Here if both the BIOS and OS owned bits are set! This should not be possible
+;  but it HAS been observed!! We try to get it back to a valid state by
+;  clearing the OS owned bit. This should tell the BIOS that it owns the
+;  controller which is the expected state at this point. We have no way to
+;  verify this so we just wait for a while (and hope). We then try again.
+
+	DISPCHR	0x04, 'C'
+
+	MOVL	EAX, EBX		;Clear the OS owned bit
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR+3
+	MOVL	EAX, #0
+	OUTB	[DX]
+	PUSHL	ECX
+	PUSHL	#100t			;Delay for 100 milliseconds
+	CALL	$_delay1ms#
+	POPL	ECX
+	LOOP	ECX, 22$		;And try again
+	JMP	noport4			;This really should not repeat!
+
+;Here if the BIOS does not own the controller (the BIOS bit is 0).
+
+24$:	BTL	EAX, #24t		;Do we already own the controller?
+	JC	32$			;Yes (Very strange since this should
+					;  be the first OS code to touch the
+					;  controller! We just accept what it
+					;  says!)
+
+;Here if the BIOS owns the controller (the BIOS bit is 1 and the OS bit is 0)
+;  or if no one owns it (both bits are 0, which is the reset state)
+
+26$:	MOVL	EAX, EBX		;Set the OS owned bit
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR+3
+	MOVL	EAX, #1
+	OUTB	[DX]
+	MOVL	ECX, #0x100		;Don't wait forever!
+28$:	DISPCHR	0x07, 'G'
+	CALL	readconfig		;Get the current bits
+	DISPLNG	0x07, '!', EAX
+	BTL	EAX, #24t		;Make sure our bit is still set
+	JNC	30$			;Opps!
+	BTL	EAX, #16t		;Does the BIOS still have it?
+	JNC	32$			;No - finished
+30$:	PUSHL	ECX			;Yes
+	PUSHL	#100t			;Delay for 100 milliseconds
+	CALL	$_delay1ms#
+	POPL	ECX
+	LOOP	ECX, 28$		;Wait some more if we should
+	DISPCHR	0x07, '?'
+	JMP	noport4			;BIOS didn't give it up!
+
+32$:	DISPCHR	0x07, 'H'
+
+;Here with ownership of the controller. Initialize it.
+
+	MOVL	EDX, dbd_opreg[EDI]	;We need to reset it now
+	MOVL	ECX, #3
+	MOVL	OR_USBCMD[EDX], #0	;Clear the run bit
+36$:	TESTL	OR_USBSTS[EDX], #USBSTS$HALTED ;Has it halted yet?
+	JNE	38$			;Yes - continue
+	DECL	ECX			;No - should we give up?
+	JE	noport5			;Yes!
+	PUSHL	ECX			;No
+	PUSHL	#20t			;Delay for 20 milliseconds
+	CALL	$_delay1ms#
+	POPL	ECX
+	JMP	36$
+
+;Here with the controller halted
+
+38$:	DISPCHR	0x03, 'H'
+
+	PUSHL	#20t			;Wait a little to be safe
+	CALL	$_delay1ms#
+	MOVL	OR_USBCMD[EDX], #USBCMD$RESET ;Start a reset
+	MOVL	ECX, #3
+10$:	TESTB	OR_USBCMD[EDX], #USBCMD$RESET ;Is the reset complete?
+	JE	14$			;Yes - finished here
+	DECL	ECX			;No - should we give up?
+	JE	noport5			;Yes!
+	PUSHL	ECX			;No
+	PUSHL	#20			;Delay for 20 milliseconds
+	CALL	$_delay1ms#
+	POPL	ECX
+	JMP	10$
+
+14$:	DISPCHR	0x07, 'R'
+	JMP	chkdvok
+.PAGE
+;Function to find and set up a connected debug device
+;	void $_finddebug(void)
+;  If successful, $_dbd is set to point to the $_dbdtbl entry for the device.
+;    Otherwise $_dbd is set to 0.
+
+$$$=!0
+;;;FRM find_savecfg, 4t
+;;;FRM find_savecmd, 4t
+find_SIZE=!$$$
+
+	.ENTRY	$_finddebug
+$_finddebug::
+	MOVL	EDX, $_dbd#		;Do we currently have a device set up?
+	TESTL	EDX, EDX
+	JE	2$			;No - try to find one and set it up
+	MOVL	EBX, dbd_dbreg[EDX]	;Yes - is it still set up? (It may not
+	BTL	[EBX], #10t		;  be if the OS has reset the EHCI!)
+	JNC	2$			;No
+	RET				;Yes - finished here
+
+2$:	MOVL	$_dbd#, #0		;No - we need to find and initialize a
+	PUSHL	EDI			;  device
+	PUSHL	ESI
+	ENTER	find_SIZE, 0
+	MOVL	EDI, #$_dbdtbl#
+findlp:	DISPCHR	0x70, 'F'
+	MOVL	EAX, EDI
+	SUBL	EAX, #$_dbdtbl#
+	CLRL	EDX
+	MOVL	ECX, #dbd_SIZE
+	IDIVL	ECX
+.IF NE $$DISP
+	MOVB	AH, #0x70
+	PUSHL	EAX
+	CALL	$_putdbhex#
+.ENDC
+	MOVL	EAX, dbd_regphy[EDI]	;Map the registers for this interface
+	MOVL	EDX, #debugpg1
+	CALL	mapmemory
+	MOVL	EAX, dbd_dbgphy[EDI]
+	MOVL	EDX, #debugpg2
+	CALL	mapmemory
+
+;Start up the EHCI if it is not running and grab the debug port.
+
+	CALL	$_initdebugdev
+	TESTL	EAX, EAX
+	JS	12$
+	DISPCHR	0x07, '8'
+.IF NE 0
+	PUSHL	#DBRQ_NOOP		;Send a couple of NOOP responses to
+	PUSHL	#0			;  "clear the pipe".
+	CALL	$_sendresponse#
+	PUSHL	#DBRQ_NOOP
+	PUSHL	#0
+	CALL	$_sendresponse#
+.ENDC
+10$:	LEAVE				;  (Once it's set up the normal
+	POPL	ESI			;  controller state does not affect
+	POPL	EDI			;  the operation of the debug port.)
+	RET
+
+;Here if we don't have a usable debug device on this controller
+
+12$:	DISPCHR	0x07, 'N'
+	MOVL	EDX, dbd_opreg[EDI]	;Clear the run bit
+	MOVL	OR_USBCMD[EDX], #0
+	PUSHL	#20t
+	CALL	$_delay1ms
+	ADDL	EDI, #dbd_SIZE
+	CMPL	EDI, #$_dbdtbl+4*dbd_SIZE
+	JAE	14$
+	CMPL	[EDI], #0
+	JNE	findlp
+14$:	MOVL	$_dbd#, #0
+	JMP	10$
+.PAGE
+;Subroutine to reset and set up the debug device.
+
+$$$=!0
+FRM idbdv_usbcmd, 4
+idbdv_SIZE=!$$$
+
+$_initdebugdev::
+	ENTER	idbdv_SIZE, 0
+
+	DISPCHR	0x40, 'I'
+
+	MOVL	EDX, dbd_opreg[EDI]
+	MOVL	EBX, dbd_dbreg[EDI]
+	MOVL	ESI, dbd_portreg[EDI]
+	MOVL	EAX, OR_USBCMD[EDX]
+	MOVL	idbdv_usbcmd[EBP], EAX
+	BTZL	DBR_CTLSTS[EBX], #28t	;Disable the debug port
+
+	BTL	OR_USBCMD[EDX], #0	;Is the EHCI running now? (It should
+					;  always be running if the OS has
+					;  been started and always not be
+					;  running if t he OS has not been
+					;  started when get here.)
+	JC	4$			;Yes
+
+;;;;	DISPLNG	0x03, 'C', OR_USBCMD[EDX]
+;;;;	DISPLNG	0x03, 'S', OR_USBSTS[EDX]
+
+	BTSL	OR_USBCMD[EDX], #0	;No - start it (assume configured)
+
+;;;;	DISPCHR	0x70, 'S'
+
+	PUSHL	#50t
+	CALL	$_delay1ms#
+
+2$:
+;;;;	DISPLNG	0x02, 'S', OR_USBSTS[EDX]
+	BTL	OR_USBSTS[EDX], #12t
+	JC	2$
+
+	DISPCHR	0x70, 'R'
+
+	BTSL	OR_CONFIGFLG[EDX], #0	;Indicate configured (this grabs all
+					;  of the ports)
+4$:
+;;;;	DISPCHR	0x70, 'C'
+
+	PUSHL	#40t
+	CALL	$_delay1ms#
+
+	BTSL	[ESI], #12t		;Make sure our port has power
+	BTZL	[ESI], #13t		;Make sure we own the port
+	BTSL	[ESI], #5		;Make sure no overcurrent indication
+	BTZL	[ESI], #2		;Disable the port
+
+	PUSHL	#100t
+	CALL	$_delay1ms#
+
+.IF GT $$DISP-1
+	DISPLNG	0x07, 'P', ESI
+	DISPLNG	0x07, 0, [ESI]
+	DISPLNG	0x07, 0, DBR_CTLSTS[EBX]
+.ENDC
+
+	BTL	[ESI], #6		;Has the port been resumed?
+	JNC	6$			;No
+	BTZL	[ESI], #6		;Yes - try to clear this
+	PUSHL	#100t
+	CALL	$_delay1ms#
+.IF GT $$DISP-1
+	DISPLNG	0x04, 'P', [ESI]
+	DISPLNG	0x04, 0, DBR_CTLSTS[EBX]
+.ENDC
+6$:	BTL	[ESI], #0		;Is a device connected?
+	JNC	20$			;No
+	MOVL	EAX, [ESI]		;Yes - make sure not a low speed device
+	SHRL	EAX, #10t
+	ANDL	EAX, #0x03
+	CMPL	EAX, #0x01
+	JE	22$			;If low speed
+	DISPCHR	0x07, 'R'
+	MOVL	EAX, [ESI]		;Might be high speed - start a reset
+	BTSL	EAX, #8
+	BTZL	EAX, #2
+	MOVL	[ESI], EAX
+	PUSHL	#200t			;Wait for 200msec
+	CALL	$_delay1ms#
+	BTZL	[ESI], #8		;End the reset
+	PUSHL	#40t			;Wait for another 40msec
+	CALL	$_delay1ms#
+.IF GT $$DISP-1
+	DISPLNG	0x02, 'P', [ESI]
+	DISPLNG	0x02, 0, DBR_CTLSTS[EBX]
+.ENDC
+	BTL	[ESI], #2		;Do we really have an HS device?
+	JC	8$
+	DISPCHR	0x04, 'N'
+	PUSHL	#1000t			;Delay for 1 second
+	CALL	$_delay1ms#
+	JMP	4$			;Try again!
+
+;Here with a high speed device
+
+8$:	ORL	DBR_CTLSTS[EBX], #0x50000400 ;Force port enabled, indicate in
+					     ;  udr by the debugger
+	BTZL	[ESI], #2t		;"Disable" the port the normal way
+	DISPCHR	0x30, 'H'
+
+;Now initialize the debug device
+
+	MOVL	$_dbd#, EDI
+	DISPCHR	0x20, 'A'
+	MOVB	$_dbaddr#, #0		;Send this to address 0
+	MOVB	$_dbinppid#, #DBPID_DATA0
+	MOVB	$_dboutpid#, #DBPID_DATA0
+	PUSHL	#0x007F0500		;Try to set the device address to 127
+	PUSHL	#0
+	PUSHL	#0			;Ignore errors here since this may be
+	CALL	$_dosetup#		;  a fixed address device
+	MOVB	$_dbaddr#, #127t	;Send everything after this to 127
+	DISPCHR	0x20, 'E'
+	PUSHL	#0x0A000680		;Read the debug descriptor
+	PUSHL	#0x00040000
+	PUSHL	#$_dbbufr#+180t
+	CALL	$_dosetup#
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	EAX, $_dbbufr+182t	;Store the endpoints
+	ANDL	EAX, #0x7F7F
+	MOVB	dbd_inpep[EDI], AL
+	MOVB	dbd_outep[EDI], AH
+	DISPCHR	0x20, 'D'
+	PUSHL	#0x00060300		;Set the debug feature
+	PUSHL	#0x00000000
+	PUSHL	#0
+	CALL	$_dosetup#
+	TESTL	EAX, EAX
+	JS	20$
+	DISPCHR	0x20, 'R'
+
+;When get here the debug device should be fully set up and ready to use.
+
+	MOVL	EAX, dbd_regphy[EDI]
+	MOVL	knlGeckotDev#, EAX
+	MOVZBL	EAX, dbd_portnum[EDI]
+	MOVL	knlGeckotPort#, EAX
+	DISPCHR	0x07, '7'
+	TESTB	idbdv_usbcmd[EBP], #0x01 ;Was the controller running before?
+	JNE	10$			;Yes - leave it running
+	MOVL	EDX, dbd_opreg[EDI]	;No - clear the run bit
+	MOVL	OR_USBCMD[EDX], #0
+
+	DISPCHR	0x70, 's'
+
+	PUSHL	#20t
+	CALL	$_delay1ms
+10$:	CLRL	EAX
+20$:	LEAVE
+	RET
+
+;Here if have a low speed device
+
+22$:	DISPCHR	0x07, 'L'
+	MOVL	EAX, #ER_NSDEV
+	JMP	20$
+.PAGE
+readconfig:
+	MOVL	EAX, EBX
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	ADDL	EDX, #P_PCI1DATA-P_PCI1ADDR
+
+	PUSHL	ECX
+	MOVL	ECX, #10000t
+4$:	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+	LOOP	ECX, 4$
+	POPL	ECX
+
+	INL	[DX]
+	RET
+
+;;;;;writeconfigbyte:
+	PUSHL	EAX
+	MOVL	EAX, EBX
+	BTSL	EAX, #31t
+	MOVL	EDX, #P_PCI1ADDR
+	OUTL	[DX]
+	A2IOP	P_PCI1DATA-P_PCI1ADDR
+	POPL	EAX
+	ADDL	EDX, ECX
+	OUTB	[DX]
+	RET
+
+;Function to make a physical address available in virtual space
+;	c{EAX} = Physical address
+;	c{EDX} = Virtual page address
+;	CALL	mapmemory
+;	c{EAX} = Virtual address
+
+mapmemory:
+	MOVL	ECX, EAX
+	ANDL	EAX, #0x00000FFF
+	ADDL	EAX, EDX
+	ANDL	ECX, #0xFFFFF000
+	ORL	ECX, #0x267
+	SHRL	EDX, #10t
+	MOVL	pgtable[EDX], ECX
+	MOVL	ECX, CR3		;Clear the page cache
+	MOVL	CR3, ECX
+	RET
+
+	END

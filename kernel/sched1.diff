@@ -1,0 +1,33 @@
+1176 ***  np_ppda=!20t
+--- 1176  np_ppda=!16t
+1181 ***  	PUSHL	EBX
+1385 ***  	POPL	EBX
+
+1412 ***  nt_pda  =!32t
+1413 ***  nt_type =!28t
+1414 ***  nt_queue=!24t
+1415 ***  nt_ptda =!20t
+
+--- 1410  nt_pda  =!28t
+--- 1411  nt_type =!24t
+--- 1412  nt_queue=!20t
+--- 1413  nt_ptda =!16t
+1420 ***  	PUSHL	EBX
+
+1624 ***  	POPL	EBX
+
+1642 ***  rmvthd_tda=!12t
+--- 1638  rmvthd_tda=!8t
+1646 ***  	PUSHL	EBX
+1665 ***  	POPL	EBX
+
+1836 ***  6$:	MOVL	EDX, fp_ppda[ESP]
+1837 ***  	SHLL	EAX, #pda_SHIFT		;Get actual address for the PDA
+1838 ***  	ADDL	EAX, #pdabase
+1839 ***  	MOVL	[EDX], EAX
+
+--- 1830  6$:	MOVL	EDX, EAX		;Get actual address for the PDA
+--- 1831  	SHLL	EDX, #pda_SHIFT
+--- 1832  	ADDL	EDX, #pdabase
+--- 1833  	MOVL	EBX, fp_ppda[ESP]
+--- 1834  	MOVL	[EBX], EDX

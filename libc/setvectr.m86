@@ -1,0 +1,167 @@
+	.TITLE	setvector - Signal vector routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\xmac\stdio.par
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+
+	.STDSEGS
+
+	.PSECT	_DATA_p
+
+sighp:	.LONG	0
+
+;Prototype signal routine
+
+sigbase:
+signext: .LONG	0			;Offset of next signal routine
+signum:	 .LONG	0			;Place to store signal number
+sigentry:PUSHAL				;Save all registers (segment registers
+	 PUSHL	#GS_UDATA		;Make sure DS is right
+	 POPL	DS
+sigcall: CALL	$			;Call the function
+	 POPAL				;Restore registers
+	 INT	knl_DISMISS##		;Dismiss signal
+SIGSIZE=!$-sigbase
+
+	.PSECT	_TEXT_p
+
+;Function to setup C callable function as signal routine
+;	long setvector(
+;	    int    num,		// Signal number
+;	    int    level,	// Signal level
+;	    void (*func)());	// Function to call on signal
+;  Value returned is 0 if normal -1 if error (errno is set)
+
+$$$=!0
+FRM sv_prvlvl, 4t
+sv_SIZE=!$$$
+
+sv_num=!20t
+sv_lvl=!24t
+sv_sig=!28t
+
+	.ENTRY	setvector
+setvector:
+	PUSHL	EBX
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	sv_SIZE
+	PUSHL	#8			;Disable signals for now
+	CALL	svcSchSetLevel#
+	MOVL	sv_prvlvl[EBP], EAX	;Remember previous level
+	MOVL	EBX, sighp		;Point to first signal block
+	MOVL	ECX, sv_num[ESP]
+	CMPL	ECX, #-1		;Want to clear all vectors?
+	JNE	10$			;No
+
+;Here if clearing all vectors
+
+4$:	TESTL	EBX, EBX		;Yes - have another one?
+	JE	24$			;No - finished
+	CMPL	{sigcall-sigbase}+1[EBX], #0 ;Yes - this vector set now?
+	JE	8$			;No
+	CLRL	EAX			;Yes - but not any more
+	MOVL	{sigcall-sigbase}+1[EBX], EAX
+	PUSHL	{signum-sigbase}[EBX]	;Stack vector number
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	EAX
+	CALL	svcSchSetVector#	;Clear the vector
+8$:	MOVL	EBX, [EBX]		;Get next block
+	JMP	4$			;Continue
+
+;Here if not clearing all vectors
+
+10$:	TESTL	EBX, EBX		;Have another signal block?
+	JE	12$			;No - finished here
+	CMPL	{signum-sigbase}[EBX], ECX ;Yes - is it this one?
+	JE	14$			;Yes
+	MOVL	EBX, [EBX]		;No - advance to next
+	JMP	10$			;Continue
+
+;Here if don't have a block for the desired signal
+
+12$:	CMPL	sv_sig[EBP], #0		;Clearing the vector?
+	JE	24$			;Yes - nothing is needed here
+	PUSHL	#{SIGSIZE+3}&0xFFFFFFFC	;No - allocate a signal block
+	CALL	sbrk#
+	POPL	ECX
+	TESTL	EAX, EAX
+	JE	16$			;If error
+	MOVL	EBX, EAX
+	MOVL	EAX, sighp		;OK - link it in
+	MOVL	sighp, EBX
+	MOVL	[EBX], EAX
+	MOVL	EAX, sv_num[EBP]	;Store the vector number
+	MOVL	{signum-sigbase}[EBX], EAX
+	LEAL	EDI, {sigentry-sigbase}[EBX] ;Copy the prototype code
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, #sigentry
+	MOVL	ECX, #{SIGSIZE-{sigentry-sigbase}+3}/4
+	CLD
+	RMOVSL	[EDI], [ESI]
+
+;Here with a signal block for the desired signal
+;	c{EBX} = Offset of the signal block
+
+14$:	MOVL	EAX, sv_sig[EBP]	;Get offset of signal routine
+	TESTL	EAX, EAX		;Clearing the vector?
+	JE	20$			;Yes
+	SUBL	EAX, EBX		;Make it relative
+	SUBL	EAX, #{sigcall-sigbase}+5t
+	MOVL	{sigcall-sigbase}+1[EBX], EAX ;Store in CALL instruction
+	PUSHL	{signum-sigbase}[EBX]	;Stack vector number
+	MOVZBL	EDX, sv_lvl[EBP]	;No - stack level
+	PUSHL	EDX
+	LEAL	EAX, {sigentry-sigbase}[EBX]
+	PUSHL	EAX
+	JMP	22$
+
+;Here if error when setting vector (probably bad vector number)
+
+16$:	NEGL	EAX			;Make positive for errno
+	MOVL	errno#, EAX		;Save error code
+	CALL	svcSchSetLevel#		;Restore previous signal level
+	MOVL	EAX, #-1		;Return -1
+	JMP	30$
+
+;Here if clearing the vector
+
+20$:	MOVL	{sigcall-sigbase}+1[EBX], EAX ;Clear routine address
+	PUSHL	EAX
+	PUSHL	EAX
+22$:	CALL	svcSchSetVector#	;Set or clear the vector
+	TESTL	EAX, EAX
+	JS	16$.S			;If error
+24$:	CLRL	EAX
+30$:	PUSHL	EAX
+	PUSHL	sv_prvlvl[EBP]
+	CALL	svcSchSetLevel#		;Restore previous signal level
+	POPL	EAX
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	POPL	EBX
+	RET				;Return 0
+
+	.END

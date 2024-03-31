@@ -1,0 +1,2154 @@
+	.TITLE	usbuhcdev - USB Universal Host Controller driver
+
+;*--------------------------------------------------------------------------*
+;* USBUHCDRV.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xosxdisk.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xosusb.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+
+MAJV   =!4
+MINV   =!1
+EDITNUM=!0
+
+	LKEHEAD	USBUHCDEV, MAJV, MINV, EDITNUM, LKETYPE_DEVICE
+
+;This is the device driver for the USB Univeral Host Controller (UHC)
+;  interface.  It should support all PCI UHC implementations.
+
+;There is a reasonably serious problem with the UHC implementation of USB
+;  bandwidth reclamation. It uses an actual loop in the QH list. There are
+;  no provisions for disabling this loop when there is nothing to transfer.
+;  (as is the case with the OHC). This will case excessive loading of the
+;  PCI bus when there is no USB activity. We handle this as best we can by
+;  disabling the QH loop when there are no active TDs. This means that the
+;  empty loop will run for the remainder of a frame when all activity has
+;  completed and for a part of the next frame (until we respond to the
+;  interrupt). Unfortunately, this is the best we can do. A possible other
+;  solution is to use vertical execution of QHs instead of a bandwidth
+;  reclamation loop. Unfortunately, this results in very poor scheduling
+;  behavior that is generally not acceptable. Another problem is that some
+;  UHC implementations have a bug that causes them to lock up and never
+;  advance to the next frame pointer if the reclamation loop has no TDs
+;  linked to any of the QHs. We handle this by hanging a dummy TD (which
+;  is always inactive) off of the initial control (placeholder) QH.
+
+;Following describes the structure of the QH and TD blocks used here. We
+;  build two parallel structures, one containing physical address links
+;  and one containing virtual address links. When a TD is retired by the
+;  controller it only updates the physical address links. Thus we have
+;  pointers to the completed TDs. We allocate 32 bytes for both QHs and
+;  TDs. The first 8 bytes of each QH are the hardware data block. The
+;  first 16 bytes of each TD are the hardware data block.
+
+;Note that this version does NOT support isochronous transfers.
+
+;   +------------+      +------------+
+;   | Frame Pntr | .... | Frame Pntr |
+;   +------------+      +------------+
+;         |                   |
+;       +----+              +----+
+;       | QH |              | QH |	Interrupt PQH (placeholder)
+;       +----+              +----+
+;         |                   |
+;       +----+              +----+
+;       | QH |              | QH |	0 or more interrupt QHs
+;       +----+              +----+
+;         |                   |
+;         ------->-----<-------
+;                   |
+;                 +----+
+;                 | QH |		1MS Interrupt PQH
+;                 +----+
+;                   |
+;                 +----+
+;                 | QH |		0 or more 1MS Interrupt QHs
+;                 +----+
+;                   |
+;              +->--+
+;              |    |
+;              |  +----+
+;              |  | QH |		Control PQH (placeholder)
+;              |  +----+
+;              |    |
+;              |  +----+
+;              |  | QH |		0 or more Control QHs
+;              |  +----+
+;              ^    |
+;              |  +----+
+;              |  | QH |		Bulk transfer PQH (placeholder)
+;              |  +----+
+;              |    | |   +----+
+;              |    | +->-| TD |	Dummy TD (always inactive) to work
+;              |    |     +----+	around possible UHC bug
+;              |  +----+
+;              |  | QH |		0 or more bulk transfer QHs
+;              |  +----+
+;              |    |
+;              +-<--+			The bandwidth reclamation loop is
+;					only present when at least 1 QH has
+;					an active TD
+
+;The first interrupt PQH is only present for frames where an interrupt
+;  transfer with a rate other than 1MS is needed. Most of these are linked
+;  to more than one frame. All PQHs after this first PQH are common to all
+;  frames. Since PQHs are never given up the back-pointers are never used
+;  and are NULL. (The back-pointers for the interrupt PQHs don't make any
+;  sense anyway, since each is, in general, pointed to by multiple pointers).
+
+;TDs (except for the one dummy TD) are never linked to the placeholder QHs.
+;  Additional QHs are allocated and linked immediately after the associated
+;  placeholder QH for actual IO requests. The placeholder QHs provide a fixed
+;  location for linking each type of QH and ensure that there will be a single
+;  pointer to each real QH.
+
+;The placeholder QHs are all allocated in a single XMB. And, except for their
+;  link items, are never modified. Each "real" QH is allocate in a non-chached
+;  XMB and is associated with a PCB.
+
+;TDs always specify execution by breadth.
+
+;Two parallel lists of QHs are maintained. One uses physical addresses using
+;  the fields used by the hardware and one uses virtual addresses. Each real
+;  QH points back to its PCB. A doubly linked list of PCBs with active QHs is
+;  also maintained.
+
+;Define IO port offsets (relative to the controler's base IO register)
+
+P_USBCMD   =!0x00		;(R/W)   USB command register
+P_USBSTS   =!0x02		;(R/W/C) USB status register
+P_USBINTR  =!0x04		;(R/W)   USB interrupt register
+P_FRNUM    =!0x06		;(R/W)   Frame number
+P_FRBASEADD=!0x08		;(R/W)   Frame list base address
+P_SOFMOD   =!0x0C		;(R/W)   Start of frame modify
+P_PORTSC1  =!0x10		;(R/W/C) Port 1 status/control 
+P_PORTSC2  =!0x12		;(R/W/C) Port 2 status/control
+
+;Define bits in the P_USBCMD register
+
+USBCMD$MAX64  =!0x0080		;Maximum reclamation packet size is 64 bytes
+USBCMD$CFGFLG =!0x0040		;Configure done flag (software only)
+USBCMD$DEBUG  =!0x0020		;Debug mode
+USBCMD$FGR    =!0x0010		;Force global resume
+USBCMD$EGSM   =!0x0008		;Enter global suspend mode
+USBCMD$GRESET =!0x0004		;Global reset
+USBCMD$HCRESET=!0x0002		;Host contorller reset
+USBCMD$RUN    =!0x0001		;Run/stop
+
+;Define bits in the P_USBSTS register
+
+USBSTS$HALTED=!0x0020		;Host controller halted
+USBSTS$HCPERR=!0x0010		;Host controller process error
+USBSTS$HSERR =!0x0008		;Host system error
+USBSTS$RESUME=!0x0004		;Resume detect
+USBSTS$ERROR =!0x0002		;USB error
+USBSTS$INT   =!0x0001		;USB interrupt
+
+;Define bits in the P_USBINTR register
+
+USBINTR$SPIE =!0x0008		;Short packet interrupt enable
+USBINTR$IOCIE=!0x0004		;Interrupt on complete interrupt enable
+USBINTR$RIE  =!0x0002		;Resume interrupt complete
+USBINTR$TOIE =!0x0001		;Timeout/CRC interrupt enable
+
+;Define bits in the P_PORTSCx registers
+
+USBPORT$SUSPEND=!0x1000		;(RW)  Suspend
+USBPORT$RESET  =!0x0200		;(RW)  Port reset
+USBPORT$LOWSPD =!0x0100		;(RO)  Low speed device attached
+USBPORT$PRESENT=!0x0080		;(RO)  Port is present
+USBPORT$RESUME =!0x0040		;(RW)  Resume
+USBPORT$LSTS   =!0x0030		;(RO)  Line status
+USBPORT$ENBCHG =!0x0008		;(R/C) Port enabled changed
+USBPORT$ENABLE =!0x0004		;(R/W) Port enabled status
+USBPORT$CONCHG =!0x0002		;(R/C) Connect status changed
+USBPORT$CONNECT=!0x0001		;(RO)  Connect status
+
+;Define offsets in the queue heads (QH)
+
+$$$=!0
+BLK qh_label, 4			;Label (QH**)
+BLK qh_paddr, 4			;Physical address of this QH with Q bit set
+BLK qh_pcb  , 4			;Address of the PCB
+BLK qh_vnext, 4			;Virtual address of next QH in hardware list
+				;  (points to qh_label)
+				;WARNING: There must be a multiple of 16 bytes
+				;         before qh_phead!
+;Start of hardware QH
+BLK qh_pnext, 4			;Physical address of next QH in hardware list
+				;  (points to qh_pnext)
+BLK qh_phead, 4			;Physical address of current TD for this QH
+;End of hardware QH
+BLK qh_vprev, 4			;Virtual address of previous QH in hardware list
+				;  (points to qh_label)
+BLK         , 4			;Fill - The length of the QH must be a multiple
+qh_uhcSIZE=!$$$			;  of 16.
+XMBINDEX qh_uhcINDEX, qh_uhcSIZE
+
+;Define offsets in the TD array header block. This block is always the first
+;  element in an array of TDs. Its only purpose is to provide information
+;  when debugging.
+
+$$$=!0
+BLK tdah_label, 4		;Label (TD**) or (DTD*)
+BLK tdah_count, 4		;Number of TDs or DTDs which follow
+BLK           , 8		;Padding to make this the same size as a TD
+
+;Define offsets in the hardware transfer descriptor (TD) - Since TDs are
+;  always allocated in an array in a single XMB, only the hardware part is
+;  needed. AN initial 16-byte area at the beginning of the array contains
+;  the TD** label.
+
+$$$=!0
+BLK td_pnext , 4		;Physical address of next TD
+BLK td_status, 4		;Status fields
+BLK td_cmd   , 4		;Command fields
+BLK td_pbufr , 4		;Physical address of data buffer
+td_SIZE=!$$$
+
+;Define bits and fields in td_status
+
+TDSTS$SHORTPD =!0x20000000	;Short packet detect enable
+TDSTS$ERRCNT  =!0x18000000	;Error counter
+TDSTS$LOWSPD  =!0x04000000	;Low speed select
+TDSTS$ISOCH   =!0x02000000	;Isochronous select
+TDSTS$INTCOMP =!0x01000000	;Interrupt on complete
+TDSTS$ACTIVE  =!0x00800000	;Active
+TDSTS$ALLERROR=!0x00760000	;All error bits
+TDSTS$STALLED =!0x00400000	;Stalled
+TDSTS$BFRERR  =!0x00200000	;Data buffer error (overrun or underrun)
+TDSTS$BABBLE  =!0x00100000	;Bable detected
+TDSTS$NAK     =!0x00080000	;NAK received
+TDSTS$CRCTOERR=!0x00040000	;CRC or time-out error
+TDSTS$BSERR   =!0x00020000	;Bit stuff error
+TDSTS$ACTLEN  =!0x000007FF	;Actual length received
+
+;Define bits and fields in td_cmd
+
+TDCMD$MAXLEN=!0xFFE00000
+TDCMD$TOGGLE=!0x00080000
+TDCMD$ENDPNT=!0x00078000
+TDCMD$ADDR  =!0x00007F00
+TDCMD$TOKEN =!0x000000FF
+
+XMBINDEX PHQHSINX, qh_uhcSIZE*11t+td_SIZE*2 ;Size index for the XMB to hold
+					    ;  the placeholder QHs
+
+;Define the device dependent part of the PDB
+
+$$$=!pcb_devdep
+BLK pcb_uhcqh     , 4		;Address of queue header block (QH) - This
+				;  is allocated in a non-cached XMB
+BLK pcb_uhctdxmb  , 4		;Address of XMB containing TDs
+BLK pcb_uhctdlast , 4		;Address of last TD for current transfer
+BLK pcb_uhcptdaddr, 4		;Physical address of first TD
+BLK pcb_uhcintphqh, 4		;Interrupt placeholder QH used
+BLK pcb_uhcactnext, 4
+BLK pcb_uhcactprev, 4
+pcb_uhcSIZE=!$$$
+XMBINDEX uhcpcbsinx, pcb_uhcSIZE
+
+;Define offsets in the device dependent part of the ICB
+
+$$$=icb_devdep
+BLK icb_uhcstsreg  , 4		;Address of the UHC status register
+BLK icb_uhcstatus  , 1		;Status bits from interrupt level
+BLK                , 3
+BLK icb_uhccbxacnt , 4		;Number of active bulk xfer or control QHs
+BLK icb_uhcacthead , 4		;Pointer to first active PCB
+BLK icb_uhcacttail , 4
+BLK icb_uhcvpfrmlst, 4		;Virtual address of the physical address frame
+				;  list
+BLK icb_uhcppfrmlst, 4		;Physical address of the physical address
+				;  frame list
+BLK icb_uhclastqh  , 4		;Virtual address of last QH or PQH in the
+				;  frame list
+BLK icb_uhcctrlpqh , 4		;Virtual address of control PQH
+BLK icb_uhcbulkpqh , 4		;Virtual address of bulk transfer PQH
+BLK icb_uhc1mspqh  , 4		;Virtual address of 1ms interrupt PQH
+BLK icb_uhc2mspqh  , 4		;Virtual address of 2ms interrupt PQH
+BLK icb_uhc4mspqh  , 4		;Virtual address of 4ms interrupt PQH
+BLK icb_uhc8mspqh  , 4		;Virtual address of 8ms interrupt PQH
+BLK icb_uhc16mspqh , 4		;Virtual address of 16ms interrupt PQH
+BLK icb_uhc32mspqh , 4		;Virtual address of 32ms interrupt PQH
+BLK icb_uhc64mspqh , 4		;Virtual address of 64ms interrupt PQH
+BLK icb_uhc128mspqh, 4		;Virtual address of 128ms interrupt PQH
+BLK icb_uhc256mspqh, 4		;Virtual address of 256ms interrupt PQH
+BLK icb_uhcpqh1ms  , 4		;Physical address of 1ms interrupt PQH
+icb_uhcSIZE=!$$$
+
+;Define bits for icb_uhcstatus
+
+ICBSTS$PORTCHG=!0x80		;Port status has changed
+ICBSTS$INTSTS =!0x7F		;Hardware interrupt status bits
+.PAGE
+;UHC driver dispatch table
+
+	CODE
+
+uhcdisp:.LONG	uhcstart	;usb_start        = 0  - Start controller
+	.LONG	uhcstop		;usb_stop         = 4  - Stop controller
+	.LONG	uhcrateindex	;usb_rateindex    = 8  - Get rate index
+	.LONG   uhcresetport	;usb_resetport    = 12 - Reset port
+	.LONG	uhcenableport	;usb_enableport   = 16 - Enable port
+	.LONG	uhcdisableport	;usb_disableport  = 20 - Disable port
+	.LONG	uhccreatepipe	;usb_createpipe   = 24 - Create pipe
+	.LONG	uhcdstrypipebgn	;usb_dstrypipebgn = 28 - Destroy pipe
+	.LONG	uhcdstrypipefin	;usb_dstrypipefin = 32 - Destroy pipe
+	.LONG	uhctransfer	;usb_transfer     = 36 - Transfer data
+	.LONG	uhccancelpipe	;usb_cancelpipe   = 40 - Cancel transfer
+	.LONG	uhcclrtoggle	;usb_clrtoggle    = 44 - Clear data toggle bit
+.PAGE
+;USB Universal Host Controller device characteristics table
+
+	.MOD	4
+uhcchartbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, , 4, knlDcMsgClass##    , knlDcGetClass## , knlDcSetClass##, 0
+ CHARENT  TYPE    , TEXT, , 4, knlDcMsgType##     , knlDcGet4Byte## , 0              , dcb_typename
+ CHARENT  UNIT    , DECV, , 1, knlDcMsgUnit##     , knlDcGet1Byte## , 0              , dcb_punit
+ CHARENT  PCIBUS  , DECV, , 2, xospciMsgBus##     , xosusbGet2Byte##, 0              , icb_bus
+ CHARENT  PCISLOT , DECV, , 2, xospciMsgSlot##    , xosusbGet2Byte##, 0              , icb_slot
+ CHARENT  PCIFUNC , DECV, , 2, xospciMsgFunc##    , xosusbGet2Byte##, 0              , icb_func
+ CHARENT  PCIVENID, HEXV, , 2, xospciMsgVen##     , xosusbGet2Byte##, 0              , icb_device
+ CHARENT  PCIDEVID, HEXV, , 2, xospciMsgDev##     , xosusbGet2Byte##, 0              , icb_device+2
+ CHARENT  PCIREV  , HEXV, , 2, xospciMsgRev##     , xosusbGet2Byte##, 0              , icb_revsn
+ CHARENT  IOREG   , HEXV, , 2, knlDcMsgIoReg##    , xosusbGet4Byte##, 0              , icb_ioreg
+ CHARENT  INT     , DECV, , 2, knlDcMsgInt##      , xosusbGet4Byte##, 0              , icb_irq
+ CHARENT  NUMPORTS, DECV, , 1, xosusbMsgNumPorts##, xosusbGet1Byte##, 0              , icb_numports
+ CHARENT  PORTCON , HEXV, , 2, xosusbMsgPortCon## , xosusbGet2Byte##, 0              , icb_portcon
+ CHARENT  PORTACT , HEXV, , 2, xosusbMsgPortAct## , xosusbGet2Byte##, 0              , icb_portact
+ CHARENT  PORTLOW , HEXV, , 2, xosusbMsgPortLow## , xosusbGet2Byte##, 0              , icb_portlow
+ CHARENT  SOPIPES , DECV, , 4, xosusbMsgSOPipes## , xosusbGet4Byte##, 0              , icb_sopipes
+ CHARENT  SIPIPES , DECV, , 4, xosusbMsgSIPipes## , xosusbGet4Byte##, 0              , icb_sipipes
+ CHARENT  IOPIPES , DECV, , 4, xosusbMsgIOPipes## , xosusbGet4Byte##, 0              , icb_iopipes
+ CHARENT  IIPIPES , DECV, , 4, xosusbMsgIIPipes## , xosusbGet4Byte##, 0              , icb_iipipes
+ CHARENT  CPIPES  , DECV, , 4, xosusbMsgCPipes##  , xosusbGet4Byte##, 0              , icb_cpipes
+ CHARENT  BOPIPES , DECV, , 4, xosusbMsgBOPipes## , xosusbGet4Byte##, 0              , icb_bopipes
+ CHARENT  BIPIPES , DECV, , 4, xosusbMsgBIPipes## , xosusbGet4Byte##, 0              , icb_bipipes
+ CHAREND
+.PAGE
+	.SBTTL	Initialization
+
+	INITSUB	inituhc
+
+;This driver completely configures itself when loaded to use all available
+;  UHC interfaces. The addunit function is not used.  This driver must be
+;  loaded before the USBCTL symbiont is started.
+
+$$$=!0
+FRM init_addr    , 4
+FRM init_ioreg   , 4
+FRM init_intcode , 4
+FRM init_devcnt  , 4		;Device count
+FRM init_cnt     , 4
+FRM              , 3
+FRM init_irq     , 1
+FRM init_vpfrmlst, 4		;Virtual address of physical address frame list
+FRM init_qhcbo   , 4
+FRM init_qh1mspa , 4		;Physical address of 1ms interrupt QH with Q set
+FRM init_qh1mso  , 4		;Offset of 1ms interrupt QH
+FRM init_pcib    , 4		;Address of PCI DCT block for the device
+init_SIZE=!$$$
+
+inituhc:PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	init_SIZE, 0
+
+;We must first scan through all UHCs and disable the SMM functions in case
+;  legacy support was enabled. If we don't do this for all controllers before
+;  resetting any of the controllers the system can hang in system management
+;  mode.
+
+	MOVL	init_pcib[EBP], #0
+4$:	LEAL	EAX, init_pcib[EBP]
+	PUSHL	EAX
+	PUSHL	#12t			;Class
+	PUSHL	#3t			;Sub-class
+	PUSHL	#0			;Programming interface
+	CALL	xospciFindByClass##
+	TESTL	EAX, EAX
+	JS	init2			;If no more
+
+;Here with a USB UHC located
+
+	MOVL	EDI, init_pcib[EBP]
+	MOVL	EAX, pcib_intitem[EDI]	;Get the IRQ number
+	MOVB	init_irq[EBP], AL
+	MOVL	EAX, pcib_addr4[EDI]	;Get the base IO register address
+	TESTB	AL, #0x1E		;Make sure it's a valid IO address
+	JNE	4$
+	TESTB	AL, #0x01
+	JE	4$
+	DECL	EAX
+	MOVL	init_ioreg[EBP], EAX
+	PUSHL	init_pcib[EBP]		;Clear the legacy trap/interrupt
+	PUSHL	#0xC0			;  enables and flags
+	PUSHL	#0x8F00
+	CALL	xospciWriteCfgReg##
+	JMP	4$			;Continue
+.PAGE
+;Here with legacy support disabled on all controllers - Now we can safely
+;  initialize each controller.
+
+init2:	CLRL	EAX
+	MOVL	init_devcnt[EBP], EAX
+	MOVL	init_pcib[EBP], EAX
+	MOVL	init_intcode[EBP], #firstint
+4$:	LEAL	EAX, init_pcib[EBP]
+	PUSHL	EAX
+	PUSHL	#12t			;Class
+	PUSHL	#3t			;Sub-class
+	PUSHL	#0			;Programming interface
+	CALL	xospciFindByClass##
+	TESTL	EAX, EAX
+	JS	20$			;If no more
+
+;Here with a USB UHC located
+
+	MOVL	EDI, init_pcib[EBP]
+	MOVL	EAX, pcib_intitem[EDI]	;Get the IRQ number
+	MOVB	init_irq[EBP], AL
+	MOVL	EAX, pcib_addr4[EDI]	;Get the base IO register address
+	TESTB	AL, #0x1E		;Make sure it's a valid IO address
+	JNE	4$
+	TESTB	AL, #0x01
+	JE	4$
+	DECL	EAX
+	MOVL	init_ioreg[EBP], EAX
+
+	LEAL	EDX, P_USBINTR[EAX]	;Make sure no interrupts are enabled!
+	CLRL	EAX
+	OUTW	[DX]
+	A2IOP	P_USBSTS-P_USBINTR	;Also make sure no status bits are
+	MOVL	EAX, #0x1F		;  left over
+	OUTW	[DX]
+	MOVZBL	ECX, init_irq[EBP]
+	ORL	ECX, #0x100		;Indicate interrupt can be shared
+	PUSHL	ECX
+	CALL	sysIoChkInt##		;Is the interrupt available?
+	TESTL	EAX, EAX
+	JS	18$			;No - fail!
+	MOVL	EDX, init_ioreg[EBP]	;Are the IO registers available?
+	LEAL	ECX, 1Fh[EDX]
+	CALL	knlChkIORegs##
+	JC	18$			;No - fail!
+	MOVL	ESI, #uhcint		;Copy prototype interrupt routine
+	MOVL	EDI, init_intcode[EBP]
+	MOVL	ECX, #UHCINTSZ/4
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVL	EAX, xosusbNextUnit##
+	MOVL	EBX, #'UHCI'
+	MOVL	ECX, #icb_uhcSIZE
+	MOVL	EDX, #uhcchartbl
+	MOVL	ESI, init_ioreg[EBP]
+	CALL	xosusbMakeIcb##		;Create the ICB
+	JC	18$			;If error
+	MOVL	ECX, #icb_nexts
+	MOVL	EDX, #firsticb
+	CALL	xosusbLinkIcb##
+	MOVL	icb_disp[ESI], #uhcdisp
+	MOVL	icb_fdisp[ESI], #uhcfork
+	DECL	icb_fnext[ESI]
+	MOVB	icb_pcbindex[ESI], #uhcpcbsinx
+	MOVL	EDX, init_ioreg[EBP]	;Store base IO register addresses in
+	MOVL	icb_ioreg[ESI], EDX	;  the ICB
+	ADDL	EDX, #P_USBSTS
+	MOVL	icb_uhcstsreg[ESI], EDX
+
+	MOVL	EBX, init_pcib[EBP]
+	MOVZBL	EAX, pcib_addr[EBX]
+	MOVW	icb_bus[ESI], AX
+	MOVL	EAX, pcib_addr[EBX]
+	SHRL	EAX, #11t
+	ANDL	EAX, #0x1F
+	MOVW	icb_slot[ESI], AX
+	MOVL	EAX, pcib_addr[EBX]
+	SHRL	EAX, #8
+	ANDL	EAX, #0x07
+	MOVW	icb_func[ESI], AX
+
+	MOVL	EAX, pcib_devid[EBX]
+	MOVL	icb_device[ESI], EAX
+	MOVL	EAX, pcib_clsitem[EBX]
+	MOVW	icb_revsn[ESI], AX
+	MOVZBL	ECX, init_irq[EBP]	;Store interrupt number in the ICB
+	MOVL	icb_irq[ESI], ECX
+	MOVL	EDI, init_intcode[EBP]	;Fix up the interrupt code
+	MOVL	{fix1-uhcint}+1[EDI], ESI
+	MOVL	EAX, EDI
+	SUBL	EAX, #uhcint
+	SUBL	{fix2-uhcint}+1[EDI], EAX
+	SUBL	{uhcintexit-uhcint}+1[EDI], EAX
+	LEAL	EAX, icb_name[ESI]	;Set up the interrupt vector
+	PUSHL	EAX
+	ORL	ECX, #0x100
+	PUSHL	ECX
+	PUSHL	#DT_TRAP
+	MOVL	EAX, init_intcode[EBP]
+	PUSHL	EAX
+	ADDL	EAX, #uhcintexit-uhcint
+	PUSHL	EAX
+	CALL	sysIoSetInt##
+	TESTL	EAX, EAX
+	JS	30$			;We already checked this!
+	MOVL	ECX, icb_irq[ESI]	;Enable the interrupt
+	CALL	knlEnableInt##
+	LEAL	EAX, icb_name[ESI]	;Register the registers
+	PUSHL	EAX
+	MOVL	EAX, init_ioreg[EBP]
+	PUSHL	EAX
+	ADDL	EAX, #0x1F
+	PUSHL	EAX
+	CALL	sysIoRegPorts##
+	TESTL	EAX, EAX
+	JS	30$			;We already checked this!
+
+;Here when ready to initialize the hardware
+
+	MOVL	init_cnt[EBP], #10t
+	MOVL	EDX, icb_ioreg[ESI]
+	A2IOP	P_USBCMD
+8$:	MOVL	EAX, #USBCMD$HCRESET	;Reset everything
+	OUTW	[DX]
+	PUSHL	#0
+	PUSHL	#60t*ST_MILLISEC
+	CALL	sysSchTimeWait##	;Wait for a while
+	MOVL	EDX, icb_ioreg[ESI]
+	INW	[DX]			;Is the reset done?
+	TESTB	AL, #USBCMD$HCRESET
+	JE	10$			;Yes
+	DECL	init_cnt[EBP]
+	JNE	8$
+	CRASH	USBC
+
+10$:	PUSHL	init_pcib[EBP]		;Enable normal interrupts
+	PUSHL	#0xC0
+	PUSHL	#0x2000
+	CALL	xospciWriteCfgReg##
+	MOVL	ECX, #8			;Check for up to 8 ports
+	MOVB	icb_numports[ESI], #0
+	MOVL	EDX, icb_ioreg[ESI]
+	A2IOP	P_PORTSC1
+12$:	INW	[DX]			;Get port bits
+	TESTB	AL, #USBPORT$PRESENT	;Is this port present?
+	JE	14$			;No
+	INCB	icb_numports[ESI]	;Yes
+	ADDL	EDX, #2			;Advance to next port
+	LOOP	ECX, 12$		;Continue if more to check
+
+;Here with device completely set up - continue searching for UHC devices if
+;  we have room for another
+
+14$:	CMPL	init_devcnt[EBP], #0	;Is this the first device?
+	JNE	16$			;No
+	MOVL	EBX, #'UHCI'		;Yes - get USB interface name
+	CLRL	EDX			;No addunit subroutine
+	CALL	xosusbNewInterface##	;Register this USB driver
+16$:	ADDL	init_intcode[EBP], #UHCINTSZ+4
+	INCL	xosusbNextUnit##
+	INCL	init_devcnt[EBP]
+18$:	CMPL	init_devcnt[EBP], #16t
+	JL	4$
+
+;Here when all of the USB UHCs (if any) have been found
+
+20$:	CMPL	init_devcnt[EBP], #0	;Did we find any UHC devices at all?
+	JE	nodev			;No - fail
+	MOVL	EBX, #uhcoat		;Yes - start our once-a-tick routine
+	CALL	knlSetupOAT##
+	MOVL	EBX, lkei_pctop+12t[EBP]
+	MOVL	EAX, init_intcode[EBP]	;Highest code offset used
+	MOVL	[EBX], EAX
+	CLRL	EAX
+22$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	lkei_ADJ
+
+;Here if no UHC devices were found
+
+nodev:	MOVL	EAX, #ER_PDNAV
+	JMP	22$
+
+;Here if error after driver has been registered
+
+30$:	CRASH	UHC
+.PAGE
+	.SBTTL	uhcint - USB UHC interface prototype interrupt routine
+
+;Since this is short, its all in the prototype routine to save the CALL/RET
+;  overhead of calling a common interrupt routine.
+
+uhcint:	INTENTR
+fix1:	MOVL	EDI, #0			;Get offset of our ICB
+	MOVL	EDX, icb_uhcstsreg[EDI]	;Point to the status register
+	INW	[DX]			;Get the status bits
+	ANDL	EAX, #1Fh		;Any interrupt bits set?
+	JE	uhcintexit		;No - nothing to do here
+	OUTW	[DX]			;Yes - clear the bits
+	ORB	icb_uhcstatus[EDI], AL	;Store the bits for fork level
+fix2:	CALL	knlReqFork##		;Request fork and dismiss interrupt
+uhcintexit:
+	JMP	knlIntDoneHigh##	;All finished here (this will be
+UHCINTSZ=!{$-uhcint+3}&0FFFFFFFCh	;  modified to point to knlIntDoneLow
+	.LONG	0
+					;  if necessary)
+;End of initialization only code
+
+	CODE
+.PAGE
+	.SBTTL	usb_start - Driver function - Start USB device
+
+;Here for the usb_start driver function - Start USB device - must be called
+;  in extended fork context
+;	long value = uhcstart(
+;	    DCB *dcb)		// Address of the DCB
+
+;  This function is called the first time a UHC controller is used. It sets
+;  up all of the necessary data structures. Deferring this until the
+;  UHC is actually save allocating a non-trivial amount of memory of UHCs
+;  that are never used (it is fairly common to have unused UHCs on a PC)
+
+;  We create two parallel frame lists. The first contains 1024 hardware
+;  address pointer and is used by the hardware. There are only 256 different
+;  pointers. The array of 256 pointers is replacted 4 time to give the 1024
+;  required hardware pointers. The second list contains 256 virtual address
+;  pointers.
+
+;  There are 511 possible periodic QH lists: 256 different lists which are
+;  executed every 256ms, 128 different lists which are executed every 128ms,
+;  ..., 1 list which is executed every millisec. This version of the driver
+;  does not provide very agressive scheduling however. We only implement one
+;  QH list for each of the supported intervals: 256ms, 128ms, 64ms, 32ms,
+;  16ms, 8ms, 4ms, 2ms, and 1ms for a total of 8 lists. We will need to be
+;  enhanced if this is used for applications which saturate the USB with
+;  periodic traffic. For the current applicaitons this should be OK.
+
+uhcstart:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, 12t[ESP]
+	MOVL	ESI, dcb_usbicb[EDI]
+	CMPL	icb_uhcvpfrmlst[ESI], #0 ;Is the device active?
+	JNE	8$			;Yes - fail
+	PUSHL	#-XMBX_4096		  ;No - get a 4KB non-cached exec buffer
+	LEAL	EAX, icb_uhcvpfrmlst[ESI] ;  for the physical frame list
+	PUSHL	EAX
+	CALL	sysMemGetNcXmb##
+	TESTL	EAX, EAX
+	JNS	10$
+6$:	POPL	ESI
+	POPL	EDI
+	RET	4
+
+8$:	MOVL	EAX, #ER_ACT
+	JMP	6$
+
+10$:	PUSHL	icb_uhcvpfrmlst[ESI]	;Get physical address of the buffer
+	CALL	sysMemGetPhyAddr##
+	MOVL	icb_uhcppfrmlst[ESI], EAX
+	PUSHL	#-PHQHSINX		 ;Get an exec buffer for the placeholder
+	LEAL	EAX, icb_uhcbulkpqh[ESI] ;  QHs
+	PUSHL	EAX
+	CALL	sysMemGetNcXmb##
+	TESTL	EAX, EAX
+	JNS	start2
+12$:	PUSHL	EAX
+	PUSHL	icb_uhcvpfrmlst[ESI]
+	MOVL	icb_uhcvpfrmlst[ESI], #0
+	CALL	sysMemGiveXmb##
+	POPL	EAX
+	JMP	6$
+.PAGE
+;Now set up the "placeholder" PQHs and the frame lists.  We create two
+;  parellel frame lists, one which contains physical address of the device
+;  hardware and one which contains offsets.  We create the following PQHs:
+;	1ms interrupt transfers
+;	2ms interrupt transfers
+;	4ms interrupt transfers
+;	8ms interrupt transfers
+;	16ms interrupt transfers
+;	32ms interrupt transfers
+;	64ms interrupt transfers
+;	128ms interrupt transfers
+;	256ms interrupt transfers
+;	control transfers
+;	bulk transfers
+;  Each frame pointer points to one of the 2ms through 256ms interrupt PQHs,
+;  each of which points to the 1ms interrupt QH which points to the control
+;  PQH which points to the bulk transfer PQH.  The bulk transfer PQH has a
+;  dummy TD. All of these PQHs and the dummy TD are in a single non-cached
+;  exec buffer.
+
+start2:	PUSHL	icb_uhcbulkpqh[ESI]
+	CALL	sysMemGetPhyAddr##
+	ADDL	EAX, #qh_pnext+0x02	;Point to the hardware part and set
+					;  the Q bit
+	MOVL	EBX, icb_uhcbulkpqh[ESI]
+
+;Set up the bulk transfer PQH
+
+setbulk:MOVL	icb_uhclastqh[ESI], EBX	;Store address of initial last QH (the
+					;  bulk transfer PQH)
+	MOVL	qh_label[EBX], #'PQH*'	;Store label for debugging
+	MOVL	qh_paddr[EBX], EAX	;Store physical address of the QH
+	MOVL	qh_pcb[EBX], #0
+	MOVL	qh_vnext[EBX], #0	;Store logical address link
+	MOVL	qh_vprev[EBX], #0
+	MOVL	qh_pnext[EBX], #0x01	;Store physical address link
+	LEAL	EDX, qh_uhcSIZE*11t+td_SIZE-{qh_pnext+0x02}[EAX]
+					;Get physical address of the DTD
+	MOVL	qh_phead[EBX], EDX	;Store it
+	LEAL	EDX, qh_uhcSIZE*11t[EBX] ;Get virtual address of the DTD
+	MOVL	tdah_label[EDX], #'DTD*' ;Set up the DTD
+	MOVL	tdah_count[EDX], #1
+	MOVL	td_SIZE+td_pnext[EDX], #0x01
+	MOVL	td_SIZE+td_status[EDX], #0
+	MOVL	td_SIZE+td_cmd[EDX], #0xFFE00000+USBTOKEN_IN
+	MOVL	td_SIZE+td_pbufr[EDX], #0
+
+;Set up the control PQH
+
+setctrl:MOVL	qh_vnext+qh_uhcSIZE[EBX], EBX ;Store logical address link
+	MOVL	qh_pnext+qh_uhcSIZE[EBX], EAX ;Store physical address link
+	ADDL	EAX, #qh_uhcSIZE
+	ADDL	EBX, #qh_uhcSIZE
+	MOVL	qh_label[EBX], #'PQH*'	;Store label for debugging
+	MOVL	qh_paddr[EBX], EAX	;Store physical address of the QH
+	MOVL	qh_pcb[EBX], #0
+	MOVL	qh_vprev[EBX], #0
+	MOVL	qh_phead[EBX], #0x01	;Indicate no TDs
+	MOVL	icb_uhcctrlpqh[ESI], EBX
+
+;Set up the 1ms interrupt placeholder QH
+
+setintr:MOVL	qh_vnext+qh_uhcSIZE[EBX], EBX ;Store logical address link
+	MOVL	qh_pnext+qh_uhcSIZE[EBX], EAX ;Store physical address link
+	ADDL	EAX, #qh_uhcSIZE
+	ADDL	EBX, #qh_uhcSIZE
+	MOVL	qh_label[EBX], #'PQH*'	;Store label for debugging
+	MOVL	qh_paddr[EBX], EAX	;Store physical address of the QH
+	MOVL	qh_pcb[EBX], #0
+	MOVL	qh_vprev[EBX], #0
+	MOVL	qh_phead[EBX], #0x01	;Indicate no TDs
+	MOVL	icb_uhc1mspqh[ESI], EBX
+	MOVL	icb_uhcpqh1ms[ESI], EAX
+	MOVL	EDX, icb_uhcvpfrmlst[ESI] ;Store the 4 1ms only frame
+	MOVL	3FC[EDX], EAX		  ;  pointers
+	MOVL	7FC[EDX], EAX
+	MOVL	0BFC[EDX], EAX
+	MOVL	0FFC[EDX], EAX
+	ADDL	EAX, #qh_uhcSIZE
+	ADDL	EBX, #qh_uhcSIZE
+	MOVL	icb_uhc2mspqh[ESI], EBX
+	PUSHL	EDI
+
+;Set up the rest of the placeholder QHs
+
+	CLRL	EDI			;Set up the 2ms interrupt QH
+	MOVL	ECX, #512t
+	MOVL	EDX, #2*4
+	CALL	setupintqh
+	MOVL	icb_uhc4mspqh[ESI], EBX
+	MOVL	EDI, #1*4		;Set up the 4ms interrupt QH
+	MOVL	ECX, #256t
+	MOVL	EDX, #4*4
+	CALL	setupintqh
+	MOVL	icb_uhc8mspqh[ESI], EBX
+	MOVL	EDI, #3*4		;Set up the 8ms interrupt QH
+	MOVL	ECX, #128t
+	MOVL	EDX, #8*4
+	CALL	setupintqh
+	MOVL	icb_uhc16mspqh[ESI], EBX
+	MOVL	EDI, #7*4		;Set up the 16ms interrupt QH
+	MOVL	ECX, #64t
+	MOVL	EDX, #16t*4
+	CALL	setupintqh
+	MOVL	icb_uhc32mspqh[ESI], EBX
+	MOVL	EDI, #15t*4		;Set up the 32ms interrupt QH
+	MOVL	ECX, #32t
+	MOVL	EDX, #32t*4
+	CALL	setupintqh
+	MOVL	icb_uhc64mspqh[ESI], EBX
+	MOVL	EDI, #31t*4		;Set up the 64ms interrupt QH
+	MOVL	ECX, #16t
+	MOVL	EDX, #64t*4
+	CALL	setupintqh
+	MOVL	EDI, #63t*4		;Set up the 128ms interrupt QH
+	MOVL	ECX, #8
+	MOVL	icb_uhc128mspqh[ESI], EBX
+	MOVL	EDX, #128t*4
+	CALL	setupintqh
+	MOVL	icb_uhc256mspqh[ESI], EBX
+	MOVL	EDI, #127t*4		;Set up the 256ms interrupt QH
+	MOVL	ECX, #4
+	MOVL	EDX, #256t*4
+	CALL	setupintqh
+	POPL	EDI
+
+;Now initialize and set up the hardware
+
+inithwr:MOVL	EDX, icb_ioreg[ESI]
+	A2IOP	P_USBCMD
+	MOVL	EAX, #USBCMD$GRESET	;Reset everything
+	OUTW	[DX]
+	PUSHL	EDX
+	PUSHL	#0
+	PUSHL	#60t*ST_MILLISEC
+	CALL	sysSchTimeWait##	;Wait for a short time
+	POPL	EDX
+	CLRL	EAX
+	OUTW	[DX]			;Terminate the reset
+	PUSHL	EDX
+	PUSHL	#0
+	PUSHL	#30t*ST_MILLISEC	;Let things settle down
+	CALL	sysSchTimeWait##
+	POPL	EDX
+	MOVL	EAX, icb_uhcppfrmlst[ESI] ;Give frame list address to the device
+	A2IOP	P_FRBASEADD-P_USBCMD
+	OUTL	[DX]
+	MOVL	EAX, #0x0F		;Enable all interrupts
+	A2IOP	P_USBINTR-P_FRBASEADD
+	OUTW	[DX]
+	A2IOP	P_USBCMD-P_USBINTR
+	MOVL	EAX, #USBCMD$MAX64
+	OUTW	[DX]
+	MOVL	ECX, #2
+	CALL	knlSDelay##
+	ADDL	EAX, #USBCMD$RUN	;Start it up!
+	OUTW	[DX]
+
+	PUSHL	#0
+	PUSHL	#ST_SECOND/4
+	CALL	sysSchTimeWait##
+
+	CLRL	EAX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+40$:	CRASH	CGPA
+.PAGE
+;Subroutine to set up an interrupt QH and set all of the frame list entires
+;  that point to it
+;	c{EAX} = Physical address value
+;	c{EBX} = Virtual address value
+;	c{EDI} = Offset in frame list of first frame list pointer to set
+;	c{ESI} = Address of ICB
+;	c{ECX} = Number of frame list pointers to set
+;	c{EDX} = Frame list pointer increment
+;	CALL	setupinqh
+;	c{EAX} = Updated physical address value
+;	c{EBX} = Updated offset value
+
+setupintqh:
+	ADDL	EDI, icb_uhcvpfrmlst[ESI]
+4$:	MOVL	[EDI], EAX		;Set the frame list entires
+	ADDL	EDI, EDX
+	LOOP	ECX, 4$
+
+	MOVL	EDX, icb_uhcpqh1ms[ESI]	;Set up the QH
+	MOVL	qh_pnext[EBX], EDX	;Store physical address link
+	MOVL	EDX, icb_uhc1mspqh[ESI]	;Store virtual address link
+	MOVL	qh_vnext[EBX], EDX
+	MOVL	qh_pcb[EBX], #0
+	MOVL	qh_vprev[EBX], #0
+	MOVL	qh_phead[EBX], #0x01	;Indicate no TDs
+	MOVL	qh_paddr[EBX], EAX	;Store physical address of the QH
+	MOVL	qh_label[EBX], #'PQH*'	;Store label for debugging
+	ADDL	EAX, #qh_uhcSIZE	;Update the physical address
+	ADDL	EBX, #qh_uhcSIZE	;Update the virtual address
+	RET
+.PAGE
+	.SBTTL	usb_stop - Driver function - Stop USB device
+
+;Here for the usb_stop driver function - Stop USB device
+;	long value - uhcstop(
+;		ICB *icb)
+
+uhcstop:
+	CRASH	????
+.PAGE
+	.SBTTL	usb_rateindex - Driver function - Get rate index
+
+;Here for the usb_rateindex driver function - Get rate index given rate
+;  in msec.
+;	value = uhcrateindex(
+;		long rate)	// Rate in msec
+;  Value returned is the rate index.
+
+ri_rate=!4
+
+uhcrateindex:
+	BSRL	EDX, ri_rate[ESP]
+	JNE	4$
+	MOVB	DL, #31t
+4$:	MOVL	EAX, #32t
+	SUBL	EAX, EDX
+	CMPL	EAX, #9
+	JLE	6$
+	MOVL	EAX, #9
+6$:	RET	4
+
+.IF NE 0
+	CLRL	EDX
+	CMPL	EAX, #1t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #2t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #6t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #12t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #24t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #48t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #96t
+	JLE	14$
+	INCL	EDX
+	CMPL	EAX, #190t
+	JLE	14$
+	INCL	EDX
+.ENDC
+
+.PAGE
+	.SBTTL	usb_resetport - Driver function - Reset port
+
+;Here for the usb_enable driver function - Reset port
+;	long = uhcresetport(
+;	    DCB *dcb,
+;	    long portnum);
+
+uhcresetport:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, 16t[ESP]
+	MOVL	ESI, dcb_usbicb[EDI]
+	MOVZBL	EAX, 12t[ESP]
+	DECB	AL
+	JS	6$
+	CMPB	AL, icb_numports[ESI]
+	JAE	6$
+	MOVZBL	EDX, AL
+	ADDL	EDX, EDX
+	ADDL	EDX, icb_ioreg[ESI]
+	ADDL	EDX, #P_PORTSC1
+	MOVL	EAX, #USBPORT$RESET	;Start the port reset
+	OUTW	[DX]
+	PUSHL	EDX
+	PUSHL	#0
+	PUSHL	#60t*ST_MILLISEC	;Wait for 200ms
+	CALL	sysSchTimeWait##
+	POPL	EDX
+	CLRL	EAX			;Remove the port reset
+	OUTW	[DX]
+	PUSHL	EDX
+	PUSHL	#0
+	PUSHL	#30t*ST_MILLISEC	;Wait for another 40ms to let things
+	CALL	sysSchTimeWait##	;  settle down
+	POPL	EDX
+	CLRL	EAX
+4$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+6$:	MOVL	EAX, #ER_VALUE
+	JMP	4$
+.PAGE
+	.SBTTL	usb_enableport - Driver function - Enable port
+
+;Here for the usb_enable driver function - Enable port
+;	long value = uhcenableport(
+;		DCB *dcb,
+;		long portnum);
+
+uhcenableport:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, 16t[ESP]
+	MOVL	ESI, dcb_usbicb[EDI]
+	MOVZBL	EAX, 12t[ESP]
+	DECB	AL
+	JS	6$
+	CMPB	AL, icb_numports[ESI]
+	JAE	6$
+	MOVZBL	EDX, AL
+	ADDL	EDX, EDX
+	ADDL	EDX, icb_ioreg[ESI]
+	ADDL	EDX, #P_PORTSC1
+	MOVL	EAX, #USBPORT$ENABLE	;Enable the port
+	OUTW	[DX]
+	PUSHL	#0
+	PUSHL	#30t*ST_MILLISEC	;Wait for 30ms to let things settle
+	CALL	sysSchTimeWait##	;  down
+	CLRL	EAX
+4$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+6$:	MOVL	EAX, #ER_VALUE
+	JMP	4$
+.PAGE
+	.SBTTL	usb_disableport - Driver function - Disable port
+
+;Here for the usb_disable driver function - Disable port
+;	long value = uhcdisableport(
+;		DCB *dcb,
+;		long portnum);
+
+uhcdisableport:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, 16t[ESP]
+	MOVL	ESI, dcb_usbicb[EDI]
+	MOVZBL	EAX, 12t[ESP]
+	DECB	AL
+	JS	6$
+	CMPB	AL, icb_numports[ESI]
+	JAE	6$
+	MOVZBL	EDX, AL
+	ADDL	EDX, EDX
+	ADDL	EDX, icb_ioreg[ESI]
+	ADDL	EDX, #P_PORTSC1
+	CLRL	EAX			;Disable the port
+	OUTW	[DX]
+	PUSHL	EDX
+	PUSHL	#0
+	PUSHL	#30t*ST_MILLISEC	;Wait for 30ms to let things settle
+	CALL	sysSchTimeWait##	;  down
+	POPL	EDX
+	CLRL	EAX
+4$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+6$:	MOVL	EAX, #ER_VALUE
+	JMP	4$
+.PAGE
+;Here for the usb_createpipe driver function - Create pipe
+;	long uhccreatepipe(
+;	    PCB *pcb);		// Address of PCB for pipe
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;The PCB should be completely set up except for the device dependent part. It
+;  should not yet be linked into the CLB's PCB list. This routine sets up the
+;  device dependent part and links the endpoint's QH into the controller's
+;  QH list.
+
+crep_pcb=!12t
+
+uhccreatepipe:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, crep_pcb[ESP]
+	PUSHL	#-qh_uhcINDEX
+	LEAL	EAX, pcb_uhcqh[ESI]
+	PUSHL	EAX
+	CALL	sysMemGetNcXmb##
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	EDI, pcb_uhcqh[ESI]
+	MOVL	qh_label[EDI], #'QH**'
+	MOVL	qh_pcb[EDI], ESI
+	LEAL	EAX, qh_pnext+0x02[EDI]
+	PUSHL	EAX			;Get physical address of the physical QH
+	CALL	sysMemGetPhyAddr##	;  with the QH bit set
+	MOVL	qh_paddr[EDI], EAX
+	CLRL	EAX
+	MOVL	pcb_uhctdxmb[ESI], EAX
+	MOVL	pcb_uhctdlast[ESI], EAX
+	MOVL	pcb_uhcptdaddr[ESI], EAX
+	MOVL	pcb_uhcintphqh[ESI], EAX
+	DECL	EAX
+	MOVL	pcb_uhcactnext[ESI], EAX
+	MOVL	pcb_uhcactprev[ESI], EAX
+	MOVL	qh_phead[EDI], #0x01	;Indicate no TDs
+
+;;;;;; CHECK FOR AVAILABLE BANDWIDTH HERE!!!!
+	TOFORK
+	PUSHL	ESI
+	CALL	intolists		;Put the PCB into the virtual and
+	FROMFORK
+	CLRL	EAX			;  physical address lists
+20$:	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to put a PCB into the virtual and physical address lists. This makes
+;  the PCB's QH visible to the controller. This is called when creating a
+;  pipe and after cancelling a pipe.
+;	void intolists(
+;	    PCB *pcb);
+
+;  Controller registers used:
+;  Note: All physical pointers point to the qh_pnext item in the QH (which
+;        is the start of the physical QH). All virtual pointers point to the
+;        start of the QH.
+;  QH items used:
+;	qh_vnext --> Virtual address of next QH in controller's list
+;	qh_pnext --> Physical address of next QH in controller's list
+;New entries are always inserted at the head of the controller's list
+
+ilst_pcb=!12t
+
+intolists:
+	REQUIREFORK
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, ilst_pcb[ESP]
+	MOVL	EDI, pcb_uhcqh[ESI]
+	CMPL	qh_label[EDI], #'QH**'
+	JE	2$
+	CRASH	NQHI
+
+2$:	MOVL	EDX, pcb_icb[ESI]
+	TESTB	pcb_endpnt[ESI], #PCB$XT_INT ;Interrupt transfer?
+	JE	4$			;No
+	MOVZBL	ECX, pcb_intindx[ESI]	;Get the interrupt index
+	MOVL	ECX, icb_uhc1mspqh[EDX+ECX*4] ;Get the corresponding PQH
+	JMP	8$
+
+;Here if not interrupt transfer
+
+4$:	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL ;Control transfer?
+	JNE	6$			;No
+
+;Here if control transfer
+
+	MOVL	ECX, icb_uhcctrlpqh[EDX] ;Get address of control PQH
+	JMP	8$
+
+;Here if bulk transfer
+
+6$:	MOVL	ECX, icb_uhcbulkpqh[EDX] ;Get address of bulk transfer PQH
+8$:	CMPL	qh_label[ECX], #'PQH*'
+	JE	10$
+	CRASH	NPQH
+
+10$:	MOVL	EAX, qh_vnext[ECX]	;Insert into the virtual address list
+	TESTL	EAX, EAX
+	JE	12$
+	CMPL	qh_label[EAX], #'QH**'
+	JE	12$
+	CMPL	qh_label[EAX], #'PQH*'
+	JE	12$
+	CRASH	NPQX
+
+
+12$:	MOVL	qh_vnext[EDI], EAX
+	MOVL	qh_vprev[EDI], ECX
+	MOVL	qh_vnext[ECX], EDI
+	TESTL	EAX, EAX
+	JE	16$
+	MOVL	qh_vprev[EAX], EDI
+16$:	CMPL	ECX, icb_uhclastqh[EDX]	;Is this the new last QH?
+	JNE	18$			;No
+	MOVL	icb_uhclastqh[EDX], EDI	;Yes - update pointer
+18$:	MOVL	EAX, qh_pnext[ECX]	;Insert into the hardware address list
+	MOVL	qh_pnext[EDI], EAX
+	MOVL	EAX, qh_paddr[EDI]
+	ORL	EAX, #0x02
+	MOVL	qh_pnext[ECX], EAX	;This makes the QH visible to the
+	POPL	ESI			;  controller
+	POPL	EDI
+	RET	4
+.PAGE
+;Here for the usb_dstrypipebgn driver function - Begin destroying a pipe
+;	void uhcdstrypipebgn(
+;	    PCB *pcb);		// Address of PCB for pipe
+
+;This routine removes the QH from the controller's physical address list and
+;  from our virtual address list.  The device MUST NOT be active.
+
+dpb_pcb=!4
+
+uhcdstrypipebgn:
+	MOVL	EDX, dpb_pcb[ESP]
+	CMPL	pcb_label[EDX], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	TESTB	pcb_status[EDX], #PSTS$ACTIVE ;Is the pipe active?
+	JE	4$			;No
+	CRASH	IACT
+
+4$:	TOFORK
+	PUSHL	EDX			;Remove the PCB from the physical and
+	CALL	outoflists		;  virtual address lists
+	FROMFORK
+	RET	4
+.PAGE
+;Here for the usb_dstrypipefin driver function - Finish destroying a pipe
+;	void uhcdstrypipefin(
+;	    PCB *pcb);		// Address of PCB for pipe
+
+;This routine give up all XMBs associated with the pipe except for the PCB.
+
+dpf_pcb=!8
+
+uhcdstrypipefin:
+	PUSHL	ESI
+	MOVL	ESI, dpf_pcb[ESP]
+	CMPL	pcb_label[ESI], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	TESTB	pcb_status[ESI], #PSTS$ACTIVE ;Is the pipe active?
+	JE	4$			;No
+	CRASH	IACT
+
+4$:	PUSHL	pcb_uhcqh[ESI]		;Give up the QH
+	CALL	sysMemGiveXmb##
+	CMPL	pcb_uhctdxmb[ESI], #0	;Do we have any TDs?
+	JE	6$			;No
+	PUSHL	pcb_uhctdxmb[ESI]	;Yes - give them up
+	CALL	sysMemGiveXmb##
+6$:	POPL	ESI
+	RET	4
+.PAGE
+;Function to remove a QH from the physical and virtual address lists. The
+;  physical pointer to the next QH is NOT modified. This allows an active
+;  QH to be removed from the list without interfearing with the controller's
+;  operation as long as it is not given up until is is definate that the
+;  controller is no longer accessing the QH (generally 1 to 2 ms).
+;	void outoflists(
+;	    PCB *pcb);
+
+olst_pcb=!12t
+
+outoflists:
+	REQUIREFORK
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, olst_pcb[ESP]
+	MOVL	EBX, pcb_uhcqh[ESI]	;Get address of our QH
+	CMPL	qh_label[EBX], #'QH**'
+	JE	2$
+	CRASH	NQHA
+
+2$:	MOVL	EDX, qh_vprev[EBX]	;Remove it from the virtual list
+	CMPL	qh_label[EDX], #'QH**'	;  (There will always be a previous
+	JE	4$			;  QH which may be a placeholder QH.)
+	CMPL	qh_label[EDX], #'PQH*'
+	JE	4$
+	CRASH	NQHB
+
+4$:	MOVL	ECX, qh_vnext[EBX]
+	TESTL	ECX, ECX
+	JE	6$
+	CMPL	qh_label[ECX], #'QH**'
+	JE	6$
+	CMPL	qh_label[ECX], #'PQH*'
+	JE	6$
+	CRASH	NQHC
+
+6$:	MOVL	qh_vnext[EDX], ECX
+	TESTL	ECX, ECX
+	JE	10$
+	MOVL	qh_vprev[ECX], EDX
+10$:	MOVL	EAX, qh_pnext[EBX]	;Also remove it from the physical list
+	MOVL	qh_pnext[EDX], EAX
+	TESTL	ECX, ECX		;Was this last QH?
+	JNE	16$			;No
+	MOVL	ECX, pcb_icb[ESI]	;Yes - update the last QH pointer
+	CMPL	EBX, icb_uhclastqh[ECX]	;Is the last QH pointer right?
+	JE	12$
+	CRASH	BLQH
+
+12$:	MOVL	icb_uhclastqh[ECX], EDX	;Yes - update the pointer
+	PUSHL	ECX			;Optimize the BRWL
+	CALL	updatebwr
+16$:	POPL	EBX
+	POPL	ESI
+	RET	4
+.PAGE
+	.SBTTL	usb_transfer - Driver function - Start transfer
+
+;Here for the usb_transfer driver function - Start transfer
+;	long uhctransfer(
+;	    PCB   *pcb,		// Address of PCB for pipe
+;	    BLIST *blist,	// Address of buffer list
+;	    long   bcnt);	// Number of buffers in buffer lsit
+;  Value returned is amount actually read (positive) or a negative XOS
+;    error code
+
+;Buffer list format:
+;  Offset  Size Description
+;     0      4  Byte count
+;     4      4  Data linear address
+;     8      4  Data physical address (0 if not known)
+;    12      4  PID (bits 0-2), reserved - must be 0 (bits 3-31)
+
+;The buffer list for a control transfer must contain 2 or more packets as
+;  follows:
+;    The first buffer must specify a control transfer with an 8 byte data
+;      buffer, which contains the setup data. The token index must indicate
+;      a SETUP packet. 
+;    If the data phase is present, the second throught second to last buffers
+;      must indicate data buffers. The token index must indicate either an IN
+;      or OUT packet, which must match the direction indicated in the setup
+;      data.
+;    The final buffer specifies the status phase. It must be 0 length with
+;      the opposite direction from the direction of the transfer.
+
+;Short packets in the data phase of a control transfer are handled here.
+;  When this is detected the transfer is restarted at the status phase (the
+;  last packet). For other than control transfers, short input simply
+;  terminate the transfer.
+
+;For all transfers, if an error occures the transfer is terminated and the
+;  callback function is called.
+
+;There are 2 ways for the caller to determine when IO is complete. If a
+;  callback function is specified, it is called when IO is complete. Otherwise
+;  the xosusbWaitDone function can be called in extended fork context to wait
+;  until IO is complete. In most cases it is more useful to use the callback
+;  function with interrupt IO and the wait function with bulk transfer and
+;  control IO, although this is not required.
+
+;The UHC provides very primitive DMA functionality. A separate TD must be
+;  created for each packet and packets cannot cross page bountries(!). This
+;  means that the TD list will be quite long for a large buffer (usually about
+;  1/4 the length of the buffer!). The inability to cross page boundries
+;  creates a problem when transferring directly to or from a user space
+;  buffer. We solve this the easy way in this version by simply not allowing
+;  this. Generally, this means that a user buffer which crosses page
+;  boundries must be aligned modulo the packet size, usually 64 bytes.
+;  Since user buffers are only used with a few devices and will generally
+;  be allocated in seperate pages (since any page containing a buffer cannot
+;  be cached), this should not be a problem.
+
+$$$=!0
+FRM xfr_tdcnt   , 4		;Number of TDs needed
+FRM xfr_toggle  , 4		;Toggle bit value
+FRM xfr_pbufr   , 4		;Physical address of the data buffer
+FRM xfr_intbos  , 4		;Interrupt input buffer offset
+FRM xfr_left    , 4		;Bytes left to transfer
+FRM xfr_pqh     , 4		;Physical address of the QH
+FRM xfr_otds    , 4		;Offset of the first TD
+FRM xfr_ptdaddr , 4		;Physical address of the first TD
+FRM xfr_vtdaddr , 4		;Virtual address of the first TD
+FRM xfr_pbfraddr, 4
+xfr_SIZE=!$$$
+
+xfr_pcb     =!28t		;(4) Address of PCB for the pipe
+xfr_blist   =!24t		;(4) Far address of buffer list
+xfr_bcnt    =!20t		;(4) Length of the buffer list
+
+uhctransfer:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	xfr_SIZE, 0
+	MOVL	ESI, xfr_pcb[EBP]
+	CMPL	pcb_label[ESI], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	TESTB	pcb_status[ESI], #PSTS$GONE
+	JNE	xfrgone
+
+;Determine how many TDs we need.  We divide the length of each buffer by the
+;  transfer size (rounded up).
+
+	MOVL	EDX, pcb_icb[ESI]	 ;Make sure its not in the active list
+	MOVL	EAX, icb_uhcacthead[EDX] ;  (only for debugging!)
+4$:	TESTL	EAX, EAX
+	JE	8$
+	CMPL	EAX, ESI
+	JNE	6$
+	CRASH	INAL			;[IN Active List]
+
+6$:	MOVL	EAX, pcb_uhcactnext[EAX]
+	JMP	4$
+
+8$:	MOVL	EAX, xfr_bcnt[EBP]	;Get number of buffers
+	MOVL	xfr_left[EBP], EAX
+	MOVL	xfr_tdcnt[EBP], #0	;Initialize the TD count
+	MOVL	EBX, xfr_blist[EBP]	;Point to start of the packet list
+	MOVL	xfr_toggle[EBP], #0
+	MOVL	ECX, pcb_maxpkt[ESI]	;Get maximum tranxfer size
+14$:	MOVL	EAX, [EBX]
+	TESTL	EAX, EAX
+	SETE	DL
+	ORB	AL, DL
+	LEAL	EAX, -1[ECX+EAX]
+	CLRL	EDX
+	IDIVL	ECX
+	ADDL	xfr_tdcnt[EBP], EAX
+	ADDL	EBX, #bl_SIZE
+	DECL	xfr_left[EBP]
+	JNE	14$
+	MOVL	EDX, xfr_tdcnt[EBP]	;Get number of TDs we need
+	INCL	EDX			;Always add 1 to account for the first
+					;  16 bytes which are not used except
+					;  for the label.)
+	IMULL	EDX, #td_SIZE		;Get size of the XMB we need
+	PUSHL	EDX
+	LEAL	EAX, pcb_uhctdxmb[ESI]
+	PUSHL	EAX
+	CALL	sysMemGetNcXmb##
+	TESTL	EAX, EAX
+	JS	sxfrdone
+	MOVL	EBX, pcb_uhctdxmb[ESI]	;Get address of the TD XMB
+	MOVL	tdah_label[EBX], #'TD**' ;Store label for debugging
+	MOVL	EAX, xfr_tdcnt[EBP]
+	MOVL	tdah_count[EBX], EAX
+	ADDL	EBX, #td_SIZE
+	MOVL	xfr_vtdaddr[EBP], EBX
+	PUSHL	EBX			;Get physical address of the first TD
+	CALL	sysMemGetPhyAddr##
+	MOVL	xfr_ptdaddr[EBP], EAX	;Save physical address
+	MOVL	pcb_uhcptdaddr[ESI], EAX
+	MOVL	EDI, pcb_uhcqh[ESI]
+					;Fall into setuptds on  next page
+.PAGE
+;Now set up the TDs
+
+setuptds:
+	MOVL	EDI, xfr_blist[EBP]
+	MOVL	pcb_total[ESI], #0
+	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL ;Control transfer?
+	JNE	2$
+	MOVL	pcb_total[ESI], #-8
+
+;Here to start next buffer
+
+2$:	MOVL	EAX, bl_length[EDI]	;Get length of the buffer
+	MOVL	xfr_left[EBP], EAX
+	MOVL	EAX, bl_paddr[EDI]	;Get physical address of buffer
+	TESTL	EAX, EAX		;Already have physical address?
+	JNE	4$			;Yes
+	CMPL	bl_vaddr[EDI], #0	;No - null buffer?
+	JE	4$			;Yes
+	PUSHL	bl_vaddr[EDI]		;No - get physical address
+	CALL	sysMemGetPhyAddr##
+4$:	MOVL	xfr_pbfraddr[EBP], EAX	;Save physical address of first buffer
+
+;Here to start next packet
+
+6$:	MOVL	EBX, xfr_vtdaddr[EBP]
+	TESTL	EBX, #0x0FFF		;In a new page?
+	JNE	8$			;No
+	PUSHL	EBX			;Yes - get its physical address
+	CALL	sysMemGetPhyAddr##
+	MOVL	xfr_ptdaddr[EBP], EAX	;Save it
+	MOVL	EBX, xfr_vtdaddr[EBP]
+
+;;;;??????????????????? THIS IS WRONG!!!!
+
+	MOVL	td_pnext-td_SIZE[EBX], EAX ;Fix up next TD physical pointer
+					   ;  in the previous TD
+8$:	MOVL	EAX, xfr_pbfraddr[EBP]	;Store physical address of the buffer
+	MOVL	td_pbufr[EBX], EAX	;  in the TD
+	MOVL	EAX, pcb_maxpkt[ESI]
+	CMPL	EAX, xfr_left[EBP]
+	JBE	10$
+	MOVL	EAX, xfr_left[EBP]
+10$:	ADDL	pcb_total[ESI], EAX	;Add packet length into the total
+	ADDL	xfr_pbfraddr[EBP], EAX	;Bump buffer address
+	SUBL	xfr_left[EBP], EAX	;Reduce amount needed
+	DECL	EAX
+	SHLL	EAX, #21t		;Get count in the right place
+	MOVL	ECX, pcb_clb[ESI]	;Get the USB device address
+	MOVB	AH, clb_addr[ECX]
+	MOVZBL	EDX, pcb_endpnt[ESI]	;Get the endpoint
+	ANDL	EDX, #0x07
+	SHLL	EDX, #15t
+	ORL	EAX, EDX
+	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL ;Control transfer?
+	JE	14$			;Yes
+
+;Here to handle the toggle bit if not a control transfer
+
+	MOVZBL	EDX, pcb_toggle[ESI]
+	SHLL	EDX, #19t
+	ORL	EAX, EDX
+	XORB	pcb_toggle[ESI], #0x01
+	JMP	16$
+
+;Here to handle the toggle bit if doing a control transfer
+
+14$:	ORL	EAX, xfr_toggle[EBP]
+	XORL	xfr_toggle[EBP], #TDCMD$TOGGLE
+	CMPL	xfr_bcnt[EBP], #1	;Status phase?
+	JNE	16$			;No
+	ORL	EAX, #TDCMD$TOGGLE	;Yes - force toggle bit to 1
+16$:	MOVZBL	EDX, bl_pid[EDI]	;Get the PID index
+	MOVB	AL, tokentbl[EDX]	;Get actual PID value for the hardware
+	MOVL	td_cmd[EBX], EAX
+	MOVL	EAX, #TDSTS$ERRCNT|TDSTS$ACTIVE ;Initialize error count to 3
+					        ;  and set the active bit
+	CMPB	td_cmd[EBX], #USBTOKEN_IN ;Need short packet detect?
+	JNE	20$			;No
+	ORL	EAX, #TDSTS$SHORTPD	;Yes
+20$:	CMPB	clb_speed[ECX], #1	;Low speed device?
+	JNE	22$			;No
+	ORL	EAX, #TDSTS$LOWSPD	;Yes
+22$:	MOVL	td_status[EBX], EAX
+	ADDL	xfr_ptdaddr[EBP], #td_SIZE ;Advance physical address
+	MOVL	EAX, xfr_ptdaddr[EBP]	;Store physical pointer to next TD
+	MOVL	td_pnext[EBX], EAX
+	ADDL	xfr_vtdaddr[EBP], #td_SIZE ;Advance virtual pointer
+
+;Here with this TD complete
+
+	CMPL	xfr_left[EBP], #0	;Need another TD for this buffer?
+	JG	6$			;Yes - continue
+	ADDL	EDI, #bl_SIZE		;Advance to next buffer
+	DECL	xfr_bcnt[EBP]
+	JNE	2$
+
+;Here with all TDs constructed
+
+	MOVL	pcb_uhctdlast[ESI], EBX
+	ORL	td_status[EBX], #0x01000000 ;Set IOC bit in last TD
+	MOVL	td_pnext[EBX], #0x01 	;Clear the final link
+	ORB	pcb_status[ESI], #PSTS$ACTIVE ;Indicate active
+	MOVL	EDI, pcb_icb[ESI]
+26$:	MOVL	EAX, icb_uhcacttail[EDI] ;Link the PCB to end of the active list
+	MOVL	pcb_uhcactnext[ESI], #0
+	MOVL	pcb_uhcactprev[ESI], EAX
+	TESTL	EAX, EAX
+	JE	30$
+	MOVL	pcb_uhcactnext[EAX], ESI
+	JMP	32$
+
+30$:	MOVL	icb_uhcacthead[EDI], ESI
+32$:	MOVL	icb_uhcacttail[EDI], ESI
+	TESTB	pcb_endpnt[ESI], #PCB$XT_INT ;Interrupt transfer?
+	JNE	tdready			;Yes
+	INCL	icb_uhccbxacnt[EDI]	;No - increment bulk xfer/control
+					;  active count
+	PUSHL	EDI
+	CALL	updatebwr		;Update the bandwidth reclamation loop
+tdready:MOVL	EDI, pcb_uhcqh[ESI]
+	MOVL	EAX, pcb_uhcptdaddr[ESI] ;Store physical address of first TD
+	MOVL	qh_phead[EDI], EAX	 ;  in the QH (this makes the TD list
+	CLRL	EAX			 ;  visible to the controller)
+sxfrdone:
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+xfrgone:MOVL	EAX, #ER_DVRMV
+	JMP	sxfrdone
+.PAGE
+;Here for the usb_clrtoggle driver function - Clear data toggle bit
+;	lonf uhcclrtoggle(
+;	    PCB *pcb);
+
+;Must be called at fork level. The caller must have determined that the device
+;  is not active. Will normally only be called after issueing a CLEAR_FEATURE
+;  setup function for an endpoint to clear the ENDPOINT_HALT feature.
+
+clrtgl_pcb=!4
+
+uhcclrtoggle:
+	MOVL	EDX, clrtgl_pcb[ESP]
+	CMPL	pcb_label[EDX], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	MOVB	pcb_toggle[EDX], #0
+	CLRL	EAX
+	RET	4
+.PAGE
+;Here for the usb_cancelpipe driver function - Cancel transfer - Must be called
+;  at fork level. The caller must have verified that the pipe is active.
+;	long uhccancelpipe(
+;	    PCB *pcb);		// Address of PCB for pipe
+;  Value returned is 0 if device was idle and 1 if device was active and is
+;    now being canceled if normal or a negative XOS error code if error. If
+;    1 is returned, caller should wait at least 1 scheduler period before
+;    assuming the device is idle.
+
+;There is a serious problem with canceling an active request in that the
+;  controller may be accessing the QH or one of the TDs for this request
+;  while we are canceling it. It is virtually impossible to cleanly stop
+;  an active request! We need to change the link pointer in the QH to
+;  indicate that there are no TDs and thus that the QH is not active. The
+;  problem is that if a TD is being processed when we write the pointer,
+;  the controller will overwrite it when it has finished processfing the TD!
+;  It is possible to safely remove a QH from the list of active Qhs since
+;  the controller does not modify the "horizontal" pointer in the QH. Thus
+;  the ONLY safe way to stop a transfer appears to be as follows:
+;    1) Remove the QH from the physical address list. It is also removed from
+;       the virtual address list. (It would probably be better to keep it in
+;       the virtual address list but this would make dealing with other
+;       changes to the list while this QH was being canceled unreasonably
+;       complex. Putting it back in the list, probably at a different position,
+;       should not cause any problems.) The PCB is left in the active list.
+;    2) Delay long enough to ensure that the controller is not using the QH.
+;       This should be at least a complete frame time. We use the scheduler
+;       timer to delay for between 5 to 10ms which is very conservative.
+;       It would be nice to simply delay until the 2nd SOF, but the UHCI
+;       does not provide an SOF interrupt.
+;    3) Make the QH idle by setting bit 0 in the link (vertical) pointer and
+;       give up any TDs used by the QH.
+;    4) Put the QH back into the physical and virtual address lists.
+;    5) Indicate a complete transfer with the appropriate error code (ER_NORSP,
+;       ER_CANCL, or ER_ABORT).
+;  This entire sequence may take slightly more than 2 scheduler periods. The
+;  caller must wait at least 3 scheduler periods before assuming that the pipe
+;  is not active.
+
+can_pcb=!4
+
+uhccancelpipe:
+	MOVL	EDX, can_pcb[ESP]
+	ORB	pcb_status[EDX], #PSTS$CANCEL1 ;Indicate canceling
+	PUSHL	EDX			;Remove the QH from both lists
+	CALL	outoflists
+	PUSHL	#0			;Start a timer
+	PUSHL	#3*TICKPERSP		;2 to 3 scheduler periods
+	PUSHL	can_pcb+8[ESP]
+	PUSHL	#0
+	PUSHL	#cancel2
+	CALL	sysSchTmrCreate##
+	RET	4
+.PAGE
+;Here after a short delay. This is called in scheduler context, which is
+;  pretty much equivalent to device fork level. When we get here we assume
+;  that enough time has passed since we took the QH out of the hardware list
+;  that the controller is not touching the QH or any of its TDs.
+;	void cancel2(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+can_pda  =!24t
+can_hndl =!20t
+can_data1=!16t
+can_data2=!12t
+
+cancel2:PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, can_data1[ESP]	;Get address of the PCB
+	MOVL	EDI, pcb_uhcqh[ESI]	;Get address of the QH
+	MOVL	qh_phead[EDI], #0x01	;Make it idle
+	PUSHL	ESI			;Put it back into the lists
+	CALL	intolists
+	ANDB	pcb_status[ESI], #~{PSTS$CANCEL1|PSTS$CANCEL2}
+	MOVL	EAX, #ER_CANCL		;Assume cancelling
+	TESTB	pcb_status[ESI], #PSTS$TIMEOUT ;Right?
+	JE	16$			;Yes
+	ANDB	pcb_status[ESI], #^PSTS$TIMEOUT ;No - its a time-out
+	MOVL	EAX, #ER_NORSP
+16$:	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xferdone		;Finish the transfer
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;UHC device fork routine - All interrupt processing is done here.
+
+$$$=!0
+FRM frk_icb   , 4
+FRM frk_qh    , 4
+FRM frk_error , 4
+frk_SIZE=!$$$
+
+uhcfork:ENTER	frk_SIZE, 0
+	CMPL	icb_label[EDI], #'ICB*'
+	JE	2$
+	CRASH	NICB			;[Not an ICB]
+
+2$:	MOVL	frk_icb[EBP], EDI
+	MOVB	AL, icb_uhcstatus[EDI]
+	TESTB	AL, #1Ch		;Any global errors?
+	JNE	globalerror		;Yes
+	ANDB	AL, #USBSTS$ERROR|USBSTS$INT ;No - any transfer interrupts
+	JE	fork2			;No
+
+;Here if have at least one trnasfer done condition to handle
+
+	NOTB	AL
+	ANDB	icb_uhcstatus[EDI], AL	;Clear the transfer interrupt request
+
+;We do not try to scan the hardware QH lists, which would result in checking
+;  many idle QHs. Instead we keep a separate list of actice QHs and scan
+;  this list. We do not expect to have very many QHs which are active but
+;  not complete when we get an interrupt.
+
+	MOVL	ESI, icb_uhcacthead[EDI]
+	TESTL	ESI, ESI		;Is there another?
+	JE	fork2			;No - finished here
+
+;Here with an active PCB to check
+;	c(ESI} = Address of the PCB
+
+checkqh:CMPL	pcb_label[ESI], #'PCB*'
+	JE	4$
+	CRASH	NPCB			;[Not a PCB]
+
+4$:	MOVL	EDI, pcb_uhcqh[ESI]	;Get address of the QH
+	TESTB	pcb_status[ESI], #PSTS$CANCEL1 ;Is this transfer being
+					       ;  cancelled?
+	JNE	advanceqh		;Yes - just let it happen
+.PAGE
+;Here if request has not been cancelled. The transfer is complete if:
+;  1. qh_phead is NULL (0x01) - This means all of the TDs have been transferred
+;       successfully.
+;  or
+;  2. The TD pointed to by qh_phead is inactive - This means the transfer was
+;	terminated by a short packet or an error.
+
+chkdone:MOVL	EDX, qh_phead[EDI]	;Get address of current TD (We must
+					;  access this one time only since the
+					;  controller may change it! If the
+					;  transfer completes after we fetch
+					;  this we will get another interrupt
+					;  and will process it later.)
+	TESTB	DL, #0x01		;Has it all been transferred?
+	JNE	gdtran			;Yes
+
+;Here if all TDs were not transferred completely
+
+	ANDL	EDX, #0xFFFFFFF0	 ;Get the virtual address from the
+	SUBL	EDX, pcb_uhcptdaddr[ESI] ;  physical pointer
+	ADDL	EDX, pcb_uhctdxmb[ESI]
+	ADDL	EDX, #td_SIZE
+	TESTB	td_status+2[EDX], #TDSTS$ACTIVE>16t ;Is this TD active?
+	JNE	advanceqh		;Yes - this transfer is not complete
+
+;Here if the current QH appears to be not active - Unfortunately its somewhat
+;  hard to determine definately since the controller may still be updating
+;  these headers. Its possible that the controller has just marked the
+;  TD inactive because it was complete but has not yet updated the QH pointer.
+;  There is no specification as to how quickly this happens. The spec does
+;  strongly imply that the TD is updated before the pointer in the QH is
+;  advanced, although we probably should not count on this. We decide the
+;  QH is really inactive if this TD indicates an error or an incomplete
+;  transfer. An error is indicated if the STALL bit is set.
+
+	TESTB	td_status+2[EDX], #TDSTS$STALLED>16t ;Error on this TD?
+	JNE	2$			;Yes - its really finished
+	MOVL	EAX, td_cmd[EDX]	;Get the requested length - 1
+	SHRL	EAX, #21t
+	XORL	EAX, td_status[EDX]	;Same as actual length?
+	TESTL	EAX, #0x3FF
+	JE	advanceqh		;Yes - the QH must still be active!
+
+;Here with a complete transfer which had an error or a received a short packet -
+;  We know that all packets except for the last were full length so its
+;  pretty easy to get the length transfered.
+
+2$:	MOVL	qh_phead[EDI], #0x01	;Before we do anything else, unlink the
+					;  TD from the QH to ensure that the
+					;  controller will not be looking at
+					;  the TD which we are about to give
+					;  up. It may be looking at it when we
+					;  set this but it will be finished
+					;  before we give it up since it is
+					;  inactive.
+	MOVL	EAX, EDX
+	SUBL	EAX, pcb_uhctdxmb[ESI]
+	SHRL	EAX, #4			;This assumes td_SIZE = 16t
+	DECL	EAX
+	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL ;Control transfer?
+	JNE	4$			;No
+	DECL	EAX			;Yes - don't count the SETUP packet
+4$:	MOVL	ECX, pcb_maxpkt[ESI]
+	IMULL	ECX, EAX
+	MOVL	EAX, td_status[EDX]	;Get length of last packet
+	INCL	EAX
+	ANDL	EAX, #TDSTS$ACTLEN
+	ADDL	ECX, EAX
+	MOVL	pcb_total[ESI], ECX	;Update the amount transfered
+	TESTB	td_cmd+2[EDX], #TDCMD$TOGGLE>16t ;Update the toggle state
+	SETE	pcb_toggle[ESI]
+	TESTB	td_status+2[EDX], #TDSTS$ALLERROR>16t
+					;Was there an error on this TD?
+	JNE	errtran			;Yes
+	TESTB	pcb_endpnt[ESI], #PCB$XT_NOTCTRL ;No - must be a short packet -
+						 ;  Control transfer?
+	JNE	gdtran			;No - go finish up
+
+;Here for a short packet on a control transfer
+
+	CMPL	EDX, pcb_uhctdlast[ESI]	;Was short packet on the status phase?
+	JE	10$			;Yes - fail (should be impossible)
+	MOVL	EDX, pcb_uhctdlast[ESI]	;Get physical address of the status
+	SUBL	EDX, pcb_uhctdxmb[ESI]	;  phase TD
+	SUBL	EDX, #td_SIZE
+	ADDL	EDX, pcb_uhcptdaddr[ESI]
+	MOVL	qh_phead[EDI], EDX	;Store it in the QH (this restarts
+					;  the transfer at the status phase)
+	JMP	advanceqh		;Go on to next active QH
+
+;Here if have impossible short packet condition
+
+10$:	MOVL	EAX, #ER_USBBE
+	JMP	xferdn
+
+;Here for an active QH which is still active
+
+advanceqh:
+	MOVL	ESI, pcb_uhcactnext[ESI]
+	TESTL	ESI, ESI
+	JNE	checkqh
+	JMP	fork2
+.PAGE
+;Here with a complete transaction which had an error 
+
+errtran:MOVZBL	ECX, td_status+2[EDX]	;Get the status bits
+	TESTB	CL, #TDSTS$STALLED>16t	;Is STALLED set?
+	JE	2$			;No
+	TESTB	CL, #{TDSTS$ALLERROR-TDSTS$STALLED}>16t
+					;Yes - any other error indicated?
+	JNE	2$			;Yes
+	TESTL	td_status[EDX], #TDSTS$ERRCNT ;No - is the error count 0?
+	JE	2$			;Yes
+	MOVL	EAX, #ER_USBST		;No - this must be a stall returned
+	JMP	xferdn			;  by the device
+
+;Here not stall returned from the device
+
+2$:	MOVL	EAX, #ER_USBBE		;Assume general bus error
+	TESTB	CL, #TDSTS$CRCTOERR>16t	;Right?
+	JNE	xferdn			;Yes
+	MOVL	EAX, #ER_USBBD		;No - assume babble error
+	TESTB	CL, #TDSTS$BABBLE>16t	;Right?
+	JNE	xferdn			;Yes
+	MOVL	EAX, #ER_DOURN>16t	;No - assume buffer over/underrun
+	TESTB	CL, #TDSTS$BFRERR>16t	;Right?
+	JNE	xferdn			;Yes
+	MOVL	EAX, #ER_USBBS>16t	;No - must be a bit stuff error
+	JMP	xferdn
+
+;Here with a complete transaction without errors
+
+gdtran:	CLRL	EAX
+xferdn:	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xferdone
+	TESTL	EAX, EAX		;Is there another?
+	JE	fork2			;No
+	MOVL	ESI, EAX
+	JMP	checkqh			;Yes - continue
+.PAGE
+;Here when finished processing IO complete stuff - now check for port status
+;  changes
+
+fork2:	MOVL	EDI, frk_icb[EBP]
+	TESTB	icb_uhcstatus[EDI], #ICBSTS$PORTCHG
+	JE	forkdn
+	ANDB	icb_uhcstatus[EDI], #~ICBSTS$PORTCHG
+	MOVL	EDX, icb_ioreg[EDI]
+	A2IOP	P_PORTSC1
+	MOVL	EBX, #1
+4$:	INW	[DX]
+
+;;;;	TESTB	AH, #USBPORT$RESET>8	;Is the port being reset?
+;;;;	JNE	20$			;Yes - skip it for now
+
+	TESTB	AL, #USBPORT$ENBCHG|USBPORT$CONCHG ;Has enable or connect
+						   ;  changed?
+	JE	20$			;No
+	TESTB	AL, #USBPORT$ENABLE	;Yes - is enabled now?
+	JE	6$
+	BTSW	icb_portact[EDI], BX	;Yes - set the bit
+	ORB	icb_portsts[EDI+EBX*2], #USBPS$PES
+	JMP	8$
+
+6$:	BTZW	icb_portact[EDI], BX	;No - clear the bit
+	ANDB	icb_portsts[EDI+EBX*2], #~USBPS$PES
+8$:	TESTB	AL, #USBPORT$CONNECT	;Is it connected now?
+	JE	10$			;No
+	BTSW	icb_portcon[EDI], BX	;Yes - set the bit
+	ORB	icb_portsts[EDI+EBX*2], #USBPS$PCS
+	JMP	12$
+
+10$:	BTZW	icb_portcon[EDI], BX	;No - clear the bit
+	ANDB	icb_portsts[EDI+EBX*2], #~USBPS$PCS
+
+12$:	TESTB	AH, #USBPORT$LOWSPD>8	;Low speed device?
+	JE	14$			;No
+	BTSW	icb_portlow[EDI], BX	;Yes - set the bit
+	ORB	icb_portsts+1[EDI+EBX*2], #USBPS$LSD>8
+	JMP	16$
+
+14$:	BTZW	icb_portlow[EDI], BX	;No - clear the bit
+	ANDB	icb_portsts+1[EDI+EBX*2], #~{USBPS$LSD>8}
+16$:	ANDL	EAX, #USBPORT$ENBCHG|USBPORT$CONCHG
+	OUTW	[DX]
+	PUSHL	EBX			;Save registers across xosusbPortSignal
+	PUSHL	EDX
+					;Stack arguments:
+	PUSHL	EDI			;Address of ICB
+	PUSHL	EBX			;Port number
+	MOVZWL	EAX, icb_portsts[EDI+EBX*2]
+	PUSHL	EAX			;Port status bits
+	CALL	xosusbPortSignal##	;Request port signal
+	POPL	EDX
+	POPL	EBX
+20$:	INCL	EBX			;Advance to next port
+	ADDL	EDX, #0x02
+	CMPB	BL, icb_numports[EDI]	;Continue if more ports to handle
+	JLE	4$
+forkdn:	MOVL	EDI, frk_icb[EBP]
+	LEAVE				;Finished
+	RET
+.PAGE
+;Here if have a global controller error - This is an error that affects all
+;  transfers on the controller.  We must find and terminate all active
+;  transfers
+
+globalerror:
+	CRASH	GERR
+.PAGE
+
+$$$=!0
+FRM xfdn_next, 4
+xfdn_SIZE=!$$$
+
+xfdn_pcb =!24t
+xfdn_code=!20t
+
+xferdone:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	xfdn_SIZE, 0
+	MOVL	ESI, xfdn_pcb[EBP]
+	MOVL	EDI, pcb_icb[ESI]
+	CMPL	icb_label[EDI], #'ICB*'
+	JE	4$
+	CRASH	NICB
+
+4$:	MOVL	EBX, pcb_uhcactnext[ESI] ;Remove the QH from the active list
+	MOVL	EDX, pcb_uhcactprev[ESI]
+	TESTL	EBX, EBX
+	JE	6$
+	MOVL	pcb_uhcactprev[EBX], EDX
+	JMP	8$
+
+6$:	MOVL	icb_uhcacttail[EDI], EDX
+8$:	TESTL	EDX, EDX
+	JE	10$
+	MOVL	pcb_uhcactnext[EDX], EBX
+	JMP	12$
+
+10$:	MOVL	icb_uhcacthead[EDI], EBX
+12$:	MOVL	pcb_uhcactnext[ESI], #0xFFFFFFFF
+	MOVL	pcb_uhcactprev[ESI], #0xFFFFFFFF
+	ANDB	pcb_status[ESI], #~{PSTS$ACTIVE|PSTS$CANCEL1|PSTS$CANCEL2|PSTS$TIMEOUT}
+	MOVL	xfdn_next[EBP], EBX	;Save address of next PCB in the
+					;  active list
+	TESTB	pcb_endpnt[ESI], #PCB$XT_INT ;Interrupt transfer?
+	JNE	26$			;Yes
+	DECL	icb_uhccbxacnt[EDI]	;No - decrement the active bulk xfer or
+					;   control count
+	JE	18$			;If none active now
+	JNS	24$			;If one or more still active
+	CRASH	BDAC			;[BaD Active Count]
+
+;Here if there are now no active bulk transfer or control transfers
+
+18$:	MOVL	EBX, icb_uhclastqh[EDI]	;Stop the bandwidth reclamation loop
+	CMPL	qh_label[EBX], #'PQH*'
+	JE	20$
+	CMPL	qh_label[EBX], #'QH**'
+	JE	20$
+	CRASH	NQHD
+
+20$:	MOVL	qh_pnext[EBX], #0x01
+	JMP	26$
+
+;Here if still have at least one active bulk xfer or control QH
+
+24$:	PUSHL	EDI			;Update the bandwidth reclamation loop
+	CALL	updatebwr
+26$:	PUSHL	ESI			;Put arguments for xosusbXferDone on
+	PUSHL	xfdn_code[EBP]		;  the stack
+	PUSHL	pcb_uhctdxmb[ESI]	;Give up the TDs before we call
+	MOVL	pcb_uhctdxmb[ESI], #0	;  xosusbXferDone
+	CALL	sysMemGiveXmb##
+	CALL	xosusbXferDone##
+	MOVL	EAX, xfdn_next[EBP]	;Return next active PCB
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to update the bandwidth reclamation loop - This is called whenever
+;  a list of TDs is added or removed (except when there are no active TDs)
+;  to update the bandwidth reclamation (BWR) pointer. The BWR pointer is
+;  in the last QH in the QH list. It points to the first control or bulk
+;  transfer QH which has an active TD and is not being canceled.
+;	void updatebwr(
+;	    ICB *icb);
+
+updbwr_icb=!8
+
+updatebwr:
+
+
+	RET	4
+
+	PUSHL	EBX
+	MOVL	EBX, updbwr_icb[ESP]
+	CMPL	icb_label[EBX], #'ICB*'
+	JE	2$
+	CRASH	NICB
+
+2$:	CMPW	icb_portlow[EBX], #0	;Have any low speed ports
+	JNE	20$			;Yes - don't do bandwidth reclamation
+
+	MOVL	ECX, icb_uhcctrlpqh[EBX] ;Get the control PQH
+	CMPL	qh_label[ECX], #'PQH*'
+	JE	4$
+	CRASH	NPQH
+
+4$:	MOVL	EDX, qh_pcb[ECX]	;Get address of its PCB
+	TESTL	EDX, EDX		;Is there one?
+	JE	8$			;No - this must be a PQH
+	CMPL	qh_label[ECX], #'QH**'	;Yes - must be a QH
+	JE	6$
+	CRASH	NQH1
+
+6$:	CMPL	pcb_uhcactnext[EDX], #0xFFFFFFFF ;Yes - it it in the active
+						 ;  list?
+	JNE	10$			;Yes - this is the first active QH
+8$:	MOVL	ECX, qh_vnext[ECX]	;No - advance to next QH
+	TESTL	ECX, ECX
+	JNE	4$			;Continue if more
+	JMP	20$			;No more - this is possible is all of
+					;  the PCBs in the active list are
+					;  being canceled
+
+;Here with an active QH
+
+10$:	TESTB	pcb_status[EDX], #PSTS$CANCEL1 ;Is it being canceled?
+	JNE	8$			;Yes - go on
+	MOVL	EAX, qh_paddr[ECX]	;No - this should be the start of the
+	MOVL	ECX, icb_uhclastqh[EBX]	;  BWR loop
+	CMPL	qh_label[ECX], #'QH**'
+	JE	16$
+	CMPL	qh_label[ECX], #'PQH*'
+	JE	16$
+	CRASH	NQH2
+
+16$:	MOVL	qh_pnext[ECX], EAX	;Set the final next pointer to point
+					;  to the first active QH to create
+					;  the BWR loop
+20$:	POPL	EBX
+	RET	4			;Finished
+.PAGE
+	.SBTTL	uhcoat - Once-a-tick routine
+
+;Here once each scheduler tick
+
+	.MOD	4
+uhcoat:	DECL	tickcnt
+	JNS	14$
+	MOVL	EDI, firsticb		;Get first active USB UHC ICB
+	TESTL	EDI, EDI
+	JE	12$
+2$:	CLRL	EBX
+	MOVL	EDX, icb_ioreg[EDI]
+	A2IOP	P_PORTSC1
+	MOVZBL	ECX, icb_numports[EDI]
+4$:	INW	[DX]			;Get the port bits
+	TESTB	AH, #USBPORT$RESET>8	;Is this port being reset?
+	JNE	6$			;Yes - don't look at it now
+	TESTB	AL, #USBPORT$ENBCHG|USBPORT$CONCHG ;No - has anything changed?
+	JE	6$			;No
+	ORB	icb_uhcstatus[EDI], #ICBSTS$PORTCHG ;Yes
+	INCL	EBX
+6$:	ADDL	EDX, #0x02		;No - advance to next port
+	LOOP	ECX, 4$			;Continue if more ports to check
+	TESTL	EBX, EBX		;Did we find anything to do?
+	JE	10$			;No
+	CALL	knlReqFork##		;Yes - request fork
+10$:	MOVL	EDI, icb_nexts[EDI] 	;Advance to next active ICB
+	TESTL	EDI, EDI		;Continue if have another
+	JNE	2$
+12$:	MOVL	tickcnt, #5
+14$:	RET				;Finished
+
+	.MOD	4
+firstint:
+	.BLKB	UHCINTSZ*16t		;Leave space for interrupt routines
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+	.MOD	4
+
+firsticb:.LONG  0		;Offset of first USB UHC ICB
+lasticb: .LONG  0		;Offset of last USB UHC ICB (must immediately
+				;  follow firsticb)
+tickcnt: .LONG  0
+
+tokentbl:.BYTE	USBTOKEN_SETUP	;USBPID_SETUP = 0
+	 .BYTE	USBTOKEN_OUT	;USBPID_OUT   = 1
+	 .BYTE	USBTOKEN_IN	;USBPID_IN    = 2
+	 .BYTE	0
+
+c0val::  .LONG	0
+
+;Debug ring entry format:
+;  Offset  Size  Description
+;     0      4   Address of PCB
+;     4      2   Byte count
+;     6      2   Error code
+
+debugring:.BLKL	128t
+debugend:
+debugpnt: .LONG	debugring
+
+	LKEEND

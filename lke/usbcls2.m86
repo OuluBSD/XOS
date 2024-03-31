@@ -1,0 +1,1259 @@
+	.TITLE	usbcls2 - USB class driver for XOS
+
+;*--------------------------------------------------------------------------*
+;* USBCLS.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;* 07/26/93(brn) - Cloned from NETCLS
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This file contains routines that implement the USB client interface
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+	.INCLUD	XOSINC:\xmac\xosusb.par
+	.INCLUD	XOSINC:\xmac\xosxusb.par
+
+	LKECONT
+
+	.EXPORT	xosusbCancelPipe
+	.EXPORT	xosusbCancelPipeBegin
+	.EXPORT	xosusbClearPipe
+	.EXPORT	xosusbControl
+	.EXPORT xosusbCreatePipe
+	.EXPORT	xosusbLinkToDev
+	.EXPORT	xosusbTransfer
+	.EXPORT	xosusbTransferInt
+	.EXPORT	xosusbUnlinkFromDev
+	.EXPORT	xosusbUnlinkFromDevBgn
+	.EXPORT	xosusbUnlinkFromDevFin
+	.EXPORT	xosusbWaitForDone
+	.EXPORT	xosusbXferDone
+
+	CODE
+
+;USB clients are generally implemented as part of device level drivers for
+;  another class. The USB class also implements a low level client which is
+;  used by the usbctl symbiont to set up devices and manage hubs. The values
+;  required to establish a connection to a USB device must be provided
+;  externally from the USB class and device drivers.  This is generally done
+;  by the USBCTL symbiont which enumerates all available USB devices by doing
+;  IO using the raw USB class devices and loads and initializes the drivers
+;  needed to use these devices.
+
+;The several client interface functions each accept the address of a client
+;  data block as an argment. With one exception, the argument is only used
+;  to provide a value which is passed to the callback function as an
+;  argument. Thus there are no restructions on what (if anything) this
+;  argument points to. The exception is the xosusbXferList and xosusbControl
+;  functions. The pointer passed to these functions MUST point to a valid DCB
+;  since it is used when waiting for IO to complete. It does not need to be a
+;  USB device DCB (and generally will not be one). Also, it does not have to
+;  have any relationship to the pointers passed to other interface functions.
+;  The usage of the client pointers is summeried below:
+
+;	xosusbLinkToDev - The client block pointer is passed to the status
+;                           change callback function.
+;	xosusbXferStart - The client block pointer is passed to the IO
+;                           complete callback function.
+;	xosusbXferList  - The client block pointer is used when waiting
+;                           for IO to complete.
+;	xosusbControl   - The client block pointer is used when waiting for IO
+;                           to complete (this function calls xossubXferList).
+
+;The xosusbXferList and xosusbStartList function use a buffer list which has
+;  the following format;
+
+;	struct BLIST
+;	{   long   length;	// Buffer length
+;	    uchar *buffer;	// Linear address of buffer
+;	    uchar *physaddr;	// Physical address of buffer (0 if not known)
+;	    long   pid;		// PID code (high order bits are reserved and
+;				//   must be 0)
+;	};
+
+;The PID values MUST match the type of transfer being done. For other than
+;  control pipes, they must specify either an INPUT or an OUTPUT PID which
+;  matches the direction of the pipe. For control pipes, they must be correct
+;  for each phase as described below. In all cases, the sequencing of the
+;  toggle state is handled tranparently by the driver.
+
+;A control transfer is generated using a 2 or more entry buffer list. The
+;  first entry (PID = SETUP) must specify an 8 byte buffer which contains
+;  the data for the SETUP packet. If a data phase is to be included this is
+;  specified starting in the second buffer (PID = INPUT or OUTPUT). The
+;  direction must match the direction specified by the SETUP data. It may
+;  use as many buffers as necessary. The last buffer (PID = OUTPUT OR INPUT)
+;  specifies the status phase. It must specify 0 length and the direction
+;  must be the opposite of the direction specified in the SETUP data. Note
+;  that the driver will correctly handle the situation where a short input
+;  packet is received in the data phase of a control transfer and will
+;  generate the status phase following the short input packet. In all other
+;  cases a short input packet will terminate the transfer immediately after
+;  the short packet is received.
+
+;Interrupt transfers are handled pretty much the same as bulk transfers
+;  except that the QH is placed in one of the interrupt scheduling lists.
+;  Since no bandwidth reclamation is done on these lists, only one packet
+;  is transfered each time the QH is used. When an interrupt transfer is
+;  complete it is retired exactly the same way as a bulk transfer. It is
+;  up to the user (generally a link driver) of the pipe to post a new request
+;  before the QH is used again. Generally interrupt transfers will consist
+;  of a single packet although the driver will accept multiple packet
+;  transfers. In this case the request will not complete until all packets
+;  have been transfered. Only one packet will be transfered each time the
+;  QH is used.
+
+;Function to link to a USB driver - this is called by the addunit routine for
+;  an interface module which wants to use the USB interface.  May be called at
+;  any level.
+;	long xosusbLinkToDev(
+;	    long   cdb,		// Address of client's data block (CDB)
+;	    long   gport,	// USB global port specification (Each 4-bit nibble
+;				//   (from low to high order) specifies a
+;				//   port from 1 to 15. 0 means no port at
+;				//   that level. Bits 0-3 (which specify the
+;				//   unit number of the USB controller  must
+;				//   be nonzero. Bits 4-7 (which specify the
+;				//   port on the root hub) must be nonzero
+;				//   except for direct USB devices (USBn:)
+;				//   which do not have a permanent association
+;				//   with a partictular port. Each succesive
+;				//   higher order nonzero nibble specifies
+;				//   the port on the next hub.
+;	    long   addr,	// USB bus address for device
+;	    long   speed,	// USB bus speed (1 = low, 2 = full, 3 = high)
+;	    void (*notify)(CLB *clb, CDB *cdb, long status),
+;				// Function called on device status change.
+;				//   This function is called in extended fork
+;				//   context. Normally this will be an extended
+;				//   fork belonging to the USBCTL process.
+;	    CLB  **pclb);	// Address of place to store address of CLB
+;  Value returned is 0 if OK or a negative XOS error code if error
+
+;This is generally the first function called by a USB client when connecting
+;  to the USB class driver.  It returns the address of a Client Link Block
+;  (CLB) which is treated as an opaque token and passed to xosusbCreatePipe
+;  when creating a pipe.
+
+linkdev_cdb  =!36t		;(4) Address of client's data block (CDB)
+linkdev_gport=!32t		;(4) Global port
+linkdev_addr =!28t		;(4) USB bus address
+linkdev_speed=!24t		;(4) USB bus speed
+linkdev_func =!20t		;(4) Address of "removed" callback function
+linkdev_pclb =!16t		;(4) Address of place to store address of CLB
+
+$$$=!0
+FRM linkdev_clb, 4t
+linkdev_SIZE=!$$$
+
+xosusbLinkToDev::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	linkdev_SIZE, 0
+	MOVL	EAX, linkdev_gport[EBP]	;Find the USB device ICB
+	ANDL	EAX, #0x0F
+	MOVL	EDI, usbfirsticb#	;Point to first USB ICB
+4$:	TESTL	EDI, EDI		;More to check?
+	JE	8$			;No - fail
+	CMPL	icb_unit[EDI], EAX	;Yes - this one?
+	JE	10$			;Yes - found it
+6$:	MOVL	EDI, icb_next[EDI]	;No - advance to next
+	JMP	4$			;Continue
+
+;Here if can't find the device
+
+8$:	MOVL	EAX, #ER_NSDEV
+	JMP	20$
+
+;Here if found the ICB for the USB interface device
+
+10$:	PUSHL	#-XMBX_64
+	LEAL	EAX, linkdev_clb[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##		;Allocate a CLB
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	ESI, linkdev_clb[EBP]
+	MOVL	clb_label[ESI], #'CLB*'
+	MOVL	clb_icb[ESI], EDI	;Store address of the ICB
+	MOVL	EAX, linkdev_cdb[EBP]	;Store address of his CDB
+	MOVL	clb_cdb[ESI], EAX
+	MOVL	EAX, linkdev_func[EBP]	;Store address of "removed" callback
+	MOVL	clb_removed[ESI], EAX	;  function
+	MOVL	EAX, linkdev_addr[EBP]	;Store bus address
+	MOVB	clb_addr[ESI], AL
+	MOVL	EAX, linkdev_gport[EBP]	;Store global port specification
+	MOVL	clb_gport[ESI], EAX
+	MOVL	EAX, linkdev_speed[EBP]	;Store device speed
+	MOVB	clb_speed[ESI], AL
+	MOVL	clb_fpcb[ESI], #0	;No PCB's yet
+
+;Here with the CLB completely set up - Now link it to the ICBs list of CLBs
+
+	MOVL	EAX, icb_fclb[EDI]
+	MOVL	clb_next[ESI], EAX
+	MOVL	icb_fclb[EDI], ESI
+	MOVL	EAX, linkdev_pclb[EBP]	;Give the caller the CLB address
+	MOVL	[EAX], ESI
+	CLRL	EAX
+20$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	28t
+.PAGE
+;Function to unlink from a USB device. This function may be used when the
+;  device being unlinked does not require any final clean-up. This is often
+;  the case when a device is being unlinked because an error occured when
+;  the device was being added and it was linked but was not fully installed
+;  as an accessible device. Otherwise xosusbUnlinkFromDevBgn and
+;  xosusbUnlinkFromDevFin must be used.
+;	void xosusbUnlinkFromDev(
+;	    CLB *clb);		// Address of the CBL
+
+ulfd_clb=!4
+
+xosusbUnlinkFromDev:
+	MOVL	EDX, ulfd_clb[ESP]
+	CMPL	icb_unlnktmr[EDX], #0
+	JE	4$
+	PUSHL	icb_unlnktmr[EDX]
+	MOVL	icb_unlnktmr[EDX], #0
+	CALL	sysSchTmrCancel##
+4$:	PUSHL	ulfd_clb[ESP]
+	CALL	xosusbUnlinkFromDevBgn	;Start unlinking
+	PUSHL	#0			;Start a timer
+	PUSHL	#ST_SECOND/2		;0.5 second
+	PUSHL	ulfd_clb+8[ESP]
+	PUSHL	#0
+	PUSHL	#fromdevfin
+	CALL	sysSchTmrCreate##
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EDX, ulfd_clb[ESP]
+	MOVL	icb_unlnktmr[EDX], EAX
+8$:	RET	4
+
+;Timer function called to finish unlinking a device
+
+fdf_pda  =!16t
+fdf_hndl =!12t
+fdf_data1=!8
+fdf_data2=!4
+
+fromdevfin:
+	MOVL	EDX, fdf_data1[ESP]
+	MOVL	icb_unlnktmr[EDX], #0
+	PUSHL	EDX
+	CALL	xosusbUnlinkFromDevFin
+	RET	16t
+.PAGE
+;Function to begin unlinking from a USB device
+;	void xosusbUnlinkFromDevBgn(
+;	    CLB *clb);		// Address of the CBL
+
+;This may be called with active IO which will be canceled. Each active pipe
+;  will cause a delay of 1 to 2 scheduler ticks. None of the device's PCBs
+;  or the CLB can be accessed after this routine returns. All data blocks
+;  associated with the connection to the client are given up here  or requests
+;  to give them up later have been queued. In all cases all associated data
+;  blocks have been unlinked.
+
+;This is alwasys called in the context of a client device. It is the
+;  responsibility of the caller to make sure that all links to the USB
+;  device have been cleared before calling this function and to ensure
+;  that no attempt to access the usb device will be made by another thread
+;  after this function is called. This entire function is critical relative
+;  to starting IO on the client device.
+
+;Unlinking from a device is a multiple step process which is normally initiated
+;  by USBCTL issueing a REMOVE special device function for the USB interface.
+;  This calls the "remove" entry for each client device that has created a
+;  pipe for the phsycial device. This routine first indicates that the device
+;  has been removed by setting the DS1$REMOVED bit and any other status needed
+;  by the particular device. This will prevent any new requests from accessing
+;  any of the USB data items associated with the device. It then calls this
+;  function which cancels any active IO on any of the devices pipes and calls
+;  xosusbDestroyPipeBgn to unlink the PCB from its ICB. The PCB is NOT given
+;  up as there may be threads with cached pointers to it. At least 20ms later
+;  the xosusbUnlinkFromDevFin function must be called for the device. This
+;  delay will usually be on the order of 0.5 to 1 second to allow enough time
+;  for the client device to become completely idle. This is usually called as
+;  a timer function, which is effectively at device fork level. This calls
+;  xosusbDestroyPipeFin which verifies that the pipe is truely idle and
+;  completes destroying it by calling the low level USB driver to give up
+;  any linked buffers and by giving up the buffer containing the PCB.
+
+;Unlinking may also be initiated directly by a client driver if it encounters
+;  a fatal error when setting up a client device.
+
+ulfdb_clb=!12t
+
+xosusbUnlinkFromDevBgn:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, ulfdb_clb[ESP]
+	CMPL	clb_label[ESI], #'CLB*'
+	JE	2$
+	CRASH	NCLB
+
+2$:	MOVL	EDI, clb_icb[ESI]
+	CMPL	icb_label[EDI], #'ICB*'
+	jE	4$
+	cRASH	NICB
+
+4$:	LEAL	EDX, icb_fclb[EDI]	;Find pointer to this CLB
+6$:	CMPL	ESI, [EDX]
+	JE	12$
+	MOVL	EDX, [EDX]
+	TESTL	EDX, EDX
+	JNE	8$
+	CRASH	BDCL			;[BaD CLB List]
+
+8$:	CMPL	clb_label[EDX], #'CLB*'
+	JE	10$
+	CRASH	NCLB
+
+10$:	ADDL	EDX, #clb_next
+	JMP	6$
+
+;Here with the pointer to this CLB
+
+12$:	MOVL	EAX, clb_next[ESI]	;Unlink it
+	MOVL	[EDX], EAX
+	MOVL	clb_next[ESI], #0xFFFFFFFF
+
+;Now start destroying all of the the client's pipes
+
+	MOVL	EDI, clb_fpcb[ESI]
+16$:	TESTL	EDI, EDI
+	JE	24$
+	CMPL	pcb_label[EDI], #'PCB*'
+	JE	20$
+	CRASH	NPCB
+
+20$:	PUSHL	EDI			;Make sure the pipe is idle
+	CALL	xosusbCancelPipe
+	PUSHL	EDI			;Do the device dependent stuff
+	MOVL	EAX, pcb_icb[EDI]
+	MOVL	EAX, icb_disp[EAX]
+	CALLI	usb_dstrypipebgn[EAX]
+	MOVL	EDI, pcb_next[EDI]	;Advance to next PCB
+	JMP	16$
+
+;Here when finished
+
+24$:	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to finish unlinking from a USB device. Must be called from fork
+;  level. This function is usually called from a timer function or it may be
+;  called from main program level raised to fork level.
+;	void xosusbUnlinkFromDevFin(
+;	    CLB *clb);
+
+;This function is called after it has been assured that no one (including the
+;  USB interface) is accessing any of the USB data structures associated with
+;  the client. 
+
+ulfdf_clb=!12t
+
+xosusbUnlinkFromDevFin::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, ulfdf_clb[ESP]
+	CMPL	clb_label[ESI], #'CLB*'
+	JE	4$
+	CRASH	NCLB
+
+4$:	MOVL	EDI, clb_fpcb[ESI]	;Get next PCB
+	TESTL	EDI, EDI
+	JE	10$
+	CMPL	pcb_label[EDI], #'PCB*'
+	JE	6$
+	CRASH	NPCB
+
+6$:	MOVL	EAX, pcb_next[EDI]	;Remove it from the list
+	MOVL	clb_fpcb[ESI], EAX
+	MOVL	pcb_next[EDI], #0xFFFFFFFF ;Indicate not in the list
+	PUSHL	EDI			;Do the device dependent stuff (This
+	MOVL	EAX, pcb_icb[EDI]	;  will give up any additional XMBs
+	MOVL	EAX, icb_disp[EAX]	;  used by the driver.)
+	CALLI	usb_dstrypipefin[EAX]
+	PUSHL	EDI			;Find the count for the pipe
+	CALL	findpipecnt
+	DECL	[EAX]			;Decrement it
+	JNS	8$
+	CRASH	BDPC			;[BaD Pipe Count]
+
+8$:	PUSHL	EDI			;Give up the PCB
+	CALL	sysMemGiveXmb##
+	JMP	4$			;Continue
+
+;Here with all of the associated PCBs given up
+
+10$:	PUSHL	ESI			;Give up the CLB
+	CALL	sysMemGiveXmb##
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to create a device pipe
+;	long xosusbCreatePipe(
+;		CLB   *clb,	// Address of CLB returned by xosusbLinkToUsbDev
+;		long   endpnt,	// Rate(16).Transfer type and endpoint (16)
+;		long   pktsz,	// Maximum packet size
+;		PCB  **ppcb)	// Pointer to location to receive PCB address
+;  Value returned is 0 if OK or a negative XOS error code if error
+
+;NOTE: This routine does no consistancy checking on the parameter values
+;      supplied. It is the responsibility of the caller to ensure there is
+;      no conflict with the values provided.
+
+cp_clb   =!28t
+cp_rate  =!26t
+cp_endpnt=!24t
+cp_pktsz =!20t
+cp_ppdb  =!16t
+
+$$$=!0
+FRM cp_pdb, 4t
+cp_SIZE=!$$$
+
+xosusbCreatePipe:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	cp_SIZE, 0
+	MOVL	EDI, cp_clb[EBP]
+	CMPL	clb_label[EDI], #'CLB*'
+	JE	2$
+	CRASH	NCLB
+
+2$:	MOVL	EDI, clb_icb[EDI]
+	CMPL	icb_label[EDI], #'ICB*'
+	JE	4$
+	CRASH	NICB
+
+4$:	MOVZBL	EAX, icb_pcbindex[EDI]
+	NEGL	EAX
+	PUSHL	EAX
+	LEAL	EAX, cp_pdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##		;Allocate an XMB for the PCB
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	ESI, cp_pdb[EBP]
+	MOVL	pcb_label[ESI], #'PCB*'
+	MOVL	EAX, cp_clb[EBP]
+	MOVL	pcb_clb[ESI], EAX
+	MOVL	pcb_icb[ESI], EDI
+	MOVB	AL, cp_endpnt[EBP]
+	MOVB	pcb_endpnt[ESI], AL
+	MOVL	EAX, cp_pktsz[EBP]
+	MOVL	pcb_maxpkt[ESI], EAX
+	MOVZWL	EAX, cp_rate[EBP]
+	CMPB	AH, #0
+	JE	6$
+	MOVL	EAX, #0xFF
+6$:	TESTL	EAX, EAX
+	JNE	8$
+	INCL	EAX
+8$:
+;;;; NEED TO CHECK FOR LOW SPEED HERE!!!!
+
+10$:	MOVB	pcb_reqrate[ESI], AL
+	BSRL	ECX, EAX		;Find the largest power of 2 that does
+	MOVL	EDX, #1			;  not exceed the requested rate
+	SHLL	EDX, CL
+	MOVB	pcb_actrate[ESI], DL	;Store the actual rate
+	MOVB	pcb_intindx[ESI], CL	;And store the interrupt index
+	CLRL	EAX
+	MOVB	pcb_toggle[ESI], AL
+	MOVB	pcb_status[ESI], AL
+	MOVL	pcb_callback[ESI], EAX
+	MOVL	pcb_wthread[ESI], EAX
+	MOVL	pcb_waketmr[ESI], EAX
+	MOVL	pcb_ctrlcb[ESI], EAX
+	MOVL	pcb_ctrlxmb[ESI], EAX
+	PUSHL	ESI
+	MOVL	EAX, icb_disp[EDI]
+	CALLI	usb_createpipe[EAX]
+	TESTL	EAX, EAX
+	JS	14$
+	MOVL	ECX, cp_clb[EBP]	;Link to the CLB's list of PCBs
+	MOVL	EDX, clb_fpcb[ECX]
+	MOVL	pcb_next[ESI], EDX
+	MOVL	clb_fpcb[ECX], ESI
+	PUSHL	ESI			;Find the count for the pipe
+	CALL	findpipecnt
+	INCL	[EAX]			;Increment it
+	MOVL	EAX, cp_ppdb[EBP] 	;Give him the PCB address
+	MOVL	[EAX], ESI
+	CLRL	EAX
+20$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if error after the XMB is allocated
+
+14$:	MOVZBL	ECX, icb_pcbindex[EDI]
+	PUSHL	EAX
+	PUSHL	ESI
+	CALL	sysMemGiveXmb##
+	POPL	EAX
+	JMP	10$
+.PAGE
+;Function to clear an interrupt or bulk transfer pipe - This issues a
+;  CLEAR_FEATURE setup function on EP0 for the inidcated endpoint specifying
+;  the ENDPOINT_HALT feature. It also clears the data toggle state so DATA0
+;  will be sent or expected next.
+;	long xossubClearPipe(
+;	    DCB *dcb,		// Address of DCB
+;	    PCB *pcb0,		// Address of PCB for endpoint 0
+;	    PCB *pcbep);	// Address of PCB for endpoint to clear
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+clrpipe_dcb  =!12t
+clrpipe_pcb0 =!8t
+clrpipe_pcbep=!4t
+
+xosusbClearPipe::
+	MOVL	ECX, clrpipe_pcbep[ESP]	;Get address of the PCB for the endpoint
+	CMPL	pcb_label[ECX], #'PCB*'	;  to clear
+	JE	2$
+	CRASH	NPCB
+
+2$:	MOVZBL	EAX, pcb_endpnt[ECX]
+	ANDL	EAX, #0x8F
+	PUSHL	clrpipe_dcb[ESP]	;Address of DCB
+	PUSHL	clrpipe_pcb0+4[ESP]	;Address of endpoint 0 PCB
+	PUSHL	EAX			;SETUP data
+	PUSHL	#0x00000102
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value (always 1 second)
+	PUSHL	#ST_SECOND
+	CALL	xosusbControl
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ECX, clrpipe_pcbep[ESP]
+	MOVL	EDX, pcb_icb[ECX]
+	PUSHL	ECX
+	MOVL	EAX, icb_disp[EDX]
+	CALLI	usb_clrtoggle[EAX]
+10$:	RET	12t
+.PAGE
+;Subroutine to do a control transaction to or from a device pipe
+;	long = xosusbControl
+;	    DCB   *dcb,		// Address of DCB
+;	    PCB   *pcb,		// Address of PCB
+;	    SETUP  setup,	// Setup data
+;	    char  *data,	// Address of data buffer
+;	    int    len,		// Length of data (output) or buffer (input)
+;	    void (*callback)(PCB *pcb, DCB *dcb, long code, long amount),
+;				// Callback function
+;	    long  *ptotal,	// Address to receive data count
+;	    time_s timeout);	// Timeout value
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;  The data buffer must be in the exec data sement and must not cross a page
+;    boundry
+;  If the callback argument is NULL, this is a blocking call:
+;	1.  The DCB argument must point to a valid DCB of some type
+;	2.  This call does not return until IO is complete
+;	3.  Actual amount transfered is stored in the long pointed to by
+;	    ptotal if it is not NULL
+;  Otherwise:
+;	1.  The DCB argument can be any value. Other than being passed to
+;	    the callback function it is not used.
+;	2.  This call returnes as soon as IO is started
+;	3.  The ptotal argument is not used (Amount transfered is passed to
+;	    the callback function.)
+
+contrl_dcb     =!56t		;(4) Address of DCB
+contrl_pcb     =!52t		;(4) Address of PCB
+contrl_setup   =!44t		;(8) Setup data
+contrl_data    =!40t		;(4) address of data buffer
+contrl_len     =!36t		;(4) Length of data buffer
+contrl_callback=!32t		;(4) Address of callback function
+contrl_ptotal  =!28t		;(4) Far address to receive data count
+contrl_timeout =!20t		;(8) Timeout value
+
+;Define offsets in our XMB
+
+$$$=!0
+BLK dcxmb_label, 4t
+BLK            , 4t
+BLK dcxmb_setup, 8t
+BLK dcxmb_blist, 48t
+BLK dcxmb_data , 0t
+
+xosusbControl::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, contrl_pcb[EBP]	;Get address of the PCB
+	CMPL	pcb_label[EDI], #'PCB*'
+	JE	6$
+	CRASH	NPCB
+
+;Determine how big a buffer we need. It must hold the buffer list and the
+;  data buffer. (We must allocate a buffer here to make sure it does not
+;  cross a page boundry and to insure that it is non-cached.) 
+
+6$:	CMPL	pcb_ctrlxmb[EDI], #0	;Doing a control function now?
+	JNE	32$			;Yes - fail
+	MOVL	EDX, contrl_len[EBP]	;No - get length of the buffer
+	ADDL	EDX, #dcxmb_data	;Plus space before the buffer
+	PUSHL	EDX
+	LEAL	EAX, pcb_ctrlxmb[EDI]
+	PUSHL	EAX
+	CALL	sysMemGetNcXmb##
+	TESTL	EAX, EAX
+	JS	28$
+	MOVL	ESI, pcb_ctrlxmb[EDI]
+	MOVL	dcxmb_label[ESI], #'STUP'
+	MOVL	EAX, contrl_setup+0[EBP] ;Copy the setup data
+	MOVL	dcxmb_setup+0[ESI], EAX
+	MOVL	EAX, contrl_setup+4[EBP]
+	MOVL	dcxmb_setup+4[ESI], EAX
+
+;Construct the buffer list
+
+	MOVB	AL, dcxmb_setup+0[ESI]	;Get the direction bit from the setup
+	ANDB	AL, #0x80		;  data
+	ANDB	pcb_endpnt[EDI], #0x7F	;Set it in the PCB
+	ORB	pcb_endpnt[EDI], AL
+	MOVL	dcxmb_blist+bl_length[ESI], #8
+	MOVL	dcxmb_blist+bl_pid[ESI], #USBPID_SETUP
+	LEAL	EAX, dcxmb_setup[ESI]
+	MOVL	dcxmb_blist+bl_vaddr[ESI], EAX
+	MOVL	dcxmb_blist+bl_paddr[ESI], #0
+	MOVL	ECX, contrl_len[EBP]
+	LEAL	EBX, dcxmb_blist+bl_SIZE[ESI]
+	MOVL	EDX, #2			;Assume no data
+	TESTL	ECX, ECX		;Any data?
+	JE	14$			;No
+	INCL	EDX			;Yes
+	MOVL	bl_length[EBX], ECX
+	LEAL	EAX, dcxmb_data[ESI]
+	MOVL	bl_vaddr[EBX], EAX
+	MOVL	bl_paddr[EBX], #0
+	MOVL	bl_pid[EBX], #USBPID_IN	;Assume input
+	TESTB	dcxmb_setup[ESI], #0x80	;Right?
+	JNE	12$			;Yes
+	MOVL	bl_pid[EBX], #USBPID_OUT ;No - change the PID
+	PUSHL	EDI
+	PUSHL	ESI			;Copy the data to our buffer
+	LEAL	EDI, dcxmb_data[ESI]
+	MOVL	ESI, contrl_data[EBP]
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	CLD
+	MOVL	EAX, ECX
+	SHRL	ECX, #2
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #0x03
+	RMOVSB	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+12$:	ADDL	EBX, #bl_SIZE
+
+;Set up null buffer for the status phase
+
+14$:	MOVL	bl_length[EBX], #0
+	MOVL	bl_pid[EBX], #USBPID_OUT ;Assume input
+	TESTB	pcb_endpnt[EDI], #0x80	;Right?
+	JNE	16$			;Yes
+	MOVL	bl_pid[EBX], #USBPID_IN	;No - its output
+16$:	MOVL	bl_vaddr[EBX], #0
+	MOVL	bl_paddr[EBX], #0
+	CLRL	EBX			;Assume no callback
+	MOVL	EAX, contrl_callback[EBP] ;Store callback address
+	MOVL	pcb_ctrlcb[EDI], EAX
+	TESTL	EAX, EAX		;Was a callback specified?
+	JE	17$			;No
+	MOVL	EBX, #ctrlcallback	;Yes
+17$:	PUSHL	contrl_dcb[EBP]		;Address of DCB
+	PUSHL	contrl_pcb[EBP]		;Address of PCB
+	LEAL	EAX, dcxmb_blist[ESI]	;Address of buffer list
+	PUSHL	EAX
+	PUSHL	EDX			;Number of buffers in buffer list
+	PUSHL	EBX
+	PUSHL	contrl_ptotal[EBP]	;Address to receive data count
+	PUSHL	contrl_timeout+4[EBP]	;Timeout value
+	PUSHL	contrl_timeout+0[EBP]
+	CALL	xosusbTransfer
+	TESTL	EAX, EAX
+	JS	24$
+	CMPL	pcb_ctrlcb[EDI], #0	;Blocking call?
+	JNE	40$			;No - finished for now
+	TESTB	dcxmb_setup[ESI], #0x80	;Yes - doing input?
+	JE	24$			;No - all finished
+	MOVL	EBX, contrl_ptotal[EBP]	;Yes - did we get any data?
+	MOVL	ECX, [EBX]
+	TESTL	ECX, ECX
+	JLE	24$			;No
+	PUSHL	EDI			;Yes
+	PUSHL	ESI
+	ADDL	ESI, #dcxmb_data	;Point to our buffer
+	MOVL	EDI, contrl_data[EBP]	;Point to caller's buffer
+	PUSHL	DS
+	POPL	ES
+
+$$$$IN::
+
+	CLD
+	CMPL	ECX, #8			;If less than 8 bytes do it the easy way
+	JB	20$
+	MOVL	EAX, ECX		;Calculate the amount needed to long
+	MOVL	ECX, #0x04		;  align the destination
+	SUBL	EDX, EDI
+	ANDL	ECX, #0x03
+	JE	18$
+	SUBL	EAX, ECX
+	RMOVSB	[EDI], [ESI]		;Get destination buffer long aligned
+18$:	MOVL	ECX, EAX
+	SHRL	ECX, #2t
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #0x03
+20$:	RMOVSB	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	CLRL	EAX
+24$:	PUSHL	EAX
+	PUSHL	ESI
+	MOVL	pcb_ctrlxmb[EDI], #0
+	CALL	sysMemGiveXmb##
+26$:	POPL	EAX
+28$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	40t
+
+40$:	JMP	26$
+
+;Here if error on transfer after XMB has been allocated
+
+30$:	PUSHL	EAX
+	JMP	20$
+
+;Here if busy
+
+32$:	MOVL	EAX, #ER_BUSY
+	JMP	28$
+.PAGE
+;Callback function for non-blocking control transfers
+;	void ctrlcallback(
+;	    PCB *pcb,
+;	    DCB *dcb,
+;	    long code,
+;	    long amount);
+
+;This function copies the transfer buffer to the user's buffer if input,
+;  gives up the XMB used, and calls the user's callback function.
+
+ccbk_pcb   =!28t
+ccbk_dcb   =!24t
+ccbk_code  =!20t
+ccbk_amount=!16t
+
+ctrlcallback:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	EDI, ccbk_pcb[EBP]
+	MOVL	ESI, pcb_ctrlxmb[EDI]
+	TESTB	dcxmb_setup[ESI], #0x80	;Yes - doing input?
+	JE	8$			;No
+	MOVL	ECX, ccbk_amount[EBP]	;Yes - did we get any data?
+	TESTL	ECX, ECX
+	JLE	8$			;No
+	PUSHL	EDI			;Yes
+	ADDL	ESI, #dcxmb_data	;Point to our buffer
+	MOVL	EDI, contrl_data[EBP]	;Point to caller's buffer
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CMPL	ECX, #8			;If less than 8 bytes do it the easy way
+	JB	6$
+	MOVL	EAX, ECX		;Calculate the amount needed to long
+	MOVL	ECX, #0x04		;  align the destination
+	SUBL	EDX, EDI
+	ANDL	ECX, #0x03
+	JE	4$
+	SUBL	EAX, ECX
+	RMOVSB	[EDI], [ESI]		;Get destination buffer long aligned
+4$:	MOVL	ECX, EAX
+	SHRL	ECX, #2t
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #0x03
+6$:	RMOVSB	[EDI], [ESI]
+	POPL	EDI
+8$:	PUSHL	pcb_ctrlxmb[EDI]	;Give up the XMB
+	MOVL	pcb_ctrlxmb[EDI], #0
+	CALL	sysMemGiveXmb##
+	MOVL	ECX, pcb_ctrlcb[EDI]	;Call the user's callback function
+	MOVL	pcb_ctrlcb[EDI], #0
+	PUSHL	ccbk_pcb[EBP]
+	PUSHL	ccbk_dcb[EBP]
+	PUSHL	ccbk_code[EBP]
+	PUSHL	ccbk_amount[EBP]
+	CALLI	ECX
+	LEAVE
+	POPL	ESI			;Finished
+	POPL	EDI
+	rET	16t
+.PAGE
+;Function to transfer interrupt data using a buffer list
+;	long xosusbTransferInt(
+;	    DCB   *dcb,		// Address of DCB
+;	    PCB   *pcb,		// Address of PCB
+;	    LIST  *blist,	// Buffer list
+;	    int    bcnt,	// Number of entries in the list
+;	    void (*callback)(PCB *pcb, DCB *dcb, long code, long amount),
+;				// Callback function
+;	    long  *total,	// Address of long to receive total number
+;				//   of bytes transfered
+;	    time_s    timeout);	// Timeout period
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+tnsi_dcb     =!44t		;(4) Address of DCB
+tnsi_pcb     =!40t		;(4) Address of PCB
+tnsi_blist   =!36t		;(4) address of the buffer list
+tnsi_bcnt    =!32t		;(4) Number of item in buffer list
+tnsi_callback=!28t		;(4) Address of callback function
+tnsl_ptotal  =!24t		;(4) Far address to receive total value
+tnsi_timeout =!16t		;(8) Timeout value
+
+;This function must be used to start interrupt input if the interval is (or
+;  might be) greater than 32MS. If the interval is known to not be greater
+;  than 32MS xosusbStartList can be called directly. This function is needed
+;  because some USB controllers (OHC and EHC) do not implement interrupt rates
+;  greater than 32MS. If we are using such a controller and the interval is
+;  more than 32MS this function delays passing the request to the controller
+;  for the required period.
+
+;NOTE: The callback function is called at device fork level.
+
+
+xosusbTransferInt:
+				;FOR NOW, JUST FALL INTO xosusbTransfer!!!!
+
+;Function to transfer data using a buffer list - May be called at fork level
+;  or at main program level except that if there is any posibility that it
+;  may be called at fork level for a PCB it must not be called at main program
+;  level for that PCB. Also, the callback argument MUST not be NULL if called
+;  at fork level.
+;	long xosusbTransfer(
+;	    DCB   *dcb,		// Address of DCB
+;	    PCB   *pcb,		// Address of PCB
+;	    LIST  *blist,	// Buffer list
+;	    int    bcnt,	// Number of entries in the list
+;	    void (*callback)(PCB *pcb, DCB *dcb, long code, long amount),
+;				// Callback function (If NULL, this is a
+;				//   blocking call.)
+;	    long  *total,	// Address of long to receive total number
+;				//   of bytes transfered
+;	    time_s timeout);	// Timeout period
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;NOTE: If a callback function is not specified, the DCB argument must point
+;      to a valid device DCB of any type. It is used when waiting for IO to
+;      complete.
+
+;NOTE: It is preferred to call this function at main program level, especially
+;      if the transfer will require setting up multiple TDs. It will normally
+;      only be called at device fork level for devices which must re-post an
+;      interrupt input request. In this case any calls from main program level
+;      for that PCB must be called raised to fork level and must specify a
+;      callback function.
+
+trns_dcb     =!48t		;(4) Address of DCB
+trns_pcb     =!44t		;(4) Address of PCB
+trns_blist   =!40t		;(4) Address of the buffer list
+trns_bcnt    =!36t		;(4) Number of item in buffer list
+trns_callback=!32t
+trns_ptotal  =!28t		;(4) Address to receive total value
+trns_timeout =!20t		;(8) Timeout value
+
+xosusbTransfer:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, trns_pcb[EBP]
+	CMPL	pcb_label[EDI], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	TESTB	pcb_status[EDI], #PSTS$GONE ;Has the device been removed:
+	JNE	24$			;Yes - fail
+	TESTB	pcb_status[EDI], #PSTS$ACTIVE ;No - active?
+	JNE	20$			;Yes - fail
+	CMPL	pcb_waketmr[EDI], #0	;Have a wake request now?
+	JNE	20$			;Yes - fail
+	MOVL	EAX, trns_timeout+0[EBP] ;Was a timeout requested?
+	ANDL	EAX, trns_timeout+4[EBP]
+	INCL	EAX
+	JE	6$			;No
+	PUSHL	trns_timeout+4[EBP]	;Yes
+	PUSHL	trns_timeout+0[EBP]
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#startto
+	CALL	sysSchTmrCreate##
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	pcb_waketmr[EDI], EAX
+6$:	MOVL	EAX, trns_callback[EBP] ;Get possible callback function
+	MOVL	pcb_callback[EDI], EAX
+	MOVL	EAX, trns_dcb[EBP]	;Store DCB address in case we need it
+	MOVL	pcb_dcb[EDI], EAX
+	MOVL	pcb_total[EDI], #0
+	MOVL	knlTda+tdaRtnValue0##, #0
+	PUSHL	EDI			;Address of PCB
+	PUSHL	trns_blist[EBP]		;Address of buffer list
+	PUSHL	trns_bcnt[EBP]		;Length of buffer list
+	MOVL	EDX, pcb_icb[EDI]
+	MOVL	EAX, icb_disp[EDX]
+	CALLI	usb_transfer[EAX]	;Dispatch to the link level driver
+	TESTL	EAX, EAX		;  to do the transfer
+	JS	16$			;If error
+	CMPL	trns_callback[EBP], #0	;Have a callback function?
+	JNE	16$			;Yes - finished here
+	PUSHL	trns_dcb[EBP]		;No - need to wait
+	PUSHL	EDI					;  necessary.
+	CALL	xosusbWaitForDone	;Wait until finished
+	MOVL	ECX, pcb_total[EDI]
+	CMPL	trns_ptotal+0[EBP], #0	;Does he want the amount transfered?
+	JE	16$			;No
+14$:	MOVL	EDX, trns_ptotal[EBP]	;Yes
+	MOVL	[EDX], ECX
+16$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	32t
+
+20$:	MOVL	EAX, #ER_BUSY
+22$:	CLRL	ECX
+	JMP	14$
+
+24$:	MOVL	EAX, #ER_DVRMV
+	JMP	22$
+.PAGE
+;Subroutine called on timeout (We will also eventually get here if the transfer
+;  is aborted because the pipe was destroyed, although it will be because of
+;  the timeout.) This is called in scheduler context raised to fork level
+;  (FORK_SFORK).
+;	void startto(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+sto_pda  =!20t
+sto_hndl =!16t
+sto_data1=!12t
+sto_data2=!8
+
+startto:PUSHL	EDI
+	MOVL	EDI, sto_data1[ESP]
+	CMPL	pcb_label[EDI], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	TESTB	pcb_status[EDI], #PSTS$GONE ;Has it been destroyed?
+	JE	20$			;No
+
+;Here if the endpoint has been destroyed but the PCB has not been deleted
+;  because IO was incomplete. This is much the same as the situation described
+;  below for xosusbWaitForDone.
+
+	PUSHL	EDI
+	CALL	sysMemGiveXmb##		;Give up the XMB (All of the links to
+	JMP	24$			;  and from the PCB were cleared when
+					;  the PSTS$GONE bit was set.)
+
+;Here if the endpoint has not been destroyed. Just cancel the IO operation.
+;  We cannot call xosusbCancelPipe here since it requires a scheduled thread.
+;  and waits until the cancel operation is complete. All we need to do here
+;  is start cancelling. This will be completed in the device fork level code.
+
+20$:	TESTB	pcb_status[EDI], #PSTS$ACTIVE ;Is this pipe active?
+	JE	24$			;No - Possible if operation completed
+					;  while scheduler was setting up to
+					;  call here. Just ignore this.
+	TESTB	pcb_status[EDI], #PSTS$CANCEL1 ;And not already cancelled?
+	JNE	24$			;No
+	MOVL	EDX, pcb_icb[EDI]	;Yes - call the controller routine
+	PUSHL	EDI			;  to cancel the transfer - The
+	MOVL	EAX, icb_disp[EDX]	;  controller routine will call the
+	CALLI	usb_cancelpipe[EAX]	;  callback function with an ER_NORSP
+					;  error when finished cancelling the
+					;  IO operation.
+	ORB	pcb_status[EDI], #PSTS$TIMEOUT ;Indicate timed out
+24$:
+
+;;;	PUSHL	EDI
+;;;	PUSHL	pcb_dcb[EDI]
+;;;	PUSHL	#ER_NORSP
+;;;	PUSHL	#0
+;;;	CALLI	pcb_callback[EDI]
+
+	POPL	EDI
+	RET	16t
+.PAGE
+	.SBTTL	xosusbWaitForDone - Subroutine to wait until IO is complete
+
+;Subroutine to wait until IO is complete
+;	long xosusbWaitForDone(
+;	    DCB *dcb,
+;	    PCB *pcb)
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+wfd_dcb=!16t
+wfd_pcb=!12t
+
+xosusbWaitForDone::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, wfd_pcb[ESP]
+	CLRL	EAX
+	TOFORK
+	TESTB	pcb_status[ESI], #PSTS$ACTIVE ;Is the endpoint active?
+	JE	10$			;No - just return
+	MOVL	EDI, wfd_dcb[ESP]	;Yes - need to wait
+	MOVL	EAX, knlTda+tdaAddr##
+	MOVL	pcb_wthread[ESI], EAX
+	MOVL	knlTda+tdaRtnValue0##, #0
+	PUSHL	#-1
+	PUSHL	#-1
+	PUSHL	#THDS_DW2
+	CALL	sysIoWait##
+	TESTB	pcb_status[ESI], #PSTS$ACTIVE ;Is it still active?
+	JE	12$			;No - finished here
+
+;Here if the pipe is still active after waiting. This will happen if the
+;  transfer is interrupted externally (such as when the device is closed
+;  with IO active). This should only happen for ER_ABORT or ER_CANCEL errors.
+;  It will not happen on a normal time-out since the time-out code cancels
+;  the transfer before waking us up.
+
+	TOFORK
+	TESTB	pcb_status[ESI], #PSTS$ACTIVE ;Really still active?
+	JE	10$			;No - false alarm
+	PUSHL	EAX			;Yes
+	TESTB	pcb_status[ESI], #PSTS$GONE ;Has it been destroyed?
+	JE	2$			;No
+
+;Here if the endpoint has been destroyed but the PCB has not been deleted
+;  because someone using it was waiting for IO. This should never happen
+;  since the client is required to wait at least 2ms after canceling a pipe
+;  which should ensure that IO has completed. It possibily could happen if
+;  the controller is hung and never processes the cancelled IO request. If
+;  thats the case the controller is probably non-functional so all we really
+;  need to worry about is making sure we don't leak memory or try to use a
+;  deleted XMB. Deleting the PCB here should be safe since the clients are
+;  only allowed to use the address as a token. Before using it again the
+;  client should reload it from its data blocks, which should have been
+;  cleared when the pipe was terminated.
+
+	PUSHL	ESI			;Give up the XMB (All of the links to
+	CALL	sysMemGiveXmb##		;  and from the PCB were cleared when
+	JMP	4$			;  the PSTS$GONE bit was set.)
+
+;Here if the endpoint has not been destroyed. Just cancel the IO operation.
+
+2$:	FROMFORK
+	PUSHL	ESI
+	CALL	xosusbCancelPipe
+4$:	POPL	EAX
+	JMP	12$
+
+10$:	FROMFORK
+12$:	POPL	ESI			;No - finished here
+	POPL	EDI
+	RET	8
+.PAGE
+;Function called by the controller type dependent routines when a USB transfer
+;  is complete. This function is called at device fork level.
+;	long xosusbXferDone(
+;	    PCB *pcb,		// Address of PCB
+;	    long code)		// Error code
+
+xd_pcb =!12t
+xd_code=!8t
+
+xosusbXferDone::
+	PUSHL	ESI
+	MOVL	ESI, xd_pcb[ESP]
+	CMPL	pcb_label[ESI], #'PCB*'
+	JE	2$
+	CRASH	#NPCB'			;[Not a PCB]
+
+2$:	TESTB	pcb_status[ESI], #PSTS$ACTIVE
+	JE	4$
+	CRASH	DISA			;[Device Is Still Active]
+
+4$:	CMPL	pcb_waketmr[ESI], #0
+	JE	6$
+	PUSHL	pcb_waketmr[ESI]	;Cancel our timer
+	MOVL	pcb_waketmr[ESI], #0
+	CALL	sysSchTmrCancel##
+6$:	CMPL	pcb_wthread[ESI], #0	;Is he waiting?
+	JE	8$			;No
+	PUSHL	pcb_wthread[ESI]
+	MOVL	pcb_wthread[ESI], #0
+	PUSHL	xd_code+4[ESP]
+	CALL	sysIoResumeThread##
+8$:	CMPL	pcb_callback[ESI], #0
+	JE	10$
+	PUSHL	ESI
+	PUSHL	pcb_dcb[ESI]
+	PUSHL	xd_code+8[ESP]
+	PUSHL	pcb_total[ESI]
+	CALLI	pcb_callback[ESI]
+10$:	POPL	ESI
+	RET	8t
+.PAGE
+;Function to cancel IO on a device pipe
+;	int = xosusbCancelPipe(
+;	    PCB *pcb);		// Address of PCB
+;  Value returned is TRUE if pipe was active and FALSE if it was not active
+
+;This function can be used to cancel any active IO request. After this function
+;  is issued, the pipe's callback function will always be called if an IO
+;  request was active with an error of ER_CANCL indicated. Note that IO is NOT
+;  cancelled immediately. The controller may access the PCB for up to about
+;  1ms. This is a blocking function that waits long enough to ensure that the
+;  pipe has been canceled. If the pipe is active it will delay for 30 to 40ms
+;  before returning.
+
+cnp_pcb=!4
+
+xosusbCancelPipe::
+	TOFORK
+	MOVL	EDX, cnp_pcb[ESP]
+	ANDB	pcb_status[EDX], #~PSTS$TIMEOUT ;Indicate not timed out
+	PUSHL	EDX			;Start canceling the pipe if need to
+	CALL	xosusbCancelPipeBegin
+	FROMFORK
+	TESTL	EAX, EAX
+	JE	10$			;If not active
+	PUSHL	#0			;Active - wait a short time to give it
+	PUSHL	#4*TICKPERSP		;  time to cancel
+	CALL	sysSchTimeWait##
+	MOVL	EDX, cnp_pcb[ESP]
+	TESTB	pcb_status[EDX], #PSTS$ACTIVE ;Is the pipe still active?
+	JE	8$			;No
+	CRASH	PISA			;[Pipe Is Still Active]
+
+8$:	MOVL	EAX, #1			;Indicate cancelled
+10$:	RET	4
+.PAGE
+;Function to start canceling IO on a device pipe - MUST be called at fork
+;  level. The caller MUST wait until this operation is complete before
+;  accessing the pipe again. This may be done by waiting until the transfer
+;  is complete or by delaying for at least 3 scheduler ticks.
+
+;	void xosusbCancelPipeBegin(
+;	    PCB *pcb);
+
+cnpb_pcb=!8
+
+xosusbCancelPipeBegin::
+	PUSHL	ESI
+	MOVL	ESI, cnpb_pcb[ESP]
+	CMPL	pcb_label[ESI], #'PCB*'
+	JE	2$
+	CRASH	NPCB
+
+2$:	CLRL	EAX
+	TESTB	pcb_status[ESI], #PSTS$ACTIVE ;Is this pipe active?
+	JE	10$			;No - nothing to do here
+	TESTB	pcb_status[ESI], #PSTS$CANCEL1 ;Already being cancelled?
+	JNE	8$			;Yes
+	MOVL	EDX, pcb_icb[ESI]	;No - call the controller routine
+	CMPL	icb_label[EDX], #'ICB*'	;  to cancel the transfer
+	JE	4$
+	CRASH	NPCB
+
+4$:	PUSHL	ESI
+	MOVL	EAX, icb_disp[EDX]
+	CALLI	usb_cancelpipe[EAX]
+8$:	MOVL	EAX, #1			;Indicate cancel started
+10$:	POPL	ESI
+	RET	4
+.PAGE
+;Function to get address of the pipe count value for a controller
+;	long *findpipecnt{
+;	    PCB *pcb);
+
+fpc_pcb=!4
+
+findpipecnt:
+	MOVL	EDX, fpc_pcb[ESP]	;Get address of the PCB
+	MOVZBL	EAX, pcb_endpnt[EDX]	;Get the pipe type
+	SHRL	EAX, #4
+	ANDL	EAX, #0x0F
+	MOVZBL	EAX, cnttbl[EAX]
+	ADDL	EAX, #icb_cpipes
+	ADDL	EAX, pcb_icb[EDX]
+	RET	4
+
+cnttbl:	.BYTE	icb_cpipes-icb_cpipes	;00 - Control pipe
+	.BYTE	icb_sopipes-icb_cpipes	;10 - Isochronous output pipe
+	.BYTE	icb_bopipes-icb_cpipes	;20 - Bulk xfer output pipe
+	.BYTE	0			;30 - Invalid
+	.BYTE	icb_iopipes-icb_cpipes	;40 - Interrupt output pipe
+	.BYTE	0			;50 - Invalid
+	.BYTE	0			;60 - Invalid
+	.BYTE	0			;70 - Invalid
+	.BYTE	icb_cpipes-icb_cpipes	;80 - Control pipe
+	.BYTE	icb_sipipes-icb_cpipes	;90 - Isochronous input pipe
+	.BYTE	icb_bipipes-icb_cpipes	;A0 - Bulk xfer input pipe
+	.BYTE	0			;B0 - Invalid
+	.BYTE	icb_iipipes-icb_cpipes	;C0 - Interrupt input pipe
+	.BYTE	0			;D0 - Invalid
+	.BYTE	0			;E0 - Invalid
+	.BYTE	0			;F0 - Invalid
+
+	LKEEND

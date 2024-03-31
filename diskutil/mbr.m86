@@ -1,0 +1,260 @@
+	.TITLE	mbr
+
+	.PROC	80386
+	.STK16
+
+	.SEG	mbr_s, DATA, READ, WRITE, 16BIT
+	.MSECT	mbr_m, mbr_s, ADDR=0x7C00
+	.PSECT	mbr_p, mbr_m
+
+mbrbgn:	CLI
+
+;;;	MOVW	AX, SP
+;;;	CALL	puthex
+
+	CLRW	AX
+	MOVW	SS, AX
+	MOVW	SP, #0x7C00		;Set Stack Pointer to 0000:7C00
+	STI				;Enable Interrupts
+	MOVW	ES, AX
+	MOVW	DS, AX
+	CLD
+	MOVW	SI, #cpybgn
+	MOVW	DI, #cpybgn-mbrbgn+0x0600
+	PUSHW	AX			;Set up Segment (AX = 0) and Offset
+	PUSHW	DI			;  (DI) for "RET" to 0000:061B
+	MOVW	CX, #0x200-{cpybgn-mbrbgn}
+	RMOVSB	[DI], [SI]
+	RETF				;"Return" to the code we just copied
+
+;The following code is copied to 0x0600 + cpybgn - mbrbgn
+
+cpybgn:	
+;;;	MOVW	AX, DI
+;;;	CALL	puthex
+
+	MOVW	BX, #0x07BE		;Point to first partition table entry
+	MOVB	CL, #4			;Look at 4 entries
+loop1:	CMPB   	[BX], CH		;(CH is 0 from decrement above)
+	JL	active			;If bit 7 is set in first byte (There
+					;  is no good reason to demand that
+					;  the rest of the byte be 0 so we
+					;  dont!)
+	ADDW	BX, #0x10		;Advance to next etnry
+	LOOP  	CX, loop1		;If more to check
+	MOVW	SI, #noactmsg		;No active partition found
+	JMP	fail
+
+;Here with an active partition. We must check all other entries for being
+;  non-bootable (first byte 00h), or there's an error! (Only one entry in
+;  the Partition Table can be marked as 'Active.')
+
+active:	PUSHW	BX			;Save address for the boot block
+loop2:	ADDW	BX, #0x10
+	DECW	CX
+	JE      ready
+	CMPB	[BX], CH		;Is this one active?
+	JAE	loop2
+	MOVW	SI, #invptmsg
+	JMP	fail
+
+;Here with an active partition to boot. First see if we can do an extended
+;  read.
+
+ready:
+;;;	MOVW	AX, #0x0E00+'a'
+;;;	CLRW	BX
+;;;	INT	0x10
+
+	MOVB	DL, #0x80		;See if have INT 13 extensions
+	MOVW	BX, #0x55AA
+	MOVB	AH, #0x41
+	INT	0x13
+	JC	noext			;Nope
+	POPL	ESI			;Restore address of the partition
+	PUSHL	ESI			;  table entry
+	CMPW	BX, #0xAA55
+	JNE	noext			;Nope
+	TESTB	CL, #0x01
+	MOVB	CL, #0
+	JNE	doread			;Yep
+
+;Here if don't have the INT 13 extensions available. This means we must use
+;  the old CHS INT 13 read. The partition tables on current generation disks
+;  (especially USB disks) often have incorrect CHS value. Also, the values
+;  actually used by the BIOS with non-CHS disks (which includes virtually all
+;  disks likely to be seen today) generally are decided on arbitrarily by the
+;  BIOS. The best way to handle this mess (which we use here) appears to be to
+;  use the LBA values from the partition table and convert them to CHS values
+;  using the CHS parameters returned by the INT 13 function 8 BIOS function.
+;  If we have a disk larger than about 8GB and the BIOS does not support
+;  extended reads on it, any attempt to boot from a partition located above
+;  8GB will fail.
+
+noext:
+;;;	MOVW	AX, #0x0E00+'o'
+;;;	CLRW	BX
+;;;	INT	0x10
+
+	MOVB	DL, #0x80		;Get the disk's CHS parameters
+	MOVB	AH, #8
+	INT	0x13
+	JC	rdfail			;Can't do much if this fails!
+
+.IF NE 0
+	PUSHAW
+	PUSHW	DX
+	MOVW	AX, CX
+	CALL	puthex
+	POPW	AX
+	CALL	puthex
+	POPAW
+.ENDC
+
+;Get the CHS values we need (we don't use the number of cylinders)
+
+	MOVB	AL, CL			;Store number of sectors
+	ANDW	AX, #0x3F
+	JE	rdfail			;Cannot be zero!
+	MOVW	DI, AX
+	MOVB	BL, DH			;Store number of heads
+	MOVB	BH, #0
+	INCW	BX
+
+;  c[DI] = Number of sectors
+;  c[BX] = Number of heads
+
+;;;	PUSHAW
+;;;	PUSHW	BX
+;;;	MOVW	AX, DI
+;;;	CALL	puthex
+;;;	POPW	AX
+;;;	CALL	puthex
+;;;	POPAW
+
+	MOVW	AX, 0x08[SI]		;Get the LBA value for the boot block
+	MOVW	DX, 0x0A[SI]		;  we want
+	DIVW	DI			;Get the sector number
+	INCW	DX
+	MOVB	CL, DL
+	CLRW	DX			;Get the head number
+	DIVW	BX
+	MOVB	DH, DL
+	MOVB	CH, AL			;We now have the cylinder number in AX
+	SHLB	AH, #6
+	ORB	CL, AH			;We now have the argument registers set
+doread:	MOVB	DL, #0x80		;  up for INT 13 function 2
+	MOVW	DI, #5			;Try this up to 5 times before giving up
+rdloop:	PUSHAW
+	CMPB	CL, #0			;Can we do an extented read?
+	JE	doext			;Yes
+
+;;;	PUSHAW
+;;;	PUSHW	DX
+;;;	PUSHW	CX
+;;;	MOVW	AX, #0x0E00+'o'
+;;;	CLRW	BX
+;;;	INT	0x10
+;;;	POPW	AX
+;;;	CALL	puthex
+;;;	POPW	AX
+;;;	CALL	puthex
+;;;	POPAW
+
+	MOVW	BX, #0x7C00		;No - do a normal disk read (function 2)
+	MOVW	AX, #0x0201
+	INT	0x13
+	JMP	rddone
+
+;Here if can do an extended read - Construct an address packet on the stack.
+
+doext:
+;;;	MOVW	AX, #0x0E00+'x'
+;;;	CLRW	BX
+;;;	INT	0x10
+
+	PUSHW	#0			;Disk block number (64 bits)
+	PUSHW	#0
+	PUSHW	0x0A[SI]
+	PUSHW	0x08[SI]
+	PUSHW	#0			;Memory address (32 bits)
+	PUSHW	#0x7C00
+	PUSHW	#1			;Block count
+	PUSHW	#0x10			;Size of this address packet
+	MOVB	AH, #0x42
+	MOVW	SI, SP
+	INT     0x13
+	POPAW				;Discard the address packet
+
+rddone:	POPAW				;Restore registers
+	JNC	rdgood
+	PUSHAW
+	MOVB	DL, #0x80		;Error - reset the disk
+	MOVB	AH, #0
+	INT	0x13
+	POPAW
+	DECW	DI			;Should we try again?
+	JNE	rdloop			;Yes
+rdfail:	MOVW	SI, #rderrmsg
+fail:	CLD
+erloop:	LODSB	[SI]
+	CMPB	AL, #0
+	JE	hang
+	MOVB	AH, #0x0E
+	MOVW	BX, #0x0007
+	INT	0x10
+	JMP	erloop
+
+hang:	STI
+	JMP	$
+
+;Here with the boot block read - verify the signature and jump to it
+
+rdgood:	CMPW	0x7DFE, #0xAA55		;Is the boot block's signature right?
+	JNE	bdboot			;No - fail
+	POPW	SI			;Yes - restore address of the partition
+					;  table entry
+;;;	PUSHAW
+;;;	MOVW	AX, SI
+;;;	CALL	puthex
+;;;	POPAW
+
+	JMPF	0:0x7C00		;Start the bootstrapt at 0:7C00
+
+
+bdboot:	MOVW	SI, #bdbtmsg
+	JMP	fail
+
+rderrmsg:.ASCIZ	"? Error reading boot block"
+bdbtmsg: .ASCIZ	"? Invalid boot block"
+noactmsg:.ASCIZ	"? No active partition found"
+invptmsg:.ASCIZ	"? Invalid partition table"
+
+.IF NE 0
+;	c[AX] = Value to display
+
+puthex:	PUSHW	DS
+	MOVW	CX, #4
+30$:	ROLW	AX, #4
+	PUSHW	AX
+	PUSHW	CX
+	ANDB	AL, #0x0F
+	CMPB	AL, #9
+	JBE	32$
+	ADDB	AL, #'A'-'0'-10t
+32$:	ADDB	AL, #'0'
+	MOVB	AH, #0x0E		;Display character
+	CLRW	BX
+	INT	0x10
+	POPW	CX
+	POPW	AX
+	LOOP	CX, 30$
+	MOVW	AX, #0x0E00+' '		;Display space
+	CLRW	BX
+	INT	0x10
+	POPW	DS
+	RET
+.ENDC
+
+$=0x1FE
+	.WORD	0xAA55

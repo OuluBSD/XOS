@@ -1,0 +1,1233 @@
+//------------------------------------------------------------------------------
+//
+//  Definitions for 32-bit code for GCC (16-bit code is not supported with GCC)
+//
+//------------------------------------------------------------------------------
+
+// Note that we do not suport generating 16-bit code with GCC!
+
+// DPMI svcs
+
+// XOSSVC svcDpmiSetup(long flag, void far *regs);
+
+#define svcDpmiSetup(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcDpmiSetup##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// IO svcs
+                
+// XOSSVC svcIoCancel(long dummy1, void far *qab, long bits);
+
+#define svcIoCancel(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcIoCancel##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoClear(long dev, long bits);
+
+#define svcIoClear(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcIoClear##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoClose(long dev, long bits);
+
+#define svcIoClose(a1,a2) ({long v;
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcIoClose##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoClsChar(char far *name, void far *chrlst);
+
+#define svcIoClsChar(a1,a2) ({long v;\
+char *d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcIoClsChar##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoCommit(long dev);
+
+#define svcIoCommit(a1) ({long v;\
+long d1=a1;
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcIoCommit##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcIoControl(void far *qab, long func, long data);
+
+#define svcIoControl(a1,a2,a3) ({long v;\
+void *d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoControl##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoDefLog(long level, long type, char far *name, char far *defin);
+
+#define svcIoDefLog(a1,a2,a3,a4) ({long v;\
+long d1=a1;long d2=a2;char *d3=a3;char *d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcIoDefLog##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoDelete(long cmd, char far *name, void far *parm);
+
+#define svcIoDelete(a1,a2,a3) ({long v;\
+long d1=a1;char *d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcIoDelete##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoDevChar(long handle, void far *chrlst);
+
+#define svcIoDevChar(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcIoDevChar##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoDevParm(long bits, char far *name, void far *parm);
+
+#define svcIoDevParm(a1,a2,a3) ({long v;\
+long d1=a1;char *d2=s2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcIoDevParm##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoDstName(char far *rs, char far *ms, char far *ds, long dl);
+
+#define svcIoDstName(a1,a2,a3,a4) ({long v;\
+char *d1=a1;char *d2=a2;char *d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcIODstName##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoDupHandle(long oldhndl, long newhndl, long cmdbits);
+
+#define svcIODupHandle(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoDupHandle##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+//XOSSVC svcIoFindLog(long level, char far *str, char far *name,
+		char far *defin, long length, long far *skip);
+
+#define svcIoFindLog(a1,a2,a3,a4,a5,a6) ({long v;\
+long d1=a1;char *d2=a2;char *d3=a3;char *d4=a4;long d5=a5;long *d6=d6;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl ds\n\
+\tpushl %6\n\
+\tcallf svcIoFindLog##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+// XOSSVC svcIoGetHndlMap(uchar far *map, long size);
+
+#define svcIoGetHndlMap(a1,a2) ({long v;\
+uchar *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcIoGetHndlMap##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoInBlock(long dev, char far *data, long size);
+
+#define svcIoInBlock(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoInBlock#"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+//XOSSVC svcIoInBlockP(long dev, char far *data, long size, void far *parm);
+
+#define svcIoInBlockP(a1,a2,a3,a4) ({long v;\
+long d1=a1;char *d2=a2;long d3=a3;void *d4=a4;
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcIoInBlockP##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+//XOSSVC svcIoInSingle(long dev);
+
+#define svcIoInSingle(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcIoInSingle##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcIoInSingleP(long dev, void far *parm);
+
+#define svcIoInSingleP(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcIoInSingleP##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoMakePipe(void);
+
+#define svcIoMakePipe() ({long v;\
+long d1=a1;\
+asm volatile(\
+\tcallf svcIoMakePipe##"\
+:"=a"(v):);v;})
+
+// XOSSVC svcIoOpen(long bits, char far *name, void far *parm);
+
+#define svcIoOpen(a1,a2,a3) ({long v;
+long d1=a1;char *d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcIoOpen##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoOutBlock(long dev, char far *data, long size);
+
+#define svcIoOutBlock(a1,a2,a3) \
+({long v;\long d1=a1;char *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoOutBlock##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+// XOSSVC svcIoOutBlockP(long dev, char far *data, long size,
+        void far *parm);
+
+#define svcIoOutBlockP(a1,a2,a3,a4) ({long v;\
+long d1=a1;char *d2=a2;long d3=a3;void *d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcIoOutBlockP##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoOutSingle(long dev, long byte);
+
+#define svcIoOutSingle(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcIoOutSingle##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcIoOutSingleP(long dev, long byte, void far *parm);
+
+#define svcIoOutSingleP(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcIoOutSingleP##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoOutString(long dev, char far *data, long size);
+
+#define svcIoOutString(a1,a2,a3) ({long v;\
+long d1=a1;char *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoOutString##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoOutStringP(long dev, char far *data, long size,
+        void far *parm);
+
+#define svcIoOutStringP(a1,a2,a3,a4) ({long v;\
+long d1=a1;char *d2=a2;long d3=a3;void *d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcIoOutStrngP##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoPath(char far *name, long opt, char far *bfr, long size);
+
+#define svcIoPath(a1,a2,a3,a4) ({long v;\
+char *d1=a1;long d2=a2;char *d3=a3;long d4-a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcIoPath##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoPorts(long func, long base, long num);
+
+#define svcIoPorts(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoPorts##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoQueue(void far *qab);
+
+#define svcIoQueue(a1) ({long v;\
+void *d1=a1;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tcallf svcIoQueue##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcIoRename(long cmd, char far *oname, char far *nname,
+        void far *parm);
+
+#define svcIoRename(a1,a2,a3,a4) ({long v;\
+long d1=a1;char *d2=a3;char *d3=a3;void *d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcIoRename##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoRun(void far *qab);
+
+#define svcIoRun(a1) ({long v;\
+void *d1=a1;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tcallf svcIoRename##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcIoSetPos(long dev, long pos, long mode);
+
+#define svcIoSetPos(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcIoSetPos##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcIoSpecial(long dev, long func, void far *addr, long count,
+        void far *parm);
+
+#define svcIoSpecial(a1,a2,a3,a4,a5) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;long d4=a4;void *d5=a5;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl ds\n\
+\tpushl %5\n\
+\tcallf svcIoSpecial##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5));v;})
+
+// XOSSVC svcIoTransName(long func, char far *name, char far *buffer,
+		long size);
+
+#define svcIoTransName(a1,a2,a3,a4) ({long v;\
+long d1=a1;char *d2=a2;char *d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcIoTransName##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcIoWait(void far *pnt);
+
+#define svcIoWait(a1) ({long v;\
+void *d1=a1;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tcallf svcIoWait##"\
+:"=a"(v):"g"(a1));v;})
+
+// Memory management svcs
+
+// XOSSVC svcMemChange(void far *base, long bits, long size);
+
+#define svcMemChange(a1,a2,a3) ({long v;\
+void *d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcMemChange##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcMemConvShr(long, void far *addr, long, char far *name,
+        long type, long level, long prot, long, void far *acl);
+
+#define svcMemConvShr(a1,a2,a3,a4,a5,a6,a7,a8) ({long v;\
+long d1=a1;void *d2=a2;char *d3=a3;long d4=a4;long d5=a5;long d6=a6;\
+long d7=a7;void *d8=a8;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl %6\n\
+\tpushl %7\n\
+\tpushl ds\n\
+\tpushl %8\n\
+\tcallf svcMemConvShr##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6),"g"(a7),"g"(a8));v;})
+
+// XOSSVC svcMemCreate(long select, long type);
+
+#define svcMemCreate(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcMemCreate##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcMemDebug(long func, void far *addr, long far *value);
+
+#define svcMemDebug(a1,a2,a3) ({long v;\
+long d1=a1;void *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcMemDebug##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcMemLink(long newselect, long oldselect, long type);
+
+#define svcMemLink(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcMemLink##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcMemLinkShr(void far *addr, char far *name, long level);
+
+#define svcMemLinkShr(a1,a2,a3) ({long v;\
+void *d1=a1;char *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcMemLinkShr##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcMemMap(void far *base, long phys, long bits, long size);
+
+#define svcMemMap(a1,a2,a3,a4) ({long v;\
+void *d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcMemMap##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcMemNull(char far *base, long offset, long pagebits, long size);
+
+#define svcMemNull(a1,a2,a3,a4) ({long v;\
+char *d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcMemNull##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcMemPageType(void far *base, long bottom, long top, long bits);
+
+#define svcMemPageType(a1,a2,a3,a4) ({long v;\
+void *d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcMemPageType##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcMemSegType(long select, long type);
+
+#define svcMemSegType(a1,a2) ({long v;\
+long d1=a1;long d2=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcMemSegType##"\
+:"=a"(v):"g"(a1),"g"(a2)),"g"(a6));v;})
+
+// XOSSVC svcMemWPCntl(unsigned long mask);
+
+#define svcMemWPCntl(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcMemWPCntl##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcMemWPSet(long number, long type, long size, void far *address);
+
+#define svcMemWpSet(a1,a2,a3,a4) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;void *d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tcallf svcMemWpSet##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// Scheduler svcs
+
+// XOSSVC svcSchAlarm(long func, long handle, long vect, long data,
+        long date, long time);
+
+#define svcSchAlarm(a1,a2,a3,a4,a5,a6) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;long d6=a6;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl %6\n\
+\tcallf svcSchAlarm##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+// XOSSVC svcSchClrEvent(char far *name, long mask);
+
+#define svcSchClrEvent(a1,a2) ({long v;\
+char *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchClrEvent##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchClrSignal(long vector);
+
+#define svcSchClrSignal(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcSchClrSignal##"\
+:"=a"(v):"g"(a1)),"g"(a6));v;})
+
+// XOSSVC svcSchCtlCDone(void);
+
+#define svcSchCtlDone() ({long v;asm volatile(\
+ "callf svcSchCtlDone##"\
+:"=a"(v):);v;})
+
+// void svcSchDismiss(void);
+
+#define svcSchDismiss() ({long v;asm volatile(\
+ "callf svcSchDismiss##"\
+:"=a"(v):);v;})
+
+// XOSSVC svcSchExit(long status);
+
+#define svcSchExit(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcSchExit##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcSchGetVector(long vector, long, void far **addr);
+
+#define svcSchGetVector(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3-a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcSchGetVecator##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSchInitVector(long type);
+
+#define svcSchInitVector(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcSchInitVector##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcSchIntrProc(long pid, long func, long status);
+
+#define svcSchIntrProc(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a3;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcSchIntrProc##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// void svcSchIRet(void);
+
+#define svcSchIRet() ({long v;asm volatile(\
+ "callf svcSchIRet##"\
+:"=a"(v):);v;})
+
+// XOSSVC svcSchKill(long status, long pid);
+
+#define svcSchKill(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchKill##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchKillX(ulong status, ulong process, void far *memaddr,
+		void far *cseip, ulong efr, ulong data);
+
+#define svcSchKillX(a1,a2,a3,a4,a5,a6) ({long v;\
+ulong d1=a1;ulong d2=a2;void *d3=a3;void *d4=a4;ulong d5=a5;ulong d6=a6;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl %6\n\
+\tcallf svcSchKillX##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+//XOSSVC svcSchMakEvent(char far *name, long size, long intr);
+
+#define svcSchMakEvent(a1,a2,a3) ({long v;\
+char *d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %6\n\
+\tcallf svcSchMakEvent##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSchRelEvent(char far *name, long mask);
+
+#define svcSchRelEvent(a1,a2) ({long v;\
+char *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchRelEvent##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchResEvent(char far *name, long event);
+
+#define svcSchResEvent(a1,a2) ({long v;\
+char *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tcallf svcSchResEvent##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchSetEvent(char far *name, long event, long val, long pid);
+
+#define svcSchSetEvent(a1,a2,a3,a4) ({long v;\
+char *d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcSchSetEvent##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcSchSetLevel(long level);
+
+#define svcSchSetLevel(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcSchSetLevel##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcSchSetVector(long vector, long lvl, void far *addr);
+
+#define svcSchSetVector(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcSchSetVector##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSchSleep(void);
+
+#define svcSchSleep() ({long v;asm volatile(\
+ "callf svcSchSleep##"\
+:"=a"(v):);v;})
+
+//XOSSVC svcSchSuspend(void far *flag, long time);
+
+#define svcSchSuspend(a1,a2) ({long v;\
+void *d1=a1;long d2=a2;
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchSuspend##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchWaitProc(long pid, long time);
+
+#define svcSchWaitProc(a1,a2) ({long v;\
+long d1=a1;long d2=a2;
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchWaitProc##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSchWaitMEvent(char far *name, long mask, long timeout);
+
+#define svcSchWaitMEvent(a1,a2,a3) ({long v;\
+char *d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcSchWaitMEvent##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSchWaitSEvent(char far *name, long event, long timeout);
+
+#define svcSchWaitSEvent(a1,a2,a3) ({long v;\
+char *d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcSchWaitSEvent##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSchWaitSignal(void far *flag, long time);
+
+#define svcSchWaitSignal(a1,a2) ({long v;\
+void *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcSchWaitSignal##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// General system svcs
+
+// XOSSVC svcSysCmos(long addr, long data);
+
+#define svcSysCmos(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcSysCmos##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSysDateTime(long func, void far *data);
+
+#define svcSysDateTime(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcSysDateTime##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSysDefEnv(long level, void far *str, void far *def);
+
+#define svcSysDefEnv(a1,a2,a3) ({long v;\
+long d1=a1;void *d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcSysDefEnv##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSysErrMsg(long code, long format, void far *str);
+
+#define svcSysErrMsg(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcSysErrMsg##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSysFindEnv(long level, char far *str, char far *fnd,
+        char far *defin, long length, long far *skip);
+
+#define svcSysFindEnv(a1,a2,a3,a4,a5,a6) ({long v;\
+long d1=a1;char *d2=a2;char *d3=a3;char *d4=a4;long d5=a5;long *d6=a6;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl ds\n\
+\tpushl %6\n\
+\tcallf svcSysFindEnv##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+// XOSSVC svcSysGetEnv(long level, char far *buffer, long size);
+
+#define svcSysGetEnv(a1,a2,a3) ({long v;\
+long d1=a1;char *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcSysGetEnv##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcSysGetInfo(long func, long data, void far *bfr, long size);
+
+#define svcSysGetInfo(a1,a2,a3,a4) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcSysGetInfo##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcSysGetPData(long pid, void far *data);
+
+#define svcSysGetPData(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcSysGetPData##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSysGetPid(void);
+
+#define svcSysGetPid() ({long v;asm volatile(\
+ "callf svcSysGetPid##"\
+:"=a"(v):);v;})
+
+// XOSSVC svcSysGetPLevel(long pid);
+
+#define svcSysGetPLevel(a1) ({long v;\
+long d1=a1;\
+asm volatile(\
+ "pushl %1\n\
+\tcallf svcSysGetPLevel##"\
+:"=a"(v):"g"(a1));v;})
+
+// XOSSVC svcSysGetPName(long pid, void far *str);
+
+#define svcSysGetPName(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcSysGetPName##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSysLog(char far *msg, long size);
+
+#define svcSysLog(a1,a2) ({long v;\
+char *d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tpushl %2\n\
+\tcallf svcSysLog##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcSysSetPName(void far *name);
+
+#define svcSysSetPName(a1) ({long v;\
+void *d1=a1;\
+asm volatile(\
+ "pushl ds\n\
+\tpushl %1\n\
+\tcallf svcSysSetPName##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+//  Terminal svcs
+
+// XOSSVC svcTrmAttrib(long dev, long func, void far *data);
+
+#define svcTrmAttrib(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcTrmAttrib##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcTrmCurPos(long dev, long page, long chr, long line);
+
+#define svcTrmCurPos(a1,a2,a3,a4) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcTrmCurPos##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcTrmCurType(long dev, long curtype);
+
+#define svcTrmCurType(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcTrmCurType##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcTrmDspMode(long dev, long func, void far *data);
+
+#define svcTrmDspMode(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;void *d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl ds\n\
+\tpushl %3\n\
+\tcallf svcTrmDspMode##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcTrmDspPage(long dev, long page);
+
+#define svcTrmDspPage(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcTrmDspPage##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcTrmEgaPalet(long dev, void far *list);
+
+#define svcTrmEgaPalet(a1,a2) ({long v;\
+long d1=a1;void *d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tcallf svcTrmEgaPatet##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcTrmFunction(long dev, long func);
+
+#define svcTrmFunction(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcTrmFunction##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcTrmGetAtChr(long dev, long page);
+
+#define svcTrmGetAtChr(a1,a2) ({long v;\
+long d1=a1;long d2=a2;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tcallf svcTrmGetAtChr##"\
+:"=a"(v):"g"(a1),"g"(a2));v;})
+
+// XOSSVC svcTrmGetPixel(long dev, long page, long xcoord, long ycoord);
+
+#define svcTrmGetPixel(a1,a2,a3,a4) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcTrmGetPixel##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcTrmLdCusFont(long dev, long table, long size, void far *data,
+		long begin, long count);
+
+#define svcTrmLdCusFont(a1,a2,a3,a4,a5,a6) ({long v;\
+long *d1=a1;long d2=a2;long d3=a3;void *d4=a4;long d5=a5;long d6=a6;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl ds\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl %6\n\
+\tcallf svcTrmLdCusFont##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6));v;})
+
+// XOSSVC svcTrmLdStdFont(long dev, long table, long font, long begin,
+		long count);
+
+#define svcTrmLdStdFont(a1,a2,a3,a4,a5) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tcallf svcTrmLdStdFont##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5));v;})
+
+// XOSSVC svcTrmMapScrn(long dev, void far *buffer, long size, long offset);
+
+#define svcTrmMapScrn(a1,a2,a3,a4) ({long v;\
+long d1=a1;void *d2=a2;long d3=a3;long d4=a4;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tcallf svcTrmMapScrn##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4));v;})
+
+// XOSSVC svcTrmScroll(long dev, long page, long xul, long yul,
+        long xlr, long ylr, long cnt, long attrib);
+
+#define svcTrmScroll(a1,a2,a3,a4,a5,a6,a7,a8) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;long d6=a6;\
+long d7=a7;long d8=a8;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tpushl %6\n\
+\tpushl %7\n\
+\tpushl %8\n\
+\tcallf svcTrmScroll##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5),"g"(a6),"g"(a7),"g"(a8));\
+v;})
+
+// XOSSVC svcTrmSelFont(long descriptor, long fonta, long fontb);
+
+#define svcTrmSelFont(a1,a2,a3) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcTrmselFont##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})
+
+// XOSSVC svcTrmSetAtChr(long dev, long page, long chr, long attrib,
+        long count);
+
+#define svcTrmSetAtChr(a1,a2,a3,a4,a5) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tcallf svcTrmSetAtChr##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5));v;})
+
+// XOSSVC svcTrmSetChr(long dev, long page, long chr, long color,
+        long count);
+
+#define svcTrmSetChr(a1,a2,a3,a4,a5) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tcallf svcTrmSetChr##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5));v;})
+
+// XOSSVC svcTrmSetPixel(long dev, long page, long xcoord, long ycoord,
+        long value);
+
+#define svcTrmSetPixel(a1,a2,a3,a4,a5) ({long v;\
+long d1=a1;long d2=a2;long d3=a3;long d4=a4;long d5=a5;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tpushl %4\n\
+\tpushl %5\n\
+\tcallf svcTrmSetPixel##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3),"g"(a4),"g"(a5));v;})
+
+// XOSSVC svcTrmWrtInB(long dev, void far *str, long cnt);
+
+#define svcTrmWrtLnB(a1,a2,a3) ({long v;\
+long d1=a1;void *d2=a2;long d3=a3;\
+asm volatile(\
+ "pushl %1\n\
+\tpushl ds\n\
+\tpushl %2\n\
+\tpushl %3\n\
+\tcallf svcTrmWrtLnB##"\
+:"=a"(v):"g"(a1),"g"(a2),"g"(a3));v;})

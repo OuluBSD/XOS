@@ -1,0 +1,280 @@
+	.TITLE	$_geckot
+
+;*--------------------------------------------------------------------------*
+;* geckot.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	geckot.par
+
+
+MAJVER =!1
+MINVER =!2
+EDITNUM=!0
+
+$_VERSION==!{MAJVER<24t}+{MINVER<16t}+EDITNUM
+
+	GTCODE
+
+	.ENTRY	geckotdispatch
+geckotdispatch::
+	JMP	geckoentr.S		;0x00 (2)  - Start GECKOX
+	JMP	geckodebug.S		;0x02 (2)  - Debug trap entry
+	JMP	geckoint3x.S		;0x04 (2)  - INT3 entry
+	.BLKB	10t			;0x06 (10) - Reserved
+	.LONG	{MAJVER<24t}+{MINVER<16t}+EDITNUM
+					;0x10 (4)  - Version number
+geckoint3x:
+	JMP	geckoint3
+
+;Here on the initial entry to GECKOT
+
+geckoentr:
+	CALL	$_enter#
+	MOVL	$_dbentry#, #ENTTP_CALLED+{ENTFG_INIT<8}
+	MOVL	EDI, #$_bptable#	;Clear the breakpoint and watchpoint
+	MOVL	EAX, DS			;  tables
+	MOVL	ES, EAX
+	MOVL	ECX, #{BPMAX*bpt_SIZE}/4+{4*wpt_SIZE}/4
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]
+	MOVL	DR7, EAX		;Make sure no watchpoints are set
+	MOVL	DR3, EAX
+	MOVL	DR2, EAX
+	MOVL	DR1, EAX
+	MOVL	DR0, EAX
+4$:	CALL	$_usbinit#		;Initialize the USB routines
+	CMPL	$_dbdtbl#, #0		;Did we find any usable EHCIs?
+	JE	6$			;No - just return
+	CALL	$_finddebug#		;Find and set up a debug device
+	CMPL	$_dbd#, #0		;Did we find one?
+	JNE	reqloop			;Yes - go on
+6$:	DISPCHR	0x4E, 'X'
+	JMP	4$			;No - keep trying!!
+.PAGE
+;Here on a debug trap
+
+geckodebug:
+	CALL	$_enter#
+	MOVB	tracetrp#, #0
+	DISPCHR	0x47, 'D'
+	MOVL	EAX, DR6
+	TESTB	AH, #0x40		;Single step debug trap?
+	JE	8$			;No
+	ANDL	EAX, #~0x4000		;Yes - clear the bit in DR6
+	MOVL	DR6, EAX
+	CMPB	$_tracestate#, #TS_SINGLE ;Doing single step?
+	JNE	2$			;No
+	DISPCHR	0x47, 'S'
+	MOVL	$_dbentry#, #ENTTP_SINGLE ;Yes
+	JMP	enter2
+
+;Here if not doing single step
+
+2$:	CMPB	$_tracestate#, #TS_RUN	;Starting execution?
+	JE	$_putinbpleave#		;Yes - just quietly put in the INT3
+					;  instructions and continue
+
+;Here if single step debug trap was unexpected
+
+4$:	CALL	$_takeoutbp#		;Remove breakpoint instructions
+	MOVL	EAX, DR7
+	ANDL	EAX, #0xFFFF1FFF
+	MOVL	DR7, EAX
+	DISPCHR	0x47, '?'
+	MOVL	$_dbentry#, #ENTTP_UXTTRP
+	JMP	enter2
+
+;Here if not a single step debug trap
+
+8$:	TESTB	AL, #0x0F		;Data trap?
+	JE	4$			;No
+	CALL	$_takeoutbp#		;Yes - remove breakpoint instructions
+	MOVL	EDI, #$_wptable#
+	MOVL	ECX, #4
+	MOVL	ESI, #0x01
+	MOVL	EDX, #0x00030000
+	MOVL	$_dbentry, #ENTTP_UXWTPT ;Assume unexpected
+10$:	MOVL	EAX, DR6		;Have a match on this watchpoint?
+	TESTL	EAX, ESI
+	JE	14$			;No
+	TESTL	EAX, EDX		;Yes - instruction watchpoint?
+	JNE	12$			;No
+	BTSL	$_uregEFR, #16t		;Yes - set the resume bit
+12$:	CMPL	wpt_addr[EDI], #0	;Do we have it enabled?
+	JE	14$			;No
+	ADDL	$_dbentry, #ENTTP_WTPT-ENTTP_UXWTPT ;Yes - it was unexpected
+14$:	ADDL	EDI, #wpt_SIZE
+	ADDL	ESI, ESI
+	LOOP	ECX, 10$
+	JMP	enter2
+.PAGE
+;Here on an INT3
+
+geckoint3:
+	CALL	$_enter#
+
+.IF GT $$DISP-1
+	DISPCHR	0x20, 'B'
+	DISPLNG 0x20, 'P', $_uregEIP#
+	DISPLNG 0x20, 0, $_uregCSflat#
+	DISPLNG	0x20, 0, $_uregEFR#
+.ENDC
+	MOVL	EAX, $_dbd#
+	MOVL	EAX, dbd_dbreg[EAX]
+	MOVL	EAX, $_dbd#
+	MOVL	EAX, dbd_opreg[EAX]
+	CALL	$_takeoutbp#		;Remove breakpoint instructions and
+	TESTL	EAX, EAX		;  see if this was expected
+	JE	6$			;If not expected
+
+;Here if breakpoint was expected
+
+	DECL	$_uregEIP#		;Fix up the address
+	CMPL	bpt_count[EAX], #0	;Should we skip it this time?
+	JLE	4$			;No
+	DECL	bpt_count[EAX]		;Yes - reduce the count
+	MOVL	$_tracestate#, #TS_RUN
+	MOVB	tracetrp#, #2		;Tell the kernel we want this trap
+	BTSL	$_uregEFR#, #8		;Set the T bit
+	JMP	$_leave#		;Continue execution
+
+;Here if should take the breakpoint
+
+4$:	MOVL	$_dbentry#, #ENTTP_BKPT	;It was expected
+	JMP	enter2
+
+;Here if breakpoint was unexpected
+
+6$:	DISPCHR	0x47, 'U'
+	MOVL	$_dbentry#, #ENTTP_UXBKPT
+
+;Here with the caller's state saved. Now try to set up a debug device for use
+
+enter2:	CALL	$_finddebug#		;Find and set up a debug device
+	CMPL	$_dbd#, #0		;Did we find one?
+	JE	enter2			;No - just keep trying!
+	PUSHL	#DBRP_USSTATE		;Send the state response
+	CALL	$_sendstate#
+					;Fall into reqloop on the next page
+.PAGE
+;This is the command loop. We loop here waiting for commands as long as
+;  GeckoT is active.
+
+reqloop:CALL	$_getrequest#		;Get a request from the debug device
+	TESTL	EAX, EAX
+	JS	40$			;If error
+	MOVL	$_reqtype#, EAX
+	DISPCHR	0x40, 'Q'
+.IF NE $$DISP
+	PUSHL	EAX
+	ANDL	[ESP], #0x000F
+	ORL	[ESP], #0x4000
+	CALL	$_putdbhex#
+.ENDC
+	CMPL	EAX, #MAXCMD
+	JAE	42$
+	CALLI	dsp[EAX*4]		;Process the request
+	JMP	reqloop
+
+	.MOD	4
+dsp:	.LONG	$_reqnoop#	;DBRQ_NOOP    = 0x00
+	.LONG	$_reqstate#	;DBRQ_STATE   = 0x01
+	.LONG	$_reqlkelist#	;DBRQ_LKELIST = 0x02
+	.LONG	$_reqrdmem#	;DBRQ_RDMEM   = 0x03
+	.LONG	$_reqwrtmem#	;DBRQ_WRTMEM  = 0x04
+	.LONG	$_reqrdreg#	;DBRQ_RDREG   = 0x05
+	.LONG	$_reqwrtreg#	;DBRQ_WRTREG  = 0x06
+	.LONG	$_reqrdio#	;DBRQ_RDIO    = 0x07
+	.LONG	$_reqwrtio#	;DBRQ_WRTIO   = 0x08
+	.LONG	$_reqbpctrl#	;DBRQ_CTRLBP  = 0x09
+	.LONG	$_reqbplist#	;DBRQ_LISTBP  = 0x0A
+	.LONG	$_reqwpctrl#	;DBRQ_CTRLWP  = 0x0B
+	.LONG	$_reqwplist#	;DBRQ_LISTWP  = 0x0C
+	.LONG	$_reqxctrl#	;DBRQ_XCTRL   = 0x0D
+	.LONG	$_reqgetva#	;DBRQ_GETVA   = 0x0E
+	.LONG	$_reqgetpa#	;DBRQ_GETPA   = 0x0F
+	.LONG	$_reqrdpci#	;DBRQ_RDPCI   = 0x10
+	.LONG	$_reqwrtpci#	;DBRQ_WRTPCI  = 0x11
+MAXCMD=!{$-dsp}/4
+
+;Here if error getting a request - For now just try again!
+
+40$:
+;;;;;	INT3
+	JMP	reqloop
+
+;Here if request is invalid
+
+42$:	PUSHL	#ER_FUNC
+	PUSHL	EAX
+	CALL	$_errorresp
+	JMP	reqloop
+.PAGE
+
+$_badlength::
+	PUSHL	#ER_IDLEN
+	JMP	4$
+
+$_baddata::
+	PUSHL	#ER_IDFMT
+4$:	PUSHL	#0
+	CALL	$_errorresp
+	RET
+
+;Function to send an error response
+;	void errorresp(
+;	    int code,
+;	    int detail);
+
+errrp_code  =!8
+errrp_detail=!4
+
+$_errorresp::
+	MOVL	EAX, $_reqtype#
+	MOVB	$_dbbufr#+0, AL
+	MOVL	EAX, errrp_code[ESP]
+	MOVL	$_dbbufr#+1, EAX
+	MOVL	EAX, errrp_detail[ESP]
+	MOVL	$_dbbufr#+5, EAX
+	PUSHL	#DBRQ_ERROR
+	PUSHL	#9
+	CALL	$_sendresponse#
+	RET	8t
+
+return:	
+;;;;;	INT3
+	JMP	return
+
+xxxxx:	.LONG	5
+
+	END

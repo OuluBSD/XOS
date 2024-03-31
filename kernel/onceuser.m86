@@ -1,0 +1,184 @@
+	.TITLE	onceuser - XOS once-only real mode code
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+	.MACRO	CALLO func
+	.BYTE	0xE8
+	.LONG	func-{0x404+{$-icode}}
+	.ENDM
+
+DEBUG_INIT=!0			;Do not include code for debugging INIT process
+
+	ONCE
+
+sos=!icode-400h			;Define offset for the code/data segment
+
+;Following is copied to user space for the initial process on the system
+
+icode::	CALL	opencon
+	PUSHL	#0			;Define XOSSYS: = OORDSK:
+	PUSHL	#nxossys-sos
+	PUSHL	#doordsk-sos
+	CALLO	svcLogDefine#
+	TESTL	EAX, EAX
+	JNS	8$			;If OK
+	MOVL	ECX, #ilnmsg1-sos	;If error
+	CLRL	EBX
+	MOVL	EDX, #iermsg3-sos
+	CALL	onceerr
+	JMP	icode			;Keep trying!!
+
+;Here to load and run INIT
+
+8$:	PUSHL	conhndl-sos		;Close the console device
+	PUSHL	#0
+	CALLO	sysIoClose#
+	PUSHL	#initqab-sos
+	CALLO	sysIoRun#
+	PUSHL	EAX
+	CALL	opencon
+	POPL	EAX
+	TESTL	EAX, EAX		;If get here, something is wrong - did
+	JS	10$			;  the request get queued?
+	MOVL	EAX, initqab-sos+qab_error ;Yes - get error code
+10$:	MOVL	ECX, #iermsg1-sos
+	CLRL	EBX
+	MOVL	EDX, #iermsg3-sos
+	CALL	onceerr
+	JMP	8$			;Keep trying!!
+.PAGE
+;Subroutine to display error message
+;	c{EAX} = Error code
+;	c{ECX} = Address of first message string
+;	c{EBX} = Address of second message string
+;	c{EDX} = Address of third message string
+;	CALL	onceerr
+
+onceerr:MOVB	ierbufrx-sos, #0	;Clear first byte in case no error
+	TESTL	EAX, EAX		;Do we have an error to report?
+	JGE	2$			;No
+	PUSHL	EDX
+	PUSHL	ECX
+	PUSHL	EAX			;Yes - get error message string
+	PUSHL	#3
+	PUSHL	#ierbufrx-sos
+	CALLO	sysLibErrMsg#
+	POPL	ECX
+2$:	PUSHL	conhndl-sos		;Display the first message string
+	PUSHL	ECX
+	PUSHL	#0
+	CALLO	sysIoOutString#
+	TESTL	EBX, EBX
+	JE	6$
+	PUSHL	conhndl-sos		;Display the second message string
+	PUSHL	EBX
+	PUSHL	#0
+	CALLO	sysIoOutString#
+6$:	CMPB	ierbufrx-sos, #0	;Do we have an error message string?
+	JE	onceer2			;No
+	PUSHL	conhndl-sos		;Yes - display it
+	PUSHL	#ierbufr-sos
+	PUSHL	#0
+	CALLO	sysIoOutString#
+	POPL	EDX
+onceer2:PUSHL	conhndl-sos		;Display the third message string
+	PUSHL	EDX
+	PUSHL	#0
+	CALLO	sysIoOutString#
+	PUSHL	conhndl-sos
+	PUSHL	#ierbufrx-sos		;Wait for him to tell us to go on!
+	PUSHL	#10t
+	CALLO	sysIoInBlock#
+8$:	PUSHL	conhndl-sos		;Display a new-line
+	PUSHL	#crlfmsg-sos
+	PUSHL	#0
+	CALLO	sysIoOutString#
+	RET
+.PAGE
+;Subroutine to open the console device
+;	CALL	opencon
+
+opencon:PUSHL	#XO$OUT|XO$IN
+	PUSHL	#conname-sos
+	PUSHL	#0
+	CALLO	sysIoOpen#
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	conhndl-sos, EAX
+	RET
+
+;Here if can't open the console - just exit!!
+
+6$:	PUSHL	#1
+	CALLO	svcSchExit#
+.PAGE
+	.MOD	4
+
+conhndl:.LONG	0			;Handle for console device
+
+;QAB for running INIT
+
+initqab:.WORD	RFNC_RUN|RFNC$WAIT	;qab_func
+	.WORD	0			;qab_status
+	.LONG	0			;qab_error
+	.LONG	0			;qab_amount
+	.LONG	0			;qab_handle
+	.BYTE	0, 0, 0, 0		;qab_vector
+	.LONG	R$SAMEPROC		;qab_option
+	.LONG	0			;qab_count
+	.LONG	rfile-sos		;qab_buffer1
+	.LONG	0			;qab_buffer2
+	.LONG	rparm-sos		;qab_parm
+
+;Parameter list for running INIT
+
+rparm:	.BYTE	PAR$SET|REP_STR, SIZE_LNGSTR
+	.WORD	IOPAR_RUNCMDTAIL
+	.LONG	iarg-sos
+	.WORD	IARGSZ, IARGSZ
+	.BYTE	0
+
+rfile:	.ASCIZ	"XOSSYS:INIT.RUN"
+conname:.ASCIZ	"_OOCD0:"
+
+iarg:	.ASCII	"INIT"
+IARGSZ=!$-iarg
+
+nxossys: .ASCIZ "XOSSYS:"
+doordsk: .ASCIZ "OORDSK:"
+
+ilnmsg1: .ASCIZ	{CR,LF}"? KERNEL: Error defining initial logical name: XOSSYS:"
+
+iermsg1: .ASCII	{CR,LF}"? KERNEL: Cannot load system initialization program"
+	 .ASCIZ	" (XOSSYS:INIT.RUN)"
+
+iermsg3: .ASCIZ	{CR,LF,CR,LF}"Type <ENTER> to try again "
+crlfmsg: .ASCIZ	{CR,LF}
+ierbufr: .ASCII	{CR,LF}"          "
+ierbufrx:.BLKB	80t
+
+icodeend::!
+
+	END

@@ -1,0 +1,1017 @@
+	.TITLE	oncereal - XOS once-only real mode code
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD XOSINC:\xmac\xosxtrm.par
+	.INCLUD XOSINC:\xmac\xosboot.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+	.STK16
+
+;This module positions the loaded code and data correctly in memory, builds
+;  the scheduler page directory and page tables, and finishes building the
+;  GDT.
+;When this is complete, the layout of physical memory is as follows (note
+;  that all loaded code and data must fit in contiguous base memory);
+;	Zero page                      (4K) - Not used (except for crash save)
+;	Common page table for page 301 (4K) - System code segment
+;	Common page table for page 302 (4K) - System data segment (first 4M)
+;	Common page table for page 390 (4K) - System data segment (second 4M)
+;	Common page table for page 391 (4K) - System data segment (second 4M)
+;	Scheduler page directory       (4K)
+;	Scheduler task PDA             (8K)
+;	Common page table for page 340 (4K) - First 4M for PDAs
+;	Common page table for page 392 (4K) - First 4M for exec page pool
+;	System data segment
+;	System code segment
+;	Debugger code segment
+;	Debugger data segment
+
+	.SEG	x_DATA_rs, DATA, 16BIT
+	.MSECT	x_DATA_rm, x_DATA_rs, ADDR=0
+
+	.SEG	pspy_rs , DATA    , 16BIT
+;;;;;	.MSECT	pspy_rm , pspy_rs , ADDR=0
+
+	.SEG	vusercode_rs, CODE, 16BIT
+	.SEG	u_CODE_rs   , CODE, 16BIT
+	.SEG	x_CODE_rs   , CODE, 16BIT
+
+	.SEG	gt_DEBUG_rs, CODE       , 16BIT
+	.MSECT	gt_DEBUG_rm, gt_DEBUG_rs, ADDR=0
+	.PSECT	gt_CODE_rp , gt_DEBUG_rm
+
+	.SEG	gx_DEBUG_rs, CODE       , 16BIT
+	.MSECT	gx_DEBUG_rm, gx_DEBUG_rs, ADDR=0
+	.PSECT	gx_CODE_rp , gx_DEBUG_rm
+
+	.SEG	r_CODE_rs, COMB     , 16BIT, READ, WRITE
+	.MSECT	r_CODE_rm, r_CODE_rs, ADDR=0
+	.PSECT	r_CODE_rp, r_CODE_rm
+
+	.SEG	o_CODE_rs, CODE     , 16BIT
+	.MSECT	o_CODE_rm, o_CODE_rs, ADDR=0
+
+	.SEG	top_rs, DATA, 16BIT
+	.MSECT	top_rm, top_rs, ADDR=0
+
+.IF NDF $$GECKOB
+  $$GECKOB=!0
+.ENDC
+
+;Define addresses for some things that are built here
+
+pa_nullpgdir==!0x1000		;Null process page directory
+pa_pgtbl301 ==!0x2000		;Page table for table 301 (system code)
+pa_pgtbl302 ==!0x3000		;Page table for table 302 (system code)
+pa_pgtbl390 ==!0x4000		;Page table for table 390 (system data)
+pa_pgtbl391 ==!0x5000		;Page table for table 391 (system data)
+pa_avail    ==!0x6000		;First available physical address
+
+;This is the initial start of XOS - this routine determines the amount of 
+;  memory needed for several configuration dependent areas and copies all
+;  of XOS to the bottom of memory, leaving the required space as needed.
+;  It initializes everything for protected mode operation and switches to
+;  protected mode.
+
+;This version of XOS can only be loaded using version 8.0 or later of the
+;  XOS bootstrap. This version of the bootstrap leaves the following data
+;  on page 0:
+;    p0_label  =0x600 (4 bytes)   Label = "XOS@"
+;    p0_devunit=0x604 (1 byte)    BIOS device name
+;    p0_partnum=0x605 (1 byte)    Partition number
+;    p0_resrvd =0x606 (2 bytes)   Reserved, will be 0
+;    p0_guid   =0x608 (16 bytes)  GUID for the boot device or partition (For
+;				    BIOS disks and FAT file systems on the
+;				    first 4 bytes are used and contain the
+;				    volume/partition ID.)
+;    p0_basedir=0x618 (n+1 bytes) Name of the base boot director (null
+;				    terminated)
+
+	.PSECT	r_CODE_rp
+	.START	oncer
+	.STACK	ostack
+
+oncer::!CLI				;Make sure no interrupts here
+	MOVB	AL, #0x80		;Also no NMIs
+	OUTB	P_CLKADDR
+
+.IF NE $$GECKOB
+	PUSHFW
+	CALLF	geckoentr#
+.ENDC
+	PUSHW	CS			;Setup to access our data
+	POPW	DS
+	PUSHL	#0			;Make sure the EFR is right
+	PUSHL	CS
+	PUSHL	#once2
+	.STK32
+	IRET
+	.STK16
+
+once2:!	CLRL	EAX			;Make sure debug registers are clear
+	MOVL	DR7, EAX
+	MOVL	DR6, EAX
+	MOVL	DR3, EAX
+	MOVL	DR2, EAX
+	MOVL	DR1, EAX
+	MOVL	DR0, EAX
+
+	MOVW	AX, #0x1200		;Enable loading default palette during
+	MOVB	BL, #0x31		;  mode set
+	INT	0x10
+	MOVW	AX, #0x1200		;Enable cursor scaling
+	MOVB	BL, #0x34
+	INT	0x10
+	MOVW	AX, #0x1A00		;Try to get the display combination
+	INT	0x10			;  code
+	CLI
+	CMPB	AL, #0x1A		;Did it work?
+	JNE	4$			;No - go try something else
+	CMPB	BL, #1			;Yes - is it an MDA?
+	JE	8$			;Yes
+	CMPB	BL, #5			;Monochrome EGA?
+	JE	6$			;Yes
+	MOVL	EDX, #DISP_VGA
+	CMPB	BL, #7			;Monochrome VGA?
+	JE	10$			;Yes
+	MOVL	EDX, #DISP_VGA+DISP$COLOR
+	CMPB	BL, #8			;Color VGA?
+	JE	12$			;Yes
+	MOVL	EDX, #DISP_EGA+DISP$COLOR ;No - assume color EGA!
+	JMP	12$
+
+;Here if the get display combination code function did not work
+
+4$:	MOVB	AH, #0x12		;Try to get EGA information
+	MOVB	BL, #0x10
+	INT	0x10
+	CLI
+	CMPB	BL, #0x10		;Did it work?
+	JE	8$			;No - assume we have an MDA
+	MOVL	EDX, #DISP_EGA+DISP$COLOR ;Yes - assume color EGA
+	CMPB	BH, #0			;Right?
+	JE	12$			;Yes
+6$:	MOVL	EDX, #DISP_EGA		;No - must be monochrome EGA
+	JMP	10$
+
+;Here if the get EGA information function did not work - assume MDA
+
+8$:	MOVL	EDX, #DISP_MDA
+10$:	MOVB	AL, #7
+	JMP	14$
+
+12$:	MOVB	AL, #3
+14$:	MOVL	dsptyp, EDX
+	MOVB	dspmode, AL
+	MOVB	AH, #0			;Set display mode and clear screen
+	INT	0x10
+	CLI
+	MOVB	AH, #1			;Set to block cursor
+	MOVW	CX, #0x0007
+	CMPL	dsptyp, #DISP_MDA	;Monochrome display?
+	JNE	16$			;Yes
+	MOVB	CL, #0x0C		;Yes - fix up the cursor size value
+16$:	INT	0x10
+
+	MOVW	AX, #0x1112		;Change to 50-line mode
+	CLRW	BX
+	INT	0x10
+
+.IF NE 0
+	MOVW	AX, #0x4F0A
+	MOVB	BL, #0
+	INT	0x10
+
+	PUSHW	#!x_DATA_rs
+	POPW	GS
+	MOVW	GS:knlJunk1#+0-database, AX
+	MOVW	GS:knlJunk1#+2-database, ES
+	MOVW	GS:knlJunk1#+4-database, DI
+	MOVW	GS:knlJunk1#+6-database, CX
+.ENDC
+
+	MOVW	BX, #bgnmsg		;Display initial banner
+	CALL	dispmsg
+
+	CLRW	AX
+	MOVW	ES, AX
+	CMPL	ES:p0_label1, #'XOS*'
+	JNE	167$
+	CMPL	ES:p0_label2, #'XOS4'
+	JE	17$
+167$:	MOVW	BX, #btdemsg
+	MOVB	AL, #0
+	JMP	error
+
+17$:	CLI
+	MOVB	BH, #2			;Get offset for 8 x 14 basic font
+	CALL	getfont			;  table
+	MOVL	font8x14, EBP
+	MOVB	BH, #3			;Get offset for 8 x 8 basic low font
+	CALL	getfont			;  table
+	MOVL	font8x8l, EBP
+	MOVB	BH, #4			;Get offset for 8 x 8 basic high font
+	CALL	getfont			;  table
+	MOVL	font8x8h, EBP
+	MOVB	BH, #5			;Get offset for 9 x 14 font fixup
+	CALL	getfont			;  table
+	MOVL	font9x14f, EBP
+	MOVB	BH, #6			;Get offset for 8 x 16 basic font
+	CALL	getfont			;  table
+	MOVL	font8x16, EBP
+	MOVB	BH, #7			;Get offset for 9 x16 font fixup
+	CALL	getfont			;  table
+	MOVL	font9x16f, EBP
+	PUSHW	#0			;Save the interrupt enable masks in
+	POPW	ES			;  page 0 for use when rebooting
+	INB	P_INC1P1
+	MOVB	ES:pg0_ic1mask, AL
+	IOPAUSE
+	INB	P_INC2P1
+	MOVB	ES:pg0_ic2mask, AL
+	MOVW	BX, #status1
+	CALL	dispmsg
+	PUSHW	#0			;Set up the NMI vector
+	POPW	GS
+	MOVW	GS:0x08, #nmiint
+	MOVW	GS:0x0A, CS
+	MOVB	AL, #1A			;Enable NMIs
+	OUTB	P_CLKADDR
+	IOPAUSE
+	INB	P_CLKDATA
+	PUSHW	#!x_DATA_rs
+	POPW	GS
+.PAGE
+	INT	0x12			;Get size of the base memory area
+	SHLW	AX, #6t			;Change to number of paragraphs
+	CMPW	AX, #0xA000		;Greater than 640K?
+	JBE	2$			;No
+	MOVW	AX, #0xA000		;Yes - just use 640K
+2$:	MOVW	memtop, AX		;Remember where the top is
+	MOVW	BX, #status2		;Display second status character
+	CALL	dispmsg
+	MOVL	ECX, #0x2400		;Clear pages 1 through 9
+	MOVL	EDI, #0x1000
+	CLRL	EAX
+	MOVW	FS, AX
+	MOVW	ES, AX
+	CLD
+	RSTOSL	[EDI]
+	PUSHW	#!x_DATA_rs
+	POPW	GS
+	MOVL	EAX, dsptyp		      ;Store display type in the
+	MOVL	GS:knlDispType#-database, EAX ;  data segment
+	PUSHW	GS
+	MOVB	AH, #0C0h		;Get the machine type
+	INT	0x15
+	CLI
+	POPW	GS
+	CMPB	AH, #0			;Did it work?
+	JE	4$			;Yes
+	MOVL	EAX, #0x6000FFFF	;No - get value to use
+	JMP	6$			;Continue
+
+4$:	MOVL	EAX, ES:2[BX]		;Get actual machine type
+6$:	MOVL	GS:knlMachType#-database, EAX ;Store machine type
+	MOVL	oncemt, EAX		;Also store it locally!
+
+	MOVL	EAX, disproma		;Store physical address of display ROM
+	MOVL	GS:disprom#-database, EAX
+	MOVL	EAX, font8x8l		      ;Store offset for 8 x 8 basic
+	MOVL	GS:knlFont8x8L#-database, EAX ;  low font table
+	MOVL	EAX, font8x8h		      ;Store offset for 8 x 8 basic
+	MOVL	GS:knlFont8x8H#-database, EAX ;  high font table
+	MOVL	EAX, font8x14		       ;Store offset for 8 x 14 basic
+	MOVL	GS:knlFont8x14L#-database, EAX ;  low font table
+	ADDL	EAX, #14t*128t		;And also for high half
+	MOVL	GS:knlFont8x14H#-database, EAX
+	MOVL	EAX, font8x16		       ;Store offset for 8 x 16 basic
+	MOVL	GS:knlFont8x16L#-database, EAX ;  low font table
+	ADDL	EAX, #16t*128t		;And also for high half
+	MOVL	GS:knlFont8x16H#-database, EAX
+	MOVL	EAX, font9x14f		       ;Store offset for 9 x 14 font
+	MOVL	GS:knlFont9x14F#-database, EAX ;  fixup table
+	MOVL	EAX, font9x16f		       ;Store offset for 9 x 16 font
+	MOVL	GS:knlFont9x16F#-database, EAX ;  fixup table
+	MOVW	BX, #status3		;Display third status character
+	CALL	dispmsg
+
+;The following code determines if hard disks are present, and, if so, copies
+;  the specification for each to XOS's data area - Note that this is mostly
+;  obsolete, since most systems today do not set the disk type and auto-detect
+;  the disks.  This stuff has been left in to handle those few old systems that
+;  are left that still use this!
+
+	CLRW	AX
+	MOVW	GS, AX
+	PUSHW	#!x_DATA_rs
+	POPW	ES
+	TESTB	oncemt+3, #02		;Is this a PS/2?
+	JNE	10$			;Yes
+	MOVB	AL, #0x12		;No - get the disk type byte
+	CALL	readcmos
+	MOVB	AH, #0
+	SHLW	AX, #4
+	JMP	12$
+
+;Here if running on a PS/2 - the disk bytes are stored differently
+
+10$:	MOVB	AL, #0x11		;Get byte for first disk drive
+	CALL	readcmos
+	MOVB	AH, AL
+	MOVB	AL, #0x12		;Get byte for second disk drive
+	CALL	readcmos
+
+;Here with AL and AH set to indicate the existance of the first and second
+;  hard disk drives.  Note that we really don't care about the type value,
+;  just if the drive exists!  We use the type information obtained using the
+;  pointers at 0:41h*4 and 0:46h*4.
+
+12$:	CLD
+	CMPB	AH, #0			;Is the first drive present?
+	JE	14$			;No
+	MOVW	DI, #knlHdkDataC#-database ;Yes - point to place to put the
+					   ;  hard disk data
+	LFSW	SI, GS:0x41*4		;Point to data for first drive (C:)
+	TESTW	SI, SI			;Is the first drive really present?
+	JE	14$			;No
+	MOVW	CX, #8			;Yes
+	RMOVSW	[DI], FS:[SI]		;Copy the data
+14$:	CMPB	AL, #0			;Is the second drive present?
+	JE	16$			;No
+	MOVW	DI, #knlHdkDataD#-database ;Yes - point to place to put the
+					   ;  hard disk data
+	LFSW	SI, GS:0x46*4		;Point to data for second drive (D:)
+	TESTW	SI, SI			;Is the second drive really present?
+	JE	16$			;No
+	MOVW	CX, #8			;Yes
+	RMOVSW	[DI], FS:[SI]		;Copy the data
+16$:	MOVW	BX, #status4		;Display fourth status character
+	CALL	dispmsg
+
+;The following code fixes up the format of the global descriptor table entries
+;  since XMAC and XLINK are not smart enough to split the addresses into two
+;  fields!
+
+	MOVL	EDX, #xgdtable#-database ;Point to first descriptor
+	SHRL	EDX, #4
+	ADDW	DX, #!x_DATA_rs
+	MOVW	ES, DX
+	CLRW	BX
+	MOVW	CX, #GS_AVAIL/8		;Get number of global descriptors to fix
+18$:	MOVW	DX, ES:2[BX]		;Get access bits and high 4 bits of size
+	MOVL	EAX, ES:4[BX]		;Get linear address
+	MOVW	ES:2[BX], AX		;Store low 16 bits of linear address
+	SHRL	EAX, #16t		;Get high 16 bits of linear address
+	MOVB	ES:4[BX], AL		;Store the high 16 bits
+	MOVB	ES:7[BX], AH
+	XCHGB	DL, DH
+	MOVW	ES:5[BX], DX		;Store the access bits and the high 4
+	ADDW	BX, #8			;  size bits
+	LOOP	CX, 18$			;Continue if more to fix
+
+	MOVW	BX, #status5		;Display fifth status character
+	CALL	dispmsg
+
+	CLRW	AX
+	MOVW	FS, AX
+	MOVW	BX, #pa_pgtbl390+{{database>10t}&0x0FFF}
+	MOVW	DX, #!x_DATA_rs		;Move the data segment
+	MOVL	ECX, #datatop#-database
+	MOVW	AX, #0x0263
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl391+{{gdtable>10t}&0x0FFF}
+	MOVL	EDX, #xgdtable-database ;Move the global descriptor table
+	SHRL	EDX, #4t
+	ADDW	DX, #!x_DATA_rs
+	MOVL	ECX, #XGDTSIZE#
+	MOVW	AX, #0x263
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl391+{{procspy>10t}&0x0FFF}
+	MOVW	DX, #!pspy_rs		;Move the first process spy page
+	MOVL	ECX, #procspytop#-procspy
+	MOVW	AX, #0x265
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl301+{{knlV86CodeBase>10t}&0x0FFF}
+	MOVW	DX, #!vusercode_rs	;Move the real mode user code segment
+	MOVL	ECX, #vusercodetop#
+	MOVW	AX, #0x265
+	CALL	movseg	
+
+	MOVW	BX, #pa_pgtbl301+{{usercodebase>10t}&0x0FFF}
+	MOVW	DX, #!u_CODE_rs		;Move the protected mode user code
+					;  segment
+	MOVL	ECX, #usercodetop#-usercodebase
+	MOVW	AX, #0x265
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl301+{{geckotbase>10t}&0x0FFF}
+	MOVW	DX, #!gt_DEBUG_rs	;Move the exec GeckoT segment
+	MOVL	ECX, #geckottop#-geckotbase
+	MOVW	AX, #0x263
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl301+{{geckoxbase>10t}&0x0FFF}
+	MOVW	DX, #!gx_DEBUG_rs	;Move the exec GeckoX segment
+	MOVL	ECX, #geckoxtop#-geckoxbase
+	MOVW	AX, #0x263
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl302+{{codebase>10t}&0x0FFF}
+	MOVW	DX, #!x_CODE_rs		;Move the exec code segment
+	MOVL	ECX, #codetop#-codebase
+	MOVW	AX, #0x263
+	CALL	movseg
+
+	MOVW	BX, #pa_pgtbl302+{{oocodebase>10t}&0x0FFF}
+	MOVW	DX, #!o_CODE_rs		;Move the once-only code segment
+	MOVL	ECX, #oocodetop#-oocodebase
+	MOVW	AX, #0x263
+	CALL	movseg
+
+	MOVL	FS:pa_pgtbl391+{{knlPageZero>10t}&0x0FFF}, #0x65
+					;Map physical page 0 were we can use it
+
+;Here with all msects moved. Now set up the page directory.
+
+	MOVL	FS:pa_nullpgdir+0x3FE*4, #pa_nullpgdir+0x227
+					;Use page directory as a page table to
+					;  give access to all page tables in a
+					;  single 4M piece.
+	MOVL	FS:pa_nullpgdir+0x301*4, #pa_pgtbl301+0x227
+					;Store page directory entry for page
+					;  table 301
+	MOVL	FS:pa_nullpgdir+0x302*4, #pa_pgtbl302+0x227
+					;Store page directory entry for page
+					;  table 302
+	MOVL	FS:pa_nullpgdir+0x390*4, #pa_pgtbl390+0x227
+					;Store page directory entry for page
+					;  table 390
+	MOVL	FS:pa_nullpgdir+0x391*4, #pa_pgtbl391+0x227
+					;Store page directory entry for page
+					;  table 391
+	MOVW	CX, #32t		;Always map 32 pages at 0xA8000 for
+	MOVL	EAX, #0xA0000+0x227	;  the initial console display buffer
+	MOVW	DI, #pa_pgtbl301+{textdispbase&0x003FFFFF}/0x400
+	PUSHW	FS
+	POPW	ES
+34$:	STOSL	[DI]			;Store pointer
+	ADDL	EAX, #0x1000		;Bump pointer
+	LOOP	CX, 34$			;Loop if more to store
+	MOVW	BX, #status6		;Display seventh status character
+	CALL	dispmsg			;Continue on next page
+.PAGE
+;Here with most of the real mode set up done. Before we switch to protected
+;  mode we need to read the XOSDIR:\cfg\boot.cfg file and load the indicated
+;  files into a RAM-disk for use by the initialization routine. The boot.cfg
+;  file is also copied to the RAM-disk. Also, the file XOSDIR:\cmd\lkeload.run
+;  is also always copied to the RAM-disk. The RAM-disk is created starting at
+;  1MB.
+
+;BOOT.CFG is a simple text file. Each line starts with a flag character that
+;  indicates what to be done with the file named on the line as follows:
+;	: Name following is the name of an LKE without the extension. The
+;	  extension .lke is added and the file is copied to the RAM-disk from
+;	  the XOSDIR:\sys\ directory.
+;	- Name following is the name of a program or LKE with the extension.
+;	  It is copied to the RAM-disk from the XOSDIR:\sys\ directory.
+;	$ Treated the same as - except files are copied from the
+;	  XOSDIR:\cmd\ directory.
+;	= Same as $.
+;	@ Name following is the name of a symbiont without the extension. The
+;	  extension .run is added and the file is copied to the RAM-disk from
+;	  the XOSDIR:\sys\ directory.
+;  Lines beginning with any other character are quietly skipped. It is
+;  recommended that an initial # character be used for comment lines.
+;  Completely blank lines are allowed. All other leading character should
+;  be treated as reserved and should not appear.
+;  The $ and = characters indicate different actions to be taken by the
+;  protected mode code.
+
+readcfg:!
+	CLRW	AX
+	MOVW	FS, AX
+	MOVW	SI, #p0_basedir		;Copy the base directory name to our		
+	MOVW	DI, #dirbufr		;  data segment
+	PUSHW	DS
+	POPW	ES
+	MOVW	CX, #63t
+2$:	MOVB	AL, FS:[SI]
+	INCW	SI
+	MOVB	[DI], AL
+	INCW	DI
+	CMPB	AL, #0
+	LOOPNE	CX, 2$
+	JNE	4$
+	MOVB	[DI], #0
+4$:	MOVW	DX, #cmddir
+	MOVW	BX, #lkelstr		;Read lkeload.run
+	CALL	readfile
+	MOVW	DX, #sysdir
+	MOVW	BX, #initstr		;Read init.run
+	CALL	readfile
+	MOVW	DX, #sysdir
+	MOVW	BX, #oncestr		;Read once.run
+	CALL	readfile
+	MOVW	DX, #cmddir		;Read symbiont.run
+	MOVW	BX, #symbstr
+	CALL	readfile
+	MOVW	DX, #cmddir		;Read server.run
+	MOVW	BX, #servrstr
+	CALL	readfile
+	MOVW	DX, #sysdir		;Read logger.run
+	MOVW	BX, #loggrstr
+	CALL	readfile
+	MOVW	DX, #cfgdir
+	MOVW	BX, #bootstr		;Read boot.cfg
+	CALL	readfile
+	MOVW	BX, filsize		;Protect this file
+	ADDW	BX, filbufr
+	MOVB	[BX], #0		;Put a null at the end of the file
+	INCW	BX
+	MOVW	filbufr, BX		;Store new offset of the file buffer
+nxtfile:!
+	MOVW	SI, lstpnt		;Get pointer to file name list
+	CLD
+	LODSB	[SI]
+	CMPB	AL, #0			;End of file?
+	JE	rddone			;Yes
+	MOVB	lineflag, AL
+	CMPB	AL, #0x0A		;LF (funny blank line)?
+	JE	lineend			;Yes
+	MOVW	DI, #namebufr		;Point to the file name buffer
+	MOVW	CX, #31t
+	CLRW	AX
+10$:	LODSB	[SI]
+	CMPB	AL, #0
+	JE	fileend
+	CMPB	AL, #' '
+	JE	nameend
+	CMPB	AL, #0x09
+	JE	nameend
+	CMPB	AL, #0x0D		;CR?
+	JE	nameend
+	CMPB	AL, #0x0A		;LF?
+	JE	lineend			;Yes - end of line
+	CMPB	AH, #0
+	JNE	10$
+	DECW	CX
+	JS	bdfspc
+	STOSB	[DI]
+	JMP	10$
+
+nameend:!
+	MOVB	AH, #1
+	JMP	10$
+
+fileend:!
+	DECW	SI
+lineend:!
+	MOVW	lstpnt, SI
+	CMPB	lineflag, #':'		;Need to add .lke?
+	JE	addlke			;Yes
+	CMPB	lineflag, #'='
+	JE	frmcmd
+	CMPB	lineflag, #'-'
+	JE	frmsys
+	JMP	nxtfile
+
+addlke:!MOVL	[DI], #'.lke'
+	ADDW	DI, #4
+frmsys:!MOVW	DX, #sysdir
+	JMP	16$
+
+frmcmd:!MOVW	DX, #cmddir
+16$:	MOVB	[DI], #0
+	MOVW	BX, #namebufr
+	CALL	readfile
+	JMP	nxtfile			;Go get next file
+
+bdfspc:!MOVB	AL, #BER_BDFSPC
+	JMP	rderror
+
+cddone:!MOVW	AX, #0x4B00		;Try to terminate CDROM emulation
+	MOVW	SI, #cdromdata
+	MOVB	DL, #0
+	INT	0x13
+	MOVW	BX, #cddnmsg
+	CALL	dispmsg			;Fall into rddone on next page
+.PAGE
+;Here with all files stored in the RAM-disk
+
+rddone:!MOVL	EAX, ramdsk		;Calculate actual size of the RAM-disk
+	SUBL	EAX, #0x101004
+	MOVW	BX, filbufr
+	MOVL	[BX], EAX
+	PUSHL	EAX
+	ADDL	EAX, #0x1FFF+4		;Get number of pages
+	SHRL	EAX, #12t
+	PUSHW	AX
+	MOVL	ramdsk, #0x100000
+	MOVL	ECX, #4t		;Store total size at the beginning of
+	CALL	copy2xm			;  the RAM-disk
+	CLRW	AX
+	MOVW	ES, AX
+	MOVW	DI, #pa_pgtbl390+{{oocdbuffer>10t}&0xFFFF}
+	MOVL	EAX, #0x0A0027		;Map display buffer for protected mode
+	MOVW	CX, #2			;  once-only routines
+24$:	STOSL	[DI]
+	ADDL	EAX, #0x001000
+	LOOP	CX, 24$
+	MOVW	DI, #pa_pgtbl390+{{oordfile>10t}&0xFFFF}
+	MOVL	EAX, #0x100427		;Map the once-only data area (including
+	POPW	CX			;  the RAM-disk contents
+26$:	STOSL	[DI]
+	ADDL	EAX, #0x001000
+	LOOP	CX, 26$
+	CLRL	EAX
+	MOVW	FS, AX
+	MOVW	BX, #spmmsg
+	CALL	dispmsg
+	MOVB	AH, #03			;Get current cursor position for
+	MOVB	BH, #0			;  protected mode
+	INT	0x10
+	MOVZWL	EDI, DX
+	MOVL	EAX, #pa_nullpgdir	;Set PDPR (otherwise known as CR3)
+	MOVL	CR3, EAX
+	LGDTL	gdtval			;Load the GDT
+	MOVL	FS:pa_nullpgdir+0, #0x23 ;Set up page 0 as a page table for the
+					 ;  first 4MB of physical memory
+	MOVL	FS:0, #0x23		;Also map physical page 0 as virtual
+					;  page 0
+	MOVL	FS:4, #0x1237		;And map physical page 1 (page
+					;  direcotry) as virtual page 1 so
+					;  the protected mode code can access
+					;  it.
+	MOVL	FS:0x10, #0x66C5220F	;Store the following instructions on
+	MOVB	FS:0x14, #0xEA		;  page 0 (above the map entry!);
+	MOVL	FS:0x15, #oncep#	;	MOVL	CR0, EBP
+	MOVW	FS:0x19, #GS_XCODE	;	JMPF	oncep
+					;  This provides a page which is mapped
+					;  to itself for enabling paging!!
+	MOVZWL	EAX, memtop		;Get memory size for protected mode
+	MOVL	EBX, dst		;Get first free address
+	POPL	ESI			;Restore total RAM-disk size
+	ADDL	ESI, #0x1004
+	MOVL	EBP, CR0		;Get current CR0 bits
+	ORL	EBP, #0x80000001	;Set protected mode, paging enabled,
+	JMPF	0:0x10			;  preserve 80287/80387 state
+.PAGE
+nmiint:!PUSHAW
+	PUSHW	DS
+	PUSHW	CS
+	POPW	DS
+	MOVW	BX, #nmimsg
+	CALL	dispmsg
+	MOVB	AL, #0x0C
+	OUTB	P_SYSCONB
+	IOPAUSE
+	MOVB	AL, #0
+	OUTB	P_SYSCONB
+	POPW	DS
+	POPAW
+	IRET
+
+rderror:!
+	MOVW	BX, #rdemsg
+
+;Here if error during the real mode once-only
+;	c(AL) = Error code
+;	c[BX] = Offset of error message
+
+error:!	PUSHW	AX
+	CALL	dispmsg			;Display first error line
+	POPW	AX
+	CMPB	AL, #0			;Have an error code?
+	JE	4$			;No
+	MOVW	BX, #buffer+2		;Yes - get corresponding text
+	PUSHW	DS
+	POPW	ES
+	MOVB	AH, #BF_ERRMSG
+	INT	0xB1
+	MOVW	BX, #buffer
+	MOVW	[BX], #': '
+	CALL	dispmsg
+4$:	MOVW	BX, #ftlmsg
+	CALL	dispmsg
+	MOVB	AH, #0			;Wait for a key
+	INT	0x16
+	MOVB	AL, dspmode		;Clear the display
+	MOVB	AH, #0
+	INT	0x10
+	INT	0x19			;Re-boot
+.PAGE
+	.SBTTL	readfile - Subroutine to read file
+
+;Subroutine to read file
+;	c[DX] = Offset of name of final directory
+;	c[BX] = Offset of name of file
+;	CALL	readfile
+;  Does not return if error
+ 
+readfile::!
+	PUSHW	DS
+	POPW	ES
+	PUSHW	BX
+	PUSHW	DX
+	PUSHW	BX
+	PUSHW	DX
+
+;;;;	MOVW	BX, #dirbufr		;Display name of base directory
+;;;;	CALL	dispmsg
+;;;;	MOVW	BX, #bslsh		;Display backslash
+;;;;	CALL	dispmsg
+
+	POPW	BX			;Display name of final directory
+	CALL	dispmsg
+	MOVW	BX, #bslsh		;Display backslash
+	CALL	dispmsg
+	POPW	BX			;Display name of program
+	CALL	dispmsg
+	MOVW	BX, #space		;Display a space
+	CALL	dispmsg
+	MOVW	SI, #nullstr		;Open the root directory
+	PUSHW	DS
+	POPW	ES
+	MOVW	AX, #BF_SEARCH*0x100
+	INT	0xB1
+	JC	8$			;If not found
+	MOVW	SI, #dirbufr		;Open the base directory
+	MOVW	AX, #0x10+BF_SEARCH*0x0100
+	INT	0xB1
+	JC	8$
+	POPW	SI			;Open the final directory
+	MOVW	AX, #0x10+BF_SEARCH*0x0100
+	INT	0xB1
+	JC	8$			;If not found
+	POPW	SI			;Restore offset of file name
+	PUSHW	SI
+	MOVW	DI, filbufr		;Copy file name to the file buffer so
+	ADDW	DI, #4			;  we can put it in the file header
+	MOVW	CX, #32t
+2$:	LODSB	[SI]
+	CMPB	AL, #0
+	JE	4$
+	STOSB	[DI]
+	LOOP	CX, 2$
+4$:	RSTOSB	[DI]
+	POPW	SI
+	MOVW	AX, #80h+BF_SEARCH*100h
+	INT	0B1h
+8$:	JC	rderror			;If not found
+	MOVL	filsize, EAX		;Store file size
+	MOVL	filcnt, EAX
+	MOVW	cpygdt+0x10, #0xFFFF
+	MOVW	cpygdt+0x18, #0xFFFF
+	MOVW	BX, filbufr
+	MOVL	[BX], EAX
+	MOVL	ECX, #36t		;Copy the file header to the RAM-disk
+	CALL	copy2xm
+10$:	MOVW	SI, filbufr		;Read first 16K of file
+	PUSHW	DS
+	POPW	ES
+	MOVL	ECX, filcnt
+	CMPL	ECX, #4000h
+	JB	12$
+	MOVL	ECX, #0x4000
+12$:	SUBL	filcnt, ECX
+	MOVB	AH, #BF_READ
+	INT	0xB1
+	JC	8$			;If error
+	CALL	copy2xm			;Copy it to the RAM-disk
+	CMPL	filcnt, #0		;More to do for this file?
+	JNE	10$			;Yes
+	RET
+.PAGE
+	.SBTTL	copy2xm - Copy file buffer to extended memory
+
+;Subroutine to copy file buffer to extended memory
+;	c{ECX} = Length
+;	CALL	copy2xm
+
+copy2xm:!
+	MOVZWL	EAX, filbufr		;Store new offset of the file buffer
+	CLRL	EDX
+	MOVW	DX, DS
+	SHLL	EDX, #4t
+	ADDL	EAX, EDX
+	MOVL	cpygdt+0x12, EAX
+	MOVB	cpygdt+0x15, #0x93
+	MOVL	EAX, ramdsk
+	MOVL	cpygdt+0x1A, EAX
+	MOVB	cpygdt+0x1D, #0x93
+	ADDL	ramdsk, ECX
+	INCL	ECX
+	SHRL	ECX, #1
+	MOVW	SI, #cpygdt
+	MOVB	AH, #0x87
+	INT	0x15
+	JNC	ret010
+	MOVW	BX, #xmemsg
+	MOVB	AL, #0
+	JMP	error
+.PAGE
+	.SBTTL	getfont - Subroutine to get offset of font table
+
+;Subroutine to get offset of display font table
+;	c(BH) = Font index
+;	CALL	getfont
+;	c{EBP} = Physical offset
+
+getfont:!
+	CLRL	EBP			;Return 0 if this doesn't work
+	MOVL	ES, EBP
+	MOVW	AX, #0x1130		;Get function
+	INT	10h			;Call BIOS
+	CLI
+	CLRL	EAX
+	MOVW	AX, ES
+	SHLL	EAX, #4
+	ADDL	EBP, EAX
+	MOVL	EAX, EBP		;Get address of start of display
+	ANDL	EAX, #0xFFFF0000	;  ROM
+	CMPL	disproma, #0		;Is this the first time?
+	JNE	4$			;No
+	MOVL	disproma, EAX		;Yes - just store address
+2$:	MOVZWL	EBP, BP			;Get offset in data segment where this
+	ADDL	EBP, #dsprom		;  will be mapped
+ret010:!RET
+
+;Here if already have display ROM address stored
+
+4$:	CMPL	disproma, EAX		;Is it the same?
+	JE	2$			;Yes - OK
+	CLRL	EBP			;No - return 0!
+	RET
+.PAGE
+	.SBTTL	movseg - Subroutine to move segment
+
+;Subroutine to move segment to its final location for XOS
+;	c[AX]    = Page table entry bits
+;	c[FS:BX] = Real address of first page table entry for segment
+;	c{ECX}   = Length of segment (in bytes)
+;	c[DX]    = Segment selector for source segment
+;	c{dst}   = New physical address for segment
+;	CALL	movseg
+;	c{dst}   = Physical address for next segment
+
+movseg:!MOVL	left, ECX
+	ADDL	ECX, #0xFFF		;Change to pages (round up)
+	SHRL	ECX, #12t
+	JE	ret012			;If nothing to move
+	MOVL	EDI, ECX
+	SHLL	EDI, #12t
+	ANDL	EAX, #0x0FFF		;Remove junk from the page bits
+	ORL	EAX, dst		;Combine with the physical address
+2$:	MOVL	FS:[BX], EAX		;Store page table entry
+	ADDW	BX, #4			;Bump page table pointer
+	ADDL	EAX, #0x1000		;Bump physical address
+	LOOP	CX, 2$			;Continue if more pages
+	MOVL	EAX, dst		;Get the starting address
+	ADDL	dst, EDI		;Bump address
+	SHRL	EAX, #4			;Change to segment selector
+	CLD
+4$:	CLRW	DI			;Move one page
+	CLRW	SI
+	MOVW	GS, DX
+	MOVW	ES, AX
+	MOVL	ECX, left
+	CMPL	ECX, #0x1000
+	JBE	6$
+	MOVL	ECX, #0x1000
+6$:	SUBL	left, ECX
+	RMOVSB	[DI], GS:[SI]
+	ADDW	AX, #0x100		;Bump segment selectors to next page
+	ADDW	DX, #0x100
+	CMPL	left, #0		;More to move?
+	JNE	4$			;Yes - continue
+	CLRW	CX			;No - clear the rest of the last page
+	SUBW	CX, DI
+	ANDW	CX, #0xFFF
+	MOVB	AL, #0
+	RSTOSB	[DI]
+ret012:!RET				;No - finished
+.PAGE
+	.SBTTL	dispmsg - Subroutine to display message
+
+;Subroutine to display message from our data segment
+;	c[BX] = Offset of message
+;	CALL	dispmsg
+
+dispmsg:!
+	MOVB	AL, [BX]
+	CMPB	AL, #0
+	JE	ret012
+	INCW	BX
+	MOVB	AH, #0Eh
+	PUSHW	BX
+	CLRW	BX
+	INT	0x10
+	POPW	BX
+	JMP	dispmsg
+.PAGE
+	.SBTTL	readcmos - Subroutine to read CMOS memory
+
+;Subroutine to read CMOS memory during once-only
+;	c(AL) = Offset
+;	CALL	readcmos
+;	c(AL) = Data
+
+readcmos:!
+	OUTB	P_CLKADDR		;Set offset
+	IOPAUSE
+	IOPAUSE
+	INB	P_CLKDATA		;Read the contents
+	PUSHL	EAX
+	MOVB	AL, #1Ah		;Put offset to default value
+	OUTB	P_CLKADDR
+	POPL	EAX
+	RET				;All done here
+.PAGE
+	.SBTTL	Data for oncer
+
+nullstr:! .BYTE  0
+bgnmsg:!  .ASCIZ "XOS real mode initialization: "
+status1:! .ASCIZ "1"
+status2:! .ASCIZ "2"
+status3:! .ASCIZ "3"
+status4:! .ASCIZ "4"
+status5:! .ASCIZ "5"
+status6:! .ASCIZ "6  Reading startup files:"{CR,LF}
+nmimsg:!  .ASCIZ " NMI "
+space:!   .ASCIZ " "
+bslsh:!   .ASCIZ "\\"
+lkelstr:! .ASCIZ "lkeload.run"
+initstr:! .ASCIZ "init.run"
+oncestr:! .ASCIZ "once.run"
+symbstr:! .ASCIZ "symbiont.run"
+servrstr:!.ASCIZ "server.run"
+loggrstr:!.ASCIZ "logger.run"
+bootstr:! .ASCIZ "boot.cfg"
+cmddir:!  .ASCIZ "cmd"
+cfgdir:!  .ASCIZ "cfg"
+sysdir:!  .ASCIZ "sys"
+btdemsg:! .ASCIZ {CR,LF}"? Data stored by boot loader is invalid"
+rdemsg:!  .ASCIZ {CR,LF,CR,LF}"? Error reading file"
+xmemsg:!  .ASCIZ {CR,LF}"? Error copying data to extended memory"{CR,LF}
+ftlmsg:!  .ASCII {CR,LF,CR,LF}"**** Cannot continue initialization - Press any"
+	  .ASCIZ " key to re-boot ****"{CR,LF}
+cddnmsg:! .ASCIZ "CD disk emulation terminated"{CR,LF}
+spmmsg:!  .ASCIZ {CR,LF}"Switching to protected mode"{CR,LF}
+;;extmsg: .ASCIZ "Have disk extensions"{CR,LF}
+
+	  .MOD  2
+memtop:!  .WORD	0		;Top of memory
+mcpdata:! .WORD 0xFFFF		;Data for determining coprocessor type
+dsptyp:!  .LONG	1		;Display type
+gdtval:!  .WORD	0x0FFF
+	  .LONG	gdtable
+dst:!	  .LONG	pa_avail
+left:!	  .LONG 0		;Amount left to move (local to movseg)
+ramdsk:!  .LONG 0x100004	;Pointer to RAM-disk physical memory
+disproma:!.LONG	0		;Physical address of display ROM
+dspmode:! .BYTE 0		;BIOS display mode
+	  .BYTE 0
+font8x8l:!.LONG	0		;Offset of 8 x 8 basic low font table
+font8x8h:!.LONG	0		;Offset of 8 x 8 basic high font table
+font8x14:!.LONG	0		;Offset of 8 x 14 basic font table
+font8x16:!.LONG	0		;Offset of 8 x 16 basic font table
+font9x14f:!.LONG 0		;Offset of 9 x 14 font fixup table
+font9x16f:!.LONG 0		;Offset of 9 x 16 font fixup table
+oncemt:!  .LONG	0		;Local copy of knlMachType
+cpygdt:!  .BLKB 48t		;GDT for copy to extended memory
+dirbufr:! .BLKB 64t		;Name of system directory
+lstpnt:!  .WORD buffer		;Pointer to the file list
+filsize:! .LONG 0		;File size
+filcnt:!  .LONG 0
+filbufr:! .WORD buffer		;Offset of file buffer
+namebufr:!.BLKB 32t		;File name buffer
+bootnum:! .BYTE	0, 0		;Boot disk values
+lineflag:!.BYTE 0
+cdromdata:!.LONG 0, 0, 0, 0, 0	;Buffer for boot CDROM data
+	  .BLKW	0x100		;Once-only stack
+ostack:!  .BLKW 1
+buffer:!

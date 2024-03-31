@@ -1,0 +1,2295 @@
+	.TITLE	ioutil2 - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD XOSINC:\XMAC\XOSXDISK.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD XOSINC:\XMAC\PCAT.PAR
+
+FORKDEFS=!1
+
+	DATA
+
+	.SBTTL	ioinit - Subroutine to initialize IO routines
+
+	ONCE
+
+;Subroutine to initialize IO routines
+;	CALL	ioinit
+
+ioinit::PUSHL	#1024t			;Create the initial DCB ID table
+	CALL	sysIoSetDevLimit
+	RET
+
+	CODE
+.PAGE
+	.SBTTL	Common error routines
+
+;Here from device driver dispatch on illegal function for device
+
+knlIFnDev::
+	MOVL	knlTda+tdaDcb#, #0
+	MOVL	EAX, #ER_IFDEV		;Error = Illegal Function for DEVice
+	RET
+
+knlIFnDevP1::
+	MOVL	knlTda+tdaDcb#, #0
+	MOVL	EAX, #ER_IFDEV		;Error = Illegal Function for DEVice
+	RET	4
+
+;Here from device driver dispatch for illegal input
+
+knlIllInp::
+	MOVL	knlTda+tdaDcb#, #0
+	MOVL	EAX, #ER_NOIN
+	RET
+
+;Here from device driver dispatch for illegal output
+
+knlIllOut::
+	MOVL	knlTda+tdaDcb#, #0
+	MOVL	EAX, #ER_NOOUT
+	RET
+
+;Here to return ER_BUSY
+
+knlRtnBusy::
+	MOVL	EAX, #ER_BUSY
+	STC
+	RET
+
+knlRtnAdrErLv::
+	LEAVE
+knlRtnAdrEr::
+	MOVL	EAX, #ER_ADRER
+	STC
+	RET
+.PAGE
+;Subroutine to register a new device driver
+;	long sysIoDriverRegister(
+;	    char *name,		// Address of type name for driver (in data
+;				//   segment)
+;	    void *addunit,	// Address of addunit function
+;	    CCB  *ccn);		// Address of CCB for class
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+;  Must be called at main program level with the exec memory resource.
+
+rgdd_name   =!24t
+rgdd_addunit=!20t
+rgdd_ccb    =!16t
+
+sysIoDriverRegister::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	ESI, rgdd_ccb[EBP]	;First, make sure its not already
+	ADDL	ESI, #ccb_dlbhead	;  registered
+	MOVL	EDI, [ESI]
+4$:	TESTL	EDI, EDI
+	JE	10$
+	PUSHL	rgdd_name[EBP]
+	LEAL	EAX, dlb_name[EDI]
+	PUSHL	EAX
+	PUSHL	#8
+	CALL	sysLibStrNCmp#
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	EDI, dlb_next[EDI]
+	JMP	4$
+
+8$:	MOVL	EAX, #ER_ALDEF
+	JMP	12$
+
+;Here if new driver is not already registered
+
+10$:	MOVL	ECX, #dlb_SIZE
+	CALL	knlGetXMem
+	JC	12$
+	MOVL	dlb_label[EDI], #'DLB*'
+	MOVL	dlb_name+0[EDI], #0
+	MOVL	dlb_name+4[EDI], #0
+	LEAL	EAX, dlb_name[EDI]
+	PUSHL	EAX
+	PUSHL	rgdd_name[EBP]
+	PUSHL	#8
+	CALL	sysLibStrNMov#
+	MOVL	EAX, rgdd_addunit[EBP]
+	MOVL	dlb_addunit[EDI], EAX
+	MOVL	EAX, [ESI]
+	MOVL	dlb_next[EDI], EAX
+	MOVL	[ESI], EDI
+	CLRL	EAX
+12$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+.PAGE
+;Function to remove a DLB - This should only be called if an error occures
+;  immediately after adding a new DLB but before andthing else is done to
+;  instansiate a device driver.
+;	void sysIoDriverRemove(
+;	   char *typename,	// Address of type name for driver (in data
+;				//   segment)
+;	   CCB  *ccb);		// Address of the DLB list head pointer for
+;				//   the class
+;  No errors are indicated. If the specified type name is not found in the
+;    DLB list the system is crashed!
+
+rmdd_name=!20t
+rmdd_ccb =!16t
+
+sysIoDriverRemove::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	EDI, rmdd_ccb[EBP]	;Find the DLB
+	MOVL	EDI, #ccb_dlbhead
+4$:	MOVL	ESI, [EDI]
+	TESTL	ESI, ESI
+	JE	10$
+	PUSHL	rmdd_name[EBP]
+	LEAL	EAX, dlb_name[ESI]
+	PUSHL	EAX
+	PUSHL	#8
+	CALL	sysLibStrNCmp#
+	TESTL	EAX, EAX
+	JE	10$
+	LEAL	EDI, dlb_next[ESI]
+	JMP	4$
+
+;Here if did not find the DLB
+
+6$:	CRASH	NDLB
+
+;Here with the DLB
+
+10$:	MOVL	EAX, dlb_next[ESI]
+	MOVL	[EDI], EAX
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8t
+.PAGE
+;Common function to add a low level unit for a device driver. Must be called
+;  at main program level.
+;	long sysIoDriverAddUnit(
+;	    char *name,		// Address of type name for driver
+;	    CCB  *ccb,		// Address of CCB for class
+;	    int   unit);	// Primary unit number + 256 * secondary unit
+;				//   number
+;  Value returned is ER_DUADF if the unit is already defined, ER_NSTYP if the
+;  requested DLB is not found or otherwise the value returned by the device
+;  driver addunit function. Returns raised to fork level.
+
+dau_name=!24t
+dau_ccb =!20t
+dau_unit=!16t
+
+sysIoDriverAddUnit::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	ESI, dau_ccb[EBP]	;Get address of the CCB
+	MOVL	EDI, dau_name[EBP]	;Get address of the type name
+	MOVL	EAX, dau_unit[EBP]	;Get unit number
+	MOVL	ESI, ccb_dlbhead[ESI]	;Find the DLB for the driver
+10$:	TESTL	ESI, ESI
+	JE	24$
+	LEAL	EAX, dlb_name[ESI]
+	PUSHL	EAX
+	PUSHL	dau_name[EBP]
+	PUSHL	#8
+	CALL	sysLibStrNCmp#
+	TESTL	EAX, EAX
+	JE	16$
+	MOVL	ESI, dlb_next[ESI]
+	JMP	10$
+
+16$:	PUSHL	dau_unit[EBP]
+	CALLI	dlb_addunit[ESI]
+20$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+22$:	MOVL	EAX, #ER_DUADF
+	JMP	20$
+
+24$:	MOVL	EAX, #ER_NSTYP
+	JMP	20$
+.PAGE
+
+;Function to create a static DCB
+;	long sysIoMakeDcb(
+;	    long   dsp,
+;	    long   len,
+;	    SDTBL *disp,
+;	    DCB  **pdcb);
+
+
+mkdcb_dsp =!24t
+mkdcb_len =!20t
+mkdcb_disp=!16t
+mkdcb_pdcb=!12t
+
+sysIoMakeDcb::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, mkdcb_dsp[ESP]
+	MOVL	ECX, mkdcb_len[ESP]
+	MOVL	EDI, mkdcb_disp[ESP]
+	CALL	knlMakeDcb
+	JC	4$
+	MOVL	EDX, mkdcb_pdcb[ESP]
+	MOVL	[EDX], EDI
+	CLRL	EAX
+4$:	POPL	EBX
+	POPL	EDI
+	RET	16t
+.PAGE
+	.SBTTL	knlMakeDcb - Subroutine to create a static DCB
+
+;Subroutine to create a static DCB - must be called with the exec memory
+;  resource
+;	c{EBX} = Value for dcb_dsp
+;	c{ECX} = Total length for DCB
+;	c{EDI} = Offset of device dispatch table
+;	CALL	knlMakeDcb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset for DCB
+
+knlMakeDcb::
+	PUSHL	EDI			;Save dispatch table offset
+	CALL	knlGetXMem#		;Get memory for the DCB
+	JC	10$
+	POPL	dcb_sdisp[EDI]		;Store dispatch table offset
+	MOVL	dcb_dsp[EDI], EBX	;Store device description bits
+	MOVL	dcb_label[EDI], #'DCB*'
+	CLRL	EAX
+	DECL	EAX
+	MOVL	dcb_fnext[EDI], EAX	;Indicate not in fork queue
+	JMP	knlGetDcbId		;Store DCB ID in the DCB and return
+
+;Here if error allocating exec memory
+
+10$:	POPL	EDI			;Remove junk from the stack
+	RET				;And return
+.PAGE
+;Function to get address of a DCB from a DCB ID value
+;	DCB *sysIoGetDcbFromId(
+;	    long gid);
+;  Value returned is the address of the DCB or NULL if the DCB ID is not valid.
+
+gdfi_gid=!4
+
+sysIoGetDcbFromId::
+	MOVL	EDX, gdfi_gid[ESP]
+	MOVZWL	ECX, DX
+	MOVL	EAX, dcbtable-4[ECX*4]
+	TESTL	EAX, EAX		;Is this entry in use?
+	JNS	4$			;No
+	CMPL	dcb_label[EAX], #'DCB*' ;Yes - is it still a DCB?
+	JNE	4$			;No
+	CMPL	EDX, dcb_id[EAX]	;Yes - is the right DCB?
+	JE	6$			;Yes
+4$:	CLRL	EAX			;No - return NULL
+6$:	RET	4
+.PAGE
+	.SBTTL	knlGetDcbId - Subroutine to allocate a DCB ID value
+
+;Subroutine to allocate a DCB ID value
+;	c{EDI} = Offset of DCB
+;	CALL	knlGetDcbId
+
+knlGetDcbId::
+	MOVL	EAX, dcbtblfree		;Get entry from the free list
+	TESTL	EAX, EAX		;Is the free list empty?
+	JE	4$			;Yes - fail!
+	MOVL	EDX, dcbtable-4[EAX*4]	;Remove this entry from the free list
+	BTL	EDX, #31t
+	JC	10$
+	MOVL	dcbtblfree, EDX
+	MOVL	dcbtable-4[EAX*4], EDI	;Store DCB offset in the table
+	SHLL	EAX, #16t		;Get index in high half
+	MOVW	AX, dcbidseq		;Add the DCB sequence number
+	INCL	dcbidseq
+	RORL	EAX, #16t
+	MOVL	dcb_id[EDI], EAX	;Store ID in the DCB
+rtncls:	CLC
+	RET
+
+;Here if the DCB ID table is full
+
+4$:	MOVL	EAX, #ER_TMDVS
+	STC
+	RET
+
+10$:	CRASH	BIFL			;[Bad device ID Free List]
+.PAGE
+;Subroutine to allocate additional DCB ID table space
+;	c{EAX} = New desired number of entries
+;	CALL	setdevlimit
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long sysIoSetDevLimit(
+;	    long entries);	// New desired number of entries
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+sdl_entries=!4
+
+sysIoSetDevLimit::
+	MOVL	EAX, sdl_entries[ESP]
+	CMPL	EAX, #0x4000		;Too big?
+	JB	2$			;No
+	MOVL	EAX, #0x4000		;Yes - just use maximum
+2$:	SUBL	EAX, dcbtblsize		;Is it already this big?
+	JLE	rtncls			;Yes - nothing needed here
+	LEAL	ECX, 0x3FF[EAX]		;Get number of additional pages needed
+	SHRL	ECX, #10t
+	MOVL	EBX, dcbtblsize		;Get address for new pages
+	SHLL	EBX, #2t
+	ADDL	EBX, #dcbtable
+	PUSHL	ECX
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	ECX
+	PUSHL	#MT_SYS
+	PUSHL	#0x63
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	POPL	EBX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	14$			;If can't get the pages
+	SUBL	knlMemUser#, ECX
+	SHLL	ECX, #10t		;Get number of new entries
+	TOFORK
+	ADDL	dcbtblsize, ECX		;Update the table size
+	SUBL	EBX, #dcbtable-4
+	SHRL	EBX, #2
+	MOVL	EDX, dcbtblfree		;Find the end of the current free list
+	TESTL	EDX, EDX
+	JE	6$
+4$:	MOVL	EAX, dcbtable-4[EDX*4]
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	EDX, EAX
+	JMP	4$
+
+6$:	MOVL	dcbtblfree, EBX
+	JMP	10$
+
+;Here with the end of the free list
+
+8$:	MOVL	dcbtable-4[EDX*4], EBX
+10$:	DECL	ECX
+12$:	INCL	EBX
+	MOVL	dcbtable-8[EBX*4], EBX
+	LOOP	ECX, 12$
+	MOVL	dcbtable-4[EBX*4], #0
+	FROMFORK
+	CLRL	EAX
+14$:	BTL	EAX, #31t
+	RET	4
+.PAGE
+;Subroutine to check for free interrupt
+;	long XOSFNC sysIoChkInt(
+;	    long  intnum)	// Interrupt number + 0x100 if sharable
+
+cint_int =!4
+
+sysIoChkInt::
+	MOVZBL	ECX, cint_int[ESP]
+	MOVL	EAX, firstintrb
+2$:	TESTL	EAX, EAX
+	JE	6$
+	CMPB	intrb_number[EAX], CL
+	JE	4$
+	JG	6$
+	MOVL	EAX, intrb_next[EAX]
+	JMP	2$
+
+;Here if have an INTRB for the interrupt - see if it can be shared
+
+4$:	CMPL	cint_int+1[ESP], #0
+	JE	10$
+	CMPL	intrb_share[EAX], #0
+	JE	10$
+6$:	CLRL	EAX
+8$:	RET	4
+
+;Here if interrupt is not available
+
+10$:	MOVL	EAX, #ER_ININU
+	JMP	8$
+.PAGE
+;Function to register an interrupt and set its interrupt vector
+;	long XOSFNC sysIoSetInt(
+;	    char *name,		// Name associated with interrupt
+;	    long  intnum,	// Interrupt number + 0x100 if sharable
+;	    long  vt,		// Vector type
+;	    void *isr,		// Address of interrupt service routine
+;	    void *exit);	// Address of exit instruction (May be NULL if
+;				//   not sharable and the final JMP target has
+;				//   been set.)
+
+;If a device is capable of sharing a PCI interrupt, it must supply the offset
+;  of its exit instruction which must be initially "JMP xxx". (The address
+;  does not matter but MUST be 32 bits, it is modified here.) This instruction
+;  MUST be unique, it cannot be in code shared by multiple device units.  It
+;  must be the single final instruction executed by ALL paths through the
+;  interrupt code. The device must not execute any EOI operations. (That is
+;  done by the intdonexxx routines.). The device must quickly determine if its
+;  Interrupt is active and immediately execute the exit instruction if not.
+;  The initial interrupt code for devices using a sharable interrupt MUST be:
+;	PUSHAL				;Save registers
+;	PUSHL	DS
+;	PUSHL	ES
+;	PUSHL	FS
+;	PUSHL	GS
+;	PUSHL	#GS_DATA.B		;Make our data addressable
+;	POPL	DS
+;  This code is generated by the INTENTR macro, which is the preferred way to
+;  create it. When the device is at the beginning of the interrupt chain, this
+;  sequence is executed from the beginning.  When the device is not at the
+;  beginning of the interrupt chain, the first instruction executed is the
+;  instruction immediately following this sequence, which is JMPed to by the
+;  final instruction of the previous interrupt routine in the chain.
+
+setint_name=!32t
+setint_int =!28t
+setint_vt  =!24t
+setint_isr =!20t
+setint_exit=!16t
+
+sysIoSetInt::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	PUSHL	setint_int[ESP]
+	CALL	sysIoChkInt		;Make sure vector not in use
+	TESTL	EAX, EAX
+	JS	30$			;If error
+	MOVL	ECX, setint_int[ESP]
+	MOVL	ESI, #firstintrb
+2$:	MOVL	EBX, [ESI]
+	TESTL	EBX, EBX
+	JE	8$
+	CMPB	CL, intrb_number[EBX]
+	JLE	8$
+	LEAL	ESI, intrb_next[EBX]
+	JMP	2$
+
+;Here with the position for the INTRB
+;	c{ESI} = Address of pointer to update
+
+8$:	MOVL	ECX, #intrb_SIZE	;Allocate space for the INTRB
+	CALL	knlGetXMem#
+	JC	30$
+	MOVL	intrb_label[EDI], #'IRQB'
+	MOVL	EAX, setint_isr[ESP]	;Fill it in
+	MOVL	intrb_entry[EDI], EAX
+	MOVL	EAX, setint_name[ESP]
+	MOVL	intrb_name[EDI], EAX
+	MOVL	EAX, setint_int[ESP]
+	MOVW	intrb_number[EDI], AX	;This also stores intrb_share!
+	MOVL	EAX, setint_int[ESP]
+	MOVL	EDX, setint_name[ESP]
+	LEAL	EBX, intrb_name[EDI]
+	MOVL	ECX, #16t
+12$:	MOVZBL	EAX, [EDX]		;Copy the name string
+	CMPB	AL, #0
+	JE	14$
+	INCL	EDX
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 12$
+	JMP	16$
+
+14$:	MOVB	[EBX], #0
+	LOOP	ECX, 14$
+16$:	MOVL	EBX, [ESI]		;Link it in to the list
+	MOVL	intrb_next[EDI], EBX
+	MOVL	[ESI], EDI
+	ADDW	irqtableent#+dct_length, #20t
+	MOVL	EDX, setint_exit[ESP]	;Get address of the final JMP
+	TESTL	EBX, EBX		;Is this the last INTRB?
+	JE	20$			;Yes
+	MOVZBL	EAX, setint_int[ESP]	;No - is the next one for the same
+	CMPB	AL, intrb_number[EBX]	;  interrupt?
+	JNE	20$			;No
+
+;Here if need to link this interrupt to an existing shared interrupt. (When get
+;  here we know that both interrupts are sharable since we check this first by
+;  calling sysIoChkInt.) We always insert a new entry at the head of the chain.
+;  Thus we need to set the target for the final JMP in this routine to point to
+;  the next routine and change the interrupt vector to point to this routine.
+
+	MOVL	EAX, intrb_entry[EBX]	;Get entry for next ISR
+	ADDL	EAX, #14t-5		;Add in the magic offset to the link
+	JMP	22$			;  entry
+
+;Here if not linking to next interrupt, either because this is the last in
+;  a chain or because it is not shared. If necessary, we must set the final
+;  JMP target to be either knlIntDoneLow or knlIntDoneHigh.
+
+20$:	TESTL	EDX, EDX		;Should we set the JMP target?
+	JE	24$			;No
+	MOVL	EAX, #knlIntDoneHigh-5	;Yes - assume high interrupt
+	CMPB	intrb_number[EDI], #8	;Right?
+	JAE	22$			;Yes
+	MOVL	EAX, #knlIntDoneLow-5	;No - it's a low interrupt
+22$:	SUBL	EAX, EDX
+	MOVL	1[EDX], EAX
+
+;Set the interrupt vector
+
+24$:	MOVZBL	ECX, intrb_number[EDI]	;Get interrupt number
+	SHLL	ECX, #3t
+	CLRL	EAX
+	MOVB	AH, setint_vt[ESP]	;Get vector type in AH
+	MOVL	EBX, setint_isr[ESP]	;Get offset of interrupt routine
+	PUSHFL				;Yes - save current interrupt state
+	CLI				;Make sure no interrupts here
+	MOVL	knlIDTable#+ID_HBASE+0[ECX], EBX ;Store low 16 bits of address
+	MOVL	knlIDTable#+ID_HBASE+4[ECX], EBX ;Store high 16 bits of address
+	MOVW	knlIDTable#+ID_HBASE+2[ECX], CS ;Store selector
+	MOVW	knlIDTable#+ID_HBASE+4[ECX], AX ;Store descriptor type
+	POPFL				;Interrupts OK now
+	CLRL	EAX
+30$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	20t			;Finished
+.PAGE
+	.SBTTL	knlEnableInt - Subroutine to enable interrupt request
+
+;Subroutine to enable interrupt request
+;	C(CL) = Interrupt request level
+;	CALL	knlEnableInt
+
+knlEnableInt::
+	MOVB	CH, CL
+	ANDB	CL, #0x07
+	MOVB	AH, #0xFE
+	ROLB	AH, CL
+	CMPB	CH, #7			;Low interrupt?
+	JBE	4$.S			;Yes
+	INB	P_INC2P1		;No - enable high interrupt
+	IOPAUSE
+	ANDB	AL, AH
+	OUTB	P_INC2P1
+	MOVB	AH, #0xFB		;And make sure interrupt 2 is enabled
+4$:	INB	P_INC1P1
+	IOPAUSE
+	ANDB	AL, AH
+	OUTB	P_INC1P1
+	RET
+
+;Function to enable interrupt request
+;	void SysIoEnableInt(
+;	    long irq);
+
+iei_irq=!4
+
+sysIoEnableInt::
+	MOVL	ECX, iei_irq[ESP]
+	MOVB	CH, CL
+	ANDB	CL, #0x07
+	MOVB	AH, #0xFE
+	ROLB	AH, CL
+	CMPB	CH, #7			;Low interrupt?
+	JBE	8$			;Yes
+	INB	P_INC2P1		;No - enable high interrupt
+	IOPAUSE
+	ANDB	AL, AH
+	OUTB	P_INC2P1
+	MOVB	AH, #0xFB		;And make sure interrupt 2 is enabled
+8$:	INB	P_INC1P1
+	IOPAUSE
+	ANDB	AL, AH
+	OUTB	P_INC1P1
+	RET	4
+.PAGE
+
+icp_base=!8
+icp_high=!4
+
+sysIoChkPorts::
+	MOVL	EDX, icp_base[ESP]
+	MOVL	ECX, icp_high[ESP]
+	CALL	knlChkIORegs
+	RET	8
+
+	.SBTTL	knlChkIORegs - Subroutine to check if an IO register block is available
+
+;Subroutine to check if an IO register block is available - Reserved IO
+;  register blocks are not checked. Must be called with the exec memory
+;  resource to ensure that there are no races in allocating blocks.
+;	c{EDX} = Base IO register in block
+;	c{ECX} = Highest IO register in block
+;	CALL	knlChkIORegs
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+knlChkIORegs::
+	PUSHL	EDI
+	MOVL	EDI, firstiorrb
+4$:	TESTL	EDI, EDI		;Is there another block?
+	JE	10$			;No - finished
+	CMPW	CX, ioprb_first[EDI]	;Above next block?
+	JB	8$			;Yes - finished
+	CMPL	ioprb_name[EDI], #0	;Reserved block?
+	JE	6$			;Yes - don't check it
+	CMPW	DX, ioprb_last[EDI]	;No - is there overlap?
+	JBE	16$			;Yes - indicate not available
+6$:	MOVL	EDI, ioprb_next[EDI]	;No - advance to next block
+	JMP	4$
+
+;Here if next block is above the requested block - the requested block is
+;  available
+
+8$:	CLRL	EAX
+10$:	POPL	EDI
+	RET
+
+;Here if there is overlap - indicate not available
+
+12$:	TESTL	ESP, ESP		;Clear Z
+	POPL	EDI
+	RET
+
+16$:	MOVL	EAX, #ER_IOINU
+	STC
+	POPL	EDI
+	RET
+.PAGE
+;Subroutine to register an IO register block - Caller must have already
+;  determined that the block is available by calling knlChkIORegs.
+;  Allocation over reserved blocks is allowed for exact matches.
+;	c{EBX} = Address of name string
+;	c{EDX} = Base IO register in block
+;	c{ECX} = Highest IO reigster in block
+;	CALL	knlRegIORegs
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Allocated offset for name string (bit 31 is set)
+
+;	long sysIoRegPorts(
+;	    char *name,		// Name of device
+;	    long  first,	// First IO port in block
+;	    long  last)		// Last IO port in block
+
+ioport_name =!24t
+ioport_first=!20t
+ioport_last =!16t
+
+sysIoRegPorts::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, #firstiorrb
+	MOVL	ECX, ioport_first[ESP]
+	MOVL	EDX, ioport_last[ESP]
+4$:	MOVL	EBX, [ESI]
+	TESTL	EBX, EBX		;Is there another block?
+	JE	10$			;No
+	CMPW	CX, ioprb_first[EBX]	;Below next block?
+	JB	10$			;Yes - it goes here
+	CMPW	DX, ioprb_last[EBX]	;No - is there overlap?
+	JBE	6$			;Yes - indicate not available
+	LEAL	ESI, ioprb_next[EBX]	;No - advance to next block
+	JMP	4$
+
+;Here if there is overlap
+
+6$:	MOVL	EAX, #ER_IOINU
+	JMP	20$
+
+;Here if next block is above the requested block - This is where the new
+;  block goes
+
+10$:	MOVL	ECX, #ioprb_SIZE
+	CALL	knlGetXMem#
+	JC	20$
+	MOVL	ioprb_label[EDI], #'IORB'
+	MOVL	EAX, ioport_first[ESP]
+	MOVW	ioprb_first[EDI], AX
+	MOVL	EAX, ioport_last[ESP]
+	MOVW	ioprb_last[EDI], AX
+	LEAL	EBX, ioprb_name[EDI]
+	MOVL	EDX, ioport_name[ESP]
+	MOVL	ECX, #16t		;Copy the name string
+14$:	MOVZBL	EAX, [EDX]
+	CMPB	AL, #0
+	JE	16$
+	INCL	EDX
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 14$
+	JMP	18$
+
+16$:	MOVB	[EBX], #0
+	LOOP	ECX, 16$
+18$:	MOVL	EAX, [ESI]		;Link the new block into the list
+	MOVL	ioprb_next[EDI], EAX
+	MOVL	[ESI], EDI
+	ADDW	iortableent#+dct_length, #20t
+	CLRL	EAX
+20$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+.PAGE
+	.SBTTL	getioregs - Get value for IOTABLE SYSTEM characteristic
+
+;Subroutine to get the value for the IOTABLE SYSTEM device characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	getioregs
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+;The value consists of one 20 byte block for each register block. The first
+;  16 bytes contain the hardware name associated with the register block.
+;  The next 2 bytes contain the base IO register number and the final 2
+;  bytes contain the top IO register number. The blocks are ordered by
+;  increasing base register values.
+
+getioregs::
+	MOVL	EDX, EBX
+	MOVL	EDI, firstiorrb
+	PUSHL	ECX
+2$:	SUBL	[ESP], #20t
+	JS	10$
+	PUSHL	EBX
+	MOVL	ECX, #16t
+	LEAL	ESI, ioprb_name[EDI]	;Give him the name
+4$:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	IFFAULT	12$
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 4$
+	POPL	EBX
+	MOVL	EAX, ioprb_first[EDI]	;Give him the values
+	IFFAULT	12$
+	MOVL	16t[EBX], EAX
+	ADDL	EBX, #20t
+	MOVL	EDI, ioprb_next[EDI]
+	TESTL	EDI, EDI
+	JNE	2$
+
+;Here when finished
+
+10$:	ADDL	ESP, #4
+	MOVL	ECX, EBX		;Get the amount we stored
+	SUBL	ECX, EDX
+	RET
+
+	FAULTHDR
+12$:	ADDL	ESP, #4
+	MOVL	EAX, #ER_ADRER
+	STC
+	RET
+.PAGE
+	.SBTTL	getirqs - Get value for IRQTABLE SYSTEM characteristic
+
+;Subroutine to get the value for the IRQTABLE SYSTEM device characteristic
+;	c{EBX} = Address of user's string buffer
+;	c{ECX} = Length of the buffer
+;	c{ESI} = Offset of characteristics table entry
+;	CALL	getirqs
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Length of string stored in buffer
+
+;The value consists of one 20 byte block for each interrupt. The first
+;  16 bytes contain the hardware name associated with the interrupt.  The
+;  next byte contains the interrupt number.  The next byte contains the
+;  description bits.  Only bit 7 is used and is set if the interrupt is
+;  sharable.  The remaining 2 bytes are reserved and will always contain 0.
+
+getirqs::
+	MOVL	EDX, EBX
+	MOVL	EDI, firstintrb
+	PUSHL	ECX
+2$:	SUBL	[ESP], #20t
+	JS	10$
+	PUSHL	EBX
+	MOVL	ECX, #16t
+	LEAL	ESI, intrb_name[EDI]	;Give him the name
+4$:	MOVB	AL, [ESI]
+	INCL	ESI
+	IFFAULT	12$
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 4$
+	POPL	EBX
+	CLRL	EAX
+	MOVZWL	EAX, intrb_number[EDI]
+	IFFAULT	12$
+	MOVL	16t[EBX], EAX
+	ADDL	EBX, #20t
+	MOVL	EDI, intrb_next[EDI]
+	TESTL	EDI, EDI
+	JNE	2$
+
+;Here when finished
+
+10$:	ADDL	ESP, #4
+	MOVL	ECX, EBX		;Get the amount we stored
+	SUBL	ECX, EDX
+	RET
+
+	FAULTHDR
+12$:	ADDL	ESP, #4
+	MOVL	EAX, #ER_ADRER
+	STC
+	RET
+.PAGE
+;Function to get a DCB given the device handle - Handle is taken from tdaHandle.
+;	long sysIOGetDcb(void);
+;  Value returned is 0 if normal or a negative XOS error code if error. On
+;    a normal return the address of the DCB is stored in tdaDcb and the
+;    command bits are stored in tdaCmd.
+
+sysIoGetDcb::
+	MOVL	EAX, knlTda+tdaHandle#	;Get handle from the TDA
+	CMPL	EAX, knlPda+pdaHndlNum#	;Legal device handle?
+	JA	10$			;No - fail
+4$:	MOVL	EDX, EAX		;Yes
+	SHLL	EDX, #3t
+	JE	10$			;0 is not valid
+	ADDL	EDX, #knlPda+pdaHndlTbl# ;Get address of table entry
+	MOVL	ECX, 4[EDX]		;Get command bits
+	TESTL	ECX, #XO$NOQUE|XO$OPNCLS ;Currently opening or closing the
+					 ;  device?
+	JNE	8$			;Yes - it's really not there!
+	MOVL	EDX, [EDX]		;Get address of the DCB
+	TESTL	EDX, EDX
+	JNS	10$
+	TESTL	EDX, #0x03		;Error if not set up yet or if not in
+	JNE	10$			;  use
+	MOVL	knlTda+tdaCmd#, ECX
+	MOVL	knlTda+tdaDcb#, EDX
+	CLRL	EAX
+	RET
+
+;Here if device is being opened or closed - make sure it's really active!
+
+8$:	CMPL	dcb_outtda[EDX], #0
+	JNE	10$
+	CRASH	DVNA			;[DeVice is Not Active]
+
+;Here if bad device handle
+
+10$:	MOVL	EAX, #ER_BDDVH
+	RET
+.PAGE
+;Function to verify that a buffer is writable
+;	long sysIoBufrCheck(
+;	    uchar *bufr,
+;	    long   length);
+;  Value returned is 0 if OK or a negative XOS error code if error.
+
+iobc_bufr  =!8
+iobc_length=!4
+
+sysIoBufrCheck::
+	MOVL	EBX, iobc_bufr[ESP]
+	MOVL	ECX, iobc_length[ESP]
+	LEAL	EAX, [EBX+ECX]
+	CMPL	EAX, #systembase
+	JA	10$
+	LEAL	ECX, 0xFFF[EBX+ECX]	;Yes - calculate number of pages spanned
+	ANDL	EBX, #0xFFFFF000	;  by the buffer
+	SUBL	ECX, EBX
+	SHRL	ECX, #12t
+	SHRL	EBX, #10t
+	IFFAULT	10$
+4$:	MOVL	EAX, knlPgTable#[EBX]	;Get page table entry
+	NOTL	EAX			;Must be present, user mode, and
+	TESTB	AL, #0x07		;  writable
+	JNE	10$
+	ADDL	EBX, #4			;OK - advance to next page
+	LOOP	ECX, 4$			;Continue if more pages to lock
+	CLRL	EAX
+8$:	RET	8
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	8$
+.PAGE
+;Subroutine to request execution of fork routine when interrupts are dismissed
+;	c[EDI] = Offset of DCB
+;	CALL	knlReqFork
+;  EAX is destroyed
+
+;This routine is deprecated. sysIoReqFork should be used instead.
+
+knlReqFork::
+	PUSHFL
+	CLI				;No interrupts at all here
+	CMPL	dcb_fnext.B[EDI], #-1	;Already have fork request queued?
+	JNE	6$			;Yes - nothing needed here
+	MOVL	EAX, forkreqtail	;No - get tail of fork list
+	TESTL	EAX, EAX
+	JNE	2$			;If list not empty
+	MOVL	forkreqhead, EDI	;Empty - set head pointer
+	JMP	4$
+
+2$:	MOVL	dcb_fnext[EAX], EDI	;Not empty - link to previous
+4$:	MOVL	forkreqtail, EDI	;Update tail pointer
+	MOVL	dcb_fnext[EDI], #0
+6$:	POPFL				;Allow interrupts
+	RET				;Thats all
+.PAGE
+;Function to request execution of fork routine when interrupts are dismissed
+;	void sysIoReqFork(
+;	    DCB *dcb);
+
+;This is normally called with a DCB. It only uses the fnext and fdisp items
+;  in the DCB and can be called with any data block which has these items in
+;  the same position as a DCB. The address provided is passed to the routine
+;  pointed to by the fdisp item. This function is routinely called with a
+;  pointer to something other than a DCB for devices that do not have a
+;  one-to-one correspondence between a hardware device and a DCB.
+
+rf_dcb=!8
+
+sysIoReqFork::
+	PUSHFL
+	CLI				;No interrupts at all here
+	MOVL	EDX, rf_dcb[ESP]
+	CMPL	dcb_fnext.B[EDX], #-1	;Already have a fork request queued?
+	JNE	6$			;Yes - nothing is needed here
+	MOVL	EAX, forkreqtail	;No - get tail of fork list
+	TESTL	EAX, EAX
+	JNE	2$			;If list not empty
+	MOVL	forkreqhead, EDX	;Empty - set head pointer
+	JMP	4$
+
+2$:	MOVL	dcb_fnext[EAX], EDX	;Not empty - link to previous
+4$:	MOVL	forkreqtail, EDX	;Update tail pointer
+	MOVL	dcb_fnext[EDX], #0
+6$:	POPFL				;Allow interrupts
+	RET	4			;Thats all
+.PAGE
+	.SBTTL	knlDsmFork - Subroutine to dismiss fork routine
+
+;Subroutine to dismiss fork routine - called when main program level has
+;  raised to fork level to return to main program level
+;	CALL	knlDsmFork
+;  All registers are preserved, C is always clear
+
+knlDsmFork::
+	CLI				;No interrupts here
+	CMPB	knlForkLvl#, #FORK_MFORK ;Really raised to device fork level?
+	JE	7$			;Yes
+	CMPB	knlForkLvl#, #FORK_SFORK ;Maybe
+	JNE	8$			;No - fail!
+7$:	CMPL	forkreqhead, #0		;Yes - have any device fork requests?
+	JNE	10$			;Yes
+	MOVB	knlForkLvl#, #FORK_MAIN	;No - no longer at fork level
+	STI				;Allow interrupts again
+	RET				;Thats all
+
+;Here if not at fork level
+
+8$:	CRASH	NAFL			;[Not At Fork Level]
+
+;Here if have a fork request
+
+10$:	PUSHL	DS			;Save all registers
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	PUSHAL
+	MOVB	knlForkLvl#, #FORK_DFORK ;Indicate at device fork level
+	MOVL	EDI, forkreqhead	;Get request from the fork list
+12$:	MOVL	EAX, dcb_fnext[EDI]
+	MOVL	forkreqhead, EAX
+	TESTL	EAX, EAX
+	JNE	14$
+	MOVL	forkreqtail, EAX
+14$:	MOVL	dcb_fnext[EDI], #-1	;Indicate not queued now
+	STI				;Interrupts are OK now
+	CALL	dodevfork
+	CLI
+	MOVL	EDI, forkreqhead	;Get next request
+	TESTL	EDI, EDI		;Is there another?
+	JNE	12$			;Yes - go handle it
+	MOVB	knlForkLvl#, #FORK_MAIN	;No - no longer at fork level
+	STI				;Allow interrupts
+	POPAL				;Restore registers
+	POPL	GS
+	POPL	FS
+	POPL	ES
+	POPL	DS
+ret010:	RET				;And return
+.PAGE
+knlIntDoneHigh::
+	MOVB	AL, #INT_EOI
+	CLI
+	OUTB	P_INC2P0
+	JMP	1$.S
+
+knlIntDoneLow::
+	MOVB	AL, #INT_EOI
+	CLI
+1$:	OUTB	P_INC1P0
+
+knlIntDoneDiff==!knlIntDoneLow-knlIntDoneHigh
+
+	.SBTTL	knlDismissInt - Common interrupt dismiss routine
+
+;Common routine to dismiss interrupt after checking for scheduler request
+;  when get here, all registers must be on the stack and interrupts must
+;  be disabled.
+
+knlDismissInt::
+	MOVB	AL, #0x0B		;Going back to main program level?
+	OUTB	P_INC1P0
+	IOPAUSE
+	INB	P_INC1P0
+	ORB	AL, knlForkLvl#
+	JNE	16$			;No
+2$:	CMPL	forkreqhead, #0		;Yes - have any fork requests now?
+	JE	disms4			;No
+	MOVL	EDI, forkreqhead	;Yes - get request
+	MOVL	EAX, dcb_fnext[EDI]	;Remove from fork list
+	MOVL	forkreqhead, EAX
+	TESTL	EAX, EAX
+	JNE	4$
+	MOVL	forkreqtail, #0
+4$:	MOVL	dcb_fnext[EDI], #-1
+	MOVB	knlForkLvl#, #FORK_DFORK
+	STI				;Interrupts are OK now
+
+;Here with a device fork routine to call
+
+	CALL	dodevfork
+	CLI
+	MOVB	knlForkLvl#, #FORK_MAIN	;Yes - but not any more
+	JMP	2$			;Go see if more fork requests
+
+;Here if no (more) device fork requests
+
+disms4::MOVL	EAX, ESP		;About to return to user mode?
+	ANDL	EAX, #0x3FFF
+	CMPL	EAX, #tdaXStkBegin#
+	JNE	18$			;No - just dismiss the interrupt
+	CMPB	knlSchedReq#, #0	;Need to schedule now?
+	JE	16$			;No
+	MOVB	knlForkLvl#, #FORK_SFORK ;Yes
+	STI				;Enable interrupts
+	JMP	scheduler#		;And go scheule
+
+;Here if do not need to schedule
+
+16$:	CMPL	knlPda+pdaAddr#, #knlNullPda ;Returning to null process?
+	JE	18$			;No
+	CMPL	knlCurSpeed#, #SPEED_ACTIVE ;Yes - need to change speed?
+	JNE	18$			;No
+	CALLI	knxSpdSetIdle#		;Yes
+18$:	POPL	GS			;Restore registers
+	POPL	FS
+	POPL	ES
+	POPL	DS
+	POPAL
+	IRET				;Dismiss interrupt
+.PAGE
+
+dodevfork:
+	CMPL	knlCurSpeed, #SPEED_IDLE
+	JNE	2$
+	CALLI	knxSpdSetActive#
+2$:	CALL	updatethrdtime#
+	CALLI	dcb_fdisp.B[EDI]	;Call the fork routine
+	CMPB	knlForkLvl#, #FORK_DFORK ;Still at device fork level?
+	JE	updateforktime#
+	CRASH	NAFL
+
+.PAGE
+	.SBTTL	getunqname - Subroutine to create unique file name
+
+;Subroutine to create unique file name - the number is constructed from a 35
+;  bit value.  The high order 10 bits are the low 10 bits of the system date.
+;  the low order 25 bits are initialized to 1/2 the number of scheduler ticks
+;  since midnite when the system was loaded.  This value is incremented by 1
+;  each time it is used.  The first character of the name is always $. The next
+;  seven character are generated by encoding this value as 7 base 32 digits
+;  (using the digits 0-9 and the letters A-V).
+;	c{EDI} = Address of ASCIZ string giving device and path
+;	CALL	getunqname
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Address of complete file specification
+
+getunqname::
+	PUSHL	EDI
+	IFFAULT	10$
+	CMPB	[EDI], #0		;Was anything specified?
+	JE	4$			;No
+2$:	INCL	EDI
+	IFFAULT	10$
+	MOVB	AL, [EDI]		;Get character
+	TESTB	AL, AL			;End of string?
+	JNE	2$			;No - continue
+	CMPB	-1[EDI], #'\'		;Was character back-slash?
+	JE	4$
+	CMPB	-1[EDI], #'/'		;Or a slash?
+	JE	4$
+	MOVB	[EDI], #'\'		;No - add a back-slash
+	INCL	EDI
+4$:	MOVB	AL, #'$'		;Construct unique file name
+	IFFAULT	10$
+	STOSB	[EDI]
+	MOVL	EDX, fileseqnum#+4
+	SHLL	EDX, #22t
+	MOVL	ECX, #2t
+	CALL	fndigits
+	JC	8$
+	INCL	fileseqnum#+0		;Bump file name sequence number
+	MOVL	EDX, fileseqnum#+0
+	SHLL	EDX, #7t
+	MOVB	CL, #5t
+	CALL	fndigits
+	JC	8$
+	IFFAULT	10$
+	MOVB	[EDI], #0
+8$:	POPL	EDI
+	RET
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	POPL	ES
+	POPL	EDI
+	STC
+	RET
+
+fndigits:
+	ROLL	EDX, #5
+	MOVB	AL, DL
+	ANDB	AL, #1Fh
+	CMPB	AL, #9
+	JBE	12$
+	ADDB	AL, #'A'-'0'-10t
+12$:	ADDB	AL, #'0'
+	IFFAULT	knlRtnAdrEr
+	MOVB	[EDI], AL
+	INCL	EDI
+	LOOP	ECX, fndigits
+	RET
+.PAGE
+;Function to setup device or class name for search for DCB for CCB
+;	c{EBX} = Address of ASCIZ name string
+;	CALL	knlSetName
+;	C:clr = Normal
+;	  c{EBX}        = Address of start of file specification which
+;			    follows device name
+;	  c{tdaDevName} = Device name (16 bytes)
+;	C:set = Error
+;	  c{EAX} = Error code
+
+;	long setdevname(
+;	    char  *src,
+;	    int    deflt,
+;	    char **specp);
+
+sdn_src  =!20t
+sdn_deflt=!16t
+sdn_specp=!12t
+
+setdevname::
+	PUSHL	ESI
+	PUSHL	EBX
+
+	MOVL	EBX, sdn_src[ESP]
+	MOVL	ESI, #knlTda+tdaDevName# ;Point to start of name buffer
+	MOVL	EDX, sdn_deflt[ESP]
+	CLRL	EAX
+	MOVL	[ESI], EAX		;Clear the device name buffer
+	MOVL	4[ESI], EAX
+	MOVL	8[ESI], EAX
+	MOVL	12t[ESI], EAX
+	MOVL	ECX, #16t
+	IFFAULT	20$
+	CMPB	[EBX], #'_'		;Is first character an underscore?
+	JNE	2$			;No
+	INCL	EBX			;Yes - skip the underscore
+	MOVB	AH, #0x80		;And get bit for later
+2$:	IFFAULT	20$
+	MOVB	AL, [EBX]		;Get character
+	INCL	EBX
+	CMPB	AL, #':'		;Is it the terminator?
+	JE	12$			;Yes
+	TESTB	AL, AL			;No - end of string?
+	JE	8$			;Yes
+	CMPB	AL, #'/'		;No - directory terminator?
+	JE	8$			;Yes
+	CMPB	AL, #'\'
+	JE	8$
+	DECL	ECX			;No - room for more?
+	JS	6$			;No
+	CMPB	AL, #'a'		;Yes - is it lower case?
+	JL	4$			;No
+	SUBB	AL, #0x20		;Yes - change to upper case
+4$:	MOVB	[ESI], AL		;Store in buffer
+	INCL	ESI
+	JMP	2$			;Continue
+
+;Here if more than 16 characters in the name
+
+6$:	IFFAULT	20$
+	MOVB	AL, [EBX]		;Get next character
+	INCL	EBX
+	CMPB	AL, #':'		;End of device name?
+	JE	10$			;Yes
+	CMPB	AL, #'/'		;Directory terminator?
+	JE	8$			;Yes
+	CMPB	AL, #'\'
+	JE	8$
+	TESTB	AL, AL			;No - end of name?
+	JNE	6$			;No - continue
+8$:	MOVL	knlTda+tdaDevName#+0, EDX ;Store default device name (either
+	CLRL	EAX			  ;  Z, NET, or null)
+	MOVL	knlTda+tdaDevName#+4, EAX
+	MOVL	knlTda+tdaDevName#+8, EAX
+	MOVL	knlTda+tdaDevName#+12t, EAX
+	MOVL	EBX, sdn_src[ESP]
+	JMP	14$
+
+;Here with colon when have more than 16 characters in initial atom
+
+10$:	CMPB	[EBX], #':'		;Double colon?
+	JE	16$			;Yes - this is OK
+	MOVL	EAX, #ER_BDSPC
+	JMP	sdndn
+
+;Here with device name terminator when have 16 or fewer characters in initial
+;  atom
+
+12$:	CMPB	[EBX], #':'		;Double colon?
+	JE	16$			;Yes
+	ORB	knlTda+tdaDevName#+0, AH ;No - set physical name bit if should
+	CLRL	EAX
+14$:	MOVL	ECX, sdn_specp[ESP]
+	MOVL	[ECX], EBX
+sdndn:	POPL	EBX
+	POPL	ESI
+	RET	12t
+
+;Here if have double colon - this is an implied network access - use NET: as
+;  the default name
+
+16$:	TESTL	EDX, EDX		;Want default name?
+	JE	8$			;No
+	MOVL	EDX, #'NET'		;Yes
+	JMP	8$
+
+;Here if address error
+
+	FAULTHDR
+20$:	MOVL	EAX, #ER_ADRER
+	JMP	sdndn
+.PAGE
+	.SBTTL	copyname - Subroutine to copy name to buffer
+
+;Subroutine to copy name to buffer
+;	c{EBX} = Address of name string
+;	c{EDI} = Address of buffer
+;	CALL	copyname
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+copyname::
+	MOVL	ESI, EBX		;Get addresses in right registers
+	MOVL	ECX, #FILESPCSIZE-2
+4$:	IFFAULT	knlRtnAdrEr
+	MOVZBL	EAX, [ESI]		;Get character
+	INCL	ESI
+	CMPB	AL, #'/'		;Slash?
+	JNE	6$			;No
+	MOVB	AL, #'\'		;Yes - change to back-slash
+6$:	MOVB	[EDI], AL			;Store it in buffer
+	INCL	EDI
+	TESTB	AL, AL
+	JE	ret020			;If finished
+	LOOP	ECX, 4$
+	MOVL	EAX, #ER_BDSPC		;If file specification is too long
+	STC
+ret020:	RET				;Finished
+.PAGE
+	.SBTTL	knlNewClass - Subroutine to create new device class
+
+;Subroutine to create new device class
+;	c{EAX} = First 4 characters of class name
+;	c{EDX} = Last 4 characters of class name
+;	c{ECX} = Offset of class characteristics table
+;	c{EBX} = Offset of class function dispatch table
+;	c{EDI} = Offset of device check routine
+;	c{ESI} = Offset of CCB
+;	CALL	knlNewClass
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long sysIoNewClass(
+;	    CCB *ccb);
+
+ncls_ccb=!8
+
+sysIoNewClass::
+	PUSHL	EBX
+	MOVL	EBX, ncls_ccb[ESP]
+	MOVL	EAX, ccb_name+0[EBX]
+	MOVL	EDX, ccb_name+4[EBX]
+	MOVL	ECX, knlFirstCcb#	;Get pointer to first CCB
+	TESTL	ECX, ECX
+	JE	8$
+4$:	CMPL	ccb_name+0[ECX], EAX	;Check name
+	JNE	6$
+	CMPL	ccb_name+4[ECX], EDX
+	JE	12$			;If match on name
+6$:	MOVL	ECX, ccb_next[ECX]	;Advance to next CCB routine
+	TESTL	ECX, ECX
+	JNE	4$			;Continue if more to check
+
+;Here if class is not already defined
+
+8$:	MOVL	EBX, ncls_ccb[ESP]
+	MOVL	EAX, knlFirstCcb#	;Link to head of the CCB list
+	MOVL	knlFirstCcb#, EBX
+	MOVL	ccb_next[EBX], EAX
+	INCL	numccb#			;Increase number of CCBs in system
+	CLRL	EAX
+10$:	POPL	EBX
+	RET	4
+
+;Here if call is defined
+
+12$:	MOVL	EAX, #ER_CLSAD		;If have duplicate class
+	JMP	10$
+.PAGE
+;Function to remove device class - This routine simply removes the CCB
+;  from its list - IT DOES NOT RECLAIM ANY MEMORY.  It is intended to be
+;  mainly used by class drivers which encounter a fatal error during
+;  initialization after a class has been installed.  It is also used to
+;  remove the once-only devices after start-up is complete.
+;	void sysIoRmvClass(
+;	    CCB *ccb);
+;  Any errors encountered are fatal and result in a system crash!
+
+rmvcls_ccb=!4
+
+sysIoRmvClass::
+	MOVL	EDX, #knlFirstCcb#
+2$:	MOVL	EBX, [EDX]		;Search for this CCB
+	TESTL	EBX, EBX		;Is there another?
+	JE	10$			;No - fail!
+	CMPL	EBX, rmvcls_ccb[ESP]	;Yes - this one?
+	JE	8$			;Yes
+	LEAL	EDX, ccb_next[EBX]	;No - advance to next
+	JMP	2$
+
+;Here with the CCB
+
+8$:	MOVL	EAX, ccb_next[EBX]	;Unlink it
+	MOVL	[EDX], EAX
+	MOVL	ccb_next[EBX], #0x77777777 ;Set this to make debugging easier
+	DECL	numccb#			;Reduce number of CCBs in system
+	RET	4
+
+;Here if can't find the requested CCB
+
+10$:	CRASH	CNFC			;[Can Not Find CCB]
+.PAGE
+	.SBTTL	findclass - Subroutine to find CCB for device class
+
+;Subroutine to find CCB for device class given name of class - must be called
+;  with an opn stack frame
+;	c{EBX} = Address of class name
+;	CALL	findclass
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Offset of CCB
+
+findclass::
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	EBX
+	PUSHL	#0
+	PUSHL	EAX
+	CALL	setdevname
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	EAX, knlTda+tdaDevName#+0
+	MOVL	EDX, knlTda+tdaDevName#+4
+findclass2:
+	MOVL	ESI, knlFirstCcb#	;Get pointer to first CCB
+	TESTL	ESI, ESI
+	JE	8$
+4$:	CMPL	ccb_name+0[ESI], EAX	;Check name
+	JNE	6$
+	CMPL	ccb_name+4[ESI], EDX
+	JE	12$			;If match on name
+6$:	MOVL	ESI, ccb_next[ESI]	;Advance to next CCB routine
+	TESTL	ESI, ESI
+	JNE	4$			;Continue if more to check
+8$:	MOVL	EAX, #ER_NSCLS		;Error = No Such CLaSs
+10$:	STC
+12$:	RET
+.PAGE
+;Subroutine to store DCB offset in the handle table
+;	c{EDI} = Offset of DCB
+;	CALL	knlStoreHndl
+;	C:set = Error (handle table unchanged, dcb_opencnt NOT incremented)
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Address of device table entry
+;  EAX and EDX are changed, other registers are preserved
+
+knlStoreHndl::
+	MOVL	EDX, #0xFFF		;Get expected previous contents of
+knlStoreHnd2::				;  handle table
+	MOVL	knlTda+tdaDcb#, EDI	;Store DCB address
+	MOVL	EAX, knlTda+tdaHandle#	;Store DCB address in the handle table
+	LEAL	EAX, knlPda+pdaHndlTbl#[EAX*8]
+	CMPL	[EAX], EDX 		;Make sure table is right!
+	JNE	10$
+	MOVL	[EAX], EDI		;OK
+	INCL	dcb_opencnt[EDI]	;Bump the open count
+	RET
+
+;Here if the handle table does not contain the expected value
+
+10$:	CRASH	BHTE			;[Bad Handle Table Entry]
+.PAGE
+;Subroutine to put 8 digit ASCII hex number in memory
+;	c{EAX} = Value
+;	c{EBX} = Offset for first charater
+;	CALL	knlPutHex8Nmbr
+;	c{EBX} = Offset for character following number
+;  All registers except EAX and EBX are preserved
+
+knlPutHex8Nmbr::
+	PUSHL	ECX
+	MOVL	ECX, #8t
+	JMP	2$
+
+;Subroutine to put 2 digit ASCII hex number in memory
+;	c{EAX} = Value
+;	c{EBX} = Offset for first charater
+;	CALL	knlPutHex2Nmbr
+;	c{EBX} = Offset for character following number
+;  All registers except EAX and EBX are preserved
+
+knlPutHex2Nmbr::
+	PUSHL	ECX
+	MOVL	ECX, #2t
+	SHLL	EAX, #24t
+	JMP	2$
+
+;Subroutine to put 4 digit ASCII hex number in memory
+;	c{EAX} = Value
+;	c{EBX} = Offset for first charater
+;	CALL	knlPutHex4Nmbr
+;	c{EBX} = Offset for character following number
+;  All registers except EAX and EBX are preserved
+
+knlPutHex4Nmbr::
+	PUSHL	ECX
+	MOVL	ECX, #4t
+	SHLL	EAX, #16t
+2$:	PUSHL	ES
+	TESTL	EBX, EBX
+	JNS	4$
+	PUSHL	DS
+	JMP	6$
+
+4$:	PUSHL	SS
+6$:	POPL	ES
+8$:	ROLL	EAX, #4t
+	PUSHL	EAX
+	ANDB	AL, #0Fh
+	CMPB	AL, #10t
+	JB	10$
+	ADDB	AL, #'A'-'0'-10t
+10$:	ADDB	AL, #'0'		;Make ASCII character
+	MOVB	[EBX], AL		;Store it
+	INCL	EBX
+	POPL	EAX
+	LOOP	ECX, 8$
+	POPL	ES
+	POPL	ECX
+	RET
+.PAGE
+	.SBTTL	knlPutDecNmbr - Subroutine to put ASCII decimal number in memory
+
+;Subroutine to put ASCII decimal number in memory
+;	c{EAX} = Value
+;	c{EBX} = Offset for first charater (bit 31 set if stack offset)
+;	CALL	knlPutDecNmbr
+;	c{EBX} = Offset for character following number (bit 31 is clear)
+;  All registers except EAX and EBX are preserved
+
+knlPutDecNmbr::
+	PUSHL	ES
+	TESTL	EBX, EBX
+	JNS	2$
+	PUSHL	DS
+	JMP	4$
+
+2$:	PUSHL	SS
+4$:	POPL	ES
+	PUSHL	ECX
+	MOVL	ECX, #10t
+	PUSHL	EDX
+	CALL	putnm2
+	POPL	EDX
+	POPL	ECX
+	POPL	ES
+	RET
+
+putnm2:	CLRL	EDX			;Get next digit
+	DIVL	ECX
+	PUSHL	EDX			;Save it
+	TESTL	EAX, EAX		;More?
+	JE	10$			;No
+	CALL	putnm2			;Yes
+10$:	POPL	EAX			;Get digit value
+	CMPB	AL, #10t
+	JB	14$.S
+	ADDB	AL, #'A'-'0'-10t
+14$:	ADDB	AL, #'0'		;Make ASCII character
+	MOVB	[EBX], AL		;Store it
+	INCL	EBX
+ret026:	RET
+.PAGE
+	.SBTTL	knlIopGlbId - Common routine to process IOPAR_GDID parameter
+
+;Common routine to process IOPAR_GLBID parameter for all non-disk, non-network
+;  devices - tHe global device is formatted as follows: (low order bytes first)
+;	Size     Use
+;	  4	File ID (position of file on disk) (0 if not disk)
+;	  4	Device ID (offset of UCB or DCB)
+;	  4     Node ID (network address) (0 for local device)
+;	  4	Network ID (0 for local device)
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopGlbId
+
+	DPARMHDR  GET, DECV
+knlIopGlbId::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	4$
+	CMPL	ECX, #16t		;Is his value large enough?
+	JB	knlBadParmS		;No - fail
+	CLRL	EAX
+	IFFAULT	knlRtnAdrEr
+	MOVL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr
+	MOVL	12t[EBX], EAX
+	IFFAULT	knlRtnAdrEr
+	MOVL	ECX, knlTda+tdaDcb#
+	MOVL	4[EBX], ECX		;Store offset of the DCB
+	IFFAULT	knlRtnAdrEr
+	MOVL	8[EBX], EAX
+4$:	RET
+
+knlBadParmS::
+	MOVL	EAX, #ER_PARMS
+	STC
+	RET
+.PAGE
+	.SBTTL	knlIopDelay - Common routine to process IOPAR_DELAY parameter
+
+;Common routine to process IOPAR_DELAY parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopDelay
+
+	DPARMHDR  SET, HEXV
+knlIopDelay::
+	CALL	knlGetParm#		;Get his value
+	JC	4$			;If error
+	MOVL	knlTda+tdaDelay#, EAX	;Store it
+	RET
+
+	.SBTTL	knlIopTimeOut - Common routine to process IOPAR_TIMEOUT parameter
+
+;Common routine to process IOPAR_TIMEOUT parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopTimeOut
+
+	DPARMHDR  SET, HEXV
+knlIopTimeOut::
+	CALL	knlGetParm#		;Get his value
+	JC	4$			;If error
+	CMPL	ECX, #4			;If 4-byte value of 0xFFFFFFFF then
+	JNE	2$			;  change to 0xFFFFFFFFFFFFFFFF
+	CMPL	EAX, #0xFFFFFFFF
+	JNE	2$
+	MOVL	EDX, EAX
+2$:	MOVL	knlTda+tdaTimeOut#, EAX	;Store it
+	MOVL	knlTda+tdaTimeOut#+4, EDX
+	CLC
+4$:	RET
+.PAGE
+	.SBTTL	knlIopDevSts - Common routine to process IOPAR_DEVSTS parameter
+
+;Common routine to process IOPAR_DEVSTS parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopDevSts
+
+	DPARMHDR  GET, HEXV
+knlIopDevSts::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	6$
+	MOVL	EAX, knlTda+tdaDcb#
+	MOVL	EAX, dcb_dsp[EAX]	;Get value
+	CMPL	ECX, #4
+	JAE	4$
+	ANDL	EAX, valmask[EAX*4]
+4$:	JMP	knlStrParm4#		;Give it to the user
+
+6$:	RET
+
+	.MOD	4
+valmask:.LONG	0
+	.LONG	0FFh
+	.LONG	0FFFFh
+	.LONG	0FFFFFFh
+.PAGE
+	.SBTTL	knlIopUnitNum - Common routine to process IOPAR_UNITNUM parameter
+
+;Common routine to process IOPAR_UNITNUM parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopUnitNum
+
+	DPARMHDR  GET, HEXV
+knlIopUnitNum::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	6$
+	MOVL	EDX, knlTda+tdaDcb#
+	MOVZWL	EAX, dcb_sunit[EDX]	;Get secondary unit number
+	SHLL	EAX, #16t
+	MOVB	AL, dcb_punit[EDX]	;Get primary unit number
+	JMP	knlStrParm4#
+
+6$:	RET
+
+	.SBTTL	knlIopNumOpen - Common routine to process IOPAR_NUMOPEN parameter
+
+;Common routine to process IOPAR_NUMOPEN parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopNumOpen
+
+	DPARMHDR  GET, DECV
+knlIopNumOpen::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	6$
+	MOVL	EAX, knlTda+tdaDcb#
+	MOVL	EAX, dcb_opencnt.B[EAX]
+	JMP	knlStrParm4#
+.PAGE
+	.SBTTL	knlIopIoSts - Common routine to process IOPAR_INPSTS and IOPAR_OUTSTS parameters
+
+;Common routine to process IOPAR_INPSTS and IOPAR_OUTSTS parameters for devices
+;  which are always considered ready for IO
+
+knlIopIoSts::
+	CLRL	EAX
+	INCL	EAX
+	JMP	knlStrParm4#
+.PAGE
+	.SBTTL	knlIopInpQLmt - Common routine to process IOPAR_INPQLMT parameter
+
+;Common routine to process IOPAR_INPQLMT parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopInpQLmt
+
+	DPARMHDR  BOTH, DECV
+knlIopInpQLmt::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	8$
+	MOVL	EDX, knlTda+tdaDcb#
+	BTL	dcb_dsp.B[EDX], #DS%DUPLEX ;Full duplex device?
+	JNC	knlBadParmI#		;No - fail
+	TESTB	AH, #PAR$SET		;Yes - want to set value?
+	JE	4$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm#		;Get his value
+	JC	6$			;If error
+	MOVL	EDX, knlTda+tdaDcb#
+	MOVB	dcb_inpqlmt[EDX], AL	;Store new value
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No - finished here
+	MOVZBL	EAX, dcb_inpqlmt[EDX]	;Yes - get value
+	JMP	knlStrParm4#
+
+6$:	POPL	ECX
+8$:	RET
+
+	.SBTTL	knlIopOutQLmt - Common routine to process IOPAR_OUTQLMT parameter
+
+;Common routine to process IOPAR_OUTQLMT parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopOutQLmt
+
+	DPARMHDR  BOTH, DECV
+knlIopOutQLmt::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	8$
+	MOVL	EDX, knlTda+tdaDcb#
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	10$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm#		;Get his value
+	JC	6$			;If error
+	MOVL	EDX, knlTda+tdaDcb#
+	MOVB	dcb_outqlmt[EDX], AL	;Store new value
+	POPL	EAX
+10$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No - finished here
+	MOVZBL	EAX, dcb_outqlmt[EDX]	;Yes - get value
+	JMP	knlStrParm4#
+
+	.SBTTL	knlIopBufrLmt - Common routine to process IOPAR_BUFRLMT parameter
+
+;Common routine to process IOPAR_BUFRLMT parameter for all devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopBufrLmt
+
+	DPARMHDR  BOTH, DECV
+knlIopBufrLmt::
+	CMPL	knlTda+tdaDcb#, #0
+	JE	6$
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	12$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm#		;Get his value
+	JC	6$			;If error
+	MOVL	EDX, knlTda+tdaDcb#
+	MOVB	dcb_bufrlmt[EDX], AL	;Store new value
+	POPL	EAX
+12$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No - finished here
+	MOVL	EDX, knlTda+tdaDcb#
+	MOVZBL	EAX, dcb_bufrlmt[EDX]	;Yes - get value
+	JMP	knlStrParm4#
+.PAGE
+;Common routine to process IOPAR_FILEOPTN parameter for data transfer all
+;  devices
+;	c{EBX} = Address of value
+;	c{ECX} = Length of the value
+;	CALL	knlIopFileOptn
+
+	DPARMHDR  SET, HEXV
+knlIopFileOptn::
+	CALL	knlGetParm#		;Get value of parameter
+	JC	4$			;If error
+	MOVL	knlTda+tdaPVFileOptn#, EAX ;Store value
+	CLC
+4$:	RET
+.PAGE
+;Common routine to process IOPAR_FILESPEC parameter for devices that return
+;  only the device name. Only the bits XFO$PHYDEV, XFO$XOSDEV, XFO$DOSDEV,
+;  and XFO$VOLUME are used in the value of the IOPAR_FILOPTN parameter. If
+;  any of these are set, the XOS device name is returned. If the buffer
+;  address has already been set, nothing is done here. This allows this
+;  function to be called for device opens when the parameter list is processed
+;  a second time. This routine can also be called at the beginning of
+;  processing the IOPAR_FILSPEC parameter for devices which store additional
+;  information to set up the buffer values and store the device name.
+;	c{EBX} = Address of buffer for string
+;	c{ECX} = Length of the buffer
+;	c{EDX} = Address of word to receive length of string
+;	CALL	knlIopFileSpec
+
+	DPARMHDR  GET, STR
+knlIopFileSpec::
+	CLRL	EAX
+	CMPL	knlTda+tdaDcb#, #0	;Do we have a device?
+	JE	10$			;No - must be open
+	CMPL	EBX, #systembase
+	JAE	12$
+	CMPL	EDX, #systembase
+	JAE	12$
+	CMPL	ECX, #0x1000		;Too big?
+	JA	16$			;Yes - fail
+	MOVL	knlTda+tdaPPFileSpec#, EBX ;OK - store buffer address
+	DECL	ECX
+	JE	10$
+	MOVL	knlTda+tdaPSFileSpec#, ECX ;Store buffer size
+	MOVL	knlTda+tdaPLFileSpec#, EDX ;Store address to receive amount stored
+	MOVL	knlTda+tdaPCFileSpec#, #0 ;Clear amount stored
+	TESTL	knlTda+tdaPVFileOptn#, #XFO$XOSDEV|XFO$DOSDEV|XFO$VOLUME
+					;Yes - does he want the device name?
+	JE	10$			;No
+	CALL	sysIoStoreDevName#	;Yes - give it to him
+	BTL	EAX, #31t
+10$:	RET
+
+	FAULTHDR
+12$:	MOVL	EAX, #ER_ADRER
+	STC
+	RET
+
+16$:	MOVL	EAX, #ER_PARMS
+	STC
+	RET
+.PAGE
+;Function to give up a dynamic DCB
+;	void sysIoGiveDymDcb(
+;	    DCB *dcb);
+
+gudd_dcb=!4
+
+sysIoGiveDymDcb::
+	PUSHL	gudd_dcb[ESP]
+	CALL	sysIoUnlinkDcb		;Unlink the DCB
+	MOVL	EDX, gudd_dcb[ESP]
+	MOVZWL	EAX, dcb_id.B[EDX]	;Get the DCB ID index
+	CMPL	EDX, dcbtable-4[EAX*4]
+	JE	4$
+	CRASH	BDID			;[Bad DCB ID]
+
+4$:	MOVL	ECX, dcbtblfree		;Put the ID table entry on the free list
+	MOVL	dcbtable-4[EAX*4], ECX
+	MOVL	dcbtblfree, EAX
+	PUSHL	EDX			;Give up the DCB's XMB
+	CALL	sysMemGiveXmb#
+	RET	4
+.PAGE
+;Function to allocate a dynamic DCB
+
+;	c{EBX} = Address of device name (16 bytes)
+;	c{EDI} = Value for dcb_dsp
+;	c{ECX}    = Size index for DCB
+;	CALL	knlGetDymDcb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset for DCB
+;  DCB allocated is cleared
+
+;	long sysIoGetDymDcb(
+;	    txt16 *name,	// Device name (16 bytes 0 filled)
+;	    void  *dsp,		// Value for dcb_dsp
+;	    long   szx,		// Size index for the DCB
+;	    DCB  **pdcb);	// Address of pointer to receive address of
+;				//   the DCB created
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+gtddcb_name=!24t
+gtddcb_dsp =!20t
+gtddcb_szx =!16t
+gtddcb_pdcb=!12t
+
+sysIoGetDymDcb::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, gtddcb_pdcb[ESP]
+	PUSHL	gtddcb_szx[ESP]
+	PUSHL	EBX
+	CALL	sysMemGetXmb#		;Get an exec memory buffer
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EDI, [EBX]		;Get address of the new DCB
+	SHRL	EAX, #2			;Get total size of the DCB in longs
+	MOVL	ECX, EAX
+	PUSHL	DS			;Clear it
+	POPL	ES
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	ECX, gtddcb_name[ESP]
+	MOVL	EDI, [EBX]		;Restore address of the DCB
+	MOVL	EAX, [ECX]		;Store device name
+	MOVL	EDX, 4[ECX]
+	MOVL	dcb_name+0[EDI], EAX
+	MOVL	dcb_name+4[EDI], EDX
+	MOVL	EAX, 8[ECX]
+	MOVL	EDX, 12t[ECX]
+	MOVL	dcb_name+8[EDI], EAX
+	MOVL	dcb_name+12t[EDI], EDX
+	MOVL	EAX, gtddcb_dsp[ESP]
+	MOVL	dcb_dsp[EDI], EAX	;Store device description bits
+	DECL	dcb_fnext[EDI]		;Indicate not in fork queue
+	MOVL	dcb_label[EDI], #'DCB*'
+	CALL	knlGetDcbId		;Get the DCB ID
+	JC	6$			;If error (very unlikely!)
+	CLRL	EAX
+4$:	POPL	EBX
+	POPL	EDI
+	RET	16t
+
+;Here if error getting the DCB ID
+
+6$:	PUSHL	EAX
+	PUSHL	EDI			;Give up the buffer
+	CALL	sysMemGiveXmb#
+	POPL	EAX
+	JMP	4$
+.PAGE
+;Function to link a DCB to a class
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of CCB
+;	CALL	knlLinkDcb
+
+;	long XOSFNC sysIoLinkDcb(
+;	    DCB *dcb,
+;	    CCB *ccb);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+lnkdcb_dcb=!20t
+lnkdcb_ccb=!16t
+
+sysIoLinkDcb::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, lnkdcb_dcb[ESP]
+	MOVL	ESI, lnkdcb_ccb[ESP]
+	LEAL	ECX, ccb_dcbhead[ESI]
+	PUSHL	ECX
+	MOVB	AL, dcb_punit[EDI]
+	MOVZWL	EDX, dcb_sunit[EDI]
+	CMPL	EDX, #0xFFFF		;Want to assign secondary unit number?
+	JE	6$			;Yes
+2$:	MOVL	EBX, [ECX]		;No - scan the list and find the
+	TESTL	EBX, EBX		;  position for this one
+	JE	30$
+	CMPB	AL, dcb_punit[EBX]
+	JB	30$
+	JA	4$
+	CMPW	DX, dcb_sunit[EBX]
+	JB	30$
+4$:	LEAL	ECX, dcb_next[EBX]
+	JMP	2$
+
+;Here to assign a secondary unit number
+
+6$:	MOVL	EDX, #1
+8$:	MOVL	EBX, [ECX]		;First, scan past any unnumbered
+	TESTL	EBX, EBX		;  units
+	JE	28$
+	CMPB	AL, dcb_punit[EBX]	;Same primary unit?
+	JB	28$			;No - don't have any for this unit
+	JA	10$			;No - not there yet
+	CMPW	dcb_sunit[EBX], #0	;Yes - unnumbered unit?
+	JNE	14$			;No
+10$:	LEAL	ECX, dcb_next[EBX]	;Unnumbered or lower primary - continue
+	JMP	8$
+
+12$:	MOVL	EBX, [ECX]
+	TESTL	EBX, EBX
+	JE	28$
+	CMPB	AL, dcb_punit[EBX]
+	JB	28$
+	JA	20$
+14$:	CMPW	DX, dcb_sunit[EBX]
+	JE	16$
+	DECL	EDX
+	CMPW	DX, dcb_sunit[EBX]
+	JNE	26$
+16$:	INCL	EDX
+	LEAL	ECX, dcb_next[EBX]
+	JMP	12$
+
+20$:	CRASH	BDVL
+
+;Here with an available secondary unit number
+
+26$:	INCL	EDX
+28$:	MOVW	dcb_sunit[EDI], DX
+
+;Here with position in the list for this DCB
+
+30$:	POPL	EAX
+	MOVL	[ECX], EDI		;Link previous DCB to this DCB
+	MOVL	dcb_next[EDI], EBX
+	CMPL	ECX, EAX		;Is this the first one?
+	JNE	32$			;No
+	CLRL	ECX			;Yes - no previous DCB
+	JMP	34$
+
+32$:	SUBL	ECX, #dcb_next		;Point to previous DCB
+34$:	MOVL	dcb_prev[EDI], ECX	;Link this DCB to the previous one
+	TESTL	EBX, EBX		;Is this the last DCB?
+	JE	36$			;Yes
+	MOVL	dcb_prev[EBX], EDI	;No - link to next
+	JMP	38$
+
+36$:	MOVL	ccb_dcbtail[ESI], EDI	;Update tail pointer
+38$:	MOVL	dcb_ccb[EDI], ESI	;Store offset of the CCB in the DCB
+	INCL	dcbinuse
+	MOVL	EAX, dcbinuse
+	CMPL	dcbmax, EAX
+	JAE	40$
+	MOVL	dcbmax, EAX
+40$:	CLRL	EAX
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to remove DCB from its current class
+;	void sysIoUnlinkDcb(
+;	    DCB *dcb);
+
+uld_dcb=!8
+
+sysIoUnlinkDcb::
+	PUSHL	EDI
+	MOVL	EDI, uld_dcb[ESP]
+	MOVL	EAX, dcb_prev[EDI]	;Get address of previous DCB
+	CMPL	EAX, #-1		;Is the DCB not linked?
+	JE	10$			;If not linked
+	MOVL	EDX, dcb_next[EDI]	;Get next DCB
+	MOVL	ECX, dcb_ccb[EDI]	;No - get address of the CCB
+	TESTL	EAX, EAX		;Have a previous DCB
+	JE	2$			;If no previous DCB
+	MOVL	dcb_next[EAX], EDX	;Yes - have prevous DCB
+	JMP	4$
+
+2$:	MOVL	ccb_dcbhead[ECX], EDX
+4$:	TESTL	EDX, EDX
+	JE	6$			;If no next DCB
+	MOVL	dcb_prev[EDX], EAX
+	JMP	8$
+
+6$:	MOVL	ccb_dcbtail[ECX], EAX
+8$:	MOVL	dcb_prev[EDI], #-1	;Indicate not linked
+	MOVL	dcb_next[EDI], #-1
+10$:	DECL	dcbinuse		;Reduce count of in use DCBs
+	POPL	EDI
+	RET	4
+.PAGE
+	.SBTTL	devoas - General once-a-second routine for devices
+
+;General once-a-second routine for devices
+;	CALL	devoas
+
+devoas::MOVL	EDX, #knlHdlbList	;Get first HDLB
+2$:	MOVL	ESI, [EDX]
+	TESTL	ESI, ESI
+	JE	12$			;If none
+4$:	CMPL	hdlb_count[ESI], #0	;Is the counter running?
+	JE	6$			;No - go on
+	DECL	hdlb_count[ESI]		;Yes - reduce the timer count
+	JE	10$			;If it has run out
+6$:	LEAL	EDX, hdlb_nexts[ESI]	;Advance to next CAB
+	JMP	2$
+
+;Here if timer has run out on an HDLB
+
+10$:	PUSHL	EDX
+	MOVZWL	EAX, hdlb_pda[ESI]
+	PUSHL	EAX
+
+	CRASH	????
+
+;;;;;;	CALL	knlUnholdDevSys#
+	MOVL	EBX, #devcls
+	POPL	ES
+	TOFORK
+
+	CRASH	SIG?
+
+;;;;;;	CALL	knlReqXSig#		;Request exec signal
+
+	FROMFORK
+	POPL	EDX
+	JMP	2$
+
+;Exec signal routine to close device which has timed out
+
+;;;;; MUST REWRITE THIS!!!!!
+
+devcls:
+
+	CRASH	????
+
+	CALL	knlGetQel#		;Get a QEL
+	JC	12$			;Forget it if error
+	CMPL	dcb_opencnt[EDI], #0
+	JNE	20$
+	INCL	dcb_opencnt[EDI]
+;;;;;;	MOVW	iorb_handle[ESI], #-1	;Set up arguments for the close
+	CLRL	EAX
+;;;;;	MOVL	iorb_qab+0[ESI], EAX
+;;;;;	MOVW	iorb_qab+4[ESI], AX
+;;;;;	MOVL	iorb_parm+0[ESI], EAX
+;;;;;	MOVL	iorb_qab+0[ESI], EAX
+;;;;;	MOVL	iorb_mlocktbl+0[ESI], EAX
+;;;;;	MOVL	iorb_mlockcnt[ESI], EAX
+;;;;;	MOVL	iorb_option[ESI], #C$NOHOLD
+;;;;;;	MOVL	iorb_finish[ESI], #clsalld
+;;;;;;	CALL	close3#			;Close the device
+	FROMFORK
+12$:	RET
+
+20$:	CRASH	BDOC			;[Bad Device Open Count]
+
+;Here at fork level when close is finished
+
+clsalld:PUSHL	EDI			;Get offset of DCB as wait index
+	CALL	sysSchEndWaitAll#	;Wake up all waiters
+	TESTL	EAX, EAX
+	JE	24$			;If no one waiting
+	CMPB	curqnum#, #THDS_RN1	;Is current process in RN1?
+	JE	24$			;Yes - don't bother scheduling now
+	MOVB	knlSchedReq#, #1	;No - reschedule immediately
+24$:	JMP	sysIoFinishThread#
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+forkreqhead::.LONG  0		;Fork request list head pointer
+forkreqtail::.LONG  0		;Fork request list tail pointer
+dcbtblfree:: .LONG  0
+dcbtblsize:: .LONG  0
+dcbinuse::   .LONG  0
+dcbmax::     .LONG  0
+dcbidseq:    .LONG  0
+knlHdlbList::.LONG  0
+
+
+firstintrb: .LONG  intrb0
+
+intrb0: .LONG	'IRQB'
+	.LONG	intrb2		;intrb_next
+        .BYTE	0		;intrb_bits
+        .BYTE	0		;intrb_number
+        .BLKB	2
+        .LONG	0		;intrb_entry
+        .LONG	0		;intrb_exit
+	.ASCIZ	"SYSTEM_Clock"
+
+	.MOD	4
+intrb2: .LONG	'IRQB'
+	.LONG	intrb8		;intrb_next
+        .BYTE	0		;intrb_bits
+        .BYTE	2		;intrb_number
+        .BLKB	2
+        .LONG	0		;intrb_entry
+        .LONG	0		;intrb_exit
+	.ASCIZ	"SYSTEM_Cascade"
+
+	.MOD	4
+intrb8: .LONG	'IRQB'
+	.LONG	0		;intrb_next
+	.BYTE	0		;intrb_bits
+	.BYTE	8		;intrb_number
+	.BLKB	2
+	.LONG	0		;intrb_entry
+	.LONG	0		;intrb_exit
+	.ASCIZ	"SYSTEM_RTC"
+
+irqtblsize==!3*20t
+
+
+firstiorrb::.LONG  ioregblk0
+
+	.MOD	4
+ioregblk0:.LONG  'IORB'
+	  .LONG  ioregblk1
+	  .WORD  0
+	  .WORD  0x0F
+	  .ASCIZ "SYSTEM_DMA0"
+
+	.MOD	4
+ioregblk1:.LONG  'IORB'
+	  .LONG  ioregblk2
+	  .WORD  0x20
+	  .WORD  0x21
+	  .ASCIZ "SYSTEM_IC0"
+
+	.MOD	4
+ioregblk2:.LONG  'IORB'
+	  .LONG  ioregblk3
+	  .WORD  0x40
+	  .WORD  0x43
+	  .ASCIZ "SYSTEM_Clock"
+
+	.MOD	4
+ioregblk3:.LONG  'IORB'
+	  .LONG  ioregblk4
+	  .WORD  0x70
+	  .WORD  0x77
+	  .ASCIZ "SYSTEM_RTC"
+
+	.MOD	4
+ioregblk4:.LONG  'IORB'
+	  .LONG  ioregblk5
+	  .WORD  0x80
+	  .WORD  0x8F
+	  .ASCIZ "SYSTEM_DMAX"
+
+	.MOD	4
+ioregblk5:.LONG  'IORB'
+	  .LONG  ioregblk6
+	  .WORD  0xA0
+	  .WORD  0xA1
+	  .ASCIZ "SYSTEM_IC1"
+
+	.MOD	4
+ioregblk6:.LONG	'IORB'
+	  .LONG  0
+	  .WORD  0C0h
+	  .WORD  0CDh
+	  .ASCIZ "SYSTEM_DMA1"
+
+iortblsize==!7*20t
+
+lgllvl::  .BYTE  0		;Level counter for logical name translation
+
+	END

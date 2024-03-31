@@ -1,0 +1,127 @@
+	.TITLE	notify
+
+	.PROC	80386
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD xosinc:\xmac\xws.par
+	.INCLUD xwsx.par
+	.INCLUD	bmp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;This module contains routines to manage notify objects
+
+
+;Function to create a notify object
+;	NOT *xwsmakenotify(
+;	    void *not,		// The notifier object
+;	    NOT **head,		// Pointer to notify list head pointer
+;	    WIN  *win);		// Window to be notified
+
+;This function uses the Pascal calling sequence
+
+mn_not =!12t
+mn_head=!8t
+mn_win =!4t
+
+	.ENTRY	xwsmakenotify
+xwsmakenotify::
+	PUSHL	#not_SIZE.B		;Allocate memory for the notify
+	CALL	xwsMalloc#		;  object
+	TESTL	EAX, EAX
+	JE	4$.S
+	MOVL	[EAX], #'NOT*'		;Store ID value
+	MOVL	EDX, mn_not.B[ESP]
+	MOVL	not_not.B[EAX], EDX
+
+	MOVL	EBX, mn_head.B[ESP]
+	MOVL	not_head.B[EAX], EBX	;Link to the notify list
+	MOVL	EDX, [EBX]
+	MOVL	not_nextnot.B[EAX], EDX
+	MOVL	[EBX], EAX
+
+	MOVL	EBX, mn_win.B[ESP]	;Link to the window list
+	MOVL	not_win.B[EAX], EBX
+	MOVL	EDX, win_basfnot[EBX]
+	MOVL	not_nextwin.B[EAX], EDX
+	MOVL	win_basfnot[EBX], EAX
+4$:	RET	8
+.PAGE
+;Function to give up a notify object
+;	void xwsgivenotify(
+;	    NOT *not);		// The notify object to give up
+
+;This function uses the Pascal calling sequence
+
+vn_not=!4t
+
+	.ENTRY	xwsgivenotify
+xwsgivenotify::
+	MOVL	EBX, vn_not.B[ESP]
+	MOVL	EDX, not_win.B[EBX]	;Remove this object from its notify
+	ADDL	EDX, #win_basfnot	;  list
+4$:	CMPL	[EDX], EBX
+	JE	6$.S
+	MOVL	EDX, [EDX]
+	ADDL	EDX, #not_nextwin.B
+	JMP	4$.S
+
+6$:	MOVL	EAX, not_nextwin.B[EBX]
+	MOVL	[EDX], EAX
+	MOVL	EDX, not_head.B[EBX]	;Remove this object from its window
+8$:	CMPL	[EDX], EBX		;  list
+	JE	10$.S
+	MOVL	EDX, [EDX]
+	ADDL	EDX, #not_nextnot.B
+	JMP	8$.S
+
+10$:	MOVL	EAX, not_nextnot.B[EBX]
+	MOVL	[EDX], EAX
+	PUSHL	EBX			;Give up the object
+	CALL	xwsFree#
+	RET	4
+.PAGE
+;Function to generate notify events
+;	void xwsgennotify(
+;	    NOT *not,;		// First notify object in the notify list
+;	    long type,		// Event type
+;	    long arg1,		// Arg 1 value for event
+;	    long arg2, 		// Arg 2 value for event
+;	    long arg3)		// Arg 3 value for event
+
+;This function uses the Pascal calling sequence
+
+gn_not =!28t
+gn_type=!24t
+gn_arg1=!20t
+gn_arg2=!16t
+gn_arg3=!12t
+
+	.ENTRY	xwsgennotify
+xwsgennotify::
+	PUSHL	EDI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, gn_not[EBP]
+4$:	TESTL	EDI, EDI
+	JE	6$
+	MOVL	EBX, not_win[EDI]
+	PUSHL	EBX
+	PUSHL	gn_type[EBP]
+	PUSHL	gn_arg1[EBP]
+	PUSHL	gn_arg2[EBP]
+	PUSHL	gn_arg3[EBP]
+	PUSHL	#0
+	CALL	xwsdoevent#
+	MOVL	EDI, not_nextnot[EDI]
+	JMP	4$
+
+6$:	POPL	EBP
+	POPL	EDI
+	RET	20t

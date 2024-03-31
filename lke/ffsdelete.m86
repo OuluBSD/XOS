@@ -1,0 +1,182 @@
+	.TITLE	ffsdelete - FFS delete function
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+	CODE
+
+;Here for the delete file entry - When get here the file is open on the DCB
+;  for exclusive access. The file is not locked. The directory may or may not
+;  be locked.
+;	long ffsdelete(void)
+;  Value returned is 0 if normal or a negative XOS error code if error. In
+;    all cases at least the directory is open on the DCB. The directory's lock
+;    status is unchanged. On an error the file MAY also still be open. On an
+;    error, the file may or may not still exist.
+
+ffsd_spec=!16t
+
+ffsdelete::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ORL	knlTda+tdaOption##, #XO$EXREAD|XO$EXWRITE|XO$IN|XO$OUT
+	PUSHL	ffsd_spec[ESP]		;Set the bits we must have here
+	CALL	ffsopen#		;Open the file
+	TESTL	EAX, EAX
+	JS	ffsddn
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	PUSHL	bfr_dirfiba[EBX]	;Lock the directory
+	CALL	xosdskLockBufrW##
+	PUSHL	EBX			;Lock the file
+	CALL	xosdskLockBufrW##
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is this a directory?
+	JE	6$
+	CALL	chkempdir		;Yes - see if it's empty
+	TESTL	EAX, EAX
+	JS	ffsddn
+6$:	MOVZBL	EAX, ff_extnum[EBX]	;OK - remove the file's directory entry
+	PUSHL	EAX			;  (This will update the directory on
+	MOVZBL	EAX, ff_chksum[EBX]	;  disk which ensures a "safe" order.)
+	PUSHL	EAX
+	MOVZWL	EAX, ff_f1pnt+1[EBX]	;Get low 16 bits of the first
+	PUSHL	EAX
+	PUSHL	ff_dirfblk+4[EBX]	;Address of directory FIB
+	PUSHL	ff_dirfblk+0[EBX]
+	MOVL	EDX, bfr_block+4[EBX]	;Directory block block number
+	MOVL	EAX, bfr_block+0[EBX]
+	ANDL	EDX, #0x07FFFFFF
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	PUSHL	EDX
+	PUSHL	EAX
+	PUSHL	ff_dirpos[EBX]
+	CALL	ffsfromdir#
+	TESTL	EAX, EAX
+	JS	ffsddn
+	MOVL	ff_dirpos[EBX], #-1	;Indicate no directory entry now
+	PUSHL	#0			;Give up all of the file's clusters
+	CALL	ffsreduce#
+	TESTL	EAX, EAX
+	JS	ffsddn
+	MOVL	EDX, bfr_dirfiba[EBX]	;Make the directory open on the DCB
+	MOVL	dcb_dkbasefib[EDI], EDX
+	MOVL	dcb_dkcurfib[EDI], EDX
+	DECW	bfr_usecnt[EBX]	
+	PUSHL	EBX			;Give up the file FIB
+	CALL	xosdskGiveBufr##
+	CLRL	EAX
+ffsddn:	CMPL	dcb_dkbasefib[EDI], #0	;Is something open on the DCB?
+	JE	10$			;No
+	PUSHL	EAX
+	CALL	ffsclosefib#		;Yes - close it (but keep the DCB)
+	POPL	EAX
+10$:	TESTB	dcb_sts3[EDI], #D3$FATCHG ;Have we changed any FATs?
+	JE	14$			;No
+	PUSHL	EAX			;Yes
+	CALL	ffswritefats#		;Update any changed FATs
+	POPL	EAX
+14$:	CMPL	knlTda+tdaCLockCnt##, #0 ;Have any cache buffers locked?
+	JNE	20$
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+20$:	CRASH	HCBL			;[Have Cache Block Locked]
+.PAGE
+;Function to see if a directory is empty
+;	long chkempdir(void)
+;  Value returned is 0 if normal (directory is empty) or a negative XOS error
+;    code if error (ER_DIRNE if directory is not empty).
+
+chkempdir::
+	PUSHL	EBX
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	dcb_dkfilepos[EDX], #0	;Start at beginning of directory
+2$:	CALL	ffssetrdpos#		;Setup to read a block
+	TESTL	EAX, EAX
+	JLE	20$			;If error or if EOF
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Read the block
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	20$			;If error
+	MOVL	ECX, #16t
+	LEAL	EDX, bfr_data[EBX]
+4$:	CMPB	11t[EDX], #0x0F		;Long name slot?
+	JE	10$			;Yes - it does not count
+	MOVL	EAX, [EDX]		;No - get first 4 bytes of name
+	CMPB	AL, #0			;Unused entry?
+	JE	16$			;Yes - this directory is empty
+	CMPB	AL, #0xE5		;Deleted entry?
+	JE	10$			;Yes
+	CMPL	EAX, #'.   '		;No - self entry?
+	JE	6$			;Maybe
+	CMPL	EAX, #'..  '		;Parent entry?
+	JNE	8$			;No
+6$:	MOVL	EAX, 8[EDX]		;Maybe - check extension too
+	ANDL	EAX, #0x00FFFFFF
+	CMPL	EAX, #'   '
+	JE	10$			;Yes
+8$:	TESTB	11t[EDX], #XA$LABEL	;No - is this a "label"?
+	JE	12$			;No - directory is not empty
+10$:	ADDL	EDX, #32t		;Yes - bump to next directory entry
+	LOOP	ECX, 4$			;Continue if more to check in this block
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##	;Give up the buffer
+	MOVL	EDX, knlTda+tdaDcb##
+	ADDL	dcb_dkfilepos[EDX], #0x200 ;Bump position in file
+	JMP	2$			;Continue
+
+;Here if directory is not empty
+
+12$:	PUSHL	EBX
+	CALL	xosdskRelsBufr##	;Give up the buffer
+	MOVL	EAX, #ER_DIRNE		;Error = DIRectory Not Empty
+	JMP	20$
+
+;Here if directory is empty
+
+16$:	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	CLRL	EAX
+20$:	POPL	EBX
+	RET
+
+	LKEEND

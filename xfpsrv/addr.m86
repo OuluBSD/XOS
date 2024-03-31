@@ -1,0 +1,13 @@
+	.TITLE	ADDR
+
+	.PROC	80386
+
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\ctype.par
+	.INCLUD	xosinc:\xmac\xos.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+TMPADDR==60000000h

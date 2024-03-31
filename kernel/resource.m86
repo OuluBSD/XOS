@@ -1,0 +1,404 @@
+	.TITLE	resource - Resource management routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+
+	CODE
+
+;This file contains routines for managing critical sections. There are two
+;  levels used to protect access to critical sections:
+;	Spin locks
+;	Resources
+;  Spin locks are just what the name implies. They are intended to protect
+;    very short critical sections. In partictular, a thread must not do
+;    anything that would force a context switch when it has a spin lock. This
+;    includes not doing any type of IO. There is only one level of owership of
+;    the lock. There are no common routines for spin locks. They are completely
+;    implimented by in-line code. Each spin lock uses one byte to manage the
+;    lock. Only the low order bit is used. When set it indicates that the lock
+;    is in use. This byte should be long aligned (since it is accessed with a
+;    BTxL instruction). There is no managed priority for granting ownership of
+;    a spin lock. When a thread is done with the critical section it simply
+;    clears the spin lock. Whichever thread asks for it next will get it. It
+;    is assumed that any thread will spend a VERY small percentage of its time
+;    in a spin lock so this should not cause any problems.
+
+;  The following code is used to obtain a spin lock (lock is the address of
+;    the one byte spin lock variable):
+;	SLOCK	lock
+;    This expands to:
+;	BTSL	lock, #0		;This is an atomic test and set
+;	JC	$-8.S
+;
+;  The following code is used to give up a spin lock:
+;	SRELS	lock
+;    This expands to:
+;	BTZL	lock #0
+;	JC	$+8			;This is a debug check only
+;	CRASH	LNIU
+
+;  It should be noted that spin-locks are only needed in multi-processor
+;  version of XOS. In the uni-processor version of XOS (currently the only
+;  version!) the above macros generate no code.
+
+;Resources are used for managing critical sections where a thread is expected
+;  to spend significant time compared to the time required for a context
+;  switch. This includes all instances where a context switch may be required
+;  within the critical section and where IO is done. There are two levels of
+;  access to a resource:
+;	Normal access
+;	Exclusive or locked access
+;  Any number of threads may have normal access to a resource. Only one thread
+;    may have exclusive access at any time. A thread requesting normal access
+;    is granted access immediately if no thread has exclusive access or is
+;    waiting to obtain exclusive access. Otherwise it must wait until the
+;    thread with exclusive access gives up the resource.  A thread requesting
+;    exclusive access is granted access immediately only if no other threads
+;    have access to the resource. Otherwise it must wait until all threads
+;    with access to the resource have give up that access.
+;  There is a queue of threads waiting for each resource. Access is granted in
+;    the order the requests are made. Both normal and exclusive access use the
+;    same queue.
+;  Each resource is managed using a resource management block (RMB) as follows:
+;	Offset Size Name        Description
+;	   0     4  rmb_nexttda Actual address of TDA for next thread waiting
+;				  for the resource
+;	   4     4  rmb_locktda
+;	   8     1  rmb_slock   Spin-lock variable used to manage the resource
+;	   9     1  rmb_status  Status bits
+;	  10     2  rmb_usecnt  Number of threads that have access to the
+;				  resource
+;  There is no limit to the number of resources that a thread can access at
+;    one time. Obviously, a thread can only wait for one resource at a time.
+;    A thread may obtain normal access to a given resource any number of times,
+;    but it must eventually give up access the same number of times. Attempting
+;    to obtain exclusive access when a thread already has exclusive to that
+;    resource will crash the system. Attempting to obtain normal access when a
+;    thread already has exclusive access will not be detected, but will hang
+;    the thread forever.
+;  Resources may be static or dynamic. If a resource is dynamic (that is, if
+;    the object containing the RMB can be created and destroyed) then calls
+;    to the functions to obtain and give up the resource MUST be protected with
+;    a static resource to provent another thread from destroying the object
+;    which contains the RMB during the call!
+;  There is no function to initialize a resource. A resource is initialized by
+;    simply zeroing its RMB.
+.PAGE
+;Define values for tdaResWType which indicates the type of resource access
+;  that a thread is waiting for.
+
+RWT_NORMAL=!1		;Waiting for normal access
+RWT_LOCKED=!2		;Waiting for locked access
+RWT_UPGRD =!3		;waiting for to upgrade access to locked
+
+;Function to get access to a resource.
+;	long sysSchGetResource(
+;	    RMB *rmb,		// Address of the RMB for the resource
+;	    long bits);		// RMBB$NWAIT = 0x04 - Do not wait for resource
+;				// RMBB$EXCL  = 0x02 - Exclusive (locked) use
+;				// RMBB$LOCK  = 0x01 - Lock resource (must have
+;				//			 normal access)
+;  Value returned is 0 if the resource was obtained or a negative XOS error
+;    code if error.
+
+getres_rmb =!12t
+getres_bits=!8
+
+sysSchGetResource::
+	PUSHL	EBX
+	MOVL	EBX, getres_rmb[ESP]
+	MOVL	EAX, knlTda+tdaAddr#
+	CMPL	EAX, rmb_locktda[EBX]
+	JNE	2$
+	CRASH	AHRL			;[Already Have Resource Locked]
+
+2$:	SLOCK	rmb_slock[EBX]		;Get the resource spin-lock
+	TESTB	getres_bits[ESP], #RMBB$UPGRD ;Is this an upgrade call?
+	JNE	10$			;Yes
+	TESTB	getres_bits[ESP], #RMBB$LOCKED ;No - want locked access?
+	JNE	20$			;Yes
+	CMPL	rmb_locktda[EBX], #0	;Is it locked now?
+	JNE	24$			;Yes - must wait
+	TESTB	rmb_status[EBX], #RMBS$WLOCK ;No - is someone waiting to lock
+					     ;  it?
+	JNE	24$			;Yes - another reason to wait
+	INCW	rmb_usecnt[EBX]		;No - bump the use count
+4$:	CLRL	EAX
+6$:	SRELS	rmb_slock[EBX]
+8$:	POPL	EBX
+	RET	8
+
+;Here if this is a lock call - Want to upgrade current access to locked
+
+10$:	CMPW	rmb_usecnt[EBX], #1	;Is anyone else using it?
+	JNE	18$			;Yes - must wait
+12$:	CMPL	rmb_locktda[EBX], #0	;Debug check
+	JE	16$
+	CRASH	RALK			;[Resource Already LocKed]
+
+16$:	MOVL	EAX, knlTda+tdaAddr#	;Grab it
+	MOVL	rmb_locktda[EBX], EAX
+	JMP	4$
+
+18$:	MOVB	knlTda+tdaResWType#, #RWT_UPGRD	;Indicating waiting for to
+	JMP	28$				;  upgrade access to locked
+
+;Here if want locked access
+
+20$:	CMPW	rmb_usecnt[EBX], #0	;Is anyone using it?
+	JNE	24$			;Yes
+	INCW	rmb_usecnt[EBX]		;No - grap it
+	JMP	12$
+
+;Here if must wait for normal access
+
+24$:	MOVB	knlTda+tdaResWType#, #RWT_NORMAL ;Indicate want normal access
+	JMP	28$
+
+;Here if must wait for exclusive (locked) access
+
+26$:	MOVB	knlTda+tdaResWType#, #RWT_LOCKED ;Indicate want locked access
+28$:	MOVL	EAX, knlTda+tdaAddr#
+	CMPL	EAX, rmb_locktda[EBX]
+	JNE	29$
+	CRASH	RIAL			;[Resource Is Already Locked]
+
+29$:	TESTB	getres_bits[ESP], #RMBB$NOWAIT ;Should we wait?
+	JNE	48$			;No
+	TOFORK				;Yes
+	LEAL	ECX, rmb_waittda[EBX]	;Find end of the request list
+30$:	MOVL	EDX, [ECX]
+	CMPL	EDX, #0xFFFFFFFF
+	JE	32$
+	CMPL	EDX, EAX
+	JNE	34$
+32$:	CRASH	BRWL			;[Bad Resource Wait List]
+
+34$:	TESTL	EDX, EDX
+	JE	36$
+	LEAL	ECX, tdaWaitList#[EDX]
+	JMP	30$
+
+36$:	MOVL	knlTda+tdaWaitList#, #0 ;Link us to the list
+	MOVL	knlTda+tdaRtnValue1#, #0
+	MOVL	[ECX], EAX
+	SRELS	rmb_slock[EBX]
+	PUSHL	#-1
+	PUSHL	#-1
+	PUSHL	#THDS_DW2
+	CALL	sysIoWait#		;Wait for the buffer
+	TESTL	EAX, EAX
+	JS	8$			;If error return the error
+
+;Here after waiting for the resource - we should now have it (following are
+;  all debug checks)
+
+	CMPW	rmb_usecnt[EBX], #0	;Is it in use now?
+	JNE	40$			;Yes
+	CRASH	RNIU			;[Resource Not In Use]
+
+40$:	TESTB	getres_bits[ESP], #RMBB$UPGRD|RMBB$LOCKED
+					;Did we want to lock it?
+	JE	42$			;No
+	MOVL	EDX, knlTda+tdaAddr#	;Yes - do we have it?
+	CMPL	EDX, rmb_locktda[EBX]
+	JE	8$			;Yes
+	CRASH	RNLK			;[Resource Not LocKed]
+
+42$:	CMPL	rmb_locktda[EBX], #0
+	JE	8$
+	CRASH	RILK			;[Resource Is Locked]
+
+;Here if should not wait and resource is not immediately available - return
+;  an ER_RESNA error
+
+48$:	MOVL	EAX, #ER_RESNA
+	JMP	6$
+.PAGE
+;Function to unlock resource but retain normal access to it. The caller must
+;  have exclusive access to the resource.
+;	long sysSchUnlockResource(
+;	   RMB *rmb);		// Address of the RMB for the resource
+;  Value returned is always 0.
+
+unlres_rmb=!8
+
+sysSchUnlockResource::
+	PUSHL	EBX
+	MOVL	EBX, unlres_rmb[ESP]
+	CMPL	rmb_usecnt[EBX], #0	;Is the resource in use?
+	JNE	4$			;Yes
+	CRASH	RNIU			;[Resource Not In Use]
+
+4$:	MOVL	EAX, knlTda+tdaAddr#	;Do we have exclusive access now?
+	CMPL	EAX, rmb_locktda[EBX]
+	JE	6$
+	CRASH	RNLC			;[Resource Not Locked by Caller]
+
+6$:	REQUIREFORK
+	JMP	wake1
+
+;Function to give up access to a resource. Caller must have access to the
+;  resource. Access may be locked.
+;	long sysSchGiveResource(
+;	   RMB *rmb);		// Address of the RMB for the resource
+;  Value returned is always 0.
+
+givres_rmb =!8
+
+sysSchGiveResource::
+	PUSHL	EBX
+	MOVL	EBX, givres_rmb[ESP]
+	CMPL	rmb_usecnt[EBX], #0	;Is the resource in use?
+	JNE	14$			;Yes
+	CRASH	RNIU			;[Resource Not In Use]
+
+14$:
+;;;;;;	SLOCK	rmb_slock[EBX]
+	DECL	rmb_usecnt[EBX]		;Reduce the use count
+	MOVL	EAX, knlTda+tdaAddr#	;Do we have exclusive access now?
+	CMPL	EAX, rmb_locktda[EBX]
+	JNE	16$			;No
+wake1:	MOVL	rmb_locktda[EBX], #0	;Yes - but not any longer
+16$:	CMPL	rmb_locktda[EBX], #0	;Did someone else have locked access?
+	JE	wake2			;No
+	CRASH	BRLS			;[Bad Resource Lock State]
+
+wake2:	MOVL	EDX, rmb_waittda[EBX]	;Is anyone waiting for the resource?
+	TESTL	EDX, EDX
+	JE	30$			;No
+	CMPB	tdaResWType[EDX], #RWT_LOCKED ;Yes - do they want it locked?
+	JNE	18$			;Yes
+	MOVL	EAX, tdaWaitList#[EDX]	;No - let them have it now
+	MOVL	tdaWaitList#[EDX], #-1
+	MOVL	rmb_waittda[EBX], EAX
+	INCW	rmb_usecnt[EBX]
+	TOFORK
+	PUSHL	EDX
+	PUSHL	#0
+	CALL	sysIoResumeThread#
+	FROMFORK
+	JMP	wake2
+
+;Here if the process waiting wants the resource locked
+
+18$:	CMPW	rmb_usecnt[EBX], #0	;Does anyone else have the resource?
+	JNE	30$			;Yes - can't get it locked yet
+	MOVL	EAX, tdaWaitList#[EDX]	;No - let them have it locked
+	MOVL	tdaWaitList#[EDX], #-1
+	MOVL	rmb_waittda[EBX], EAX
+	CMPB	tdaResWType[EDX], #RWT_UPGRD ;Is this an upgrade request?
+	JE	20$			;Yes
+	INCW	rmb_usecnt[EBX]		;No - increase the use count
+20$:	MOVL	rmb_locktda[EBX], EDX
+	ANDB	rmb_status[EBX], #~RMBS$WLOCK
+	MOVL	ECX, rmb_waittda[EBX]	;See if anyone else is waiting to
+22$:	TESTL	ECX, ECX		;  lock this resource
+	JE	26$
+	CMPB	tdaResWType#[ECX], #RWT_LOCKED
+	JAE	24$			;Yes
+	MOVL	ECX, tdaWaitList#[ECX]	;No - keep looking
+	TESTL	ECX, ECX
+	JMP	22$
+
+24$:	ORB	rmb_status[EBX], #RMBS$WLOCK
+26$:	TOFORK
+	PUSHL	EDX
+	PUSHL	#0
+	CALL	sysIoResumeThread#
+	FROMFORK
+30$:
+;;;;;;	SRELS	rmb_slock[EBX]
+	CLRL	EAX
+	POPL	EBX
+	RET	4
+.PAGE
+
+;Function to flush a resource. The resource is given up and all threads
+;  waiting for the resource receive an ER_RSRMV error.
+;	void sysSchFlushResource(
+;	   RMB *rmb);		// Address of the RMB for the resource
+
+flhres_rmb =!8
+
+sysSchFlushResource::
+	PUSHL	EBX
+	MOVL	EBX, flhres_rmb[ESP]
+	SLOCK	rmb_slock[EBX]
+
+	CMPL	rmb_usecnt[EBX], #0	;Is the resource in use?
+	JNE	2$			;Yes
+	CRASH	RNIU			;[Resource Not In Use]
+
+2$:	MOVL	EAX, knlTda+tdaAddr#	;Do we have exclusive access now?
+	CMPL	EAX, rmb_locktda[EBX]
+	JE	4$			;Yes
+	CRASH	BRLS			;[Bad Resource Lock State]
+
+4$:	CLRL	EAX
+	MOVL	rmb_locktda[EBX], EAX
+	MOVW	rmb_usecnt[EBX], AX
+	MOVB	rmb_status[EBX], AL
+6$:	MOVL	EDX, rmb_waittda[EBX]	;Is anyone waiting for the resource?
+	TESTL	EDX, EDX
+	JE	10$			;No
+	MOVL	EAX, tdaWaitList#[EDX]	;Yes - wake them up and tell them it
+	MOVL	tdaWaitList#[EDX], #-1	;  is gone!
+	MOVL	rmb_waittda[EBX], EAX
+	INCW	rmb_usecnt[EBX]
+	TOFORK
+	PUSHL	EDX
+	PUSHL	#ER_RSRMV
+	CALL	sysIoResumeThread#
+	FROMFORK
+	JMP	6$
+
+10$:	SRELS	rmb_slock[EBX]
+	CLRL	EAX
+	POPL	EBX
+	RET	4
+.PAGE
+;Function to determine if a resource is locked.
+;	long sysSchIsResourceLocked(
+;	   RMB *rmb);		// Address of the RMB for the resource
+;  Value returned is always 1 if resource is locked or 0 if not locked by
+;    the caller
+
+islck_rmb=!4
+
+sysSchIsResourceLocked::
+	CLRL	EAX			;Assume not locked
+	MOVL	EDX, islck_rmb[ESP]
+	CMPL	rmb_usecnt[EDX], #0	;Is the resource in use?
+	JE	4$			;No
+	MOVL	ECX, knlTda+tdaAddr#	;Yes - do we have exclusive access now?
+	CMPL	ECX, rmb_locktda[EDX]
+	JNE	4$			;No
+	INCL	EAX			;Yes - return TRUE
+4$:	RET	4
+
+	END

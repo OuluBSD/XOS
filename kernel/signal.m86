@@ -1,0 +1,1249 @@
+	.TITLE	signal - Signal routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+
+	CODE
+
+;The following functions set signal vectors. The signal system is a multi-level
+;  prioritized, queued interrupt system for scheduled threads. It is loosely
+;  patterned after the IA-32 architecture hardware interrupt system put
+;  provides a number of additional features. Each process has a 256 entry
+;  signal vector table. Each entry in this table consists of 8 bytes as
+;  follows:
+;  Offset Size Description
+;     0     4  Address of signal routine
+;     4     4  TID for target thread plus signal level and remote enable - The
+;		 TID is stored in the 32 bit item in its normal format with
+;		 bit 31 and bits 15-12 masked out (these bits are alwasy 0 in
+;		 a TID). Bit 31 is set if remote access is allowed. Bits 15-12
+;		 contain the the signal level.
+;  The uses of vectors 0 through 0x1F are pre-defined for various system
+;  functions. Vectors 0 through 0x13 may be set and used to receive notification
+;  of various system events. They cannot be invoked directly by a user program.
+;  Vectors 0x14 through 0x1F are reserved for system use. Vectors 0x20 through
+;  0xFF are generally available to be set and/or invoked by user programs.
+.PAGE
+;Here for the svcSchSetLevel SVC - Set signal level
+;	int level;		// New signal level
+;				//   Bits 31-8: Not used, ignored
+;				//   Bit     7:	Format returned value as EFR
+;				//   Bits  6-5:	00 = Set level from bits 3-0
+;				//		01 = OR bits 3-0 to level
+;				//		10 = AND complement of bits
+;				//		       3-0 to level
+;				//		11 = Do not change level
+;				//   Bit     4:	0 = Return previous value
+;				//		1 = Do not change EAX
+;				//   Bits  3-0:	New level value
+;	rtn = svcSchSetLevel(level);
+;  Value returned is previous signal level if normal or a negative error code
+;    if error
+
+psvcSchSetLevel::
+	MOVZBL	EDX, knlTda+tdaArg1#	;Get new level
+	MOVZBL	EAX, knlTda+tdaSigLvl#	;Get current signal level
+	MOVL	ECX, EDX		;Get function
+	ANDB	DL, #0Fh
+	SHRL	ECX, #5t
+	JMPIL	stsidsp[ECX*4]		;Dispatch on the function
+
+	DATA
+
+stsidsp:.LONG	stsiset		;000 - Set new level
+	.LONG	stsior		;001 - OR to level value
+	.LONG	stsiand		;010 - AND complement to level value
+	.LONG	ret004		;011 - No change
+	.LONG	stsiset		;100 - Set new level
+	.LONG	stsior		;101 - OR to level value
+	.LONG	stsiand		;110 - AND complement to level value
+	.LONG	ret004		;111 - Illegal (treat it as as get function for
+				;	 compatibility with XOS 1.7 which used
+				;	 AL = 0FFh for get)
+	CODE
+
+;Here to set new level value
+
+stsiset:MOVB	knlTda+tdaSigLvl#, DL	;Make this his new level
+	JMP	6$
+
+;Here to OR to level value
+
+stsior:	ORB	knlTda+tdaSigLvl#, DL
+	JMP	4$
+
+;Here to AND complement to level value
+
+stsiand:NOTB	DL
+	ANDB	knlTda+tdaSigLvl#, DL
+4$:	MOVB	DL, knlTda+tdaSigLvl#
+6$:	MOVB	DL, masktbl#[EDX]	;Get new interrupt mask value
+	MOVB	knlTda+tdaSigMask#, DL
+ret004:	RET				;Finished
+.PAGE
+	.SBTTL	svcSchSetVector - Set signal vector
+
+;Here for the svcSchSetVector SVC - Set signal vector
+;	long svcSchSetVector(
+;	    long  vector,	// Vector number (-1 to clear all vectors)
+;	    long  level,	// Bit  7    = Remote enable
+;				// Bits 6-0  = Signal level (0 for trap)
+;	    void *address);	// Address for vector
+;  Value returned is 0 if normal or negative error code if error.
+
+psvcSchSetVector::
+	CMPL	knlTda+tdaArg1#, #-1	;Want to clear all vectors?
+	JE	4$			;Yes
+	CALL	getvect			;No - get vector number
+	JC	8$			;If error
+
+	MOVL	ECX, knlTda+tdaArg3#	;Get new address for vector
+	TESTL	ECX, ECX		;Clearing vector?
+	JNE	10$			;No
+	CLRL	EAX			;Yes
+	MOVL	knlPda+pdaSigVTbl+0[EBX*8], EAX
+	MOVL	knlPda+pdaSigVTbl+4[EBX*8], EAX
+	RET
+
+;Here if want to clear all vectors
+
+4$:	CLRL	EBX
+	MOVL	ECX, #256t
+	CLRL	EAX
+6$:	MOVL	knlPda+pdaSigVTbl+0[EBX*8], EAX
+	MOVL	knlPda+pdaSigVTbl+4[EBX*8], EAX
+	INCL	EBX
+	LOOP	ECX, 6$
+8$:	RET
+
+;Here if not clearing the vector
+
+10$:	MOVL	knlPda+pdaSigVTbl#+svt_addr[EBX*8], ECX ;Store address
+	MOVZBL	EAX, knlTda+tdaArg2#	;Get level and type values
+	MOVL	EDX, knlTda+tdaTid#
+	ANDL	EDX, #0x7FFF0FFF
+	SHLL	EAX, #12t		;Get level in the right place
+	ANDL	EAX, #0x00087000
+	BTZL	EAX, #19t		;Get remote enable in the right place
+	JNC	12$
+	BTSL	EAX, #31t
+12$:	ORL	EAX, EDX
+	MOVL	knlPda+pdaSigVTbl#+svt_gtnum[EBX*8], EAX
+	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	svcSchInitVector - Initialize all signal vectors
+
+;Here for the svcSchInitVector SVC - Initalize all signal vectors
+;	int type;		// Vector type in bits 8-15.  Must be
+;				//   VT_NONE, VT_HWT16, or VT_HWT32
+;	rtn = svcSchInitVector(type);
+;  Value returned is always 0 if OK or a negative error code if error.
+
+psvcSchInitVector::
+	MOVL	EDX, knlTda+tdaArg1#	;Get vector type
+	TESTL	EDX, #0xFFFF00FF
+2$:	JNE	knlBadValue#
+	MOVL	EAX, #ER_NIYT
+	RET
+
+;;; THIS CALL HAS NOT BEEN CONVERTED FOR THIS VERSION AND MAY JUST BE REMOVED!
+
+.IF NE 0
+	CLD
+	PUSHL	SS
+	POPL	ES
+	CMPB	DH, #VT_NONE		;Want to clear all vectors?
+	JNE	4$			;No
+	MOVL	ECX, #80t*2		;Yes - clear 20 through 6F
+	MOVL	EDI, #pdaIdt+20h*8
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	ECX, #272t*2		;Clear 80 through 18F
+	MOVL	EDI, #pdaIdt+80h*8
+	RSTOSL	[EDI]
+	RET
+
+;Here if do not want to clear all vectors.  In this case we set the 256
+;  protected INT vectors to point to the default routines.  This includes
+;  table entries 20-6F, 70-FF, 160-17F, 180-18F.  We always clear table entries
+;  100-15F.
+
+4$:	MOVL	EBX, #pint32dft#
+	MOVZWL	EAX, BX
+	MOVW	BX, #0xEF00
+	ORL	EAX, #{GS_UCODE|0x03}<16t
+
+	MOVL	ESI, #spec32
+	CMPB	DH, #VT_HWT32		;Right
+	JE	6$			;Yes
+	CMPB	DH, #VT_HWT16		;No - want 16-bit vectors?
+	JNE	2$			;No - fail
+	MOVB	BH, #0E7h		;Yes
+	MOVL	EBX, #pint16dft#
+	MOVZWL	EAX, BX
+	MOVW	BX, #0xEF00
+	ORL	EAX, #{GS_UCODE|0x03}<16t
+	ADDL	ESI, #spec16-spec32
+6$:	MOVL	EDI, #pdaIdt#
+	MOVL	EDX, #8t		;Initialize the IDT to contain 256
+8$:	MOVL	ECX, #32t		;  user level trap gates which point to
+10$:	CMPL	EDI, #pdaIdt#+1Fh*8	;Low vector?
+	JA	12$			;No
+	CMPL	EDI, #pdaIdt#+03h*8	;Yes - debug vector?
+	JE	16$			;Yes
+	MOVL	knlPda+160h*8+0[EDI], EAX ;No - store the vector
+	MOVL	knlPda+160h*8+4[EDI], EBX
+	JMP	16$
+
+;Here if not a low vector
+
+12$:	CMPL	EDI, #pdaIdt#+7Fh*8	;Middle vector?
+	JA	14$			;No
+	CMPL	EDI, #pdaIdt#+70h*8	;Maybe
+	JB	14$			;No
+	MOVL	knlPda+110h*8+0[EDI], EAX ;Yes - store the vector
+	MOVL	knlPda+110h*8+4[EDI], EBX
+	JMP	16$
+
+;Here if normal vector
+
+14$:	MOVL	knlPda+0[EDI], EAX	;Store the vector
+	MOVL	knlPda+4[EDI], EBX
+16$:	ADDL	EAX, #4t		;Bump routine address
+	ADDL	EDI, #8t		;Bump table pointer
+	LOOP	ECX, 10$		;Continue if more to do in this group
+	ADDL	EAX, #4t		;End of group - fix up routine address
+	DECL	EDX			;More to do?
+	JNE	8$			;Yes - continue
+	LODSL	[ESI]
+	MOVW	knlPda+pdaIdt+0x21*8+0, AX ;Store INT 21 vector
+	SHRL	EAX, #16t
+	MOVW	knlPda+pdaIdt+0x21*8+6, AX
+	LODSL	[ESI]
+	MOVW	knlPda+pdaIdt+0x2F*8+0, AX ;Store INT 2F vector
+	SHRL	EAX, #16t
+	MOVW	knlPda+pdaIdt+0x2F*8+6, AX
+	LODSL	[ESI]
+	MOVW	knlPda+pdaIdt+0x31*8+0, AX ;Store INT 31 vector
+	SHRL	EAX, #16t
+	MOVW	knlPda+pdaIdt+0x21*8+6, AX
+	LODSL	[ESI]
+	MOVW	knlPda+pdaIdt+0x33*8+0, AX ;Store INT 33 vector
+	SHRL	EAX, #16t
+	MOVW	knlPda+pdaIdt+0x33*8+6, AX
+	MOVL	ECX, #96t*2-8
+	MOVL	EDI, #pdaIdt+100h*8+20h	;Clear the execption vectors
+	CLRL	EAX
+	RSTOSL	[EDI]
+	RET
+
+	DATA
+
+;Special vector table
+
+	.MOD	4
+spec16:	.LONG	pint16v21#
+	.LONG	pint16v2F#
+	.LONG	pint16v31#
+	.LONG	pint16v33#
+
+spec32:	.LONG	pint32v21#
+	.LONG	pint32v2F#
+	.LONG	pint32v31#
+	.LONG	pint32v33#
+
+	CODE
+.ENDC
+
+.PAGE
+	.SBTTL	svcSchGetVector - Get signal vector
+
+;Here for the svcSchGetVector SVC - Get signal vector
+;	long svcSchGetVector(
+;	    int   vector,	// Vector number
+;	    VVAL *address);	// Address of vector value structure (8 bytes)
+;				//   First 4 bytes receive the address
+;				//   Second 4 bytes receive the PID of the
+;				//     target thread
+;  Value returned is signal level in bits 6-0 and the remove enable state in
+;    bit 7 (other bits are 0) if normals or a negative XOS error code if error.
+
+psvcSchGetVector::
+	CALL	getvect			;Get vector number
+	JC	8$			;If error
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EDI, knlTda+tdaArg2#	;Get address for returned values
+	MOVL	EAX, knlPda+pdaSigVTbl#+svt_addr[EBX*8] ;Give him the address
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EDI], EAX
+	MOVL	EAX, knlPda+pdaSigVTbl#+svt_gtnum[EBX*8]
+	MOVL	EDX, EAX
+	ANDL	EDX, #0x7FFF0FFF
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4[EDI], EDX
+	SHRL	EAX, #12t
+	BTL	EAX, #19t
+	BTSL	EAX, #7
+	ANDL	EAX, #87
+8$:	RET
+.PAGE
+;Subroutine to get interrupt vector number from user - number is mapped
+;  to the internal vector number
+;	CALL	getvect
+;	c{EBX} = Vector number
+
+getvect:MOVL	EBX, knlTda+tdaArg1#	;Get vector number
+	CMPL	EBX, #0x0FF
+	JA	knlBadValue#
+	CMPL	EBX, #0x18
+	JB	4$
+	CMPL	EBX, #0x1F
+	JBE	knlBadValue#
+4$:	CLC
+ret006:	RET
+.PAGE
+	.SBTTL	svcSchClrSignal - Clear signal requests
+
+;Here for the svcSchClrSignal SVC - Clear signal requests
+;	long vector;		// Vector number (-1 clears signals for all
+;				//   vectors
+;	rtn = svcSchClrSignal(vector);
+;  Value returned is number of signals cleared if normal or negative error
+;    code if error
+
+psvcSchClrSignal::
+	CLRL	ECX			;Indicate no data
+	CLRL	EDX
+	CLRL	EDI
+	CLRL	EAX			;Indicate all levels
+	DECL	EAX
+	JMP	4$
+
+	.SBTTL	svcSchDisSignal - Discard signal requests
+
+;Here for the svcDisClrSignal SVC - Discard signal requests
+;	long svcSchDisSignal(
+;	    long  vector,	// Vector number (-1 discards signals for all
+;				//   vectors
+;	    long  level,	// Signal level (-1 discards signals for all
+;				//   levels)
+;	    long *data,		// Array of data and mask values to match
+;	    long  count);	// Number of data values to match (0 does not
+;				//   check any data values, 1 matches single
+;				//   data value without masking, > n matches
+;				//   n/2 data values with masking)
+;  Value returned is number of signals discarded if normal or negative error
+;    code if error
+
+$$$=!0
+FRM ds_number , 4t
+FRM ds_count  , 4t
+FRM ds_lsthead, 4t
+FRM ds_level  , 4t		;Level to clear
+FRM ds_data   , 4t		;Address of data list
+FRM ds_datasz , 4t		;Number of data items
+FRM           , 3t
+FRM ds_mask   , 1t
+ds_SIZE=!$$$
+
+psvcSchDisSignal::
+	MOVL	EAX, knlTda+tdaArg2#
+	MOVL	EDX, knlTda+tdaArg3#
+	MOVL	EDI, knlTda+tdaArg4#
+	MOVL	ECX, knlTda+tdaArg5#
+
+;	c{EAX} = Level
+;	c{EDI} = Address of data list
+;	c{ECX} = Number of data items
+
+4$:	ENTER	ds_SIZE, 0		;Set up our stack frame
+	MOVL	ds_level[EBP], EAX
+	MOVL	ds_data+0[EBP], EDI
+	MOVL	ds_data+4[EBP], EDX
+	CMPL	ECX, #1			;Have a single value?
+	JBE	6$
+	MOVB	ds_mask[EBP], #1	;No - we have mask values too
+	SHRL	ECX, #1
+	JMP	8$
+
+6$:	MOVB	ds_mask[EBP], #0	;Single value - no mask
+8$:	MOVL	ds_datasz[EBP], ECX
+	MOVL	EAX, knlTda+tdaArg1#
+	CMPL	EAX, #-1
+	JE	10$
+	CALL	knlChkVector#		;Check the vector number
+	JC	18$			;If error
+	MOVL	knlTda+tdaArg1#, EAX	;Store adjusted value
+10$:	CLRL	EAX
+	MOVL	ds_number[EBP], EAX
+	MOVL	EAX, ds_level[EBP]	;Get level
+	CMPL	EAX, #-1		;Want all levels?
+	JE	12$			;Yes
+	DECL	EAX			;No - valid level?
+	JS	knlBadValueLv#		;No
+	CMPL	EAX, #7		;Maybe
+	JAE	knlBadValueLv#		;No
+	LEAL	EAX, tdaL1HeadP#[EAX*4]	;Yes - get offset of head pointer
+	MOVL	ds_lsthead[EBP], EAX
+	CALL	dissig
+	JNC	16$
+	JMP	18$
+
+;Here to discard all levels
+
+12$:	MOVL	ds_count[EBP], #7	;Get number of lists
+	MOVL	ds_lsthead[EBP], #tdaL1HeadP# ;Point to head pointer for
+14$:	PUSHL	EDI			      ;  first list
+	CALL	dissig
+	POPL	EDI
+	JC	18$
+	ADDL	EDI, #4
+	DECL	ds_count[EBP]
+	JNE	14$
+16$:	MOVL	EAX, ds_number[EBP]
+18$:	LEAVE
+	RET
+.PAGE
+;Subroutine to discard signals for a single level
+;	c{ES:EDI} = Address of head pointer for signal request list
+;	CALL	dissig
+
+dissig:	TOFORK
+	MOVL	EDI, ds_lsthead[EBP]
+	PUSHL	DS
+	POPL	ES
+2$:	MOVL	ESI, [EDI]
+	TESTL	ESI, ESI
+	JE	30$
+	MOVL	EAX, knlTda+tdaArg1#	;Get the desired vector
+	CMPL	EAX, #-1		;All vectors?
+	JE	4$			;Yes
+	CMPW	slb_vector[ESI], AX	;No - this one?
+	JNE	28$			;No - skip this one
+4$:	MOVL	ECX, ds_datasz[EBP]	;Want to check the data?
+	JREGZ	ECX, 14$		;No
+	CMPB	CL, slb_dcnt[ESI]	;Yes - do we have enought data here?
+	JA	28$			;No - skip this one
+	IFFAULT	34$			;Yes - check the data values
+	MOVL	EBX, ds_data[EBP]
+	LEAL	EDX, slb_data[ESI]
+	IFFAULT	34$
+10$:	MOVL	EAX, [EBX]		;Get a data value
+	XORL	EAX, [EDX]		;Compare
+	CMPB	ds_mask[EBP], #0	;Want to mask it?
+	JE	12$			;No
+	IFFAULT	34$
+	ANDL	EAX, 4[EBX]		;Yes
+12$:	TESTL	EAX, EAX
+	JNE	28$			;If different
+	ADDL	EBX, #8t
+	ADDL	EDX, #4t
+	LOOP	ECX, 10$
+14$:	MOVL	EDX, slb_gfunc[ESI]	;Same - discard this one
+	TESTL	EDX, EDX		;Have a grant subroutine?
+	JE	16$			;No
+	MOVL	slb_gfunc[ESI], #0
+	PUSHL	ESI
+	PUSHL	#SGF_CLEARED		;Indicate clearing the signal
+	CALLI	EDX			;Call the grant subroutine
+16$:	MOVL	EAX, slb_next[ESI]	;Get offset of next block
+	MOVL	[EDI], EAX		;Unlink this one
+	TESTL	EAX, EAX		;Have a next block?
+	JE	22$			;No - this was the last one
+	CMPL	EDI, #tdaL7HeadP#	;Yes - is it the only one?
+	JBE	20$			;Yes
+	MOVL	slb_prev[EAX], ESI	;No - update back link
+	JMP	26$
+
+;Here if this is was the first block
+
+20$:	MOVL	slb_prev[EAX], #0	;Indicate the next block now is the
+	JMP	26$			;  last block
+
+;Here if this was the last block
+
+22$:	MOVL	ECX, ds_lsthead[EBP]
+	MOVL	EAX, EDI
+	CMPL	EAX, #tdaL7HeadP#	;Is there a previous block?
+	JA	24$			;Yes
+	CLRL	EAX			;No - this was the last one
+24$:	MOVL	knlTda+tdaxxTP#[ECX], EAX ;Update the tail pointer
+26$:	CALL	knlGiveXmb#		;Give up this signal link block
+	INCL	ds_number[EBP]		;Count the signal we cleared
+	JMP	2$
+
+;Here if do not want to remove this request
+
+28$:	LEAL	EDI, slb_next[ESI]	;Advance pointer
+	JMP	2$			;Continue
+
+;Here at end of the signal list
+
+30$:	MOVL	EDX, ds_lsthead[EBP]	;Get offset of head pointer
+	CMPL	EDI, #tdaL7HeadP#	;Is the list empty now?
+	JA	32$			;No
+	MOVL	EAX, #tdaL7HeadP#+4	;Yes - clear request bit
+	SUBL	EAX, EDX
+	SHRL	EAX, #2
+	BTZL	knlTda+tdaSigReq#, EAX
+32$:	FROMFORK
+	CLC
+	RET
+
+;Here if address error
+
+	FAULTHDR
+34$:	FROMFORK
+	JMP	knlRtnAdrEr#
+.PAGE
+;Here for the svcSchReqSignal SVC - Request a signal
+;	long svcSchReqSignal(
+;	    long  number,	// Vector number
+;	    long *datapnt,	// Address of data array
+;	    long  datasize,	// Size of data array
+;	    long  pid);		// Process ID (-1 means self, -2 means session
+;				//   process);
+;  Value returned is 0 if normal or negative error code if error
+
+psvcSchReqSignal::
+	CMPL	knlTda+tdaArg2#, #systembase
+	JAE	knlRtnAdrEr#
+	CMPL	knlTda+tdaArg3#, #32t
+	JA	8$
+	TOFORK
+	PUSHL	knlTda+tdaArg2#	;Address of first data item
+	MOVL	EAX, knlTda+tdaArg3# ;Number of data items (- indicates a
+	NEGL	EAX		     ;  pointer to the data)
+	PUSHL	EAX
+	MOVL	EAX, knlTda+tdaArg4# ;Target PID
+	CMPL	EAX, #-1
+	JNE	2$
+	MOVL	EAX, knlPda+pdaPid#
+2$:	CMPL	EAX, #-2
+	JNE	4$
+	MOVL	EAX, knlPda+pdaSesPda#
+	MOVL	EAX, pdaPid#[EAX]
+4$:	PUSHL	EAX
+	PUSHL	#0		;No grant function
+	PUSHL	#0
+	PUSHL	knlTda+tdaArg1#	;Vector number
+	CALL	sysSchReqSignal
+	ADDL	ESP, #24t
+	FROMFORK
+	TESTL	EAX, EAX
+	JS	6$
+	CLRL	EAX
+6$:	RET
+
+8$:	MOVL	EAX, #ER_VALUE
+	RET
+.PAGE
+;Here to process a signal request
+;	c[ES]  = Selector for PDA
+;	c{EBX} = Signal level
+
+dosignal::
+	MOVB	knlForkLvl#, #FORK_SFORK ;Raise to fork level
+	JMPIL	sigdsp[EBX*4]		;Dispatch on the request
+
+;Software interrupt request dispatch table
+
+	DATA
+
+	.MOD	4
+sigdsp:	.LONG	systemsig	;System level request
+	.LONG	siglvl7		;Level 7 request
+	.LONG	siglvl6		;Level 6 reqeust
+	.LONG	siglvl5		;Level 5 reqeust
+	.LONG	siglvl4		;Level 4 request
+	.LONG	siglvl3		;Level 3 request
+	.LONG	siglvl2		;Level 2 reqeust
+	.LONG	siglvl1		;Level 1 reqeust
+
+	CODE
+
+;Here to grant level 1 signal
+
+siglvl1:MOVL	EAX, #0x7F		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL1HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 2 signal
+
+siglvl2:MOVL	EAX, #0xBF		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL2HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 3 signal
+
+siglvl3:MOVL	EAX, #0xDF		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL3HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 4 signal
+
+siglvl4:MOVL	EAX, #0xEF		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL4HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 5 signal
+
+siglvl5:MOVL	EAX, #0xF7		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL5HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 6 signal
+
+siglvl6:MOVL	EAX, #0xFB		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL6HeadP# ;Get pointer
+	JMP	2$
+
+;Here to grant level 7 signal
+
+siglvl7:MOVL	EAX, #0xFD		;Get mask for clearing request
+	MOVL	EDI, #knlTda+tdaL7HeadP# ;Get pointer
+
+;Here with signal to grant
+;	c{EAX} = Mask for clearing request
+;	c(CL)  = New signal level
+;	c(CH)  = Mask byte for new level
+;	c{EDI} = Offset (in PDA) of head pointer for signal
+
+2$:	MOVL	ESI, [EDI]		;Get address of the next SLB
+	TESTL	ESI, ESI		;Really have one?
+	JNE	4$			;No!
+	CRASH	NSLB			;[No Signal Link Block]
+
+;Here with an SLB
+
+4$:	MOVL	EDX, slb_next[ESI]	;Remove entry from the signal list
+	MOVL	[EDI], EDX
+	TESTL	EDX, EDX		;Is list empty now?
+	JNE	8$			;No
+	MOVL	tdaxxTP#[EDI], #0	;Yes - clear tail pointer
+	ANDB	knlTda+tdaSigReq#, AL	;Clear request bit for level
+	JMP	8$
+
+;Here if signal list is not empty now
+
+8$:	CMPL	slb_gfunc[ESI], #0	;Do we have a grant subroutine?
+	JE	dosig2			;No - go on
+	PUSHL	ESI			;Yes - address of the SLB
+	PUSHL	#SGF_GRANTED		;Indicate granting signal
+	CALLI	slb_gfunc[ESI]		;Call the grant subroutine
+.PAGE
+;Here with a useable vector - We now construct a signal stack frame on the
+;  user's stack. Note that the new EIP is always a protected mode 32 bit
+;  address. The saved EIP may be either protected or V86 mode. Segmented
+;  protected mode addresses are fully supported as the current address. The
+;  signal address is always a flat protected mode address. This stack frame
+;  has the following format:
+;	c{{ESP}+0}  = New user GS
+;	c{{ESP}+4}  = New user FS
+;	c{{ESP}+8}  = New user ES
+;	c{{ESP}+12} = New user DS
+;	c{{ESP}+16} = New user EIP
+;	c{{ESP}+20} = New user CS
+;	c{{ESP}+24} = New user EFR
+;	c[{ESP}+28] = Number of data items on stack (each item is 32 bits)
+;	c[{ESP}+30] = Software interrupt number
+;	c{{ESP}+32} = First data item
+;	....
+;	c{{ESP}+..} = New user ESP
+;	c{{ESP}+..} = New user SS
+;  The 4 data segment register values are always present. The new user SS:ESP
+;  is only present if switching from V86 mode. The EFR value is modified
+;  slightly from the hardware format:
+;	Bits 31-19 - Not used (should be 0)
+;	Bit  18    - AC flag (alignment check - 486 and above only)
+;	Bit  17    - VM flag
+;	Bit  16    - RF
+;	Bit  15    - 0
+;	Bits 14-12 - Low 3 bits of signal level
+;	Bit  11    - OF
+;	Bit  10    - DF
+;	Bit   9    - Complement of bit 3 of signal level
+;	Bit   8    - TF
+;	Bit   7    - SF
+;	Bit   6    - ZF
+;	Bit   5    - 0
+;	Bit   4    - AF
+;	Bit   3    - 0
+;	Bit   2    - PF
+;	Bit   1    - 1
+;	Bit   0    - CF	
+
+dosig2::TESTB	knlTda+tdaURegEFR#+2, #0x02 ;Switching from real mode?
+	JE	4$			;No
+	MOVZWL	EBX, knlTda+tdaURegESP#
+	MOVZWL	EDX, knlTda+tdaURegSS#
+	SHLL	EDX, #4
+	ADDL	EBX, EDX
+	PUSHL	DS
+	POPL	ES
+	MOVL	EDX, EBX		;Remember the original value
+	MOVZWL	EAX, knlTda+tdaURegSS#
+	IFFAULT	sigbdstk
+	MOVL	ES:-4[EBX], EAX
+	MOVL	EAX, knlTda+tdaURegESP#
+	IFFAULT	sigbdstk
+	MOVL	ES:-8[EBX], EAX
+	SUBL	EBX, #8
+	JMP	6$
+
+;Here if coming from protected mode
+
+	IFFAULT	sigbdstk
+4$:	LESL	EBX, knlTda+tdaURegESP#
+
+;Here with the user's stack pointer. This uses a full segmented address in
+;  case the user program has set up a segmented structure. If this is the
+;  case we assume that the segment management code as ensured that the
+;  segment only addresses user space. We must, however, check the offset in
+;  case he is using a flat address and the offset points to the kernel. This
+;  can happen if we are trying to report a page fault that occured because of
+;  a PUSH with a 0 ESP value. This will cause the ESP value to wrap around
+;  to point to the mapping of the page tables in the top directory page! We
+;  can always make this check, even if this is a segmented address since no
+;  segment can be larger than the available user mode flat (linear) address
+;  space. We also do not allow the stack to be below 0x100 to make sure it
+;  does not wrap around while we are storing items here.
+
+	CMPL	EBX, #systembase
+	JAE	sigbdstk
+	CMPL	EBX, #0x100
+	JB	sigbdstk
+	MOVL	EDX, EBX		;Remember the original value
+6$:	MOVZBL	ECX, slb_dcnt[ESI]	;Number of data times
+	JREGZ	ECX, 10$		;If no data items
+	LEAL	EDI, slb_data-4[ESI+ECX*4]
+8$:	MOVL	EAX, [EDI]		;Copy the data items to his stack
+	SUBL	EDI, #4
+	IFFAULT	sigbdstk
+	MOVL	ES:-4[EBX], EAX
+	SUBL	EBX, #4
+	LOOP	ECX, 8$
+10$:	MOVZBL	EAX, slb_vector[ESI]
+	SHLL	EAX, #16t
+	MOVB	AL, slb_dcnt[ESI]
+	IFFAULT	sigbdstk
+	MOVL	ES:-4[EBX], EAX
+	MOVL	EAX, knlTda+tdaURegEFR#
+	MOVZBL	ECX, knlTda+tdaSigLvl#	;Insert the current signal level into
+	SHLL	ECX, #12t		;  the EFR value we save
+	BTZL	ECX, #15t
+	JC	12$
+	BTSL	ECX, #9
+12$:	ANDL	EAX, #0x00067FFF
+	ORL	EAX, ECX
+	IFFAULT	sigbdstk
+	MOVL	ES:-8[EBX], EAX
+	MOVL	EAX, knlTda+tdaURegCS#
+	IFFAULT	sigbdstk
+	MOVL	ES:-12t[EBX], EAX
+	MOVL	EAX, knlTda+tdaURegEIP#
+	IFFAULT	sigbdstk
+	MOVL	ES:-16t[EBX], EAX
+	MOVZWL	EAX, knlTda+tdaURegDS#
+	IFFAULT	sigbdstk
+	MOVL	ES:-20t[EBX], EAX
+	MOVZWL	EAX, knlTda+tdaURegES#
+	IFFAULT	sigbdstk
+	MOVL	ES:-24t[EBX], EAX
+	MOVZWL	EAX, knlTda+tdaURegFS#
+	IFFAULT	sigbdstk
+	MOVL	ES:-28t[EBX], EAX
+	MOVZWL	EAX, knlTda+tdaURegGS#
+	IFFAULT	sigbdstk
+	MOVL	ES:-32t[EBX], EAX
+	SUBL	EDX, EBX		;Get the amount we extended his stack
+	ADDL	EDX, #32t
+	SUBL	knlTda+tdaURegESP#, EDX	;Adjust his stack pointer
+	MOVZBL	EDX, slb_vector[ESI]
+	MOVL	EAX, knlPda+pdaSigVTbl[EDX*8] ;New EIP
+	MOVL	knlTda+tdaURegEIP#, EAX
+	MOVL	knlTda+tdaURegCS#, #GS_UCODE|0x03 ;New CS
+setsiglvl::
+	MOVL	EAX, knlPda+pdaSigVTbl+4[EDX*8] ;Get new signal level
+	SHRL	EAX, #12t
+	ANDL	EAX, #0x07
+	JE	22$			;If 0, don't change the level
+	MOVB	knlTda+tdaSigLvl#, AL
+	MOVB	AL, masktbl[EAX]	;Get new interrupt mask value
+	MOVB	knlTda+tdaSigMask#, AL
+22$:	CMPL	ESI, #xmbbase		;Do we have a real SLB?
+	JB	24$			;No
+	PUSHL	ESI			;Yes - give it up
+	CALL	sysMemGiveXmb#
+24$:	INSUREFORK
+	JMP	knlSignalChk#
+.PAGE
+;Here if memory trap while storing data on the user stack
+
+	FAULTHDR
+sigbdstk:
+	CMPL	ESI, #xmbbase		;Do we have a real interrupt link block?
+	JB	30$			;No
+	PUSHL	ESI
+	CALL	sysMemGiveXmb#		;Yes - give it up
+30$:	CALL	badusrstk#		;Go kill the process
+
+	DATA
+
+trapfrom::.LONG 0
+
+	CODE
+.PAGE
+	.SBTTL	systemsig - Routine to handle system level signals
+
+;Routine to handle system level signals - Normal exec signals are queued at
+;  "level 8" much like user signals. Special high priority exec singals are
+;  not queued but are indicated by bits in tdaSSigType.
+
+systemsig:
+	MOVZBL	EAX, knlTda+tdaSSigType# ;Get interrupt type bits
+	JMPIL	ssigdsp[EAX*4]		;Dispatch on the type
+
+	DATA
+
+ssigdsp:.LONG	havxsig		;	   = 00000000 - Exec signal
+	.LONG	fputrap		;SSIG$FPUX = 00000001 - FPU exception
+	.LONG	termthread#	;SSIG$KILL = 00000010 - terminate thread
+	.LONG	termthread#	;	   = 00000011
+
+	CODE
+.PAGE
+	.SBTTL	havxsig - Exec signal routine
+
+;Exec software interrupt routine for queued exec signals
+
+havxsig:MOVL	ESI, knlTda+tdaL8HeadP#	;Get offset for interrupt link block	
+	TESTL	ESI, ESI		;Really have one?
+	JNE	2$			;Yes
+	CRASH	NILB			;[No Interrupt Link Block]
+
+2$:	MOVL	EAX, slb_next[ESI]	;Remove entry from interrupt list
+	MOVL	knlTda+tdaL8HeadP#, EAX
+	TESTL	EAX, EAX		;Is list empty now?
+	JNE	10$			;No
+	MOVL	knlTda+tdaL8TailP#, EAX	;Yes - clear tail pointer
+	ANDB	knlTda+tdaSigReq#, #~01	;Clear request bit for level
+10$:	FROMFORK
+	PUSHL	ESI			;Call the signal function
+	CALLI	slb_vector[ESI]
+	PUSHL	ESI
+	CALL	sysMemGiveXmb#		;Give up the SLB
+	TOFORK
+	JMP	scheduler#		;Start over next time
+.PAGE
+	.SBTTL	fputrap - Routine to handle FPU exceptions
+
+fputrap:ANDB	knlTda+tdaSSigType#, #~SSIG$FPUX
+	JNE	2$
+	CMPL	knlTda+tdaL8HeadP#, #0.B
+	JNE	2$
+	ANDB	knlTda+tdaSigReq#, #~01h
+2$:	CLRL	EAX
+
+;;;;;	MOVL	knlTda+tdaSigRegESI#, EAX
+
+	MOVB	AL, knlTda+tdaSigLvl#
+	MOVB	AH, knlTda+tdaSigMask#
+
+;;;;;	MOVL	knlTda+tdaSigRegECX#, EAX
+
+	MOVL	EDX, #VECT_FPUERR	;Assume in protected mode
+
+	CMPW	knlPda+pdaSigVTbl#+4[EDX*8], #0 ;Is the vector set up?
+	JNE	6$			;Yes
+	CLTS				;No - clear the FPU exceptions
+	FNCLEX
+
+	CRASH	????
+
+	PUSHL	ES
+	LEAL	EAX, TC_NOVECT<24t[EDX]	;Get termination code and status
+	PUSHL	EAX
+
+;;;;;	CALL	sysSchKillProc#		;Kill this process
+
+	JMP	knlSignalChk#
+
+
+
+6$:
+;;;;;	MOVL	knlTda+tdaSigRegEDX#, EDX ;Store the vector number
+	CLRL	ESI			;Indicate no signal link block
+
+	CRASH	????
+
+;;;;;	JMP	dosig2			;Continue
+.PAGE
+;Function to request exec signal. Must be called at fork level. The exec
+;  signal routine always executes in the process's base thread.
+;    NOTE: This function has a variable number of arguments and uses the cdecl
+;          calling convention!
+;	long sysSchReqXSig(
+;	    PDA  *pda,		// Actual address of PDA
+;	    FUNC *func,		// Address of exec signal function
+;	    long  num,		// Number of data items
+;	    long  data,		// First data item
+;	    ...);
+
+srxs_pda =!12t
+srxs_func=!16t
+srxs_num =!20t
+srxs_data=!24t
+
+sysSchReqXSig::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EAX, srxs_pda[ESP]
+	MOVL	EDI, pdaTdaHead#[EAX]
+	TESTL	EDI, EDI
+	JE	10$
+	MOVL	EAX, srxs_num[ESP]
+	SHLL	EAX, #2
+	ADDL	EAX, #slb_data
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	sysMemGetXmb#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	slb_label[EDX], #'SLB*'
+	MOVL	ECX, srxs_num[ESP]
+	MOVB	slb_dcnt[EDX], CL
+	MOVL	EAX, srxs_func[ESP]
+	MOVL	slb_vector[EDX], EAX
+	CLRL	EAX
+	MOVL	slb_gfunc[EDX], EAX
+	MOVL	slb_gdata[EDX], EAX
+	PUSHL	EDI			;First arg for queuesignal
+	LEAL	EDI, slb_data[EDX]	;Copy the data items
+	LEAL	ESI, srxs_data+4[ESP]
+	MOVL	ECX, srxs_num+4[ESP]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]
+	PUSHL	EDX
+	PUSHL	#8
+	CALL	queuesignal
+8$:	POPL	ESI
+	POPL	EDI
+	RET
+
+10$:	MOVL	EAX, #ER_BDPID
+	JMP	8$
+.PAGE
+;Function to request a signal
+;    NOTE: This function has a variable number of arguments and uses the cdecl
+;          (stack) calling convention!
+;	long sysSchReqSignal(
+;	    long  vector,	// Vector number - Caller must have verified
+;				//   that this is valid.
+;	    FUNC *gfunc,	// Address of grant function (may be NULL)
+;	    FUNC  gdata,	// Data value for grant function
+;	    long  pid,		// PID of process to receive signal
+;	    long  datacnt,	// Number of data items in the SLB if positive
+;				//   (variable number of data arguments follow),
+;				//   - number of data items in the SLB if
+;				//   negative (next argument is the address of an
+;				//   an array of longs containing the data
+;				//   items), or 0x80000000 (next argument is
+;				//   the address of an SLB with the item count
+;				//   and item values filled in).
+;	    long  data,		// First data item (if any) or pointer to data
+;				//   array or an SLB
+;	    ...);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+rqsig_vect =!12t
+rqsig_gfunc=!16t
+rqsig_gdata=!20t
+rqsig_pid  =!24t
+rqsig_dcnt =!28t
+rqsig_data =!32t
+
+sysSchReqSignal::
+	PUSHL	EDI
+	PUSHL	EBX
+	REQUIREFORK
+	MOVL	EAX, rqsig_pid[ESP]	;Does the target PDA exist?
+	MOVZWL	EBX, AX
+	CMPB	knlPdaTable#[EBX], #PDATYPE_PDA
+	JNE	32$			;No
+	SHLL	EBX, #pda_SHIFT		;Maybe
+	ADDL	EBX, #pdabase
+	CMPL	pdaLabel#[EBX], #'PDA&'
+	JE	2$
+	CRASH	NPDA
+
+2$:	CMPL	EAX, pdaPid#[EBX]
+	JNE	32$			;No
+	MOVL	EAX, rqsig_vect[ESP]	;Is the target vector set up?
+	CMPL	pdaSigVTbl#+4[EBX+EAX*8], #0
+	JE	34$			;No
+	MOVL	EAX, pdaSigVTbl#+4[EBX+EAX*8]
+	ANDL	EAX, #0x7FFF0FFF	;Get target TID
+
+	PUSHL	EAX
+	CALL	sysSchGetTda#
+	TESTL	EAX, EAX
+	JE	32$			;If bad TID
+	MOVL	EDI, EAX
+
+;Here if it's OK to queue the signal
+
+	MOVL	EAX, rqsig_dcnt[ESP]
+	CMPL	EAX, #0x80000000	;Do we already have an SLB?
+	JE	20$			;Yes
+	TESTL	EAX, EAX		;No - see how big an SLB we need
+	JNS	6$
+	NEGL	EAX
+6$:	LEAL	EAX, slb_data[EAX*4]
+	PUSHL	#0			;Get an XMB for use as the SLB
+	MOVL	EDX, ESP
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	sysMemGetXmb#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	30$			;If error
+	MOVL	ECX, rqsig_dcnt[ESP]
+	MOVL	slb_dcnt[EBX], ECX	;Store item count here in case 0
+	TESTL	ECX, ECX
+	JE	24$			;If no data items
+	JNS	12$
+
+;Here if we have a pointer to the data items
+
+	NEGL	ECX
+	MOVL	slb_dcnt[EBX], ECX	;Store the correct (positive) item count
+	MOVL	EDX, rqsig_data[ESP]
+	JMP	14$
+
+;Here if data items are on the stack
+
+12$:	LEAL	EDX, rqsig_data[ESP]
+14$:	PUSHL	EBX
+	ADDL	EBX, #slb_data
+	IFFAULT	40$
+16$:	MOVL	EAX, [EDX]		;Copy the data items
+	ADDL	EDX, #4
+	MOVL	[EBX], EAX
+	ADDL	EBX, #4
+	LOOP	ECX, 16$
+	POPL	EBX
+	JMP	24$
+
+;Here if already have an SLB - In this case the data count and data items
+;  have already been stored in the SLB. The remaining parameters are still
+;  taken from the stack.
+
+20$:	MOVL	EBX, rqsig_data+0[ESP]	;Get the address of the SLB passed
+					;  to us
+	CMPL	slb_label[EBX], #'SLB*'
+	JE	24$
+	CRASH	NSLB			;[Not an SLB]
+
+;Here with the data items stored in the SLB - store the parameters and queue
+;  the request
+
+24$:	MOVL	EAX, rqsig_vect[ESP]
+	MOVL	EDX, tdaPda#[EDI]
+	MOVL	EDX, pdaSigVTbl#+4[EDX+EAX*8] ;Get signal level
+	SHRL	EDX, #12t
+	ANDL	EDX, #0x07
+	MOVL	slb_label[EBX], #'SLB*'
+	MOVL	slb_vector[EBX], EAX	;Vector number
+	MOVL	EAX, rqsig_gfunc[ESP]
+	MOVL	slb_gfunc[EBX], EAX	;Address of grant function
+	MOVL	EAX, rqsig_gdata[ESP]
+	MOVL	slb_gdata[EBX], EAX	;Data for grant function
+	PUSHL	EDI			;Queue the request
+	PUSHL	EBX
+	PUSHL	EDX
+	CALL	queuesignal
+30$:	POPL	EBX
+	POPL	EDI
+	RET
+
+;Here if target PID is not valid
+
+32$:	MOVL	EAX, #ER_BDPID
+	JMP	30$
+
+;Here if target vector is not set up or is not valid (TDA has changed)
+
+34$:	MOVL	EAX, #ER_VECNS
+	JMP	30$
+
+;Here if address error when copying the data items
+
+	FAULTHDR
+40$:	CALL	sysMemGiveXmb#		;Give up the SLB (address is on the
+	MOVL	EAX, #ER_ADRER		;  stack!)
+	JMP	30$
+.PAGE
+;Function to finish queueing a signal request
+;	long queuesignal(
+;	    TDA *tda,
+;	    SLB *slb,
+;	    long level);
+
+quesig_tda  =!20t
+quesig_slb  =!16t
+quesig_level=!12t
+
+queuesignal:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, quesig_tda[ESP]
+	MOVL	EDX, quesig_level[ESP]
+	MOVL	EBX, quesig_slb[ESP]
+	MOVZBL	EAX, sirtbl[EDX]	;Get request bit
+	ORB	tdaSigReq#[EDI], AL	;Set request bit for the process
+	MOVL	ECX, tdaL1TailP#-4[EDI+EDX*4] ;Get tail of list for desired
+	TESTL	ECX, ECX		      ;  level
+	JNE	4$			;If something in the list
+	MOVL	tdaL1HeadP#-4[EDI+EDX*4], EBX ;List is empty - store new
+					      ;  head pointer
+	JMP	6$
+
+;Here if already have an interrupt(s) entered at this level
+
+4$:	MOVL	slb_next[ECX], EBX	;Link to tail of list
+6$:	MOVL	tdaL1TailP#-4[EDI+EDX*4], EBX ;Set new tail pointer
+	MOVL	slb_next[EBX], #0
+	CMPB	DL, #7			;Is this a level 7 or 8 interrupt?
+	JB	8$			;No
+	INCL	EDX			;Yes - make it one higher
+8$:	CMPB	tdaSigLvl#[EDI], DL	;Can we interrupt this process now?
+	JAE	12$			;No
+	CMPL	EDI, knlTda+tdaAddr#	;Is interrupt for current thread?
+	JE	10$			;Yes - just reschedule
+	CMPB	tdaState#[EDI], #THDS_RN3 ;No - is it in a run queue now?
+	JBE	10$			;Yes - nothing more needed
+	MOVL	ECX, tdaSRegESP#[EDI]	;No - is it waiting in exec mode?
+	CMPW	52t[ECX], #GS_XCODE
+	JE	12$			;Yes - leave it alone
+	PUSHL	EDI			;No - requeue the process to be runable
+	CALL	sysSchRunRequeue#
+10$:	MOVB	knlSchedReq#, #1	;Request scheduling
+12$:	CLRL	EAX
+	POPL	EBX
+	POPL	EDI
+	RET	12t
+
+;Table of signal request bits
+
+sirtbl:	.BYTE	0x00	;Level 0
+	.BYTE	0x80	;Level 1
+	.BYTE	0x40	;Level 2
+	.BYTE	0x20	;Level 3
+	.BYTE	0x10	;Level 4
+	.BYTE	0x08	;Level 5
+	.BYTE	0x04	;Level 6
+	.BYTE	0x02	;Level 7
+	.BYTE	0x01	;Level 8
+.PAGE
+	.SBTTL	clrsignal - Subroutine to remove all signals for a grant function
+
+;Function to remove all signals for a given grant function and data value
+;	void clrsignals(
+;	    FUNC *gfunc,	// Address of grant function (0 removes all
+;				//   signals)
+;	    long  gdata);	// Grant function data value
+
+$$$=!0
+FRM csg_count, 4
+FRM csg_headp, 4
+csg_SIZE=!$$$
+
+csg_gfunc=!20t
+csg_gdata=!16t
+
+clrsignals::
+	REQUIREFORK
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	csg_SIZE, 0
+	MOVL	csg_count[EBP], #7	;Initialize count
+	MOVL	EDI, #knlTda+tdaL1HeadP# ;Point to head pointer for first list
+2$:	MOVL	csg_headp[EBP], EDI
+4$:	MOVL	ESI, [EDI]		;Get next request
+	TESTL	ESI, ESI
+	JE	18$			;If no more
+6$:	MOVL	EDX, slb_gfunc[ESI]	;Get address of the grant function
+	CMPL	csg_gfunc[EBP], #0	;Are we being selective?
+	JE	8$			;No
+	CMPL	csg_gfunc[EBP], EDX	;Yes - want to remove this one?
+	JNE	16$			;No
+	MOVL	EAX, slb_gdata[ESI]	;Maybe
+	CMPL	csg_gdata[EBP], EAX
+	JNE	16$			;No
+8$:	TESTL	EDX, EDX		;Yes - have a grant subroutine?
+	JE	10$			;No
+	MOVL	slb_gfunc[ESI], #0
+	PUSHL	ESI
+	PUSHL	#SGF_ALLCLR		;Indicate clearing all signals
+	CALLI	EDX			;Call the grant subroutine
+10$:	MOVL	EAX, slb_next[ESI]	;Unlink this block
+	MOVL	[EDI], EAX
+	TESTL	EAX, EAX		;Was this the last SLB in the list?
+	JNE	14$			;No
+	MOVL	EDX, csg_headp[EBP]	;Yes
+	CMPL	EDI, #xmbbase		;Is the list empty now?
+	JB	12$			;Yes
+	LEAL	EAX, -slb_next[EDI]	;No - get address of previous SLB
+12$:	MOVL	tdaxxTP#[EDI], EAX	;Update tail pointer
+14$:	PUSHL	ESI			;Give up thie SLB
+	CALL	sysMemGiveXmb#
+	JMP	4$
+
+;Here if do not want to remove this request
+
+16$:	LEAL	EDI, slb_next[ESI]	;Advance pointer
+	JMP	4$			;Continue
+
+;Here at end of the signal list
+
+18$:	MOVL	EDI, csg_headp[EBP]
+	ADDL	EDI, #4
+	DECL	csg_count[EBP]
+	JNE	2$
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+	END

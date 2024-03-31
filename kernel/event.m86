@@ -1,0 +1,606 @@
+	.TITLE	event - Event routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+
+	CODE
+
+	.SBTTL	svcSchMakEvent - Make event cluster
+
+;Here for the svcSchMakEvent SVC - Make event cluster
+;	long svcSchMakEvent(
+;	    char *name,		// Name of cluster
+;	    long  size,		// Size of cluster (0 means to remove existing
+;				//   cluster)
+;	    long  vect);	// Base vector number for cluster (-1 means
+;				//   no signals)
+;  Value returned is 0 if normal or negative error code if error
+
+psvcSchMakEvent::
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	knlTda+tdaArg1#		;Name of cluster
+	PUSHL	knlTda+tdaArg2#		;Size of cluster
+	PUSHL	knlTda+tdaArg3#		;Base vector number
+	CALL	makeevent
+	RET
+
+$$$=!0
+FRM mkev_bufr, 16t
+mkev_SIZE=!$$$
+
+mkev_pda =!28t
+mkev_name=!24t
+mkev_num =!20t
+mkev_vect=!16t
+
+makeevent::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	mkev_SIZE, 0
+	PUSHL	#0
+	MOVL	ECX, ESP
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	mkev_name[EBP]
+	LEAL	EAX, mkev_bufr[EBP]
+	PUSHL	EAX
+	PUSHL	mkev_pda[EBP]
+	PUSHL	EDX
+	PUSHL	ECX
+	CALL	findecluster		;See if the event cluster exists now
+	POPL	ESI
+	POPL	EDI
+	TESTL	EAX, EAX
+	JNS	10$
+	CMPL	EAX, #ER_NTDEF
+	JNE	6$
+	CMPL	mkev_num[EBP], #0	;Want to remove the event cluster
+	JE	6$			;Yes - just leave quietly
+	MOVL	ESI, mkev_vect[EBP]	;No - get base vector number
+	PUSHL	EAX
+	MOVL	EDI, mkev_num[EBP]	;Get number of events wanted
+	CMPL	EDI, #31t
+	JA	14$
+	CMPL	ESI, #-1
+	JE	2$
+	CMPL	ESI, #48t
+	JB	20$
+	CMPL	ESI, #255t		;Valid vector number?
+	JA	20$			;No
+2$:	MOVL	ECX, EDI
+	SHLL	ECX, #2t
+	ADDL	ECX, #ecb_events
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	ECX
+	PUSHL	EAX
+	CALL	sysMemGetXmb#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	4$
+	LEAL	EDX, ecb_events[EBX]	;Clear the event table
+	MOVL	ECX, EDI
+	CLRL	EAX
+4$:	MOVL	[EDX], EAX
+	ADDL	EDX, #4
+	LOOP	ECX, 4$
+	DECL	EDI
+	MOVL	ecb_label[EBX], #'ECB*'
+	MOVL	ecb_max[EBX], EDI	;Store maximum event number
+	MOVL	ecb_baseint[EBX], ESI	;Store base vector number
+	MOVL	ecb_reserve[EBX], #0
+	MOVL	EAX, mkev_bufr+0[EBP]	;Store event cluster name
+	MOVL	ecb_name+0[EBX], EAX
+	MOVL	EAX, mkev_bufr+4[EBP]
+	MOVL	ecb_name+4[EBX], EAX
+	MOVL	EAX, mkev_bufr+8[EBP]
+	MOVL	ecb_name+8[EBX], EAX
+	MOVL	EAX, mkev_bufr+12t[EBP]
+	MOVL	ecb_name+12t[EBX], EAX
+	MOVL	EDX, mkev_pda[EBP]
+	MOVL	EAX, pdaEvents#[EDX]	;Link it to our list
+	MOVL	ecb_next[EBX], EAX
+	MOVL	pdaEvents#[EDX], EBX
+6$:	CLRL	EAX
+8$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if we found the cluster
+
+10$:	CMPL	mkev_num[EBP], #0	;Want to remove the event cluster
+	JNE	18$			;No - error
+	MOVL	EAX, ecb_next[EDI]	;Unlink the block
+	MOVL	[ESI], EAX
+	PUSHL	EDI			;Give up the block
+	CALL	sysMemGiveXmb#
+	JMP	6$
+
+14$:	MOVL	EAX, #ER_VALUE
+	JMP	8$
+
+18$:	MOVL	EAX, #ER_ALDEF
+	JMP	8$
+
+20$:	MOVL	EAX, #ER_BADVN
+	JMP	8$
+.PAGE
+	.SBTTL	svcSchResEvent - Reserve event
+
+;Here for the svcSchResEvent SVX - Reserve event
+;	long svcSchResEvent(
+;	    char *name,		// Name of cluster
+;	    long  event);	// Event number (-1 means to allocate)
+;  Value returned is event number reserved if normal or negative error code
+;    if error
+
+$$$=!0
+FRM srsev_name, 16t
+srsev_SIZE=!$$$
+
+psvcSchResEvent::
+	ENTER	srsev_SIZE, 0
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	knlTda+tdaArg1#
+	LEAL	EAX, srsev_name[EBP]
+	PUSHL	EAX
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#0
+	PUSHL	EDX
+	CALL	findecluster		;Find the event cluster
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	EAX, knlTda+tdaArg2#	;Get event number
+	CMPL	EAX, #-1		;Want to allocate an event?
+	JNE	8$			;No
+	MOVL	EDX, ecb_reserve[ESI]
+	NOTL	EDX
+	BSFL	EAX, EDX		;Yes - find first 0 bit
+	JE	10$			;If none found
+4$:	BTSL	ecb_reserve[ESI], EAX	;Set the bit we found
+	JC	10$			;If already set
+6$:	LEAVE
+	RET				;Finished (event number is in EAX)
+
+;Here if he specified an event
+
+8$:	CMPL	EAX, ecb_max[ESI]	;Valid event number?
+	JBE	4$			;Yes - go set it
+	JMP	knlBadValueLv#		;No - fail
+
+;Here if the specified event is already reserved
+
+10$:	MOVL	EAX, #ER_EVRES
+	JMP	6$
+.PAGE
+	.SBTTL	svcSchRelEvent - Release event
+
+;Here for the svcSchRelEvent SVC - Release event
+;	long svcSchRelEvent(
+;	    char *name,		// Name of cluster
+;	    long  mask);	// Event mask,
+;  Value returned is mask of remaining reserved events if normal or negative
+;    error code if error
+
+$$$=!0
+FRM srlev_name, 16t
+srlev_SIZE=!$$$
+
+psvcSchRelEvent::
+	ENTER	srlev_SIZE, 0
+	PUSHL	#0
+	MOVL	ECX, ESP
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	knlTda+tdaArg1#
+	LEAL	EAX, srlev_name[EBP]
+	PUSHL	EAX
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	ECX
+	PUSHL	EDX
+	CALL	findecluster		;Find the event cluster
+	POPL	ESI
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	EAX, knlTda+tdaArg2#	;Get his mask
+	MOVL	EDX, EAX
+	NOTL	EAX
+	BTZL	EAX, #31t
+	ANDL	EAX, ecb_reserve[ESI]	;Clear the bits
+	MOVL	ecb_reserve[ESI], EAX	;Any left set?
+	JNE	6$			;Yes - finished here
+	TESTL	EDX, EDX		;No - want to give up the cluster?
+	JNS	6$			;No
+	PUSHL	EAX			;Yes
+	MOVL	EAX, ecb_next[ESI]	;Unlink it
+	MOVL	[EDI], EAX
+	PUSHL	ESI			;Give it up
+	CALL	sysMemGiveXmb#
+	POPL	EAX
+6$:	LEAVE
+	RET
+.PAGE
+	.SBTTL	svcSchSetEvent - Set event
+
+;Here for the svcSchSetEvent SVC - Set event
+;	long svcSchSetEvent(
+;	    char *name,		// Event cluster name
+;	    long  event,	// Event number
+;	    long  value,	// Event value
+;	    long  pid);		// Process ID
+;  Value returned is the number of threads woken up if normal or a negative
+;    XOS error code if error
+
+$$$=!0
+FRM sstev_name, 16t
+sstev_SIZE=!$$$
+
+psvcSchSetEvent::
+	ENTER	sstev_SIZE, 0	
+	PUSHL	knlTda+tdaArg4#		;Get PID
+	CALL	getpda#			;Get actual address of the PDA
+	TESTL	EAX, EAX
+	JE	4$			;If error
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	knlTda+tdaArg1#
+	LEAL	ECX, sstev_name[EBP]
+	PUSHL	ECX			;Address of cluster name string
+	PUSHL	EAX			;Address of PDA for event
+	PUSHL	#0			;Don't need address of pointer
+	PUSHL	EDX			;Address to receive address of the ECB
+	CALL	findecluster		;Find the event cluster
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	2$
+	ANDB	knlPda+pdaStatus1#[EBX], #~P1$SETUP ;Terminate set up mode
+	PUSHL	ESI
+	PUSHL	knlTda+tdaArg3#		;Get value for event
+	PUSHL	knlTda+tdaArg2#		;Get event number
+	TOFORK
+	CALL	sysSchSetEvent
+	FROMFORK
+2$:	LEAVE
+	RET
+
+4$:	MOVL	EAX, #ER_BDPID
+	JMP	2$
+.PAGE
+;Function to set an event
+;	long sysSchSetEvent(
+;	    ECB *ecb,
+;	    long eval,
+;	    long enum);
+;  Value returned is the number of threads woken up (positive) or a negative
+;    XOS error code if error.
+
+sev_ecb =!16t
+sev_eval=!12t
+sev_enum=!8
+
+sysSchSetEvent::
+	PUSHL	ESI
+	MOVL	EBX, sev_ecb[ESP]
+	MOVL	EAX, sev_eval[ESP]
+	MOVL	ECX, sev_enum[ESP]
+	CMPL	ECX, ecb_max[EBX]	;Valid number?
+	JA	knlBadValue#		;No - fail
+	BTZL	EAX, #31t		;Should we overwrite an event?
+	JC	6$			;Yes
+	CMPL	ecb_events[ESI+ECX*4], #0 ;No - will we?
+	JNE	16$			;Yes - fail
+6$:	MOVL	ecb_events[ESI+ECX*4], EAX ;No - store event
+	MOVL	EAX, ecb_baseint[ESI]	;Want signal?
+	TESTL	EAX, EAX
+	JLE	8$			;No
+	PUSHL	#0			;No signal data
+	PUSHL	knlPda+pdaPid#		;PID
+	PUSHL	#0			;No grant function
+	PUSHL	#0
+	MOVL	EAX, ecb_baseint[ESI]	;Vector number
+	ADDL	EAX, sev_enum[ESP]
+	PUSHL	EAX
+	CALL	sysSchReqSignal#
+	ADDL	ESP, #20t
+8$:	TOFORK	10$
+	CALL	20$
+	FROMFORK
+	JMP	12$	
+
+10$:	CALL	20$
+12$:	POPL	ESI
+	RET	12t
+
+;Here if event is already set and we don't want to overwrite it
+
+14$:	MOVL	EAX, #ER_EVSET
+	JMP	12$
+
+16$:	MOVL	EAX, #ER_VALUE
+	JMP	12$
+
+20$:	SHRL	ESI, #6			;Wake up anyone waiting for this
+	PUSHL	ESI			;  event cluster
+	CALL	sysSchEndWaitAll#
+	RET
+.PAGE
+	.SBTTL	svcSchClrEvent - Clear event(s)
+
+;Here for the svcSchClrEvent SVC - Clear event(s)
+;	long svcSchClrEvent(
+;	    char *name,		// Event cluster name
+;	    long  mask);	// Event mask
+;  Value returned is 0 if normal or negative error code if error
+
+$$$=!0
+FRM sclev_name, 16t
+sclev_SIZE=!$$$
+
+psvcSchClrEvent::
+	ENTER	sclev_SIZE, 0
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	knlTda+tdaArg1#
+	LEAL	EAX, sclev_name[EBP]
+	PUSHL	EAX
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#0
+	PUSHL	EDX
+	CALL	findecluster		;Find the event cluster
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	EDX, knlTda+tdaArg2#	;Get events to clear
+	CLRL	EBX
+	CLRL	EAX
+4$:	BSFL	ECX, EDX		;Get first event to clear
+	JE	8$			;If no more
+	ADDL	EBX, ECX		;OK - get event number in EBX
+	CMPL	EBX, ecb_max[ESI]	;Too big?
+	JA	8$			;Yes - stop now
+	INCL	ECX			;No
+	SHRL	EDX, CL			;Advance the bit
+	MOVL	ecb_events[ESI+EBX*4], EAX ;Clear the event
+	JMP	4$			;Continue
+
+8$:	LEAVE
+	RET
+.PAGE
+	.SBTTL	svcSchWaitSEvent - Wait for single event
+
+;Here for the svcSchWaitSEvent SVC - Wait for single event
+;	long svcSchWaitEvent(
+;	    char *name,		// Name of event cluster
+;	    long  event,	// Event number, bit 31 set if should clear
+;				//   event
+;	    long  timeout_hi,	// Time to suspend (system ticks,
+;	    long  timeout_lo);	//   0xFFFFFFFFFFFFFFFF means to wait forever,
+;				//   0 means to return immediately)
+;  Value returned is current event flag value if normal or negative error code
+;    if error.  Note that no error indication is returned when a time-out
+;    occures.  A value of 0 (which indicates the event is not set) is returned
+;    for a time-out.  Note that this function can be used to return the current
+;    value of an event if timeout is 0.
+
+$$$=!0
+fRM swsev_name, 16t
+swsev_SIZE=!$$$
+
+psvcSchWaitSEvent::
+	ENTER	swsev_SIZE, 0
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	knlTda+tdaArg1#
+	LEAL	EAX, swsev_name[EBP]
+	PUSHL	EAX
+	PUSHL	knlPda+pdaAddr#
+	PUSHL	#0
+	PUSHL	EDX
+	CALL	findecluster		;Find the event cluster
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	EDX, knlTda+tdaArg2#	;Get the event number
+	BTZL	EDX, #31t
+	CMPL	EDX, ecb_max[ESI]	;Valid number?
+	JA	knlBadValueLv#		;No - fail
+	MOVL	EAX, ecb_events[ESI+EDX*4] ;Yes - is the event set?
+	TESTL	EAX, EAX
+	JNE	4$			;Yes - return the value
+	MOVL	EAX, knlTda+tdaArg4#	;No
+	ORL	EAX, knlTda+tdaArg3#
+	JE	10$			;If should not wait
+	TOFORK				;Need to wait - use address of the
+	SHRL	ESI, #6			;  ECB/64t as the wait index
+	PUSHL	ESI
+	PUSHL	knlTda+tdaArg3#
+	PUSHL	knlTda+tdaArg4#
+	PUSHL	#THDS_EVNT
+	CALL	sysSchSetUpToWait#
+	FROMFORK
+	MOVL	EAX, #SVC$REDOREQ|SVC$DIRECT
+	LEAVE
+	RET
+
+;Here if the event is set
+
+4$:	CMPL	knlTda+tdaArg2#, #0	;Want to clear the event?
+	JNS	6$			;No
+	MOVL	ecb_events[ESI+EDX*4], #0 ;Yes
+6$:	LEAVE
+	RET
+
+;Here if event is not set but should not wait
+
+10$:	CLRL	EAX
+	LEAVE
+	RET
+.PAGE
+	.SBTTL	svcSchWaitMEvent - Wait for multiple events
+
+;Here for the svcSchWaitMEvent SVC - Wait for multiple events
+;	long svcSchWaitMEvent(
+;	    char  *name,	// Name of event cluster
+;	    long   mask,	// Event mask (bit 31 set for AND test)
+;	    time_s timeout);	// Time to suspend (fractional days, max of
+;				//   12 hours), 0xFFFFFFFF means to wait
+;				//   forever, 0 means to return immediately
+;  Value returned is current event flag value if normal or negative error code
+;    if error.  Note that no indication is returned when a time-out occures,
+;    the calling program must examine the returned value to see if the event
+;    is set, if not a time-out occured.
+
+psvcSchWaitMEvent::
+	MOVL	EAX, #ER_NIYT
+	RET
+.PAGE
+	.SBTTL	findecluster - Subroutine to find event cluster
+
+;Function to find event cluster - Address of the name string is taken from
+;  tdaArg1.
+;	long findecluster(
+;	    char *name,
+;	    char  buffer[16],
+;	    PDA  *pda,
+;	    ???  *pntr,
+;	    ECB **pecb);
+;  Value returned is 0 if OK or a negative XOS error code if error.
+
+fec_name=!24t
+fec_bufr=!20t
+fec_pda =!16t
+fec_pntr=!12t
+fec_pecb=!8
+
+findecluster:
+	PUSHL	ESI
+	MOVL	EBX, fec_bufr[ESP]
+	MOVL	ESI, fec_name[ESP]	;Get address of name string
+	CMPL	ESI, #systembase	;Valid address?
+	JB	2$
+	CMPL	ESI, #usercodebase
+	JB	14$
+	CMPL	ESI, #usercodetop#
+	JAE	14$			;No - fail
+2$:	CLRL	EAX
+	MOVL	0[EBX], EAX		;Clear the buffer
+	MOVL	4[EBX], EAX
+	MOVL	8[EBX], EAX
+	MOVL	12t[EBX], EAX
+	MOVL	EDX, EBX
+	MOVL	ECX, #16t
+	IFFAULT	14$
+4$:	MOVZBL	EAX, [ESI]		;Copy the name to the buffer
+	CMPB	AL, #0
+	JE	10$
+	INCL	ESI
+	DECL	ECX
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	JMP	4$
+
+6$:	MOVL	EAX, #ER_VALUE
+	JMP	12$
+
+;Here with name copied to our buffer
+
+10$:	PUSHL	fec_pda[ESP]
+	PUSHL	EBX
+	PUSHL	fec_pntr+8[ESP]
+	PUSHL	fec_pecb+12t[ESP]
+	CALL	sysSchFindEvClus
+12$:	POPL	ESI
+	RET	20t
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	JMP	12$
+.PAGE
+sfec_pda =!24t
+sfec_name=!20t
+sfec_pntr=!16t
+sfec_pecb=!12t
+
+sysSchFindEvClus::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDX, sfec_name[ESP]
+	MOVL	EAX, 0[EDX]		;Get name in some registers
+	MOVL	EBX, 4[EDX]
+	MOVL	ECX, 8[EDX]
+	MOVL	EDX, 12t[EDX]
+	MOVL	EDI, sfec_pda[ESP]
+	ADDL	EDI, #pdaEvents#
+12$:	MOVL	ESI, [EDI]
+	TESTL	ESI, ESI
+	JE	16$			;If no event clusters defined
+	CMPL	ecb_name+0[ESI], EAX	;Is it this one?
+	JNE	14$			;No
+	CMPL	ecb_name+4[ESI], EBX	;Maybe
+	JNE	14$			;No
+	CMPL	ecb_name+8[ESI], ECX	;Maybe
+	JNE	14$			;No
+	CMPL	ecb_name+12t[ESI], EDX	;Maybe
+	JE	20$			;Yes
+14$:	LEAL	EDI, ecb_next[ESI]	;No - advance to next
+	JMP	12$
+
+;Here if not found
+
+16$:	MOVL	EAX, #ER_NTDEF		;No - fail
+	JMP	24$
+
+20$:	MOVL	EBX, sfec_pecb[ESP]
+	MOVL	[EBX], ESI
+	MOVL	EBX, sfec_pntr[ESP]
+	TESTL	EBX, EBX
+	JE	22$
+	MOVL	[EBX], EDI
+22$:	CLRL	EAX
+24$:	POPL	ESI
+	POPL	EDI
+	RET	16t
+.page
+eventgiveall::
+	MOVL	EDX, knlPda+pdaEvents#
+	MOVL	knlPda+pdaEvents#, #0	;(Just to be safe!)
+4$:	TESTL	EDX, EDX
+	JE	6$
+	PUSHL	ecb_next[EDX]
+	PUSHL	EDX
+	CALL	sysMemGiveXmb#
+	POPL	EDX
+	JMP	4$
+
+6$:	RET
+
+	END

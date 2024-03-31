@@ -1,0 +1,736 @@
+	.TITLE	msebdev - PS/2 mouse driver
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;Since a PC only supports a single PS2 mouse, this driver does not use the
+;  addunit function. When loaded it creates a single physical mouse device
+;  named MOUSEP0:. The DCB for this device is allocated statically.
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosxtrm.par
+	.INCLUD	xosinc:\xmac\xosxkbd.par
+	.INCLUD	xosinc:\xmac\xosxmse.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	MOUSEPS2DEV, MAJV, MINV, EDITNUM, LKETYPE_DEVICE
+
+.IF EQ 1
+	;
+	; Use original definition
+	;
+	.MACRO IOPAUSEKBD
+	 IOPAUSE
+	.ENDM
+.IFF
+	.MACRO IOPAUSEKBD
+
+	pushl	ecx
+	movl	ecx, #1
+	call	knlSDelay##
+	popl	ecx
+
+	.ENDM
+.ENDC
+.PAGE
+	CODE
+
+	.SBTTL	Driver function dispatch table
+
+msebdsp:.LONG	0		;msef_addunit = 0
+	.LONG	0		;msef_send    = 8
+.PAGE
+;Device characteristics for SERA mouse devices
+
+	DATA
+
+	.MOD	4
+msebdctbl:
+ DCHARBGN  1, knlDCharValCom##
+ DCHARENT  CLASS , TEXT, , 8, knlDcMsgClass##  , knlDcGetClass##, knlDcSetClass##  , 0
+ DCHARENT  TYPE  , TEXT, , 4, knlDcMsgType##   , knlDcGet4Byte##, 0                , dcb_typename
+ DCHARENT  MTYPE , STR , ,16, xosmseMsgMType## , dcgetmtype     , 0                , 0
+
+	CODE
+.PAGE
+	.SBTTL	initmseb - PS2 mouse driver initialization routine
+
+	INITSUB	initmseb
+
+initmseb:
+	PUSHL	#msebtpnm		;Register this mouse driver
+	PUSHL	#0
+	PUSHL	#xosmseCcb##
+	CALL	sysIoDriverRegister##
+	JC	6$			;If error
+	CLRL	EAX			;OK
+	CLRL	EDX
+	MOVL	ECX, #codetop
+6$:	RET
+
+	CODE
+
+;Create the MOUSEP0: physical mouse device
+
+	MOVL	EBX, #DS$PHYS|DS$MLTUSER|DS$QOUT ;Create a static DCB
+	MOVL	ECX, dcb_msebSIZE
+	MOVL	EDI, #msebdsp
+	CALL	knlMakeDcb##
+	JC	12$
+	PUSHL	EDI
+	PUSHL	#xosmseCcb
+	CALL	sysIoLinkDcb##
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	dcb_fdisp[EDI], #xosmseFork##
+	MOVL	dcb_name+0[EDI], #'MOUS' ;Store the device name
+	MOVL	dcb_name+4[EDI], #'EP0'
+	MOVL	dcb_typename+0[EDI], #'MSEB'
+	MOVL	dcb_devchar[EDI], #msebdctbl ;Store offset of devchar table
+	MOVL	xoskbaMsePs2Dcb##, EDI	;Store DCB address for the console
+					;  keyboard driver (which has the
+					;  ISR for the PS2 mouse!)
+	MOVL	xoskbaMsePs2Input##, #inpavl ;Store address of our input routine
+	CALL	mouseinit		;Initialize the PS2 mouse (We don't
+					;  report errors here since this
+					;  would require removing the device
+					;  which is not correct. (A mouse may
+					;  be connected later.) We really
+					;  should have some way to indicate
+					;  a warning if the initialization
+					;  does not work (probably because
+					;  no mouse is connected).
+	MOVL	ECX, #codetop
+	CLRL	EDX
+	CLRL	EAX
+10$:	MOVL	EBX, #QSTS$DONE
+	RET
+
+12$:	CLRL	ECX
+	STC
+	JMP	10$
+
+	CODE
+.PAGE
+;Subroutine to initialize the PS2 mouse - Must be called at main program
+;  level. This routine will wait in exec mode until the initialization is
+;  complete.
+;	c{EDI} = Address of PS2 mouse DCB
+;	CALL	mouseinit
+;	C:set = Error
+;	  c{EAX} = XOS error code
+;	C:clr = Normal
+
+mouseinit:
+	ORB	dcb_msests1[EDI], #MSESTS1$INIT ;Indicate initializing
+	MOVB	DL, #0AD		;Disable the keyboard
+	CALL	putcmd
+	MOVB	DL,#20h			;Get the controller's command bits
+	CALL	putcmd
+	MOVL	ECX, #300t
+	CALL	knlSDelay##
+	INB	P_KEYDATA
+
+	PUSHL	EAX
+	MOVB	DL, #60h
+	CALL	putcmd
+	MOVL	ECX, #300t
+	CALL	knlSDelay##
+	POPL	EAX
+
+	ORB	AL, #02			;Enable mouse interrupts
+	ANDB	AL, #0DF		;Enable the mouse
+	OUTB	P_KEYDATA
+	MOVB	DL, #0AE		;Enable the keyboard
+	CALL	putcmd
+	MOVL	SS:pdaResponse##, #0
+	MOVW	dcb_mseinitpda[EDI], SS
+4$:	MOVL	EBX, #timeout
+	MOVL	EAX, #SPPERSEC*5
+	TOFORK
+	CALL	knlWakeRequest##
+	MOVL	dcb_mseinitwb[EDI], ESI
+
+	MOVL	EAX, SS			;Requeue this process
+	MOVL	ES, EAX
+	MOVB	AL, #knlQX_SPND##
+	CALL	knlRequeue##
+	FROMFORK
+
+;Start the initialization sequence. This first sends a reset command (0xFF).
+;  If this is successful, then send the command to switch to "wheel" mode
+;  (0xF3, 200, 0xF3, 100, 0xF3, 80) followed immediately by a read mouse ID
+;  command (0xF2). The single response byte should be either 0 (standard
+;  mouse) or 3 (some kind of wheel mouse). If we get 3, attempt to set to
+;  5-button wheel mode by sending (0xF3, 200, 0xF3, 200, 0xF3, 80). This
+;  is also followed by a read mouse ID command (0xF2). If the response is 4
+;  we have a 5-button wheel mouse.
+
+	MOVB	dcb_msebwheel[EDI], #0 ;Assume we have a standard mouse
+	MOVB	AL, #MSEPS2_RESET1	;Send a reset command to the mouse
+	MOVL	EBX, #resetstr
+	MOVL	ECX, #1
+	CALL	putstring
+	CALLF	schedule		;Call the scheduler (this is an
+					;  uninterruptable wait!)
+	MOVL	ESI, dcb_mseinitwb[EDI]
+	TESTL	ESI, ESI
+	JE	12$
+	MOVL	dcb_mseinitwb[EDI], #0
+	TOFORK
+	CALL	knlWakeRemove##
+	FROMFORK
+12$:	ANDB	dcb_msests1[EDI], #~MSESTS1$INIT ;Indicate initialization done
+	MOVL	EAX, SS:pdaResponse##
+	TESTL	EAX, EAX
+	JE	4$
+	MOVW	dcb_mseinitpda[EDI], #0
+	JS	16$
+	CLRL	EAX
+	RET
+
+16$:	STC
+	RET
+
+;Subroutine called if our time-out expires
+;	c{EDI} = Address of our DCB
+
+timeout:
+	MOVL	dcb_mseinitwb[EDI], #0
+	CMPW	dcb_mseinitpda[EDI], #0
+	JE	20$
+	MOVW	ES, dcb_mseinitpda[EDI]
+	MOVL	ES:pdaResponse##, #ER_NORSP
+	CALL	knlRRequeue##
+	CLC
+20$:	RET
+.PAGE
+dcgetmtype:
+	MOVZBL	EAX, dcb_msebwheel[EDI]
+	MOVL	EDX, CS:mtypename[EAX*4]
+	JMP	knlGetSysStr##
+
+	.MOD	4
+mtypename:
+	.LONG	txtnormal
+	.LONG	txt3bwheel
+	.LONG	txt5bwheel
+	.LONG	txttprel
+	.LONG	txttpabs
+	.LONG	txttpabsw
+.PAGE
+;Subroutine to output a string to the mouse
+;	c(AL)  = New state (set when output is complete)
+;	c{EBX} = Offset of string
+;	c{ECX} = Length of string
+;	CALL	putstring
+
+;NOTE: Each byte send generates an ACK (0xFA) response byte. Any data response
+;      generated follows the ACK for the last byte sent.
+
+putstring:
+	MOVB	dcb_msebnewsta[EDI], AL
+	MOVB	AH, [EBX]		;Get first character
+	INCL	EBX
+	DECL	ECX
+	MOVL	dcb_msebopnt[EDI], EBX
+	MOVB	dcb_msebocnt[EDI], CL
+	MOVB	dcb_msebstate[EDI], #MSEPS2_ACK
+					;Fall into putbyte for first character
+
+;Subroutine to output a byte to the mouse
+;	c(AH) = Byte to output
+;	CALL	putbyte
+
+putbyte:
+	PUSHL	EBX
+	MOVL	EBX, xoskbaDebugPnt##
+	CMPL	EBX, #xoskbaDebugEnd##
+	JAE	4$.S
+	MOVB	[EBX], #0FF
+	MOVB	1.B[EBX], AH
+	ADDL	xoskbaDebugPnt##, #2
+4$:	POPL	EBX
+
+	MOVB	DL, #0D4h		;Indicate mouse data
+	CALL	putcmd
+	MOVL	ECX, #10000
+8$:	INB	P_KEYSTS
+	IOPAUSEKBD
+	TESTB	AL, #02
+	LOOPNE	ECX, 8$
+	MOVB	AL, AH
+	MOVB	dcb_msebbyte[EDI], AL
+	OUTB	P_KEYDATA		;Output the data byte
+	IOPAUSEKBD
+	RET
+
+;Subroutine to output a comand byte to the keyboard controller
+
+putcmd:	MOVL	ECX, #10000
+12$:	INB	P_KEYSTS
+	IOPAUSEKBD
+	TESTB	AL, #02
+	LOOPNE	ECX, 12$
+	MOVB	AL, DL
+	OUTB	P_KEYCMD
+;;;;	IOPAUSEKBD
+	RET
+.PAGE
+;Here when have mouse data - This rouine is called at interrupt level by the
+;   PS2 mouse interrupt routine in KBDADEV.
+;	c(AL)  = Mouse data byte
+;	c{EDI} = Address of MOUSEP0: DCB
+
+inpavl:	MOVZBL	ECX, dcb_msebstate[EDI] ;Get our state
+
+	MOVL	xxxdata, EAX
+	MOVL	xxxstate, ECX
+
+	JMPIL	statetbl[ECX*4]
+
+	DATA
+
+statetbl:
+	.LONG	inpack		;MSEPS2_ACK    = 0  - Expecting ACK
+	.LONG	inpheader	;MSEPS2_HEADER = 1  - Header byte next
+	.LONG	inpbyte1	;MSEPS2_BYTE1  = 2  - Byte 1 next
+	.LONG	inpbyte2	;MSEPS2_BYTE2  = 3  - Byte 2 next
+	.LONG	inpbyte3	;MSEPS2_BYTE3  = 4  - Byte 3 next
+	.LONG	inprecon2	;MSEPS2_RECON2 = 5
+	.LONG	inprecon3	;MSEPS2_RECON3 = 6
+	.LONG	inpreset1	;MSEPS2_RESET1 = 7  - First reset response byte
+	.LONG	inpreset2	;MSEPS2_RESET2 = 8  - Second reset response byte
+	.LONG	inpwheel	;MSEPS2_WHEEL  = 9  - ID byte after wheel setup
+	.LONG	inpfvbut	;MSEPS2_FVBUT  = 10 - ID byte after 5-btn setup
+	.LONG	inptpmode1	;MSEPS2_TPID1  = 11
+	.LONG	inptpmode2	;MSEPS2_TPID2  = 12
+	.LONG	inptphvid	;MSEPS2_TPID3  = 13
+	.LONG	inptpmode1	;MSEPS2_TPMID1 = 14
+	.LONG	inptpmode2	;MSEPS2_TPMID2 = 15
+	.LONG	inptphvmid	;MSEPS2_TPMID3 = 16
+	.LONG	inptpmode1x	;MSEPS2_TPCAP1 = 17
+	.LONG	inptpmode2x	;MSEPS2_TPCAP2 = 18
+	.LONG	inptphvcap	;MSEPS2_TPCAP3 = 19
+	.LONG	inperr		;MSEPS2_ERROR  = 20
+	.LONG	inperr2		;MSEPS2_ERROR2 = 21
+
+	CODE
+
+;Here if have had unrecoverable error - Ignore everything except a reset
+;  indication (0xAA followed by 0x00).
+
+inperr:	CMPB	AL, #0xAA		;Reset indication?
+	JNE	2$			;No - ignore it
+inprst:	MOVB	dcb_msebstate[EDI], #MSEPS2_ERROR2 ;Yes - advance the state
+2$:	RET
+
+;Here with the byte following 0xAA after a serious error = It should be 0x00.
+
+inperr2:CMPB	AL, #0			;Is it right?
+	JE	hvreset			;Yes - go try to reset the mouse
+	MOVB	dcb_msebstate[EDI], #MSEPS2_ERROR
+	RET
+.PAGE
+;Here if expecting ACK next
+
+inpack:	CMPB	AL, #0FAh		;ACK?
+	JNE	2$			;No
+	CMPB	dcb_msebocnt[EDI], #0	;Yes - have any data to send?
+	JE	10$			;No
+	MOVL	EBX, dcb_msebopnt[EDI] ;Yes
+	DECL	dcb_msebocnt[EDI]
+	INCL	dcb_msebopnt[EDI]
+	MOVB	AH, [EBX]
+	JMP	putbyte
+
+2$:	CMPB	AL, #0FEh		;RESEND?
+	JNE	4$			;No - ignore it
+	MOVB	AH, dcb_msebbyte[EDI]	;Yes - resend the last byte
+	JMP	putbyte
+
+4$:	CMPB	AL, #0xAA		;Reset indication?
+	JE	inprst			;Yes
+8$:	RET
+
+;Here when finished with output
+
+10$:	MOVB	AL, dcb_msebnewsta[EDI] ;Update the input state
+	MOVB	dcb_msebstate[EDI], AL
+	CMPB	AL, #MSEPS2_HEADER
+	JNE	8$
+	MOVL	EAX, #1
+	MOVL	EDX, EAX
+	JMP	strdata
+.PAGE
+;Data is received in 3 or 4 byte packets. In standard PS2 mode, data
+;  packets are 3 bytes. In wheel mode, data packets are 4 bytes.
+;	Byte      Description
+;	  0   Mouse header byte:
+;		7: Y value overflow (0 in wheel mode)
+;		6: X value overflow (0 in wheel mode)
+;		5: Y value sign
+;		4: X value sign
+;		3: Always 1
+;		2: Middle button status
+;		1: Right button status
+;		0: Left button status
+;	  1   8-bit X value
+;	  2   8-bit Y value
+;	  3   In 3-button wheel mode:
+;		8-bit Z value
+;	      In 5-button wheel mode:
+;		7:   0
+;		6:   0
+;		5:   B5 status
+;		4:   B4 status
+;		3-0: 4-bit Z value
+
+;Here with a header byte
+
+inpheader:
+	CMPB	AL, #0xAA		;Might this be a reset (reconnect)
+					;  indication?
+	JE	chkreset		;Yes
+	MOVB	dcb_msebhbits[EDI], AL	;No - assume normal start of packet
+	MOVB	AH, AL
+	SHLB	AH, #6
+	ANDB	AH, #40h
+	MOVB	DL, AL
+	SHLB	DL, #3
+	ANDB	DL, #20h
+	SHLB	AL, #3
+	ANDB	AL, #10h
+	ORB	AL, AH
+	ORB	AL, DL
+	MOVB	dcb_msebheader[EDI], AL
+	MOVB	dcb_msebstate[EDI], #MSEPS2_BYTE1 ;Update state
+	MOVL	EAX, knlSchTime##
+	MOVL	dcb_msebhdtcks[EDI], EAX
+	RET
+
+;Here this might be a reset (reconnect) indication instead of a normal start
+;  of packet. We can't be sure since a packet can begin with 0xAA, although
+;  this is not likely! A reset indication consists of the two bytes 0xAA and
+;  0x00 only. If we see these two bytes and nothing else for about 100ms we
+;  assume it is really a reset.
+
+chkreset:
+	MOVB	dcb_msebstate[EDI], #MSEPS2_RECON2 ;Update state
+	MOVL	EAX, knlSchTime##
+	MOVL	dcb_msebhdtcks[EDI], EAX
+	RET
+
+;Here with the first byte following the header byte - This byte contains the
+;  X distance value (without sign)
+
+inpbyte1:
+	CALL	checksync
+	JNE	inpheader
+	MOVZBL	EAX, AL
+	TESTB	dcb_msebhbits[EDI], #10h
+	JE	2$
+	ORL	EAX, #0FFFFFF00h
+2$:	MOVL	dcb_msebxval[EDI], EAX
+	INCB	dcb_msebstate[EDI]
+	RET
+
+;Here with the second byte following the header byte - This byte contains the
+;  Y distance value (without sign).
+
+inpbyte2:
+	CALL	checksync
+	JNE	inpheader
+	MOVZBL	EAX, AL
+	TESTB	dcb_msebhbits[EDI], #20h
+	JE	4$
+	ORL	EAX, #0FFFFFF00h
+4$:	NEGL	EAX
+	MOVL	ECX, EAX
+	CLRL	EBX
+	CMPB	dcb_msebwheel[EDI], #0	;Is this a wheel mouse?
+	JE	10$			;No - this is the last byte
+	CMPB	dcb_msebwheel[EDI], #3
+	JGE	10$			;No
+	MOVL	dcb_msebyval[EDI], EAX	;Yes - save Y value
+	INCB	dcb_msebstate[EDI]
+	RET
+
+;Here with the third byte following the header byte - This byte contains the
+;  Z value and, if in 5-button mode, the additional 2 button status bits.
+
+inpbyte3:
+	CALL	checksync
+	JNE	inpheader
+	CMPB	dcb_msebwheel[EDI], #2	;Is this a 5-button mouse?
+	JNE	6$			;No
+	MOVB	AH, AL			;Yes - store the additional button
+	SHRB	AH, #2			;  bits
+	ANDB	AH, #0x0C
+	ORB	dcb_msebheader[EDI], AH
+	ANDL	EAX, #0x0F		;Assume Z value is positive
+	TESTB	AL, #08h		;Right?
+	JE	8$			;Yes
+	ORL	EAX, #0FFFFFFF0		;No - extend the sign bit
+	JMP	8$
+
+6$:	MOVXBL	EAX, AL			;Sign extend the 8-bit Z value
+8$:	MOVL	EBX, EAX
+	MOVL	ECX, dcb_msebyval[EDI]
+10$:	MOVL	EDX, dcb_msebxval[EDI]
+	CLRL	EAX
+	MOVB	AH, dcb_msebheader[EDI]
+	MOVB	dcb_msebstate[EDI], #MSEPS2_HEADER
+strdata:CALL	xosmseStoreData##
+	JMP	knlReqFork##		;Request fork
+.PAGE
+;Here with the second byte of a possible reset (reconnect) sequence - It
+;  should be 0
+
+inprecon2:
+	CMPB	AL, #0
+	JNE	inprecon3
+	INCB	dcb_msebstate[EDI]
+	MOVB	AL, #2
+	MOVL	EBX, #inpreconto
+	CALL	xosmseReqTimer##
+	JMP	knlReqFork##
+
+;Here with a third byte while receiving what may be a reset (reconnect)
+;  sequence - It is not a reset sequence! We don't bother clearing the timer -
+;  we will ignore it when it goes off since the state will be different!
+
+inprecon3:
+	MOVB	dcb_msebhbits[EDI], #0xAA
+	MOVB	dcb_msebheader[EDI], #0x01
+	JMP	inpbyte2
+
+;Function called after reset (reconnect) timeout - NOTE: This is called at
+;  main program level!
+
+inpreconto:
+	CMPB	dcb_msebstate[EDI], #MSEPS2_RECON3
+	JNE	10$
+
+;Here if we really have a reset (reconnect). Start the mouse initialization
+;  sequence.
+
+hvreset:MOVB	dcb_msebwheel[EDI], #0	;Assume we have a standard mouse
+	MOVB	AL, #MSEPS2_RESET1	;Send a reset command to the mouse
+	MOVL	EBX, #resetstr
+	MOVL	ECX, #1
+	JMP	putstring
+
+10$:	RET
+.PAGE
+;Here with first reset response byte
+
+inpreset1:
+	CMPB	AL, #0AAh		;Is it correct?
+	JNE	interr			;No
+	INCB	dcb_msebstate[EDI]	;Yes
+	RET
+
+;Here with second reset response byte
+
+inpreset2:
+
+;;;;	INT3
+
+	CMPB	AL, #0			;Is it correct?
+	JNE	interr			;No
+;;;;	MOVB	dcb_mseok[EDI], #1	;Yes - indicate operational
+
+;Now see if we have a wheel mouse
+
+;;;;	JMP	8$
+
+	MOVB	AL, #MSEPS2_WHEEL
+	MOVL	EBX, #wheelstr		;Send wheel string
+	MOVL	ECX, #7
+	JMP	putstring
+
+;Here with set wheel mode response byte
+
+inpwheel:
+	CMPB	AL, #03			;Is this a wheel mouse?
+	JNE	8$			;No
+	MOVB	dcb_msebwheel[EDI], #1	;Yes
+	MOVB	AL, #MSEPS2_FVBUT	;See if it's also a 5 button mouse
+	MOVL	EBX, #fvbutstr
+	MOVL	ECX, #7
+	JMP	putstring
+
+;Here with set 5-button wheel mode response byte
+
+inpfvbut:
+	CMPB	AL, #04			;Is this a five button mouse?
+
+;;;;	JNE	8$
+
+	JNE	strtdone		;No - its just a normal wheel mouse
+
+	MOVB	dcb_msebwheel[EDI], #2 ;Yes
+strtdone:
+	MOVB	AL, #MSEPS2_HEADER
+	MOVL	EBX, #enablestr		;Send the enable string
+	MOVL	ECX, #2
+	JMP	putstring
+
+;Here if unrecoverable error - The only thing we respond to after this is a
+;  0xAA reset indication. If we get this we try to initialize the mouse.
+
+interr:	INT3
+
+	MOVB	dcb_msebstate[EDI], #MSEPS2_ERROR
+	MOVL	EAX, #1
+	MOVL	EDX, #ER_DEVER
+	JMP	strdata
+
+;Here if not a wheel mouse - see if it's a touchpad
+
+8$:	MOVB	AL, #MSEPS2_TPID1
+	MOVL	EBX, #tpidstr
+	MOVL	ECX, #10t
+	JMP	putstring
+
+;Here with first mode byte when checking for a touchpad
+
+inptpmode1:
+	MOVB	dcb_msebmode1[EDI], AL
+	JMP	12$
+
+;Here with second mode byte when checking for a touchpad
+
+inptpmode2:
+	MOVB	dcb_msebmode2[EDI], AL
+12$:	INCB	dcb_msebstate[EDI]
+	RET
+
+;Here with first mode byte when checking for a touchpad
+
+inptpmode1x:
+	MOVB	dcb_msebmode1[EDI], AL
+	JMP	13$
+
+;Here with second mode byte when checking for a touchpad
+
+inptpmode2x:
+	MOVB	dcb_msebmode2[EDI], AL
+13$:	INCB	dcb_msebstate[EDI]
+	RET
+
+;Here with third mode byte when checking for a touchpad
+
+inptphvid:
+	MOVB	dcb_msebmode3[EDI],AL
+	CMPB	dcb_msebmode2[EDI], #47h ;Is this a touchpad?
+	JNE	strtdone		;No
+	MOVB	dcb_msebwheel[EDI], #3	;Yes - get model ID bits
+	MOVB	AL, #MSEPS2_TPMID1
+	MOVL	EBX, #tpmidstr
+	MOVL	ECX, #9
+	JMP	putstring
+
+;Here with the third mode byte when getting the touchpad model ID
+
+inptphvmid:
+	TESTB	AL, #80h		;Does this model support the new ABS
+					;  format?
+	JE	strtdone		;No - we will only use it in relative
+					;  mode
+
+;;;	MOVL	ECX, #1000t
+;;;	CALL	knlSDelay##
+
+	MOVB	dcb_msebwheel[EDI], #4 ;Yes - get the capabilities bits
+
+;;;	JMP	strtdone
+
+	MOVB	AL, #MSEPS2_TPCAP1	;  bits
+	MOVL	EBX, #tpcapstr
+	MOVL	ECX, #9
+	JMP	putstring
+
+;Here with the third mode byte when getting the touchpad capabilities
+
+inptphvcap:
+	TESTB	dcb_msebmode1[EDI], #80h ;Are these bits meaningful?
+	JE	strtdone		;No
+	MOVB	dcb_msebwheel[EDI], #5 ;Yes - indicate "W" mode is supported
+	JMP	strtdone
+.PAGE
+;Subroutine to check packet sync. This checks the time since the header byte
+;  was received.  If it is too long (more than about 100MS) we assume this
+;  is the header for a new packet.
+;	CALL	checksync
+;	Z:set = Normal
+;	Z:clr = New packet
+
+checksync:
+	MOVL	EDX, knlSchTime##
+	SUBL	EDX, dcb_msebhdtcks[EDI]
+	JNS	2$
+	ADDL	EDX, #SPPERDAY
+2$:	CMPL	EDX, #5t
+	JG	8$.S
+6$:	CLRL	EDX
+8$:	RET
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+	.MOD	4
+msapadcb: .LONG	 0
+
+xxxdata:: .LONG  0
+xxxstate::.LONG  0
+
+msebtpnm: .ASCIZ 'KBCA'
+
+resetstr: .BYTE 0FFh
+enablestr:.BYTE	0EAh, 0F4h		;Set stream mode, enable
+wheelstr: .BYTE 0F3h, 200t, 0F3h, 100t, 0F3h, 80t, 0F2h
+fvbutstr: .BYTE 0F3h, 200t, 0F3h, 200t, 0F3h, 80t, 0F2h
+tpidstr:  .BYTE 0xF5, 0xE8, 0, 0xE8, 0, 0xE8, 0, 0xE8, 0, 0xE9
+tpmidstr: .BYTE 0E8h, 0, 0E8h, 0, 0E8h, 0, 0E8h, 3, 0E9h
+tpcapstr: .BYTE 0E8h, 0, 0E8h, 0, 0E8h, 0, 0E8h, 2, 0E9h
+
+txtnormal:  .ASCIZ "Normal"
+txt3bwheel: .ASCIZ "3 Button/Wheel"
+txt5bwheel: .ASCIZ "5 Button/Wheel"
+txttprel:   .ASCIZ "TP-Relative"
+txttpabs:   .ASCIZ "TP-Absolute"
+txttpabsw:  .ASCIZ "TP-Absolute/W"
+
+ackcnt:: .LONG	0
+
+	LKEEND

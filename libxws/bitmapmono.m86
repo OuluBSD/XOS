@@ -1,0 +1,141 @@
+	.TITLE	bitmapmono
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	bmp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;This module contains routines for creating a BITMAP object from a simple
+;  mono bitmap.
+
+;Subroutine to create a BITMAP object from a simple mono bitmap
+;	long xwsBitmapLoadMono(
+;	    uchar   *monobm,
+;	    long     xsize,
+;	    long     ysize,
+;	    long     color0,
+;	    long     color1,
+;	    BITMAP **bm);
+;  Value returned is 0 if successful or a negative error code if an
+;    error occured.
+
+;When the caller is finished with the BITMAP object, it should be deallocated
+;  by calling xwsBitmapDestroy.
+
+;This function uses the Pascal calling sequence
+
+$$$=!0				;Order of the first 9 items must match the
+				;  order of the arguments to loadthread
+FRM bl_bitmap, 4
+FRM bl_xcnt  , 4
+FRM bl_ycnt  , 4
+FRM bl_bitcnt, 4
+FRM bl_color , 8
+bl_SIZE=!$$$
+
+bl_monobm=!40t
+bl_width =!36t
+bl_height=!32t
+bl_color0=!28t
+bl_color1=!24t
+bl_bm    =!20t
+
+	.ENTRY	xwsBitmapLoadMono
+xwsBitmapLoadMono::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	bl_SIZE
+
+;Determine the size of our BITMAP object and allocate its memory
+
+	MOVL	EAX, bl_width[EBP]
+	ADDL	EAX, EAX
+	IMULL	EAX, bl_height[EBP]
+	ADDL	EAX, #bm_bitmap
+	PUSHL	EAX
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	done
+	MOVL	bl_bitmap[EBP], EAX
+	MOVL	EDI, EAX
+
+;Set up the color values
+
+	MOVL	EAX, bl_color0[EBP]
+	MOVL	bl_color+4[EBP], EAX
+	MOVL	EAX, bl_color1[EBP]
+;;;	CALL	xwsgethicolor#
+	MOVL	bl_color+0[EBP], EAX
+
+;Set up the BITMAP object header
+
+	MOVL	[EDI], #'BM**'
+;;;;;	MOVL	bm_fnot[EDI], #0
+	MOVL	bm_status[EDI], #BMS$DONE
+	MOVL	bm_drw+drw_label[EDI], #'DRW#'
+	LEAL	EAX, bm_bitmap[EDI]
+	MOVL	bm_drw+drw_buffer[EDI], EAX
+	MOVL	EAX, bl_width[EBP]
+	MOVL	bm_drw+drw_width[EDI], EAX
+	MOVL	bm_drw+drw_pixelspan[EDI], EAX
+	ADDL	EAX, EAX
+	MOVL	bm_drw+drw_bytespan[EDI], EAX
+	MOVL	ECX, bl_height[EBP]
+	MOVL	bm_drw+drw_height[EDI], ECX
+	IMULL	ECX, EAX
+	MOVL	bm_drw+drw_bufsize[EDI], ECX
+	MOVL	bm_drw+drw_pixelsize[EDI], #2t
+	MOVL	bm_drw+drw_funcdsp[EDI], #xwsmemdsp#
+
+;Store BITMAP data
+
+	MOVL	EAX, bl_height[EBP]
+	MOVL	bl_ycnt[EBP], EAX
+	MOVL	EDI, bl_bitmap[EBP]
+	ADDL	EDI, #bm_bitmap
+	MOVL	EBX, bl_monobm[EBP]
+2$:	MOVL	ECX, bl_width[EBP]
+4$:	MOVB	AL, [EBX]		;Get next byte
+	INCL	EBX
+	MOVL	bl_bitcnt[EBP], #8t
+6$:	ROLB	AL, #1t			;Get next bit
+	MOVL	EDX, EAX
+	ANDL	EDX, #0x01
+	MOVL	EDX, bl_color[EBP+EDX*4] ;Get color value
+	MOVW	[EDI], DX		;Store it
+	ADDL	EDI, #2t
+	DECL	bl_bitcnt[EBP]		;No - more bits in this byte?
+	JE	10$			;No
+	LOOP	ECX, 6$			;Yes - continue if more in the line
+	JMP	12$			
+
+;Here at end of byte
+
+10$:	LOOP	ECX, 4$			;No more bits - get another byte if
+					;  more in the line
+;Here at end of line
+
+12$:	DECL	bl_ycnt[EBP]		;More lines?
+	JNE	2$			;Yes - continue
+	MOVL	EAX, bl_bitmap[EBP]	;No - finished
+	MOVL	EDX, bl_bm[EBP]
+	MOVL	[EDX], EAX
+	CLRL	EAX
+done:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+
+	.END

@@ -1,0 +1,689 @@
+	.TITLE	lglio  - Logical level IO routines for GECKO
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	XOSINC:/xmac/xos.par
+	.INCLUD	XOSINC:/xmac/xostrm.par
+	.INCLUD	XOSINC:/xmac/xosrun.par
+	.INCLUD	gecko.par
+
+	CODE
+
+;Subroutine to output 12 bit value as 3 hex digits
+
+out3hx::PUSHL	EAX			;Save value
+	MOVB	AL, AH			;Get high 4 bits
+	CALL	out2h2
+	JMP	6$			;Continue
+
+;Subroutine to output 32 bit value as 8 hex digits
+
+out8hx::PUSHL	EAX			;Save value
+	SHRL	EAX, #16t		;Get high 16 bits
+	CALL	out4hx			;Output as 4 hex digits
+	POPL	EAX			;Restore low 16 bits
+					;Fall into out4hx to output as 4 hex
+					;  digits
+
+;Subroutine to output 16 bit value as 4 hex digits
+
+out4hx::PUSHL	EAX			;Save value
+	MOVB	AL, AH			;Get high 8 bits
+	CALL	out2hx			;Output as 2 hex digits
+6$:	POPL	EAX			;Restore low 8 bits
+					;Fall into out2hx to output as 2 hex
+					;  digits
+
+;Subroutine to output 8 bit value as 2 hex digits
+
+out2hx::PUSHL	EAX			;Save value
+	SHRB	AL, #4			;Get high 4 bits
+	CALL	out2h2			;Output hex digit
+	POPL	EAX			;Restore low 4 bits
+out2h2::ANDB	AL, #0Fh		;Remove junk
+	JMP	outhxd			;Output hex digit
+.PAGE
+;Subroutine to output decimal value in fixed field
+;	c{EAX} = Value to output
+;	c(BL)  = Field width
+;	CALL	outdec
+
+outdec::MOVB	numcnt#, #0		;Clear the digit counter
+outdc2:	XORL	EDX, EDX
+	MOVL	ECX, #10t
+	DIVL	ECX			;Get next digit
+	PUSHL	EDX			;Stack the digit
+	INCB	numcnt#			;Count the digit
+	TESTL	EAX, EAX		;Are we done?
+	JNE	outdc6			;No
+outdc4:	CMPB	numcnt#, BL		;Yes - need leading space?
+	JAE	outdc8			;No - go start outputting digits
+	INCB	numcnt#			;Yes
+	CALL	outspa			;Output leading space
+	JMP	outdc4
+
+outdc6:	CALL	outdc2			;More there
+outdc8:	POPL	EAX			;Get a digit
+	ADDB	AL, #'0'		;Change to ASCII character
+	JMP	outchr			;Output the character
+.PAGE
+	.SBTTL	outaddr - Subroutine to output address
+
+;Subroutine to output address - (This has been kept as a separate function
+;  just in case we decide to put some segment stuff back in! For now it
+;  just goes to outvalna)
+;	c{EAX} = Address to output
+;	CALL	outaddr
+
+outaddr::
+	JMP	outvalna
+
+;Subroutine to output word value without alpha check
+;	c[AX] = Value of word
+;	CALL	outwordna
+
+outwordna::
+	MOVZWL	EAX, AX
+	JMP	outvalna
+
+;Subroutine to output value (48 bits) as word (16 bits) plus offset (16 bits)
+;  in the form:
+;	SYMBOL + number
+;  Where "SYMBOL" is entry from the symbol table and "number" is a numeric
+;  value of less than 1000h
+;	c[DX,AX] = Value to output
+;	CALL	outword
+
+outword::
+	MOVZWL	EAX, AX			;Zero extend value
+					;Fall into outlong
+
+	.SBTTL	outval - Subroutine to output value as long
+
+;Subroutine to output long value in the form:
+;	SYMBOL + number
+;  Where "SYMBOL" is entry from the symbol table and "number" is a numeric
+;  value of less than 1000h
+;	c{DX,EAX} = Value to output
+;	CALL	outval
+
+outval::TESTB	toutmd#, #OM$ALF	;Want alpha output?
+	JNE	outalf
+
+	.SBTTL outvalna - Enter here for no alpha output
+
+;Here if do not want alpha output
+
+outvalna::
+	CMPB	outflg#, #0		;Doing output now?
+	JNE	4$			;No
+	TESTB	toutmd#, #OM$NUM	;Want numeric output?
+	JNE	outnum			;Yes
+	MOVB	BL, #0			;No - look for data
+	XORL	EDX, EDX
+	CALL	srchsym			;Search symbol table
+	JNC	outnum			;If not found
+4$:	CLC
+ret252:	RET				;Found - finished
+.PAGE
+;Here for alpha output
+;	c{EAX} = Value
+
+outalf::MOVB	quotflg#, #0		;Indicate not in quotes to begin with
+outa02:	PUSHL	EAX
+	ANDB	AL, #0x7F		;Just 7 bits
+	CMPB	AL, #' '		;Is this a printing character?
+	JC	outa04			;No
+	CMPB	AL, #0x7F		;Maybe
+	JE	outa04			;No
+	CMPB	quotflg#, #0		;Yes - are quotes open?
+	JNE	outa06			;Yes
+	PUSHL	EAX			;No - output quote first
+	MOVB	AL, #''''
+	CALL	outchr
+	POPL	EAX
+	MOVB	quotflg#, #1
+	JMP	outa06
+
+;Here for non-printing character
+
+outa04:	PUSHL	EAX
+	CMPB	quotflg#, #0		;Have quotes open?
+	JE	outa05			;No
+	MOVB	AL, #''''		;Yes - close them now
+	CALL	outchr
+	MOVB	quotflg#, #0
+outa05:	MOVB	AL, #'<'		;Output value in angle brackets
+	CALL	outchr
+	POPL	EAX			;Restore value
+	CALL	outby0			;Output it
+	MOVB	AL, #'>'		;Close the brackets
+outa06:	CALL	outchr
+outa08:	POPL	EAX
+	SHRL	EAX, #8			;Advance characters
+	TESTL	EAX, EAX		;Anything more to do?
+	JNE	outa02.S		;Yes
+	CMPB	quotflg#, #0		;Need final quote?
+	JE	ret253.S		;No
+	MOVB	AL, #''''		;Yes
+	JMP	outchr
+
+ret253:	RET
+.PAGE
+	.SBTTL	outbyte - Subroutine to output value of a byte in current output radix
+
+;Subroutine to output value of a byte in current output radix
+;	c(AL) = Value of byte
+;	CALL	outbyte
+
+outbyte::
+	MOVZBL	EAX, AL			;Zero extend value
+	TESTB	toutmd#, #OM$ALF	;Want alpha output?
+	JNE	outalf			;Yes
+	JMP	outnum			;No
+
+	.SBTTL	outby0 - Entry point to output byte as numeric value
+
+;Here to output byte as numeric value
+
+outby0::MOVZBL	EAX, AL			;Zero extend value
+					;Fall into outnum
+
+	.SBTTL	outnum - Subroutine to output value in current output radix
+
+;Subroutine to output 32 bit value in current output radix
+;	c{EAX} = Value to output
+;	CALL	outnum
+
+outnum::MOVB	numcnt#, #0		;Clear the number counter
+outn02:	XORL	EDX, EDX		;Get next digit
+	DIVL	tradix#
+	PUSH%	%DX			;Stack the digit
+	INCB	numcnt#			;Count the digit
+	TESTL	EAX, EAX		;Are we done?
+	JE	outn10			;Yes - everything is on the stack
+	CALL	outn02			;No - more there
+outn04:	POP%	%AX			;Get a digit
+outhxd:	CMPB	AL, #10t		;Is it a decimal digit?
+	JC	outn06			;Yes
+	ADDB	AL, #7			;No - adjust to give letter
+outn06:	ADDB	AL, #'0'		;Change to ASCII character
+	JMP	outchr			;Output the character
+
+;Here with everything on the stack - see if need extra leading 0 for hex
+
+outn10:	POP%	%AX			;Get first digit
+	CMPB	AL, #10t		;Is it a decimal digit?
+	JC	outn06.S		;Yes
+	PUSH%	%AX			;No - put it back
+	MOVB	AL, #'0'		;Output leading 0
+	CALL	outchr
+	JMP	outn04.S		;Continue
+.PAGE
+;Subroutine to search symbol table
+;	c{EAX} = Value to search for
+;	c(BL)  = Value for SF$ADR bit for match
+;	CALL	srchsym
+;	C:set = Match found, value already output
+;	C:clr = Not found, no output done, value still in EDX:EAX
+
+
+;This version completely ignores any segment part!!
+
+srchsym:PUSHL	EDX			;Save segment part
+	MOVL	EBP, EDX		;Get segment part in right register
+	ANDL	EBP, #1FFFFh
+	BTL	EBP, #16t		;V86 selector?
+	JC	2$			;Yes
+	ANDL	EBP, #0xFFFFFFFC	;No - remove don't care bits
+2$:
+
+	MOVL	tmppnt#, #0		;Indicate no partial match found
+	MOVL	tmpmod#, #0
+	MOVL	tmpdif#, #0x1000
+	MOVL	EDI, geckosymtbl# 	;Point to symbol table
+	MOVL	EDX, geckosymcnt# 	;Get number of symbols
+4$:	TESTL	EDX, EDX		;More to check?
+	JE	20$			;No
+	TESTB	sym32_flag[EDI], #SF$MOD
+	JE	6$.S			;No - go on
+	MOVL	curmod#+0, EDI		;Yes - remember it
+	JMP	16$			;Continue
+
+;Here if not module name
+
+6$:	TESTB	sym32_flag.B[EDI], #SF$SUP
+	JNE	16$			;Yes - don't use it
+
+.IF NE 0
+	MOVB	BH, BL			;No - is it right kind of value?
+	XORB	BH, sym32_flag.B[EDI]
+	ANDB	BH, #SF$ADR
+	JNE	16$
+	MOVZWL	ECX, sym32_seg.B[EDI]	;Yes - compare segment part
+	BTSL	ECX, #16t		;Assume V86 selector
+	TESTB	sym32_flag.B[EDI], #SF$V86 ;Right?
+	JNE	8$.S			;Yes
+	ANDL	ECX, #0FFFCh		;No - fix it up
+8$:	CMPL	EBP, ECX
+	JNE	16$			;If different
+.ENDC
+
+
+	MOVL	ECX, EAX
+	SUBL	ECX, sym32_ofs[EDI]
+	JNE	10$			;Not exact match
+	TESTB	sym32_flag.B[EDI], #SF$GLB ;Exact - global symbol?
+	JE	12$			;No
+	JMP	26$			;Yes - always use it
+
+;Here if not exact match
+
+10$:	JC	16$			;If smaller or if crossed 0 (if signed)	
+	TESTB	sym32_flag[EDI], #SF$GLB
+	JNE	12$			;Yes - always check here
+	MOVL	ESI, opnmod#+0		;No - for open module?
+	TESTL	ESI, ESI
+	JE	16$
+	CMPL	curmod+0, ESI
+	JNE	16$			;No - don't use it here
+12$:	CMPL	ECX, tmpdif		;Is it better than previous difference?
+	JA	16$			;No
+	JB	14$			;If better
+	MOVL	ESI, tmppnt
+	TESTL	ESI, ESI
+	JE	14$			;Use match if its really the first
+	MOVB	BH, sym32_flag[ESI]
+	XORB	BH, sym32_flag[EDI]
+	TESTB	BH, #SF$GLB		;Both global or both local?
+	JE	16$			;Yes - use previous symbol
+	TESTB	sym32_flag[EDI], #SF$GLB
+	JE	16$			;No - don't use it
+14$:	MOVL	tmpdif#, ECX		;Yes - remember this difference
+	MOVL	tmppnt#+0, EDI		;And its address
+	PUSHL	curmod#+0		;Also remember module in case local
+	POPL	tmpmod#+0
+16$:	MOVZBL	ECX, [EDI]
+	LEAL	EDI, sym32_name[ECX+EDI] ;Bump pointer
+	DECL	EDX			;Reduce count
+	JMP	4$			;Continue
+
+;Here after searching entire symbol table
+
+20$:	CMPL	tmppnt#, #0		;Did we find a "close" value?
+	JE	24$			;No - go output value as number
+	MOVL	EDI, tmppnt#
+	CMPL	tmpdif#, #0		;Exact match?
+	JE	26$			;Yes (must be local symbol)
+	CALL	dispsym			;No - output symbol
+	MOVB	AL, #'+'		;Plus
+	CALL	outchr
+	MOVL	EAX, tmpdif#		;Difference
+	CALL	outnum
+22$:	STC				;Indicate output done
+24$:	POPL	EDX
+	RET				;Thats all
+
+;Here for exact match with symbol table entry
+
+26$:	CALL	dispsym
+	JMP	22$
+.PAGE
+dispsym:PUSHL	EDI
+	MOVZBL	ECX, [EDI]
+6$:	MOVB	AL, sym32_name.B[EDI]	;Get symbol character
+	CALL	outchr			;Output it
+	INCL	EDI			;Bump pointer
+	LOOP	ECX, 6$			;Continue if more possible
+	POPL	EDI
+	TESTB	sym32_flag.B[EDI], #SF$GLB+SF$MOD 
+					;Is it a global symbol or module name?
+	JNE	10$.S			;Yes - finished here
+	MOVB	AL, #'#'		;No
+	CALL	outchr			;Follow it with a #
+	MOVL	EDI, tmpmod		;Does it have a module name?
+	TESTL	EDI, EDI
+	JNE	8$.S			;Yes
+	MOVL	EBX, #nmnmsg#		;No
+	JMP	outstr
+
+;Here if have module name for local symbol
+	
+8$:	CMPL	EDI, opnmod#+0		;Same as open module?
+	JNE	dispsym.S		;No
+10$:	RET				;Yes - finished
+.PAGE
+;Subroutine to output CR-LF
+;	CALL	outcrl
+
+outcrl::MOVB	AL, #CR
+	CALL	outchr
+	MOVB	AL, #LF
+	JMP	outchr
+
+;Subroutine to output tab
+;	CALL	outtab
+
+outtab::MOVB	AL, #0x09		;Get a tab
+	JMP	outchr			;Output it
+
+;Subroutine to output a space
+;	CALL	outspa
+
+outspa::MOVB	AL, #' '		;Get a space
+	JMP	outchr			;Output it
+
+;Subroutine to output comma
+;	CALL	outcma
+
+outcma::MOVB	AL, #','		;Get a comma
+					;Fall into OUTCHR
+
+;Subroutine to output character to console
+;	c(AL) = Character to output
+;	CALL	outchr
+
+outchr::CMPB	outflg#, #0		;Do we want to do output?
+	JNE	ret256			;No
+outch2:	CMPB	AL, #LF			;Yes - is this a line-feed?
+	JNE	outchx#			;No - just output it
+	CMPB	linelim#, #0		;Yes - is a line limit in effect?
+	JE	outchx#			;No
+	CALL	outchx#			;Yes - output the character
+	DECB	linelim#		;Too many lines?
+	JNE	ret256			;No - all done here
+	PUSHL	EBX			;Yes
+	MOVL	EBX, #limmsg#		;Tell him what to do
+	CALL	outstr
+2$:	CALL	inpchx#			;Get a character
+	CALL	makupr			;Make upper case
+	CMPB	AL, #CR
+	JE	4$
+	CMPB	AL, #' '
+	JNE	6$
+4$:	MOVL	EAX, dheight#
+	MOVB	linelim#, AL
+	MOVB	linelim#, #MAXLINES
+	JMP	10$
+
+6$:	CMPB	AL, #'L'
+	JNE	8$
+	MOVB	linelim, #1
+	JMP	10$
+
+8$:	CMPB	AL, #'G'
+	JNE	12$
+10$:	MOVB	AL, #CLR
+	CALL	outchx#
+	POPL	EBX
+ret256:	RET
+
+12$:	CMPB	AL, #'Q'
+	JNE	2$
+	MOVB	AL, #CLR
+	CALL	outchx#
+	JMP	restart#
+.PAGE
+;Subroutine to output string to console and then clear type-ahead
+;	c{EBX} = Offset (in code segment) of string to output
+;	CALL	outstrca
+
+outstrca::
+	MOVB	linecnt#, #0		;Clear the input buffer
+					;Fall into outstr to output string
+
+;Subroutine to output string for code segment to console
+;	c{EBX} = Offset (in code segment) of string to output
+;	CALL	outstr
+
+outstr::CMPB	outflg#, #0		;Do we want to do output?
+	JNE	ret256			;No
+2$:	MOVB	AL, [EBX]		;Get character
+	ORB	AL, AL			;End of string?
+	JE	ret256			;Yes
+	CALL	outch2			;Output character
+	INCL	EBX			;Bump pointer
+	JMP	2$			;And continue
+.PAGE
+;Subroutine to get command keyword
+;	CALL	getname			;Enter at getnam0 with DL not 0 to
+;	C:set = Error			;  force to upper case
+;	C:clr = Normal
+;	  c(AL) = Stopper character
+
+getname::
+	MOVB	DL, #0
+getnam0::
+	MOVL	EDI, #symbuf#
+	CLRL	EAX
+	MOVB	symsiz#, AL
+	PUSHL	EDI
+	MOVL	ECX, #SYMLEN/4
+	RSTOSL	[EDI]
+	POPL	EDI
+	MOVL	ECX, #SYMLEN-1
+2$:	CALL	getchr			;Skip leading white-space
+	CMPB	AL, #0x20
+	JA	6$
+	CMPB	AL, #0
+	JNE	2$
+4$:	CLC
+	RET
+
+6$:	CMPB	DL, #0			;Want to force upper case?
+	JE	8$			;No
+	CALL	makupr			;Yes - force to upper case
+8$:	CMPB	AL, #0x20		;End?
+	JBE	4$			;Yes
+	CMPB	AL, #'/'
+	JE	4$
+	DECL	ECX			;No - will another character fit?
+	JS	10$			;No - fail
+	STOSB	[EDI]			;Yes - store character
+	INCB	symsiz#			;Count it
+	CALL	getchr			;Get next character
+	JMP	6$			;Continue
+
+;Here if name is too long
+
+10$:	STC
+	RET
+.PAGE
+;Subroutine to get next input character
+;	CALL	getchr
+;	Z:clr = Normal
+;	  c(AL) = ASCII character
+;	Z:set = End of line
+;	  c(AL) = 0
+
+getchr::CMPB	heldchr#, #0		;Have a held character?
+	JNE	2$			;Yes
+	CMPB	linecnt#, #0		;No - Anything to get?
+	JE	4$			;No
+	PUSHL	EBX			;Yes
+	DECB	linecnt#		;Reduce character count
+	MOVL	EBX, linepnt#
+	INCL	linepnt#		;Bump pointer
+	MOVB	AL, [EBX]		;Get character
+	POPL	EBX
+	RET				;And return
+
+;Here if have held character
+
+2$:	MOVB	AL, heldchr		;Get the held character
+	MOVB	heldchr, #0
+	RET
+
+;Here if line buffer is empty
+
+4$:	CLRL	EAX			;Return 0 with Z set
+	RET
+.PAGE
+;Subroutine to get input line
+;	CALL	getline
+
+getline::
+	MOVL	ESI, #linebuf#		;Reset buffer pointer
+	MOVL	linepnt#, ESI
+	MOVB	linecnt#, #0
+	CMPB	spkhold#, #0		;Are we holding a special key?
+	JE	4$			;No
+	MOVB	AL, spkhold#		;Yes - give it to him
+	MOVB	spkhold#, #0
+2$:	MOVB	linebuf#, AL
+	INCB	linecnt#
+	RET
+
+;Here if no special key held
+
+4$:	CALL	inpchx#			;Get input character
+	CMPB	AL, #0x80		;Special key?
+	JB	6$			;No
+	PUSHL	EAX			;Yes
+	CALL	delline			;Delete any current input
+	POPL	EAX
+	CMPB	datareq#, #0		;Requesting data?
+	JE	2$			;No - just return the special character
+	MOVB	spkhold#, AL		;Yes - hold the special character
+	RET				;And return the empty line
+
+;Here if not special character
+
+6$:	CMPB	AL, #' '		;Printing character?
+	JNC	8$			;Yes
+	PUSHL	EDI			;No - see if we should echo it
+	PUSHL	ECX
+	MOVL	EDI, #ccetbl		;No - should we echo it?
+	MOVL	ECX, #CCESIZ
+	RNSCASB	[EDI]
+	POPL	ECX
+	POPL	EDI
+	JE	12$			;No
+	PUSHL	EAX			;Yes - echo as plus/minus
+	MOVB	AL, #0x7F
+	JMP	10$
+
+8$:	PUSHL	EAX			;Save the character
+10$:	CALL	outchx			;Echo it
+	POPL	EAX
+12$:	ANDB	AL, #0x7F		;Make sure only 7 bits
+	CMPB	AL, #'P'-0x40		;Control-P?
+	JNE	16$			;No - continue
+	XORB	prtflg#, #1		;Yes - toggle the value of the printer
+					;  flag
+14$:	JMP	4$			;Get the next character
+
+;Here if not control-P
+
+16$:	CMPB	AL, #'X'-0x40		;Control-X?
+	JNE	18$			;No
+	CALL	delline			;Yes - delete the line
+	JMP	4$			;Continue
+
+;Here if not control-X
+
+18$:	CMPB	AL, #DEL		;Delete?
+	JE	20$			;Yes - delete last character
+	CMPB	AL, #BS			;Backspace?
+	JNE	22$			;No
+20$:	CMPB	linecnt, #0		;Yes - anything in buffer?
+	JE	4$			;No - go on
+	CALL	rmvchr			;Yes - delete one character
+	JMP	14$			;Go get next character
+
+;Here with character to store in the input buffer
+
+22$:	CMPB	AL, #CR			;Line terminator?
+	JE	ret258			;Yes
+	CMPB	AL, #LF
+	JE	ret258			;Yes
+	CMPB	linecnt, #99t		;No - too many characters?
+	JAE	26$			;Yes
+	INCB	linecnt			;No - bump the count
+	MOVB	[ESI], AL		;Store character into buffer
+	INCL	ESI
+	JMP	14$			;Continue
+
+ret258:	RET				;Finished
+
+;Here if too many input characters for the buffer
+
+26$:	CALL	rmvch2			;Erase character from screen
+	JMP	14$			;And continue
+.PAGE
+;Subroutine to delete the current input line
+;	CALL	delline
+
+delline::
+	CMPB	linecnt, #0		;Yes - anything in buffer now?
+	JE	ret258			;No - get next character
+	CALL	rmvchr			;Yes - remove a character
+	JMP	delline			;Continue until buffer is empty
+
+;Subroutine to remove (delete) one character from the input buffer
+;	CALL	rmvchr
+
+rmvchr:	DECB	linecnt			;Reduce count
+	DECL	ESI			;Backup pointer
+rmvch2:	CALL	rmvch4			;Output BS-SPA-BS
+	CALL	outspa
+rmvch4:	MOVB	AL, #BS
+	JMP	outchr			;And return
+.PAGE
+;Subroutine to check for end of input line
+;	CALL	chkend
+;	C:set = Not end of line, error message output
+;	C:clr = End of line (normal)
+;  EAX is respected
+
+chkend::PUSHL	EAX
+2$:	CALL	getchr			;Get a character
+	JE	4$			;OK if end
+	CMPB	AL, #0x20		;Is it a white-space character?
+	JBE	chkend			;Yes - ignore it
+	MOVL	EBX, #tmamsg#		;No - fail
+	CALL	outstr
+	STC
+4$:	POPL	EAX
+	RET
+.PAGE
+;Subroutine to ensure character is upper case
+;	c(AL) = Character
+;	CALL	makupr
+;	c(AL) = Character (converted to upper case if necessary)
+
+makupr::CMPB	AL, #0x60		;Check low limit for lower case
+	JC	ret260			;If below low limit
+	CMPB	AL, #0x7B		;Check high limit
+	JNC	ret260			;If above high limit
+	ANDB	AL, #0xDF		;Lower case - convert to upper case
+ret260:	RET
+.PAGE
+;Table of control characters to not echo
+
+ccetbl:	.BYTE	CR
+	.BYTE	LF
+	.BYTE	BS
+	.BYTE	'C'-40h
+	.BYTE	'X'-40h
+	.BYTE	'P'-40h
+CCESIZ=!$-ccetbl
+.PAGE

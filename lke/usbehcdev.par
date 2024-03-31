@@ -1,0 +1,253 @@
+;Define capability register offsets (relative to the controler's BAR0 address)
+
+CR_CAPLENGTH=!0x00		;(1) Length of the capability register area
+CR_IVERSION =!0x02		;(2) Interface version
+CR_SPARAMS  =!0x04		;(4) Structual parameters
+CR_CPARAMS  =!0x08		;(4) Capability parameters
+CR_PORTROUTE=!0x0C		;(8) Port route description
+
+;Define operational register offsets (relative to the controler's operational
+;  register base address - all registers are 32 bits wide)
+
+OR_USBCMD   =!0x00		;(R/W)  USB command register
+OR_USBSTS   =!0x04		;(R/WC) USB status register
+OR_USBINTR  =!0x08		;(R/W)  USB interrupt register
+OR_FRINDEX  =!0x0C		;(R/W)  Frame number
+OR_HIGHADDR =!0x10		;(R/W)  High 32 bits of 64-bit addresses
+OR_PERLIST  =!0x14		;(R/W)  Periodic list base address
+OR_ASYNCLIST=!0x18		;(R/W)  Async list head pointer
+OR_SOFMOD   =!0x0C		;(R/W)  Start of frame modify
+OR_CONFIGFLG=!0x40		;(R/WC) Configured flag register
+OR_PORTSC1  =!0x44		;(R/WC) First port (1) status/control
+
+;Define bits in the P_USBCMD register
+
+USBCMD$INTTHRS=!0x00FF0000	;Interrupt threshold control
+USBCMD$PKMENB =!0x00000800	;Asynchronous schedule park mode eable
+USBCMD$PKMCNT =!0x00000300	;Asynchronous schedule park mode count
+USBCMD$LRESET =!0x00000080	;Light host controller reset
+USBCMD$INTADB =!0x00000040	;Interrupt on async doorbell
+USBCMD$ASYNCEN=!0x00000020	;Asynce schedule enable
+USBCMD$PEREN  =!0x00000010	;Periodic schedule enable
+USBCMD$FLSIZE =!0x0000000C	;Frame list size
+USBCMD$RESET  =!0x00000002	;Reset
+USBCMD$RUN    =!0x00000001	;Run/stop
+
+;Define bits in the P_USBSTS register
+
+USBSTS$ASYNCSTS=!0x00008000	;(RO)   Asynce schedule status
+USBSTS$PERSTS  =!0x00004000	;(RO)   Periodic schedule status
+USBSTS$RECLAIM =!0x00002000	;(RO)   Reclamation
+USBSTS$HALTED  =!0x00001000	;(RO)   Controller halted
+USBSTS$ASYNCAIF=!0x00000020	;(R/WC) Async advance interrupt flag
+USBSTS$HSERRIF =!0x00000010	;(R/WC) Host system error interrupt flag
+USBSTS$FRMLSTIF=!0x00000008	;(R/WC) Frame list rollover interrupt flag
+USBSTS$PORTCIF =!0x00000004	;(R/WC) Port change interrupt flag
+USBSTS$ERRORIF =!0x00000002	;(R/WC) Error interrupt flag
+USBSTS$USBIF   =!0x00000001	;(R/WC) USB interrupt flag
+
+;Define bits in the P_USBINTR register
+
+USBINTR$ASYNCAIE=!0x00000020	;(R/WC) Async advance interrupt enable
+USBINTR$HSERRIE =!0x00000010	;(R/WC) Host system error interrupt enable
+USBINTR$FRMLSTIE=!0x00000008	;(R/WC) Frame list rollover interrupt enable
+USBINTR$PORTCIE =!0x00000004	;(R/WC) Port change interrupt enable
+USBINTR$ERRORIE =!0x00000002	;(R/WC) Error interrupt enable
+USBINTE$USBIE   =!0x00000001	;(R/WC) USB interrupt enable
+
+;Define bits in the P_CONFIGFLG register
+
+USB$CFGFLG$PORT=!0x00000001	;(R/W) Enables routing of ports to the EHC
+
+;Define bits in the P_PORTSCn registers
+
+USBPORT$WKOCEN =!0x00400000	;(R/W)  Wake on over-current enable
+USBPORT$WKDISEN=!0x00200000	;(R/W)  Wake on disconnect enable
+USBPORT$WKCONEN=!0x00100000	;(R/W)  Wake on connect enable
+USBPORT$TEST   =!0x000F0000	;(R/W)  Port test cotrol
+USBPORT$IND    =!0x0000C000	;(R/W)  Port indicator control
+USBPORT$OWNER  =!0x00002000	;(R/W)  Port owner control
+USBPORT$POWER  =!0x00001000	;(R/W)  Port power control
+USBPORT$LINESTS=!0x00000C00	;(RO)   Lint status
+USBPORT$RESET  =!0x00000100	;(R/W)  Port reset
+USBPORT$SUSPEND=!0x00000080	;(R/W)  Port suspend
+USBPORT$RESUME =!0x00000040	;(R/W)  Force resume
+USBPORT$OCICHNG=!0x00000020	;(R/WC) Over-current status changed
+USBPORT$OCISTS =!0x00000010	;(RO)   Over-current status
+USBPORT$ENBCHNG=!0x00000008	;(R/WC) Enabled status changed
+USBPORT$ENBSTS =!0x00000004	;(RO)   Enabled status
+USBPORT$CONCHNG=!0x00000002	;(R/WC) Connected status changed
+USBPORT$CONSTS =!0x00000001	;(RO)   Connected status
+
+;Define debug register offsets (relative to the first debug register)
+
+DBR_CTLSTS =!0x00		;(R/W) Control and status (32-bit access only)
+DBR_TOKEN  =!0x04		;(R/W) Token PID
+DBR_DATAPID=!0x05		;(R/W) Data PID
+DBR_RCVDPID=!0x06		;(RO)  Received PID
+DBR_BUFFER =!0x08		;(R/W) Data buffer (byte accessable)
+DBR_ENDPNT =!0x10		;(R/W) Endpoint
+DBR_ADDRESS=!0x11		;(R/W) Device USB address
+
+;We always set up TDs and QHs for 64-bit pointers, although we never put
+;  anything except 0 in the high 32-bits. This wastes some memory if we have
+;  a 32-bit controller, but does mean we only have one version to worry about.
+
+;Define offsets in the queue heads (QH) The physical QH must be aligned on a
+;  32-byte boundry, thus we must waste a few bytes if we are going to start
+;  the allocated block with a label.
+
+$$$=!0
+BLK qh_label , 4t		;Label (QH**)
+BLK qh_paddr , 4t		;Physical address of this QH with Q bit set
+BLK qh_pcb   , 4t		;Address of the PCB
+BLK qh_vnext , 4t		;Virtual address of next QH in hardware list
+				;  (points to qh_label)
+BLK qh_vprev , 4t		;Virtual address of previous QH in hardware list
+				;  (points to qh_label)
+BLK qh_type  , 1t		;Transfer type
+BLK          , 11t		;WARNING: There must be 32 bytes before qh_phead
+				;Start of hardware QH (This must be at offset
+				;  0x40)
+BLK qh_pnext , 4t		;Physical address of next QH in hardware list
+				;  (points to qh_pnext)
+BLK qh_epchar, 4t		;End-point characteristics
+BLK qh_epcap , 4t		;End-point capabilities
+BLK qh_curtd , 4t		;Current TD address
+				;Following is the overlay region which is used
+				;  by the controller during a transfer
+BLK qh_nexttd, 4t		;Next TD address
+BLK qh_alttd , 4t		;Alternate next TD address
+BLK qh_cntsts, 4t		;Count and status
+BLK qh_bufr0 , 4t		;Buffer 0 address
+BLK qh_bufr1 , 4t		;Buffer 1 address
+BLK qh_bufr2 , 4t		;Buffer 2 address
+BLK qh_bufr3 , 4t		;Buffer 3 address
+BLK qh_bufr4 , 4t		;Buffer 4 address
+BLK qh_xbufr0, 4t
+BLK qh_xbufr1, 4t
+BLK qh_xbufr2, 4t
+BLK qh_xbufr3, 4t
+BLK qh_xbufr4, 4t
+				;End of hardware QH
+BLK          , 28t		;Padding needed so arrays of QHs have the
+				;  correct alignment (the entire QH is 128
+				;  bytes, including this padding)
+qh_ehcSIZE=!$$$
+XMBINDEX qh_ehcINDEX, qh_ehcSIZE
+
+;Define values for qh_type
+
+QHTYPE_INT =!1
+QHTYPE_CTRL=!2
+QHTYPE_BULK=!3
+
+;Define offsets in the TD array header block. This block is always the first
+;  element in an array of TDs. Its only purpose is to provide information
+;  when debugging.
+
+$$$=!0
+BLK tdah_label, 4t		;Label (TD** or DTD*)
+BLK tdah_count, 4t		;Number of TDs or DTDs which follow
+BLK           , 24t		;Padding to make this the same size as a TD
+
+;Define offsets in the hardware transfer descriptor (TD) - Since TDs are
+;  almost always allocated in an array in a single XMB, only the hardware
+;  part is needed. An initial 32-byte area at the beginning of the array
+;  contains the TD** label. 
+
+$$$=!0
+BLK td_nexttd, 4t		;Physical address of next TD
+BLK td_alttd , 4t		;Physical address of alternate next TD
+BLK td_cntsts, 4t		;Count and status
+BLK td_bufr0 , 4t		;Physical address of buffer segment 0
+BLK td_bufr1 , 4t		;Physical address of buffer segment 1
+BLK td_bufr2 , 4t		;Physical address of buffer segment 2
+BLK td_bufr3 , 4t		;Physical address of buffer segment 3
+BLK td_bufr4 , 4t		;Physical address of buffer segment 4
+BLK td_xbufr0, 4t
+BLK td_xbufr1, 4t
+BLK td_xbufr2, 4t
+BLK td_xbufr3, 4t
+BLK td_xbufr4, 4t
+BLK td_total , 4t		;Total bytes to transfer (not used by the EHC)
+BLK td_buffer, 4t		;Linear address of the data buffer (not
+				;  used by the EHC - This is only used for
+				;  debugging. It is not need otherwise.)
+BLK          , 4t		;Padding needed so arrays of TDs have the
+				;  correct alignment (the entire TD is 64
+				;  bytes, including this padding)
+td_SIZE=!$$$
+XMBINDEX td_ehcINDEX, td_SIZE
+
+;Define bits and fields in td_cnt
+
+TDCNTSTS$TOGGLE =!0x80000000	;Data toggle bit
+TDCNTSTS$COUNT  =!0x7FFF0000	;Total bytes to transfer
+TDCNTSTS$INTCOMP=!0x00008000	;Interrupt on complete
+TDCNTSTS$CPAGE  =!0x00007000	;Current buffer segment
+TDCNTSTS$ERRCNT =!0x00000C00	;Error counter
+TDCNTSTS$TOKEN  =!0x00000300	;Token type
+TDCNTSTS$ACTIVE =!0x00000080	;Active
+TDCNTSTS$HALTED =!0x00000040	;Halted
+TDCNTSTS$BFRERR =!0x00000020	;Data buffer error (overrun or underrun)
+TDCNTSTS$BABBLE =!0x00000010	;Bable detected
+TDCNTSTS$XACTERR=!0x00000008	;Transaction error
+TDCNTSTS$MISSED =!0x00000004	;Missed micro-frame
+TDCNTSTS$SPLIT  =!0x00000002	;Split transaction state
+TDCNTSTS$PING   =!0x00000001	;Ping state
+TDCNTSTS$ALLERR =!0x0000007C	;All error bits
+
+XMBINDEX PHQHSINX, qh_ehcSIZE*10t+32t+td_SIZE ;Size index for the XMB to hold
+					      ;  the placeholder QHs
+
+;Define the device dependent part of the PDB
+
+$$$=!pcb_devdep
+BLK pcb_ehcqh     ,  4t		;Address of queue header block (QH) - This
+				;  is allocated in a non-cached XMB
+BLK pcb_ehctdxmb  ,  4t		;Virtual address of XMB containing TDs
+BLK pcb_ehctdlast ,  4t		;Address of last TD for current transfer
+BLK pcb_ehcptdaddr,  4t		;Physical address of first TD
+BLK pcb_ehcintphqh,  4t		;Interrupt placeholder QH used
+BLK pcb_ehcpdummytd, 4t		;Physical address of the dummy TD (This is a
+				;  copy of icb_ehcpdummytd included to make
+				;  referencing it a bit easier at fork level.)
+BLK pcb_ehcactnext,  4t
+BLK pcb_ehcactprev,  4t
+BLK pcb_ehctmrcnt ,  4t
+BLK pcb_ehctmrfunc,  4t
+BLK pcb_ehctmrwkb ,  4t
+pcb_ehcSIZE=!$$$
+XMBINDEX ehcpcbsinx, pcb_ehcSIZE
+
+;Define offsets in the device dependent part of the ICB
+
+$$$=icb_devdep
+BLK icb_ehcphyreg  , 4t		;Physical address of the register block
+BLK icb_ehccapreg  , 4t		;Address of the base capabilities register
+BLK icb_ehcopreg   , 4t		;Address of the base operational register
+BLK icb_ehcdbreg   , 4t		;Address of the base debug register
+BLK icb_ehcstatus  , 1t		;Status bits from interrupt level
+BLK                , 3t
+BLK icb_ehcacthead , 4t		;Pointer to first active PCB
+BLK icb_ehcacttail , 4t
+BLK icb_ehctmrhead , 4t
+BLK icb_ehcvpfrmlst, 4t		;Virtual address of the physical address frame
+				;  list
+BLK icb_ehcppfrmlst, 4t		;Physical address of the physical address
+				;  frame list
+BLK icb_ehcasyncpqh, 4t		;Virtual address of control PQH
+BLK icb_ehc1mspqh  , 4t		;Virtual address of 1ms interrupt PQH
+BLK icb_ehc2mspqh  , 4t		;Virtual address of 2ms interrupt PQH
+BLK icb_ehc4mspqh  , 4t		;Virtual address of 4ms interrupt PQH
+BLK icb_ehc8mspqh  , 4t		;Virtual address of 8ms interrupt PQH
+BLK icb_ehc16mspqh , 4t		;Virtual address of 16ms interrupt PQH
+BLK icb_ehc32mspqh , 4t		;Virtual address of 32ms interrupt PQH
+BLK icb_ehc64mspqh , 4t		;Virtual address of 64ms interrupt PQH
+BLK icb_ehc128mspqh, 4t		;Virtual address of 128ms interrupt PQH
+BLK icb_ehc256mspqh, 4t		;Virtual address of 256ms interrupt PQH
+BLK icb_ehcpqh1ms  , 4t		;Physical address of 1ms interrupt PQH
+BLK icb_ehcpdummytd, 4t		;Physical address of the dummy TD
+BLK icb_ehcvdummytd, 4t		;Virtual address of the dummy TD
+icb_ehcSIZE=!$$$

@@ -1,0 +1,604 @@
+	.TITLE	circle
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to draw a circle
+;	void drawcircle(
+;	    WIN *win,		// Pointer to WIN for window
+;	    long x1,		// X position of upper left corner of bounding
+;				//   box
+;	    long y1,		// Y position of upper left corner of bounding
+;				//   box
+;	    long diameter,	// Diameter of circle (width and height of
+;				//   bounding box
+;	    long color);	// Color
+
+;This function uses the Pascal calling sequence
+
+;Octants are	\ 2 | 1 /
+;  numbered as	 \  |  /
+;  show here:	4 \ | / 3
+;		   \|/
+;		---- ----
+;		   /|\
+;		6 / | \ 5
+;		 /  |  \
+;		/ 8 | 7 \
+
+dc_win     =!32t
+dc_x1      =!28t
+dc_y1      =!24t
+dc_diameter=!20t
+dc_color   =!16t
+
+$$$=!0
+FRM dc_thres    , 4t
+FRM dc_major    , 4t
+FRM dc_minor    , 4t
+FRM dc_cnt1     , 4t
+FRM dc_cnt2     , 4t
+FRM dc_rsmmas   , 4t		;Radius squared minus major axis squared
+FRM dc_bytespan , 4t
+FRM dc_pixelspan, 4t
+FRM dc_pp1      , 4t		;Pixel pointer for octant 1
+FRM dc_pp2      , 4t		;Pixel pointer for octant 2
+FRM dc_pp3      , 4t		;Pixel pointer for octant 3
+FRM dc_pp4      , 4t		;Pixel pointer for octant 4
+FRM dc_pp5      , 4t		;Pixel pointer for octant 5
+FRM dc_pp6      , 4t		;Pixel pointer for octant 6
+FRM dc_pp7      , 4t		;Pixel pointer for octant 7
+FRM dc_pp8      , 4t		;Pixel pointer for octant 8
+FRM dc_px17     , 4t		;X coordinate for octants 1 and 7
+FRM dc_px28     , 4t		;X coordinate for octants 2 and 8
+FRM dc_px35     , 4t		;X coordinate for octants 3 and 5
+FRM dc_px46     , 4t		;X coordinate for octants 4 and 6
+FRM dc_py12     , 4t		;Y coordinate for octants 1 and 2
+FRM dc_py34     , 4t		;Y coordinate for octants 3 and 4
+FRM dc_py56     , 4t		;Y coordinate for octants 5 and 6
+FRM dc_py78     , 4t		;Y coordinate for octants 7 and 8
+dc_SIZE=!$$$
+
+2$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+	.ENTRY	xwsDrawCircle
+xwsDrawCircle::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	dc_SIZE, 0
+	MOVL	ECX, dc_diameter[EBP]
+	TESTL	ECX, ECX
+	JS	2$.S			;Make sure diameter not negative
+	MOVL	ESI, dc_win[EBP]
+	MOVL	EAX, win_basdrw[ESI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	2$.S			;Yes
+	MOVL	EAX, win_basxorg[ESI]
+	ADDL	dc_x1[EBP], EAX
+	MOVL	EAX, win_basyorg[ESI]
+	ADDL	dc_y1[EBP], EAX
+	MOVL	ESI, win_bascliprgn[ESI]
+
+	CHECKRGN ESI
+
+;First determine if circle is totally outside the clipping region
+
+	MOVL	EAX, dc_x1[EBP]
+	CMPL	EAX, rgn_right[ESI]	;Completely right?
+	JG	2$.S			;Yes
+	LEAL	EDX, [EAX+ECX]
+	CMPL	EDX, rgn_left[ESI]	;Completely left?
+	JL	2$.S			;Yes
+	MOVL	EBX, dc_y1[EBP]
+	CMPL	EBX, rgn_bottom[ESI]	;Completely below?
+	JG	2$.S			;Yes
+	ADDL	ECX, EBX
+	CMPL	ECX, rgn_top[ESI]	;Completely above?
+	JL	2$.S			;Yes
+
+;Here if circle is not totally outside the clipping region - now initialize
+;  some values we need
+
+	MOVL	EAX, dc_diameter[EBP]
+	MOVL	dc_major[EBP], #0
+	MOVL	dc_minor[EBP], EAX
+	MOVL	EDX, EAX
+	IMULL	EAX, EAX
+	MOVL	dc_rsmmas[EBP], EAX	;Radius**2 - major**2 term
+	SUBL	EAX, EDX
+	MOVL	dc_thres[EBP], EAX	;Threshold term
+	CLRL	EBX			;Get distance to 1st point and 2nd
+	SHRL	EDX, #1t		;  points
+	RCLL	EBX, #2t
+	MOVL	EDI, dc_win[EBP]
+	PUSHL	EBX
+	PUSHL	EDX
+	MOVL	EAX, dc_color[EBP]
+	MOVL	EBX, win_basdrw[EDI]
+	MOVL	EDX, drw_funcdsp[EBX]
+	CALLI	gfx_getcolor[EDX]
+	MOVL	dc_color[EBP], EAX
+	POPL	EDX
+	POPL	EBX
+	MOVL	ECX, win_basdrw[EDI]
+	MOVL	EAX, drw_bytespan[ECX]
+	MOVL	dc_bytespan[EBP], EAX
+	MOVL	EAX, drw_pixelspan[ECX]
+	MOVL	dc_pixelspan[EBP], EAX
+	IMULL	EAX, dc_y1[EBP]		;Calculate the 8 pointers we need for
+	ADDL	EAX, dc_x1[EBP]		;  storing pixels in each of the eight
+	ADDL	EAX, EDX		;  segments we draw
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	dc_pp2[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	dc_pp1[EBP], EAX
+	MOVL	EAX, dc_y1[EBP]
+	ADDL	EAX, dc_diameter[EBP]
+	IMULL	EAX, dc_pixelspan[EBP]
+	ADDL	EAX, dc_x1[EBP]
+	ADDL	EAX, EDX
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	dc_pp8[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	dc_pp7[EBP], EAX
+	MOVL	ECX, EBX
+	IMULL	ECX, dc_pixelspan[EBP]
+	MOVL	EAX, dc_y1[EBP]
+	ADDL	EAX, EDX
+	IMULL	EAX, dc_pixelspan[EBP]
+	ADDL	EAX, dc_x1[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	dc_pp4[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	dc_pp6[EBP], EAX
+	MOVL	EAX, dc_y1[EBP]
+	ADDL	EAX, EDX
+	IMULL	EAX, dc_pixelspan[EBP]
+	ADDL	EAX, dc_x1[EBP]
+	ADDL	EAX, dc_diameter[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	dc_pp3[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	dc_pp5[EBP], EAX
+	CMPB	[ESI], #0		;Simple region?
+	JNE	circlip			;No - must always clip
+	CMPL	EAX, rgn_left[ESI]	;Yes - see if completely inside the
+	JL	circlip		;  region
+	CMPL	EDX, rgn_right[ESI]
+	JGE	circlip
+	CMPL	EBX, rgn_top[ESI]
+	JL	circlip
+	CMPL	ECX, rgn_bottom[ESI]
+	JGE	circlip
+
+;Here to draw a circle without clipping - we get here after determining that
+;  we have a simple clipping region and that the cirle is completely within
+;  the clipping region
+
+	MOVL	ECX, dc_color[EBP]	;Get color value
+	MOVL	EDX, dc_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+8$:	MOVL	EAX, dc_pp1[EBP]	;Store pixel color value into each of
+	MOVW	[EAX], CX		;  the 8 segments
+	MOVL	EAX, dc_pp2[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp3[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp4[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp5[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp6[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp7[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, dc_pp8[EBP]
+	MOVW	[EAX], CX
+	ADDL	dc_major[EBP], #2t	;Increment the major axis value and
+	ADDL	dc_pp1[EBP], #2t	;  each pointer
+	SUBL	dc_pp2[EBP], #2t
+	SUBL	dc_pp3[EBP], EDX
+	SUBL	dc_pp4[EBP], EDX
+	ADDL	dc_pp5[EBP], EDX
+	ADDL	dc_pp6[EBP], EDX
+	ADDL	dc_pp8[EBP], #2t
+	SUBL	dc_pp7[EBP], #2t
+	MOVL	EAX, dc_major[EBP]	;Update the R**2 - MA**2 term
+	ADDL	EAX, EAX
+	DECL	EAX
+	SUBL	dc_rsmmas[EBP], EAX
+	MOVL	EAX, dc_rsmmas[EBP]
+	CMPL	EAX, dc_thres[EBP]	;Need to change minor axis value here?
+	JG	10$.S			;No
+	SUBL	dc_minor[EBP], #2t	;Yes - increment the major axis value
+	ADDL	dc_pp1[EBP], EDX	;Update each pointer
+	ADDL	dc_pp2[EBP], EDX
+	SUBL	dc_pp3[EBP], #2t
+	ADDL	dc_pp4[EBP], #2t
+	SUBL	dc_pp5[EBP], #2t
+	ADDL	dc_pp6[EBP], #2t
+	SUBL	dc_pp8[EBP], EDX
+	SUBL	dc_pp7[EBP], EDX
+	MOVL	EAX, dc_minor[EBP]	;Update the threshold value
+	ADDL	EAX, EAX
+	SUBL	dc_thres[EBP], EAX
+10$:	MOVL	EAX, dc_minor[EBP]	;Are we finished?
+	CMPL	EAX, dc_major[EBP]
+	JGE	8$			;No - continue
+	LEAVE				;Yes
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Here when drawing a circle if need to clip
+;  region
+;	c{EBX} = 0 if diameter is odd, 1 if it is even
+;	c{EDX} = Radius (rounded down)
+
+circlip:SHRL	EBX, #1t
+	MOVL	EAX, dc_x1[EBP]		;Store the absolute X and relative Y
+	ADDL	EAX, EDX		;  coordinates for the initial point
+	MOVL	dc_px28[EBP], EAX	;  in each segment
+	ADDL	EAX, EBX
+	MOVL	dc_px17[EBP], EAX
+	MOVL	EAX, dc_x1[EBP]
+	MOVL	dc_px46[EBP], EAX
+	ADDL	EAX, dc_diameter[EBP]
+	MOVL	dc_px35[EBP], EAX
+	MOVL	EAX, dc_y1[EBP]
+	SUBL	EAX, rgn_top[ESI]
+	MOVL	dc_py12[EBP], EAX
+	ADDL	EAX, dc_diameter[EBP]
+	MOVL	dc_py78[EBP], EAX
+	MOVL	EAX, dc_y1[EBP]
+	SUBL	EAX, rgn_top[ESI]
+	ADDL	EAX, EDX
+	MOVL	dc_py34[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	dc_py56[EBP], EAX
+	MOVL	EBX, rgn_bottom[ESI]
+	SUBL	EBX, rgn_top[ESI]
+	MOVL	ECX, dc_color[EBP]	;Get color value
+	MOVL	EDX, dc_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+	CMPB	rgn_type[ESI], #RGNTYPE_COMPLEX ;Complex clipping region?
+	JGE	circmplx		;Yes - go handle that
+4$:	CMPL	dc_py12[EBP], #0	;Above top of clipping region?
+	JL	8$.S			;Yes - check next point
+	CMPL	dc_py12[EBP], EBX	;Below bottom of clipping region?
+	JG	20$			;Yes - all other points are below!
+	MOVL	EAX, dc_px17[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	6$.S
+	MOVL	EAX, dc_pp1[EBP]
+	MOVW	[EAX], CX
+6$:	MOVL	EAX, dc_px28[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	8$.S
+	MOVL	EAX, dc_pp2[EBP]
+	MOVW	[EAX], CX
+8$:	CMPL	dc_py34[EBP], #0
+	JL	12$.S
+	CMPL	dc_py34[EBP], EBX
+	JG	20$
+	MOVL	EAX, dc_px35[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	10$.S
+	MOVL	EAX, dc_pp3[EBP]
+	MOVW	[EAX], CX
+10$:	MOVL	EAX, dc_px46[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	12$.S
+	MOVL	EAX, dc_pp4[EBP]
+	MOVW	[EAX], CX
+12$:	CMPL	dc_py56[EBP], #0
+	JL	16$.S
+	CMPL	dc_py56[EBP], EBX
+	JG	20$.S
+	MOVL	EAX, dc_px35[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	16$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	14$.S
+	MOVL	EAX, dc_pp5[EBP]
+	MOVW	[EAX], CX
+14$:	MOVL	EAX, dc_px46[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	16$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	16$.S
+	MOVL	EAX, dc_pp6[EBP]
+	MOVW	[EAX], CX
+16$:	CMPL	dc_py78[EBP], #0	;Above top of clipping region?
+	JL	20$.S			;Yes - check next point
+	CMPL	dc_py78[EBP], EBX	;Below bottom of clipping region?
+	JG	20$.S			;Yes - all other points are below!
+	MOVL	EAX, dc_px17[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	20$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	18$.S
+	MOVL	EAX, dc_pp7[EBP]
+	MOVW	[EAX], CX
+18$:	MOVL	EAX, dc_px28[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	20$.S
+	CMPL	EAX, rgn_right[ESI]
+	JG	20$.S
+	MOVL	EAX, dc_pp8[EBP]
+	MOVW	[EAX], CX
+20$:	ADDL	dc_major[EBP], #2t	;Increment the major axis value and
+	ADDL	dc_pp1[EBP], #2t	;  each pointer
+	ADDL	dc_pp7[EBP], #2t
+	INCL	dc_px17[EBP]
+	SUBL	dc_pp2[EBP], #2t
+	SUBL	dc_pp8[EBP], #2t
+	DECL	dc_px28[EBP]
+	SUBL	dc_pp3[EBP], EDX
+	SUBL	dc_pp4[EBP], EDX
+	DECL	dc_py34[EBP]
+	ADDL	dc_pp5[EBP], EDX
+	ADDL	dc_pp6[EBP], EDX
+	INCL	dc_py56[EBP]
+	MOVL	EAX, dc_major[EBP]	;Update the R**2 - MA**2 term
+	ADDL	EAX, EAX
+	DECL	EAX
+	SUBL	dc_rsmmas[EBP], EAX
+	MOVL	EAX, dc_rsmmas[EBP]
+	CMPL	EAX, dc_thres[EBP]	;Need to change minor axis value here?
+	JG	24$.S			;No
+	SUBL	dc_minor[EBP], #2t	;Yes - increment the major axis value
+	ADDL	dc_pp1[EBP], EDX	;Update each pointer
+	ADDL	dc_pp2[EBP], EDX
+	INCL	dc_py12[EBP]
+	SUBL	dc_pp3[EBP], #2t
+	SUBL	dc_pp5[EBP], #2t
+	DECL	dc_px35[EBP]
+	ADDL	dc_pp4[EBP], #2t
+	ADDL	dc_pp6[EBP], #2t
+	INCL	dc_px46[EBP]
+	SUBL	dc_pp7[EBP], EDX
+	SUBL	dc_pp8[EBP], EDX
+	DECL	dc_py78[EBP]
+	MOVL	EAX, dc_minor[EBP]	;Update the threshold value
+	ADDL	EAX, EAX
+	SUBL	dc_thres[EBP], EAX
+24$:	MOVL	EAX, dc_minor[EBP]	;Are we finished?
+	CMPL	EAX, dc_major[EBP]
+	JGE	4$			;No - continue
+	LEAVE				;Yes
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Here when drawing a circle if need to clip and we have a complex clipping
+;  region
+
+circmplx:
+	MOVL	EAX, dc_py12[EBP]	;Above top of clipping region?
+	TESTL	EAX, EAX
+	JS	14$.S			;Yes - check next point
+	CMPL	EAX, EBX		;Below bottom of clipping region?
+	JG	50$			;Yes - all other points are below!
+	MOVL	EDI, rgn_ytable[ESI+EAX*4]
+	TESTL	EDI, EDI
+	JE	14$.S
+	ADDL	EDI, ESI
+	MOVL	EAX, [EDI]
+	MOVL	dc_cnt1[EBP], EAX
+	MOVL	dc_cnt2[EBP], EAX
+	ADDL	EDI, #4t
+	PUSHL	EDI
+	MOVL	EAX, dc_px17[EBP]
+4$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	8$.S
+	CMPL	EAX, 4[EDI]
+	JLE	6$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt1[EBP]
+	JNE	4$.S
+	JMP	8$.S
+
+6$:	MOVL	EAX, dc_pp1[EBP]
+	MOVW	[EAX], CX
+8$:	POPL	EDI
+	MOVL	EAX, dc_px28[EBP]
+10$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	14$.S
+	CMPL	EAX, 4[EDI]
+	JLE	12$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt2[EBP]
+	JNE	10$.S
+	JMP	14$.S
+
+12$:	MOVL	EAX, dc_pp2[EBP]
+	MOVW	[EAX], CX
+14$:	MOVL	EAX, dc_py34[EBP]
+	TESTL	EAX, EAX
+	JS	26$.S
+	CMPL	EAX, EBX		;Below bottom of clipping region?
+	JG	50$			;Yes - all other points are below!
+	MOVL	EDI, rgn_ytable[ESI+EAX*4]
+	TESTL	EDI, EDI
+	JE	26$.S
+	ADDL	EDI, ESI
+	MOVL	EAX, [EDI]
+	MOVL	dc_cnt1[EBP], EAX
+	MOVL	dc_cnt2[EBP], EAX
+	ADDL	EDI, #4t
+	PUSHL	EDI
+	MOVL	EAX, dc_px35[EBP]
+16$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	20$.S
+	CMPL	EAX, 4[EDI]
+	JLE	18$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt1[EBP]
+	JNE	16$.S
+	JMP	20$.S
+
+18$:	MOVL	EAX, dc_pp3[EBP]
+	MOVW	[EAX], CX
+20$:	POPL	EDI
+	MOVL	EAX, dc_px46[EBP]
+22$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	26$.S
+	CMPL	EAX, 4[EDI]
+	JLE	24$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt2[EBP]
+	JNE	22$.S
+	JMP	26$.S
+
+24$:	MOVL	EAX, dc_pp4[EBP]
+	MOVW	[EAX], CX
+26$:	MOVL	EAX, dc_py56[EBP]	;Above top of clipping region?
+	TESTL	EAX, EAX
+	JS	38$.S			;Yes - check next point
+	CMPL	EAX, EBX		;Below bottom of clipping region?
+	JG	50$			;Yes - all other points are below!
+	MOVL	EDI, rgn_ytable[ESI+EAX*4]
+	TESTL	EDI, EDI
+	JE	38$.S
+	ADDL	EDI, ESI
+	MOVL	EAX, [EDI]
+	MOVL	dc_cnt1[EBP], EAX
+	MOVL	dc_cnt2[EBP], EAX
+	ADDL	EDI, #4t
+	PUSHL	EDI
+	MOVL	EAX, dc_px35[EBP]
+28$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	32$.S
+	CMPL	EAX, 4[EDI]
+	JLE	30$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt1[EBP]
+	JNE	28$.S
+	JMP	32$.S
+
+30$:	MOVL	EAX, dc_pp5[EBP]
+	MOVW	[EAX], CX
+32$:	POPL	EDI
+	MOVL	EAX, dc_px46[EBP]
+34$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	38$.S
+	CMPL	EAX, 4[EDI]
+	JLE	36$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt2[EBP]
+	JNE	34$.S
+	JMP	38$.S
+
+36$:	MOVL	EAX, dc_pp6[EBP]
+	MOVW	[EAX], CX
+38$:	MOVL	EAX, dc_py78[EBP]	;Above top of clipping region?
+	TESTL	EAX, EAX
+	JS	50$.S			;Yes - check next point
+	CMPL	EAX, EBX		;Below bottom of clipping region?
+	JG	50$.S			;Yes - all other points are below!
+	MOVL	EDI, rgn_ytable[ESI+EAX*4]
+	TESTL	EDI, EDI
+	JE	50$.S
+	ADDL	EDI, ESI
+	MOVL	EAX, [EDI]
+	MOVL	dc_cnt1[EBP], EAX
+	MOVL	dc_cnt2[EBP], EAX
+	ADDL	EDI, #4t
+	PUSHL	EDI
+	MOVL	EAX, dc_px17[EBP]
+40$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	44$.S
+	CMPL	EAX, 4[EDI]
+	JLE	42$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt1[EBP]
+	JNE	40$.S
+	JMP	44$.S
+
+42$:	MOVL	EAX, dc_pp7[EBP]
+	MOVW	[EAX], CX
+44$:	POPL	EDI
+	MOVL	EAX, dc_px28[EBP]
+46$:	CMPL	EAX, [EDI]		;To left of this segment?
+	JL	50$.S
+	CMPL	EAX, 4[EDI]
+	JLE	48$.S
+	ADDL	EDI, #8t
+	DECL	dc_cnt2[EBP]
+	JNE	46$.S
+	JMP	50$.S
+
+48$:	MOVL	EAX, dc_pp8[EBP]
+	MOVW	[EAX], CX
+50$:	ADDL	dc_major[EBP], #2t	;Increment the major axis value and
+	ADDL	dc_pp1[EBP], #2t	;  each pointer
+	ADDL	dc_pp7[EBP], #2t
+	INCL	dc_px17[EBP]
+	SUBL	dc_pp2[EBP], #2t
+	SUBL	dc_pp8[EBP], #2t
+	DECL	dc_px28[EBP]
+	SUBL	dc_pp3[EBP], EDX
+	SUBL	dc_pp4[EBP], EDX
+	DECL	dc_py34[EBP]
+	ADDL	dc_pp5[EBP], EDX
+	ADDL	dc_pp6[EBP], EDX
+	INCL	dc_py56[EBP]
+	MOVL	EAX, dc_major[EBP]	;Update the R**2 - MA**2 term
+	ADDL	EAX, EAX
+	DECL	EAX
+	SUBL	dc_rsmmas[EBP], EAX
+	MOVL	EAX, dc_rsmmas[EBP]
+	CMPL	EAX, dc_thres[EBP]	;Need to change minor axis value here?
+	JG	52$.S			;No
+	SUBL	dc_minor[EBP], #2t	;Yes - increment the major axis value
+	ADDL	dc_pp1[EBP], EDX	;Update each pointer
+	ADDL	dc_pp2[EBP], EDX
+	INCL	dc_py12[EBP]
+	SUBL	dc_pp3[EBP], #2t
+	SUBL	dc_pp5[EBP], #2t
+	DECL	dc_px35[EBP]
+	ADDL	dc_pp4[EBP], #2t
+	ADDL	dc_pp6[EBP], #2t
+	INCL	dc_px46[EBP]
+	SUBL	dc_pp7[EBP], EDX
+	SUBL	dc_pp8[EBP], EDX
+	DECL	dc_py78[EBP]
+	MOVL	EAX, dc_minor[EBP]	;Update the threshold value
+	ADDL	EAX, EAX
+	SUBL	dc_thres[EBP], EAX
+52$:	MOVL	EAX, dc_minor[EBP]	;Are we finished?
+	CMPL	EAX, dc_major[EBP]
+	JGE	circmplx		;No - continue
+	LEAVE				;Yes
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+	.END

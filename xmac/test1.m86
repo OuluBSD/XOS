@@ -1,0 +1,18 @@
+	.TITLE	TEST - test program for M86
+	.SBTTL	This is a sub-title
+
+	.PROC	80386
+	.SEG	seg32,32BIT
+	.MSECT	msect32,seg32,READ,WRITE
+	.PSECT	psect32,msect32
+
+
+bb:	MOVB	AL, 84.B[EDI]
+bbb:	JMP	aaa.S
+	.BLKB	103h
+aaa:	.BYTE	0
+	JMP	bbb.S
+
+
+$=bb+0x1DD
+	.BYTE	2

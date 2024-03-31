@@ -1,0 +1,129 @@
+;*****************************************************************************
+;*
+;*                            Open Watcom Project
+;*
+;*    Portions Copyright (c) 1983-2002 Sybase, Inc. All Rights Reserved.
+;*
+;*  ========================================================================
+;*
+;*    This file contains Original Code and/or Modifications of Original
+;*    Code as defined in and that are subject to the Sybase Open Watcom
+;*    Public License version 1.0 (the 'License'). You may not use this file
+;*    except in compliance with the License. BY USING THIS FILE YOU AGREE TO
+;*    ALL TERMS AND CONDITIONS OF THE LICENSE. A copy of the License is
+;*    provided with the Original Code and Modifications, and is also
+;*    available at www.sybase.com/developer/opensource.
+;*
+;*    The Original Code and all software distributed under the License are
+;*    distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+;*    EXPRESS OR IMPLIED, AND SYBASE AND ALL CONTRIBUTORS HEREBY DISCLAIM
+;*    ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF
+;*    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR
+;*    NON-INFRINGEMENT. Please see the License for the specific language
+;*    governing rights and limitations under the License.
+;*
+;*****************************************************************************
+
+;++++
+; Modifications to this software are in the public domain.  It may be freely
+; copied and used for whatever purpose you see fit, including commerical
+; uses, remembering that the original part of this software is still covered
+; by the Open Watcom license. uses.  Anyone modifying this software may claim
+; ownership of the modifications, but not the complete derived code.  It would
+; be appreciated if the authors were told what this software is being used
+;  for, but this is not a requirement.
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+	.INCLUD	XOSINC:\xmac\ctype.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+
+;Function to shift an unsigned 64-bit value right
+;	c{EDX,EAX} = Value to shift
+;	c{EBX}     = Shift count
+;	CALL	__U8RS
+;	c{EDX,EAX} = Shifted value
+
+	.ENTRY	__U8RS
+__U8RS:	MOVL	ECX, EBX		;Get shift-count into CL
+	ANDL	ECX, #0x03F		;Get mod 64 shift count
+	TESTB	CL, #0x020		;Is count >= 32?
+	JNE	10$
+	SHRDL	EAX, EDX, CL
+	SHRL	EDX, CL
+	RET
+
+;Here if shifting more than 32 bits
+
+10$:	MOVL	EAX, EDX		;Shift by 32 bits
+	CLRL	EDX
+        SUBL	ECX, #0x20
+	SHRL	EAX, CL			;Shift the rest
+	RET
+
+
+;Function to shift a signed 64-bit value right
+;	c{EDX,EAX} = Value to shift
+;	c{EBX}     = Shift count
+;	CALL	__I8RS
+;	c{EDX,EAX} = Shifted value
+
+	.ENTRY	__I8RS
+__I8RS:	MOVL	ECX, EBX		;Get shift-count into CL
+	ANDL	ECX, #0x03F		;Get mod 64 shift count
+        TESTB	CL, #0x20		;Is count >= 32?
+        JNE	20$			;Yes
+	SHRDL	EAX, EDX, CL		;No
+	SARL	EDX, CL
+	RET
+
+;Here if shifting more than 32 bits
+
+20$:	MOVL	EAX, EDX		;Shift by 32 bits
+	SUBL	ECX, #0x20
+	SARL	EDX, #31t		;Sign extend high word
+        SARL	EAX, CL			;Shift the reset
+	RET
+
+
+;Function to shift a signed or unsigned 64-bit value left
+;	c{EDX,EAX} = Value to shift
+;	c{EBX}     = Shift count
+;	CALL	__I8LS or __U8LS
+;	c{EDX,EAX} = Shifted value
+
+	.ENTRY	__I8LS, __U8LS
+__I8LS:
+__U8LS:	MOVL	ECX, EBX		;Get shift-count into CL
+	ANDL	ECX, #0x03F		;Get mod 64 shift count
+        TESTB	CL, #0x20		;Is count >= 32?
+        JNE	30$			;Yes
+	SHLDL	EDX, EAX, CL
+	SHLL	EAX, CL
+	RET
+
+;Here if shifting more than 32 bits
+
+30$:	MOVL	EDX, EAX		;Shift by 32 bits
+	CLRL	EAX
+        SUBL	ECX, #0x20
+        SHLL	EDX, CL			;Shift remaining part
+	RET
+
+	.END

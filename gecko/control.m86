@@ -1,0 +1,785 @@
+	.TITLE	control - Program control routines for GECKO
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	XOSINC:/xmac/xos.par
+	.INCLUD	XOSINC:/xmac/xostrm.par
+	.INCLUD	XOSINC:/xmac/xosrun.par
+	.INCLUD	gecko.par
+
+	CODE
+
+;Here for the T command - Trace instruction
+
+2$:	RET
+
+trace::	CALL	txgset			;Do common set up
+	JC	2$
+	PUSHL	opnaddr#		;Save current address
+	PUSHL	opnstate#
+4$:	PUSHL	uregCS#
+	PUSHL	uregEIP#
+	CALL	single			;Execute single instruction
+	MOVB	AL, #HT			;Start with a tab
+	CALL	outchr#
+	POPL	EBX
+	POPL	EDX
+6$:	MOVB	segchgd#, #0
+	CALL	dspins#			;Display the instruction
+	CMPB	segchgd#, #0		;Was this an instruction which changed
+					;  a segment register?
+	JE	8$			;No - go on
+	MOVZBL	EBX, opnsiz#		;Yes - see if need to display next
+	ADDL	EBX, opnaddr#		;  instruction too
+	CMPL	uregEIP, EBX
+	JE	8$			;No
+	MOVB	AL, #'*'		;Yes
+	CALL	outchr#
+	CALL	outtab#
+	MOVL	EDX, uregCS#
+	JMP	6$
+
+;Here if instruction displayed did not change a segment register
+
+8$:	DECL	repcnt#			;Execute another instruction?
+	JG	4$			;Yes
+	POPL	opnstate#		;No - restore current address
+	POPL	opnaddr#
+	JMP	exec10			;Finish with common code
+.PAGE
+;Here on X command - Execute instruction
+
+execut::CALL	txgset
+
+;;;;	PUSHL	#0x48
+;;;;	POPL	ES
+;;;;	MOVW	ES:0, #0x0600+'4'
+;;;;	JMP	$
+
+	JC	6$
+4$:	CALL	single			;Execute single instruction
+	DECL	repcnt#			;OK - more?
+	JG	4$			;Yes - do another instruction
+exec10:	MOVL	EBX, #exems1#		;Tell him what happened
+	JMP	bpten6			;Continue
+
+6$:	RET
+.PAGE
+	.SBTTL	txgset - Subroutine to do common set up for T, X, and G commands
+
+;Subroutine to do common set up for T, X, and G commands
+;	CALL	txgset
+;	C:set = Error
+;	C:clr = Normal
+
+txgset:	CLRL	EAX
+	MOVL	repcnt#, EAX		;Initialize the repeat count
+	CALL	getfld#			;Get value
+	JC	4$			;If error
+	CMPB	notnul#, #0		;Was an address given?
+	JE	4$			;No
+	MOVL	EAX, value#		;Yes - get offset
+	TESTL	EAX, EAX
+	JE	2$
+	MOVL	uregEIP#, EAX
+	MOVL	uregCS#, #GS_UCODE
+2$:	CALL	getcount#		;Get count
+	JC	4$
+	MOVL	repcnt#, EAX
+	CALL	chkend#
+	JC	ret100
+	CALL	outcrl#
+	CLC
+4$:	RET
+
+
+ret100:	RET
+.PAGE
+	.SBTTL	startp - G command - Start or continue program
+
+;Here on G command - Start or continue program
+
+startp::CALL	txgset			;Get address and count
+
+;;;;	PUSHL	#0x48
+;;;;	POPL	ES
+;;;;	MOVW	ES:0, #0x0600+'5'
+;;;;	JMP	$
+
+	JC	ret100			;If error
+	CALL	outcrl			;Output a carrage return
+	CMPL	repcnt, #0		;Repeat count specified?
+	JE	strt08			;No
+	MOVL	ESI, curbpt		;Yes - currently at a breakpoint?
+	TESTL	ESI, ESI
+	JE	strt08			;No - ignore the count!
+	MOVL	curbpt, #0		;Yes - but not any more
+	MOVL	EAX, cbpaddr#		;Get current EIP
+	CMPL	bt_addr[ESI], EAX	;See if still have this address
+	JNE	strt08			;No
+	MOVL	EAX, repcnt#		;Yes - update proceed count
+	MOVL	bt_cnt[ESI], EAX
+strt08:	MOVB	wptgrnt#, #0
+	CALL	single			;Execute one instruction
+	CMPB	wptgrnt#, #0		;Did we have a watchpoint?
+	JNE	ret100			;Yes - stop now
+	MOVL	EDI, #bpttbl#		;No - point to breakpoint table
+	MOVL	ECX, #BPTNUM
+10$:	CMPB	[EDI], #0		;Is this breakpoint in use?
+	JE	12$			;No - go on
+	MOVL	EBX, bt_addr[EDI]	;Yes - get address
+	CALL	getmbyte#		;Get current value
+	JC	12$
+	MOVB	bt_ins[EDI], AL		;Save it
+	MOVB	AL, #0xCC		;Get INT3
+	CALL	putmbyte#		;Store it
+12$:	ADDL	EDI, #bt_ENSZ		;Bump pointer
+	LOOP	ECX, 10$		;Continue if more
+	JMP	singl2			;Go return to user
+.PAGE
+	.SBTTL	setbkp - BS command - Set breakpoint
+
+;Here on the BS command - Set breakpoint
+
+setbkp::CALL	getaddr			;Get address
+	JC	4$
+	CMPB	notnul, #0		;Must have an address
+	JE	noaerr
+	PUSHL	EBX
+	PUSHL	EDX
+	CALL	getcount#		;Get count if one was given
+	JC	2$
+	CALL	chkend#
+2$:	POPL	EDX
+	POPL	EBX
+4$:	JC	ret102
+	CALL	fndbkp			;Search for address in breakpoint table
+	JC	tmberr			;If not there and table is full
+	MOVL	bt_addr[EDI], EBX	;Store address in table
+6$:	MOVL	EAX, value		;Store initial count in table
+	MOVL	bt_cnt[EDI], EAX
+	CALL	getmbyte#		;Get byte to change
+	JC	hvaerr#
+	MOVB	bt_ins[EDI], AL		;Save it
+	MOVB	[EDI], #BP$BRK		;Indicate this breakpoint is in use
+setbk6:	JMP	outtab
+
+;Here if breakpoint error
+
+noaerr:	MOVL	EBX, #noamsg#
+	JMP	12$
+
+nbperr:	MOVL	EBX, #nbpmsg#
+	JMP	12$
+
+tmberr:	MOVL	EBX, #tmbmsg#		;Complain
+12$:	JMP	outstrca
+.PAGE
+;Here on the BR command - Remove breakpoint
+
+rmvbkp::CALL	getaddr			;Get the address
+	JC	ret102			;If error
+	CALL	chkend#
+	JC	ret102
+	CMPB	notnul, #0		;Was an address given?
+	JE	noaerr			;No - fail
+	CALL	fndbkp			;Search the breakpoint table
+	JNE	nbperr			;If not in table
+	MOVB	[EDI], #0		;Remove entry
+ret102:	RET
+.PAGE
+;Here on the BC command - Clear all breakpoints
+
+clrbkp::CALL	chkend#			;No arguments allowed
+	JC	ret102
+	MOVL	EDI, #bpttbl		;Remove all breakpoints
+	MOVL	ECX, #BPTNUM
+2$:	MOVB	[EDI], #0
+	ADDL	EDI, #bt_ENSZ
+	LOOP	ECX, 2$
+	RET
+.PAGE
+;Here on the BL command - List all breakpoints
+
+lstbkp::CALL	chkend#			;No arguments allowed
+	JC	ret102
+	MOVB	hdrflg, #0
+	MOVL	EDI, #bpttbl		;Point to breakpoint table
+	MOVL	ECX, #BPTNUM
+6$:	CMPB	[EDI], #0		;Is this breakpoint in use?
+	JE	8$			;No - go on
+	PUSHL	ECX			;Yes
+	PUSHL	EDI
+	CMPB	hdrflg, #0		;Have we output the header yet?
+	JNE	7$			;Yes
+	MOVL	EBX, #lsbmsg#		;No - output header
+	CALL	outstr
+	MOVB	hdrflg, #1
+7$:	CALL	outcrl
+	MOVL	EAX, bt_cnt[EDI]	;Get count
+	MOVB	BL, #5
+	CALL	outdec			;Output it
+	MOVL	EBX, #sp3str#
+	CALL	outstr
+	POPL	EDI
+	PUSHL	EDI
+	MOVL	EAX, bt_addr[EDI]	;Get breakpoint address
+	CALL	outaddr			;Output it
+	POPL	EDI
+	POPL	ECX
+8$:	ADDL	EDI, #bt_ENSZ		;Bump pointer
+	CMPB	cciflg, #0		;Is he trying to stop us?
+	JNE	ret103			;Yes
+	LOOP	ECX, 6$			;No - continue if more to check
+	CMPB	hdrflg, #0		;Did we display anything?
+	JNE	ret103			;Yes
+	MOVL	EBX, #nobmsg#		;No - tell him so
+	JMP	outstrca
+
+ret103:	RET
+.PAGE
+;Here on the WSWB command - Set data write watchpoint on a byte
+
+setwbwtp::
+	MOVL	EAX, #0x0102
+	JMP	setwpcm
+
+;Here on the WSAB command - Set data access watchpoint on a byte
+
+setabwtp::
+	MOVL	EAX, #0x0103
+	JMP	setwpcm
+
+;Here on the WSWW command - Set data write watchpoint on a word
+
+setwwwtp::
+	MOVL	EAX, #0x0202
+	JMP	setwpcm
+
+;Here on the WSAW command - Set data access watchpoint on a word
+
+setawwtp::
+	MOVL	EAX, #0x0203
+	JMP	setwpcm
+
+;Here on the WSWL command - Set data write watchpoint on a long
+
+setwlwtp::
+	MOVL	EAX, #0x0302
+	JMP	setwpcm
+
+;Here on the WSAL command - Set data access watchpoint on a long
+
+setalwtp::
+	MOVL	EAX, #0x0303
+setwpcm:PUSHL	EAX
+	CALL	getfld#			;Get the value
+	POPL	EAX
+	JC	ret103			;If error
+	CMPB	notnul#, #0		;Null item?
+	JE	6$			;Yes - fail
+	CMPB	valtyp#, #VL_LONG	;No - long?
+	JNE	notaddr			;No - error
+4$:	MOVL	EBX, value#		;Get address
+	JMP	8$
+
+;Here on the WSI command - Set instruction watchpoint
+
+setiwtp::
+	CALL	getaddr			;Get address
+	JC	ret104			;If error
+	CMPB	notnul, #0		;Was an address given?
+6$:	JE	noaerr			;No - error!
+	MOVL	EAX, #0x0101
+8$:	PUSHL	EAX
+	CALL	fndwtp			;Yes - search the watchpoint table
+	POPL	ECX
+	JC	tmwerr			;If not there and table is full
+	MOVB	wt_type[EDI], CL	;Store watchpoint type in table
+	MOVB	wt_size[EDI], CH	;Also store the size
+	MOVL	wt_addr[EDI], EBX	;Store address in table
+	PUSHL	EAX
+	PUSHL	EDX
+	PUSHL	EBX
+	CALL	getfld#			;Get watchpoint data value
+	CLRL	ECX
+	ANDB	[EDI], #~WP$DATA
+	CMPB	notnul#, #0
+	JE	12$
+	ORB	[EDI], #WP$DATA
+	MOVL	ECX, value#
+12$:	MOVL	wt_data[EDI], ECX	;Store it
+
+;;;;;;	MOVL	EAX, valofs#		;Store initial count in table
+
+	CLRL	EAX
+	MOVL	wt_cnt[EDI], EAX
+	POPL	EBX
+	POPL	EDX
+	POPL	EAX
+	MOVB	CL, wt_type[EDI]
+	MOVB	CH, wt_size[EDI]
+	CALL	wptsetclr#		;Set the hardware watchpoint
+	JC	eschwp			;If error
+	ORB	[EDI], #WP$ACT		;OK - indicate this watchpoint is in use
+	JMP	outtab#
+
+eschwp:	MOVL	EBX, #escwmsg#
+	JMP	14$
+
+ret104:	RET
+
+tmwerr:	MOVL	EBX, #tmwmsg#
+14$:	JMP	outstrca#
+.PAGE
+;Here on the WR command - Remove watchpoint
+
+rmvwtp::CALL	getaddr			;Get the address
+	JC	ret104			;If error
+	CMPB	notnul#, #0		;Was an address given?
+	JE	noaerr			;No - fail
+	CALL	fndwtp			;Search watchpoint table
+	JNE	nwperr			;Error if not there
+	MOVB	[EDI], #0		;Clear table
+	MOVB	CL, #0			;Also clear the hardware
+	CALL	wptsetclr
+	JC	eschwp
+	RET
+
+nwperr:	MOVL	EBX, #nwpmsg#
+	JMP	outstrca
+.PAGE
+;Here on the WC command - Clear all watchpoints
+
+clrwtp::CALL	chkend#			;No arguments allowed
+	JC	ret105
+	CLRL	EAX			;Remove all watchpoints
+	MOVL	EDI, #wpttbl#
+4$:	TESTB	[EDI], #WP$ACT		;Is this one in use?
+	JE	6$			;No
+	MOVB	[EDI], #0		;Yes - indicate not in use now
+	PUSHL	EAX			;Clear the hardware watchpoint
+	PUSHL	EDI
+	MOVB	CL, #0
+	CALL	wptsetclr
+	POPL	EDI
+	POPL	EAX
+	JC	eschwp
+6$:	ADDL	EDI, #wt_ENSZ
+	INCL	EAX
+	CMPB	AL, #3
+	JBE	4$
+ret105:	RET
+.PAGE
+;Here on the WL command - List all watchpoints
+
+lstwtp::CALL	chkend#			;No arguments allowed
+	JC	ret105
+	MOVB	hdrflg, #0
+	MOVL	EDI, #wpttbl#		;Point to watchpoint table
+	MOVL	ECX, #4
+2$:	CMPB	[EDI], #0		;Is this watchpoint in use?
+	JE	12$			;No - go on
+	PUSHL	ECX			;Yes
+	PUSHL	EDI
+	CMPB	hdrflg, #0		;Have we output the header yet?
+	JNE	4$			;Yes
+	MOVL	EBX, #lswmsg#		;No - output header
+	CALL	outstr
+	MOVB	hdrflg, #1
+4$:	CALL	outcrl#
+	CALL	outspa#
+	CALL	outspa#
+	MOVZBL	EAX, wt_type[EDI]	;Get watchpoint type
+	MOVB	AL, wptype-1[EAX]
+	CALL	outchr#
+	MOVB	AL, #' '		;Assume instruction watchpoint
+	CMPB	wt_type[EDI], #1	;Right?
+	JE	6$			;Yes
+	MOVZBL	EAX, wt_size[EDI]	;No - get watchpoint size
+	MOVB	AL, wpsize-1[EAX]	;Get corresponding letter
+6$:	CALL	outchr#
+	CALL	outspa#
+	MOVL	EAX, wt_cnt[EDI]	;Get count
+	MOVB	BL, #5
+	CALL	outdec#			;Output it
+	MOVL	EBX, #sp3str#
+	CALL	outstr#
+	POPL	EDI
+	PUSHL	EDI
+	TESTB	[EDI], #WP$DATA		;Have a data value?
+	JNE	8$			;Yes
+	MOVL	EBX, #lswndv#		;No
+	CALL	outstr#
+	JMP	10$
+
+8$:	MOVL	EAX, wt_data[EDI]	;Get watchpoint data value
+	CALL	out8hx#			;Output it
+10$:	MOVL	EBX, #sp3str#
+	CALL	outstr#
+	POPL	EDI
+	PUSHL	EDI
+	MOVL	EAX, wt_addr[EDI]	;Get watchpoint address
+	CALL	outaddr#		;Output it
+	POPL	EDI
+	POPL	ECX
+12$:	ADDL	EDI, #wt_ENSZ		;Bump pointer
+	CMPB	cciflg#, #0		;Is he trying to stop us?
+	JNE	14$			;Yes
+	DECL	ECX
+	JNE	2$			;No - continue if more to check
+	CMPB	hdrflg#, #0		;Did we display anything?
+	JNE	14$			;Yes
+	MOVL	EBX, #nowmsg#		;No - tell him so
+	JMP	outstrca#
+
+14$:	RET
+
+wptype:	.ASCII	"IWA"
+wpsize: .ASCII	"BWL"
+.PAGE
+	.SBTTL	intent - Interrupt entry point
+
+;Here whenever user program is interrupted
+
+intent::CALL	entgecko#		;Do common entry stuff
+	MOVL	EBX, #in0msg#
+	CALL	outstr
+	MOVL	EAX, uregIP#
+	JMP	8$			;Continue
+
+;Protection error trap entry point
+
+perint::CALL	entgecko#
+	MOVL	EBX, #permsg#
+	JMP	bpten6
+
+;Page fault error trap entry point
+
+ferint::CALL	entgecko#
+	MOVL	EBX, #fermsg#
+	JMP	bpten6
+
+;Segment not present error trap entry point
+
+nerint::CALL	entgecko#
+	MOVL	EBX, #nermsg#
+	JMP	bpten6
+
+;Illegal instruction error trap entry point
+
+illinsint::
+	CALL	entgecko#
+	MOVL	EBX, #illinsmsg#
+	JMP	bpten6
+
+;Breakpoint entry point - get here whenever INT3 is executed
+
+bptent::CALL	entgecko#		;Do common entry stuff
+	MOVL	curbpt#, ESI		;Remember the current breakpoint
+	ORL	ESI, ESI		;Did we find it in the table?
+	JNE	2$			;Yes
+	MOVL	EBX, #bp0msg#		;No
+	CALL	outstr#			;Start the message
+	MOVL	EBX, #unxmsg#		;Tell him it was unexpected
+	CALL	outstr#
+	MOVL	EBX, #bp2msg#
+	CALL	outstr#
+	MOVL	EAX, uregIP#
+	DECL	EAX
+	JMP	8$
+
+;Here if address of this breakpoint is in our table
+
+2$:	MOVL	EAX, bt_addr[ESI]	;Remember EIP for current breakpoint
+	MOVL	cbpaddr, EAX
+	DECL	uregIP			;Fix up the saved PC value
+	CMPL	bt_cnt[ESI], #0		;Have repeat count for this one?
+	JE	4$			;No - go on
+	DECL	bt_cnt[ESI]		;Yes - reduce the count
+	JMP	strt08			;Continue execution
+
+;Here if should really stop for this breakpoint
+
+4$:	MOVL	EBX, #bp0msg#		;Start the message
+	CALL	outstr
+	MOVL	EBX, #bp1msg#		;Output rest of message
+bpten6::CALL	outstr#
+	MOVL	EAX, uregEIP#
+8$:	MOVL	EDX, uregCS#		;Display IP
+	JMP	outaddr#
+.PAGE
+	.SBTTL	single - Subroutine to execute single instruction for user
+
+;Subroutine to execute single instruction for user
+;	CALL	single
+;	C:set = Error (message already output)
+
+single::ORB	uregEFR+1, #FLAG$T/100h	;Set the trace trap flag
+	MOVB	trctrpf#, #1		;Indicating expecting trace trap
+singl2:	PUSHL	#0x80000000|DH_STDTRM	;Turn off debug inputmode
+	CALL	svcTrmDebugIn##
+	CALL	rstusr#			;Restore user registers
+	MOVL	xESP#, ESP		;Save GECKO's stack pointer
+	CMPL	userchr#, #0		;Need to send a character to the user
+					;  program?
+	JE	6$			;No
+	PUSHL	#DH_STDTRM		;Yes
+	PUSHL	userchr#
+	MOVL	userchr#, #0		;Only do it once
+	CALL	svcTrmInsertChr##
+6$:	TESTB	uregEFR#+2, #02		;V86 mode image?
+	JNE	8$			;Yes
+	MOVL	SS, uregSS#		;No - restore user stack pointer
+	MOVL	ESP, uregESP#
+	JMP	10$
+
+8$:	MOVL	SS, uSS#		;Restore actual user stack pointer
+	MOVL	ESP, uESP#
+	PUSHL	uregSS#
+	PUSHL	uregESP#
+10$:	PUSHL	#0			;Stack 0 interrupt item count
+	PUSHL	uregEFR#		;Stack flag bits
+	PUSHL	uregCS#			;Stack code segment selector
+	PUSHL	uregEIP#		;Stack code segment offset
+	PUSHL	uregDS#			;Stack segment registers
+	PUSHL	uregES#
+	PUSHL	uregFS#
+	PUSHL	uregGS#
+	INT	knl_DISMISS##
+.PAGE
+;Here on debug trap - when get here entgecko has already been called, and the
+;  value of DR6 (masked by the enabled interrupts) is in AL and DR6 has been
+;  cleared
+
+debugtrap::
+	MOVB	wptgrnt#, #0
+	TESTB	AL, #0x0F		;Have at least one watchpoint?
+	JNE	2$			;Yes
+	TESTB	AH, #0x40		;No - have a single-step trap?
+	JNE	26$			;Yes - go on
+	MOVL	EBX, #dbxmsg#		;No - tell him
+	CALL	outstr
+	MOVL	EAX, uregEIP#		;Display EIP
+	CALL	outaddr#
+	JMP	outcrl#			;End the line
+
+;Here with at watchpoint(s) to report
+
+2$:
+;;;;	PUSHL	#0x48
+;;;;	POPL	ES
+;;;;	MOVW	ES:0, #0x0600+'W'
+;;;;	JMP	$
+
+	PUSHL	EAX			;Save DR6 value
+	ANDL	EAX, #0x0F
+	ORB	uregEFR+2, #01		;Set the RF bit in his EFR
+	MOVL	EDI, #wpttbl		;Point to our watchpoint table
+4$:	TESTB	AL, #01h		;Have hit on this watchpoint?
+	JE	14$			;No
+	PUSHL	EAX			;Yes
+	PUSHL	EDI
+	TESTB	wt_sts[EDI], #WP$DATA	;Have data value to check?
+	JE	57$			;No
+	MOVL	EBX, wt_addr[EDI]
+	MOVZBL	EAX, wt_size[EDI]	;Get watchpoint size
+	JMPIL	wpssize-4[EAX*4]
+
+	.MOD	4
+wpssize:.LONG	wpxbyte
+	.LONG	wpxword
+	.LONG	wpxlong
+
+;Here to compare byte value
+
+wpxbyte:CALL	getmbyte#
+	CMPB	AL, wt_data[EDI]
+	JMP	55$
+
+;Here to compare word value
+
+wpxword:CALL	getmword#
+	CMPW	AX, wt_data[EDI]
+	JMP	55$
+
+;Here to compare long value
+
+wpxlong:CALL	getmlong#
+	CMPL	EAX, wt_data[EDI]
+55$:	JNE	13$
+
+;Here with watchpoint to grant
+
+57$:	CMPB	wptgrnt, #0
+	JE	59$
+	CALL	outcrl
+59$:	INCB	wptgrnt
+	MOVL	EBX, #inwpmsg#		;Assume instruction watchpoint
+	CMPB	wt_type[EDI], #1	;Right?
+	JNE	6$			;No
+	ORB	uregEFR+2, #01		;Yes - set the RF bit in his EFR
+	JMP	12$			;Continue
+
+;Here if not an instruction watchpoint
+
+6$:	MOVL	EBX, #acwpmsg#		;Assume access watchpoint
+	CMPB	wt_type[EDI], #3	;Right?
+	JE	8$			;Yes
+	MOVL	EBX, #wrwpmsg#		;No - its a write watchpoint
+8$:	CALL	outstr#
+	MOVL	EBX, #bwpmsg#		;Assume byte watchpoint
+	POPL	EDI
+	PUSHL	EDI
+	CMPB	wt_size[EDI], #1	;Right?
+	JE	10$			;Yes
+	MOVL	EBX, #wwpmsg#		;No - assume word watchpoint
+	CMPB	wt_size[EDI], #2	;Right?
+	JE	10$			;Yes
+	MOVL	EBX, #lwpmsg#		;No - its a long watchpoint
+10$:	CALL	outstr#
+	MOVL	EBX, #wp0msg#
+	CALL	outstr#
+	POPL	EDI
+	PUSHL	EDI
+	MOVL	EAX, wt_addr[EDI]	;Display data address
+	CALL	outaddr#
+	MOVL	EBX, #wp1msg#
+12$:	CALL	outstr#
+	MOVL	EAX, uregEIP#		;Display EIP
+	CALL	outaddr#
+13$:	POPL	EDI
+	POPL	EAX
+14$:	ADDL	EDI, #wt_ENSZ		;Bump watch table pointer to next slot
+	SHRL	EAX, #1			;Get next bit
+	JNE	4$			;If more bits to check
+	POPL	EAX			;Restore DR6 value
+	TESTB	AH, #0x40		;Have a single-step trap?
+	JE	28$			;No - finished here
+	CALL	outcrl			;Yes - start a new line
+
+26$:	ANDB	uregEFR+1, #~{FLAG$T/100h} ;Clear the trace trap bit
+	CMPB	trctrpf#, #0		;Are we expecting this?
+	JE	30$			;No!
+	MOVB	trctrpf#, #0		;Yes
+28$:	RET
+
+;Here if have unexpected trace trap
+
+30$:	MOVL	EBX, #uxttmsg#		;Complain about this
+	JMP	bpten6
+.PAGE
+	.SBTTL	fndbkp - Subroutine to search breakpoint address table for an address
+
+;Subroutine to search breakpoint address table for an address
+;	c{EBX} = Address to search for
+;	CALL	fndbkp
+;	Z:set,C:clr = Address found
+;	Z:clr,C:clr = Address not found, space available
+;	C:set       = Address not found, table full
+;	c{EDI}      = Address of entry (if there) or of space for entry (if
+;			not there and space is available)
+
+fndbkp:	MOVL	EDI, #bpttbl		;Point to start of table
+	MOVL	fndbkt#, #0		;Clear pointer to hole
+	MOVL	ECX, #BPTNUM		;Size of table
+2$:	CMPB	[EDI], #0		;Is this entry in use?
+	JNE	4$			;Yes - go check address
+	CMPB	fndbkt#, #0		;No - is this the first empty entry?
+	JNE	6$			;No
+	MOVL	fndbkt#, EDI		;Yes - remember address of entry
+	JMP	6$			;Continue
+
+;Here if entry is in use
+
+4$:	CMPL	EBX, bt_addr[EDI]
+	JE	ret110			;Finished if match
+6$:	ADDL	EDI, #bt_ENSZ		;Bump pointer
+	LOOP	ECX, 2$			;Continue if more to search
+	MOVL	EDI, fndbkt#		;Point to possible hole
+	TESTL	EDI, EDI		;Did we find a hole?
+	MOVB	AL, #0
+	JNE	8$			;Yes
+	INCB	AL			;No - get a 1 which will go to C!
+8$:	RCRB	AL, #1			;Set C if no hole, leave Z clear
+ret110:	RET				;Finished
+.PAGE
+;Subroutine to search watchpoint address table for an address
+;	c{EBX} = Address to search for
+;	CALL	fndwtp
+;	Z:set,C:clr = Address found
+;	  c(AL)  = Entry number
+;	  c{EDI} = Offset of entry found
+;	Z:clr,C:clr = Address not found, space available
+;	  c(AL)  = Entry number
+;	  c{EDI} = Address of available entry
+;	C:set       = Address not found, table full
+;  c{EAX} is preserved
+
+fndwtp::MOVL	EDI, #wpttbl#		;Point to start of table
+	MOVB	AL, #0
+	MOVL	fndbkt#, #0		;Clear pointer to hole
+	MOVL	ECX, #4			;Size of table
+2$:	CMPB	[EDI], #0		;Is this entry in use?
+	JNE	4$			;Yes - go check address
+	CMPB	fndbkt#, #0		;No - is this the first empty entry?
+	JNE	6$			;No
+	MOVL	fndbkt#, EDI		;Yes - remember address of entry
+	MOVB	AH, AL			;And return number too
+	JMP	6$			;Continue
+
+;Here if entry is in use
+
+4$:	CMPL	EBX, wt_addr[EDI]
+	JE	10$			;Finished if match
+6$:	ADDL	EDI, #wt_ENSZ		;Bump pointer
+	INCL	EAX
+	LOOP	ECX, 2$			;Continue if more to search
+	MOVL	EDI, fndbkt#		;Point to possible hole
+	MOVB	AL, AH
+	TESTL	EDI, EDI		;Did we find a hole?
+	MOVB	CL, #0
+	JNE	8$			;Yes
+	INCB	CL			;No - get a 1 which will go to C!
+8$:	RCRB	CL, #1			;Set C if no hole, leave Z clear
+10$:	RET				;Finished
+.PAGE
+;Subroutine to get address
+;	CALL	getaddr
+;	C:set = Error
+;	C:clr = Normal
+;	  c{EDX:EBX} = Address
+
+getaddr:CALL	getfld			;Get the value
+	JC	6$			;If error
+	CMPB	notnul, #0		;Null item?
+	JE	6$			;Yes - this is OK here
+	MOVL	EBX, value		;Yes - get offset
+	CLC
+6$:	RET
+
+;If value is not an address
+
+notaddr:MOVL	EBX, #noamsg#
+	CALL	outstr
+	STC
+	RET
+.PAGE

@@ -1,0 +1,467 @@
+	.TITLE	$_usbio
+
+;*--------------------------------------------------------------------------*
+;* USBEHCDRV.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xosusb.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+	.INCLUD	xosinc:\xmac\xosxusbehc.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+;Function to send a response to the host
+;	void $_sendresponse(
+;	    int    type,
+;	    int    cnt);
+
+;NOTE: The Intel EHCI document says the bytes in the debug port data buffer 
+;      "can be individually accessed", which would seem to imply that it
+;      supports byte writes. The debug port in the AMD SB600 chipset (if not
+;      others) does NOT support byte writes to the data buffer. Thus we use
+;      an 8-byte buffer in memory to construct the message to be output and
+;      write it to the debug port with 32-bit writes!
+
+$$$=!0
+FRM sndrp_seqnum, 4t
+FRM sndrp_buffer, 8t
+sndrp_SIZE=!$$$
+
+sndrp_type=!20t
+sndrp_cnt =!16t
+
+	.ENTRY	$_sendresponse
+$_sendresponse::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	sndrp_SIZE
+	MOVL	EBX, $_dbd#
+	MOVL	EBX, dbd_dbreg[EBX]
+	MOVL	sndrp_seqnum[EBP], #0
+	MOVL	ESI, #$_dbbufr#
+	MOVL	EAX, sndrp_cnt[EBP]
+	MOVL	[ESI+EAX], #0xFFFFFFFF
+	MOVL	4[ESI+EAX], #0xFFFFFFFF
+	LEAL	EDI, sndrp_buffer+2[EBP]
+	MOVL	ECX, #6
+	MOVZBL	EAX, sndrp_type[EBP]
+	BTSL	EAX, #7
+	MOVB	AH, sndrp_cnt+0[EBP]
+	CMPL	sndrp_cnt[EBP], #0xFF
+	JBE	2$
+	BTSL	EAX, #6			;Indicate have 16-bit count
+	MOVZBL	EDX, sndrp_cnt+1[EBP]
+	SHLL	EDX, #16t
+	ORL	EAX, EDX	
+	INCL	EDI
+	DECL	ECX
+2$:	MOVL	sndrp_buffer+0[EBP], EAX
+	MOVL	sndrp_buffer+4[EBP], #0
+	DISPCHR 0x07, 'O'
+6$:	SUBL	sndrp_cnt[EBP], ECX
+10$:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	MOVB	[EDI], AL
+	INCL	EDI
+	LOOP	ECX, 10$
+12$:	MOVL	EAX, sndrp_buffer+0[EBP]
+	MOVL	DBR_BUFFER+0[EBX], EAX
+	MOVL	EAX, sndrp_buffer+4[EBP]
+	MOVL	DBR_BUFFER+4[EBX], EAX
+.IF GT $$DISP-1
+	DISPLNG	0x07, 'O', sndrp_buffer+4[EBP]
+	DISPLNG	0x07, 0, sndrp_buffer+0[EBP]
+.ENDC
+	CALL	debugsend		;Send the packet
+	JC	14$			;If error
+	CMPL	sndrp_cnt[EBP], #0
+	JLE	14$
+	MOVL	EAX, sndrp_seqnum[EBP]
+	MOVL	sndrp_buffer+0[EBP], EAX
+	INCL	sndrp_seqnum[EBP]
+	ANDL	sndrp_seqnum[EBP], #0x7F
+	MOVL	sndrp_buffer+4[EBP], #0
+	MOVL	ECX, #7
+	LEAL	EDI, sndrp_buffer+1[EBP]
+	JMP	6$
+
+;Here when finished
+
+14$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+
+
+;Function to receive a request from the host
+;	int $_getrequest(void);
+;  Value returned is the request type if positive or a negative XOS error code
+;    if negative. reqlength is set to the data length.
+
+$$$=!0
+FRM getrq_left  , 4t
+FRM getrq_seqnum, 4t
+FRM getrq_type  , 4t
+getrq_SIZE=!$$$
+
+	.ENTRY	$_getrequest
+$_getrequest::
+	PUSHL	EDI
+	ENTER	getrq_SIZE
+	MOVL	EBX, $_dbd#
+	MOVL	EBX, dbd_dbreg[EBX]
+	MOVL	getrq_seqnum[EBP], #0
+4$:	DISPCHR	0x07, 'I'
+	CALL	debugrecv		;Get a packet
+	TESTL	EAX, EAX
+	JS	22$
+	MOVL	EBX, $_dbd#
+	MOVL	EBX, dbd_dbreg[EBX]
+	MOVXBL	EAX, DBR_BUFFER+0[EBX]
+	TESTL	EAX, EAX
+	JNS	4$			;Ignore it if not start of a message
+	ANDL	EAX, #0x3F		;Save message type
+	MOVL	getrq_type[EBP], EAX
+	MOVL	EDI, #$_dbbufr#
+	LEAL	EDX, DBR_BUFFER+2[EBX]
+	MOVL	ECX, #6
+	MOVZBL	EAX, DBR_BUFFER+1[EBX]	;Get low byte of the length
+	TESTB	DBR_BUFFER+0[EBX], #0x40 ;Is there a high byte?
+	JE	6$			;No
+	MOVB	AH, DBR_BUFFER+2[EBX]	;Yes
+	INCL	EDX
+	DECL	ECX
+6$:	CMPL	EAX, #DBBUFRSZ		;Too long?
+	JA	24$			;Yes
+	MOVL	getrq_left[EBP], EAX
+	MOVL	$_reqlength#, EAX
+10$:	PUSHL	EDI
+	MOVL	EDI, $_debugpnt#
+	MOVL	EAX, DBR_BUFFER+0[EBX]
+	MOVL	[EDI], EAX
+	MOVL	EAX, DBR_BUFFER+4[EBX]
+	MOVL	4[EDI], EAX
+	ADDL	EDI, #8
+	CMPL	EDI, #$_debugend#
+	JB	12$
+	MOVL	EDI, #$_debugrng#
+12$:	MOVL	$_debugpnt#, EDI
+	POPL	EDI
+	CMPL	ECX, getrq_left[EBP]
+	JBE	14$
+	MOVL	ECX, getrq_left[EBP]
+14$:	JREGZ	ECX, 20$
+	SUBL	getrq_left[EBP], ECX
+16$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	MOVB	[EDI], AL
+	INCL	EDI
+	LOOP	ECX, 16$
+	CMPL	getrq_left[EBP], #0
+	JE	20$
+	CALL	debugrecv		;Get another packet
+	TESTL	EAX, EAX
+	JS	22$
+	MOVL	EBX, $_dbd#
+	MOVL	EBX, dbd_dbreg[EBX]
+	MOVZBL	EAX, DBR_BUFFER+0[EBX]
+	CMPL	EAX, getrq_seqnum[EBP]
+	JNE	26$
+	INCL	getrq_seqnum[EBP]
+	ANDL	getrq_seqnum[EBP], #0x7F
+	LEAL	EDX, DBR_BUFFER+1[EBX]
+	MOVL	ECX, #7
+	JMP	10$
+
+;Here with a complete message
+
+20$:	MOVL	EAX, getrq_type[EBP]
+22$:	LEAVE
+	POPL	EDI
+	RET
+
+;Here if message is too long
+
+24$:	MOVL	EAX, #ER_RTOBG
+	JMP	22$
+
+;Here if have an out of sequence packet
+
+26$:	MOVL	EAX, #ER_IVMSG
+	JMP	14$
+.PAGE
+;Function: dosetup - Send a setup request to the debug device
+;	long dosetup(
+;	    long   data3_0;	// First 4 setup data bytes
+;	    long   data7_4;	// Second 4 setup data bytes
+;	    uchar *response);	// Buffer to receive response (if any)
+;  Value returned is the number of bytes transfered if normal or a negative
+;    XOS error code if error
+
+;Setup functions with a data output phase are not supported (or needed for
+;  setting up the debug device)! Also, if an input phase is present it will
+;  read a maximum of 8 bytes in one packet.
+
+dsu_data3_0=!12t
+dsu_data7_4=!8t
+dsu_resp   =!4t
+
+	.ENTRY	$_dosetup
+$_dosetup::
+	DISPCHR	0x07, 'C'
+	MOVL	EBX, $_dbd#		;Store the SETUP phase data
+	MOVL	EBX, dbd_dbreg[EBX]
+	MOVL	EAX, dsu_data3_0[ESP]
+	MOVL	DBR_BUFFER+0[EBX], EAX
+	MOVL	EAX, dsu_data7_4[ESP]
+	MOVL	DBR_BUFFER+4[EBX], EAX
+	PUSHL	#{DBPID_DATA0<8}+DBPID_SETUP ;Do the SETUP phase
+	PUSHL	#0x10018
+	PUSHL	#0
+	CALL	debugphase
+	TESTL	EAX, EAX
+	JS	12$
+	PUSHL	#{DBPID_DATA1<8}+DBPID_IN ;Do an input phase next (This is
+	PUSHL	#0x10000		  ;  the input phase for the control
+	PUSHL	#0			  ;  transfer if one is needed,
+	CALL	debugphase		  ;  otherwise it is the status phase.)
+	TESTL	EAX, EAX
+	JS	12$
+	CLRL	EAX
+	TESTB	dsu_data3_0+0[ESP], #0x80 ;Do we need an input phase?
+	JE	12$			;No (we just did the status phase!)
+	MOVL	EDX, dsu_resp[ESP]	;Yes - give him the data
+	MOVL	EAX, DBR_BUFFER+0[EBX]
+	MOVL	[EDX], EAX
+	MOVL	EAX, DBR_BUFFER+4[EBX]
+	MOVL	4[EDX], EAX
+	PUSHL	DBR_CTLSTS[EBX]		;Save the amount input
+	PUSHL	#{DBPID_DATA1<8}+DBPID_OUT ; Do the status (output) phase
+	PUSHL	#0x10010
+	PUSHL	#0
+	CALL	debugphase
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	EAX, ECX
+	ANDL	EAX, #0x0F
+12$:	RET	12t
+.PAGE
+;Function to receive a message
+;	long debugrecv();
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    received message is in DBR_BUFFER.
+
+debugrecv:
+	MOVL	EDX, $_dbd
+	MOVL	EAX, #DBPID_IN
+	MOVB	AH, $_dbinppid#
+	PUSHL	EAX
+	PUSHL	#0x10000
+	MOVZBL	EAX, dbd_inpep[EDX]
+	PUSHL	EAX
+	CALL	debugphase
+	XORB	$_dbinppid#, #DBPID_DATA0^DBPID_DATA1
+	RET
+
+;Function to send the 8-byte message already stored in DBR_BUFFER
+;	long debugsend();
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+debugsend:
+.IF GT $$DISP-1
+	DISPCHR	0x07, 'O'
+.ENDC
+	MOVL	EDX, $_dbd
+	MOVL	EAX, #DBPID_OUT
+	MOVB	AH, $_dboutpid#
+	PUSHL	EAX
+	PUSHL	#0x10018
+	MOVZBL	EAX, dbd_outep[EDX]
+	PUSHL	EAX
+	CALL	debugphase
+	XORB	$_dboutpid#, #DBPID_DATA0^DBPID_DATA1
+	RET
+
+;Function to do one phase of a transfer to or from a debug device
+;	long debugphase(
+;	    long tokens,	// Token PID + data PID * 256
+;	    long funcnt,	// 0x10010 + count if output
+;				// 0x10000 if input
+;	    long endpnt);	// Endpoint
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+dbph_tokens=!12t
+dbph_funcnt=!8
+dbph_endpnt=!4
+
+debugphase:
+.IF GT $$DISP-1
+	DISPLNG	0x02, 'P', dbph_tokens+4[ESP]
+	DISPLNG	0x02, 0, dbph_funcnt+4[ESP]
+	DISPLNG	0x02, 0, dbph_endpnt+4[ESP]
+.ENDC
+	MOVL	retrycnt, #4
+2$:	MOVL	EDX, $_dbd
+	MOVL	EBX, dbd_dbreg[EDX]
+	MOVZBL	EAX, dbph_endpnt[ESP]
+	MOVB	AH, $_dbaddr#
+	MOVW	DBR_ENDPNT[EBX], AX
+	MOVL	EAX, dbph_tokens[ESP]
+	MOVW	DBR_TOKEN[EBX], AX
+	MOVL	nakcnter, #0
+.IF GT $$DISP-1
+	DISPLNG	0x02, 'r', DBR_TOKEN[EBX]
+	DISPLNG	0x02, 0, DBR_ENDPNT[EBX]
+	DISPLNG	0x02, 'd', DBR_BUFFER+4[EBX]
+	DISPLNG	0x02, 0, DBR_BUFFER+0[EBX]
+.ENDC
+6$:	ANDL	DBR_CTLSTS[EBX], #~0x1F
+	MOVL	EAX, dbph_funcnt[ESP]
+	ORL	DBR_CTLSTS[EBX], EAX
+	BTSL	DBR_CTLSTS[EBX], #5
+	MOVL	ECX, #1000000t
+8$:	BTL	DBR_CTLSTS[EBX], #16t	;Is the request complete?
+	JC	20$			;Yes
+	PUSHL	ECX
+	PUSHL	#2
+	CALL	$_delay1ms
+	POPL	ECX
+	LOOP	ECX, 8$			;No - wait some more if not too long
+
+;Here if the device did not complete the transfer. Reinitialize it and try
+;  again.
+
+	DISPCHR	0x04, 'H'
+	DISPCHR	0x04, 'u'
+	DISPCHR	0x04, 'n'
+	DISPLNG	0x04, 'g', DBR_CTLSTS[EBX]
+12$:	PUSHL	EDI
+	MOVL	EDI, $_dbd
+	CALL	$_initdebugdev#
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	14$
+	DISPCHR	0x04, +'+'
+	JMP	debugphase
+
+14$:	DISPCHR	0x04, '-'
+	JMP	debugphase
+
+;Here with the request complete
+
+20$:	BTSL	DBR_CTLSTS[EBX], #16t	;Clear the done bit (this bit is R/WC)
+	BTL	DBR_CTLSTS[EBX], #6	;Error reported?
+	JC	24$			;Yes
+	MOVZBL	EDX, DBR_RCVDPID[EBX]	;No
+	CMPB	DL, #DBPID_NAK	 	;Was it NAKed?
+	JE	30$			;Yes - try again
+	CMPB	DL, #DBPID_ACK		;No - was it ACKed?
+	JE	32$			;Yes - that's OK
+	CMPB	DL, #DBPID_NYET		;No - but NYET is just a funny ACK!
+	JE	32$			;Yes
+	CMPB	DL, DBR_DATAPID[EBX]
+	JE	32$
+	CMPB	DL, #DBPID_STALL
+	JE	26$
+
+;Here if response if invalid
+
+	DECL	errcnter
+	JNS	dbphde
+	MOVL	errcnter, #500000t
+	DISPLNG	0x04, 'I', DBR_CTLSTS[EBX]
+dbphde:	MOVL	EAX, #ER_DEVER
+dbphdn:	RET	12t
+
+;Here if error reported by the debug device
+
+24$:	DISPLNG	0x04, 'E', DBR_CTLSTS[EBX]
+	DECL	retrycnt
+	JNE	2$
+	JMP	12$
+
+	JMP	dbphde
+
+;Here if transfer was STALLed
+
+26$:	DISPCHR	0x07, 'S'
+	MOVL	EAX,# ER_USBST
+	JMP	dbphdn
+
+;Here if transfer was NAKed
+
+30$:	MOVL	retrycnt, #4
+	PUSHL	#10t
+	CALL	$_delay1ms	
+	DECL	nakcnter
+	JNS	6$
+	MOVL	nakcnter, #40t
+	CALL	$_flash#
+	JMP	6$
+
+;Here if transfer was ACKed
+
+32$:
+;;;;;	DISPCHR	0x07, 'A'
+	CLRL	EAX
+	JMP	dbphdn
+.PAGE
+;Function to delay for a multiple of 1 msec
+;	void $_delay1ms(
+;	    long delay);	// Time to delay (msecs)
+
+d1ms_delay=!4
+
+	.ENTRY	$_delay1ms
+$_delay1ms::
+	MOVL	EAX, d1ms_delay[ESP]
+2$:	MOVL	ECX, $_delaycnt#	;Loop for 1 msec
+4$:	JMP	6$
+6$:	JMP	8$
+8$:	LOOP	ECX, 4$
+
+;;;;;	DISPCHR	0x70, '.'
+
+	DECL	EAX
+	JNE	2$
+	RET	4
+
+	GTDATA
+
+nakcnter:.LONG	0
+errcnter:.LONG  0
+retrycnt:.LONG	0
+
+	END

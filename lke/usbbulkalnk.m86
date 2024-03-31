@@ -1,0 +1,1028 @@
+	.TITLE	usbbulkalnk - UDB generic bulk transfer interface routine
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xosxbulk.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+
+MAJV   =!1
+MINV   =!0
+EDITNUM=!0
+
+;This link driver supports one bulk transfer input and one bulk transfer
+;  output endpoint plus the control endpoint per device unit. Multiple
+;  units can be created for the same USB device if support for more bulk
+;  transfer endpoints are needed, however, only one unit can access the
+;  control endpoint at a time.
+
+;Define offsets in our DCB
+
+$$$=!dcb_bulkdep
+BLK dcb_bulkuaclb     , 4
+BLK dcb_bulkuapcb0    , 4
+BLK dcb_bulkuapcbbin1 , 4
+BLK dcb_bulkuapcbbin2 , 4
+BLK dcb_bulkuapcbbinc , 4
+BLK dcb_bulkuapcbiin  , 4
+BLK dcb_bulkuapcbbout1, 4
+BLK dcb_bulkuapcbbout2, 4
+BLK dcb_bulkuapcbboutc, 4
+BLK dcb_bulkuagport   , 4
+BLK dcb_bulkuailist   , bl_SIZE		;Buffer list for interrupt input
+					;Following three items are order so
+					;  that they can be used to specify
+					;  signal data when requesting a
+					;  signal for interrupt input.
+BLK dcb_bulkuaidata   , 4		;Copy of the user's signal data
+BLK dcb_bulkuailength , 4
+BLK dcb_bulkuaibuffer , 36t		;Data buffer for interrupt input
+					;  (has extra long to make it easier
+					;  to fill the last long)
+BLK dcb_bulkuaep0max  , 2
+BLK dcb_bulkuabin1max , 2
+BLK dcb_bulkuabin2max , 2
+BLK dcb_bulkuabout1max, 2
+BLK dcb_bulkuabout2max, 2
+BLK dcb_bulkuaiinmax  , 2
+BLK dcb_bulkuaepbin1  , 1
+BLK dcb_bulkuaepbin2  , 1
+BLK dcb_bulkuaepbout1 , 1
+BLK dcb_bulkuaepbout2 , 1
+BLK dcb_bulkuaepiin   , 1
+BLK dcb_bulkuaaddr    , 1
+BLK dcb_bulkuaspeed   , 1
+BLK dcb_bulkauiininv  , 1
+
+BLK dcb_bulkuaiinri   , 1		;Requested input interrupt interval
+BLK dcb_bulkuaiinai   , 1		;Actual input interrupt interval
+BLK dcb_bulkuaiinact  , 1		;TRUE if interrupt input is active
+BLK                   , 1
+
+BLK dcb_bulkuaspec    , 2
+BLK dcb_bulkuaven     , 2
+BLK dcb_bulkuadev     , 2
+BLK dcb_bulkuarel     , 2
+BLK dcb_bulkuasplname , 16t
+BLK dcb_bulkuausbmnftr, 44t
+BLK dcb_bulkuausbprod , 44t
+BLK dcb_bulkuausbsernm, 44t
+dcb_bulkuaSIZE=!$$$
+XMBINDEX dcb_bulkuaINDEX, dcb_bulkuaSIZE
+
+	LKEHEAD	USBBULKALNK, MAJV, MINV, EDITNUM, LKETYPE_LINK
+
+	DATA
+
+;USB bulk transfer device driver type A dispatch table
+
+usbbulkadsp:
+	.LONG	0		;bulkf_init    =  0 - Initialize interface
+	.LONG	bulkuaoutput	;bulkf_output  =  4 - Output
+	.LONG	bulkuaoutsts	;bulkf_outsts  =  8 - Get output status
+	.LONG	bulkuainput	;bulkf_input   = 12 - Input
+	.LONG	bulkuainpsts	;bulkf_inpsts  = 16 - Get input status
+	.LONG   bulkuasetvect	;bulkf_setvect = 20 - Set vector
+	.LONG	bulkuaclose	;bulkf_close   = 24
+	.LONG	bulkuacdcb	;bulkf_cdcb    = 28 - Clear DCB
+UPADSPSZ=!{$-usbbulkadsp}/4
+
+;USB bulk transfer device (type USBA) device characteristics table
+
+	.MOD	4
+usbbulkadchartbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##   , knlDcGetClass## , knlDcSetClass##, 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##    , knlDcGet4Byte## , 0              , dcb_typename
+ CHARENT  USBGPORT, HEXV, ,  4, xosusbMsgGPort##  , knlDcGet4Byte## , 0              , dcb_bulkuagport
+ CHARENT  USBSPEC , STR , ,  8, xosusbMsgUsbSpec##, usbbulkagetspec , 0              , 0
+ CHARENT  USBADDR , DECV, ,  4, xosusbMsgBusAddr##, knlDcGet1Byte## , 0              , dcb_bulkuaaddr
+ CHARENT  USBSPEED, TEXT, ,  8, xosusbMsgSpeed##  , usbbulkagetspeed, 0              , 0
+ CHARENT  USBEP0MX, DECV, ,  4, xosusbMsgEP0Max## , knlDcGet1Byte## , 0              , dcb_bulkuaep0max
+ CHARENT  USBEPBI1, DECV, ,  4, msgepbin1         , knlDcGet1Byte## , 0              , dcb_bulkuaepbin1
+ CHARENT  USBBI1MX, DECV, ,  4, msgbin1pktmax     , knlDcGet2Byte## , 0              , dcb_bulkuabin1max
+ CHARENT  USBEPBI2, DECV, ,  4, msgepbin2         , knlDcGet1Byte## , 0              , dcb_bulkuaepbin2
+ CHARENT  USBBI2MX, DECV, ,  4, msgbin2pktmax     , knlDcGet2Byte## , 0              , dcb_bulkuabin2max
+ CHARENT  USBEPBO1, DECV, ,  4, msgepbout1        , knlDcGet1Byte## , 0              , dcb_bulkuaepbout1
+ CHARENT  USBBO1MX, DECV, ,  4, msgbout1pktmax    , knlDcGet2Byte## , 0              , dcb_bulkuabout1max
+ CHARENT  USBEPBO2, DECV, ,  4, msgepbout2        , knlDcGet1Byte## , 0              , dcb_bulkuaepbout2
+ CHARENT  USBBO2MX, DECV, ,  4, msgbout2pktmax    , knlDcGet2Byte## , 0              , dcb_bulkuabout2max
+ CHARENT  USBEPII , DECV, ,  4, msgepiin          , knlDcGet1Byte## , 0              , dcb_bulkuaepiin
+ CHARENT  USBIIMX , DECV, ,  4, msgiinpktmax      , knlDcGet2Byte## , 0              , dcb_bulkuaiinmax
+ CHARENT  USBIINRI, DECV, ,  4, xosusbMsgIInReqI##, knlDcGet1Byte## , 0              , dcb_bulkuaiinri
+ CHARENT  USBIINAI, DECV, ,  4, xosusbMsgIInActI##, knlDcGet1Byte## , 0              , dcb_bulkuaiinai
+ CHARENT  USBVEN  , HEXV, ,  4, xosusbMsgVendor## , knlDcGet2Byte## , 0              , dcb_bulkuaven
+ CHARENT  USBDEV  , HEXV, ,  4, xosusbMsgDevice## , knlDcGet2Byte## , 0              , dcb_bulkuadev
+ CHARENT  USBREL  , STR , ,  8, xosusbMsgRelease##, usbbulkagetrel  , 0              , 0
+ CHARENT  USBMNFTR, STR , , 44, xosusbMsgMnftr##  , knlDcGetStr##   , 0              , dcb_bulkuausbmnftr
+ CHARENT  USBPROD , STR , , 44, xosusbMsgProd##   , knlDcGetStr##   , 0              , dcb_bulkuausbprod
+ CHARENT  USBSERNM, STR , , 44, xosusbMsgSerNm##  , knlDcGetStr##   , 0              , dcb_bulkuausbsernm
+ CHAREND
+
+msgepbout1:    CHARINFO  {First bulk output endpoint}
+msgbout1pktmax:CHARINFO  {Max pkt size for first bulk output endpoint}
+msgepbout2:    CHARINFO  {Second bulk output endpoint}
+msgbout2pktmax:CHARINFO  {Max pkt size for second bulk output endpoint}
+msgepbin1:     CHARINFO  {First bulk input endpoint}
+msgbin1pktmax: CHARINFO  {Max pkt size for first bulk input endpoint}
+msgepbin2:     CHARINFO  {Second bulk input endpoint}
+msgbin2pktmax: CHARINFO  {Max pkt size for second bulk input endpoint}
+msgepiin:      CHARINFO  {Interrupt input endpoint}
+msgiinpktmax:  CHARINFO  {Max pkt size for interrupt input endpoint}
+.PAGE
+	.SBTTL	Initialization
+
+	INITSUB	initusbbulka
+
+initusbbulka::
+	PUSHL	#drvname
+	PUSHL	#usbbulkaaddunit
+	PUSHL	#xosblkCcb##
+	CALL	sysIoDriverRegister##	;Register this BULK driver
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	usbbulkaaddunit - Subroutine to add bulk transfer unit
+
+;Subroutine to add bulk transfer unit
+;	long usbbulkaaddunit(
+;	    int   unit);
+;  Value returned is 0 if normal or a negative XOS error if error
+;  Must be called at main program level. Returns at device fork level.
+
+;The ADDUNIT function must specify all of the details describing how the
+;  USB device is connected. This includes the controller name, port on the
+;  controller, USB bus address, bus speed, maximum packet size and endpoints
+;  to use. Normally this function is issued by the USBCTL symbiont which
+;  provices this information.
+
+	.MOD	4
+usbbulkaaublk:			;Characteristics description block for addunit
+ CHARBGN  3, 0
+ CHARENT  TYPE    , TEXT, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  UNIT    , DECV, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  NAME    , STR , , 16, 0, 0, auname      , 0
+ CHARENT  USBGPORT, DECV, ,  4, 0, 0, augport     , 0
+ CHARENT  USBADDR , DECV, ,  4, 0, 0, auaddr      , 0
+ CHARENT  USBSPEC , HEXV, ,  4, 0, 0, auvalue     , au_spec
+ CHARENT  USBSPEED, TEXT, ,  4, 0, 0, auspeed     , 0
+ CHARENT  USBBIN  , DECV, ,  4, 0, 0, auepbin     , 0
+ CHARENT  USBBOUT , DECV, ,  4, 0, 0, auepbout    , 0
+ CHARENT  USBIIN  , DECV, ,  4, 0, 0, auepiin     , 0
+ CHARENT  USBIIINV, DECV, ,  4, 0, 0, aueiininv   , 0
+ CHARENT  USBPKTMX, DECV, ,  4, 0, 0, aupktmax    , 0
+ CHARENT  USBVEN  , HEXV, ,  4, 0, 0, auvalue     , au_ven
+ CHARENT  USBDEV  , HEXV, ,  4, 0, 0, auvalue     , au_dev
+ CHARENT  USBREL  , HEXV, ,  4, 0, 0, auvalue     , au_rel
+ CHARENT  USBMNFTR, STR , , 42, 0, 0, autext      , au_usbmnftr
+ CHARENT  USBPROD , STR , , 42, 0, 0, autext      , au_usbprod
+ CHARENT  USBSERNM, STR , , 42, 0, 0, autext      , au_usbsernm
+ CHAREND
+
+$$$=!0
+FRM au_gport   , 4		;Global port
+FRM au_addr    , 4		;USB address
+FRM au_epbin1  , 4		;First input end-point number
+FRM au_epbin2  , 4		;Second input end-point number
+FRM au_epbout1 , 4		;First output end-point number
+FRM au_epbout2 , 4		;Second output end-point number
+FRM au_epiin   , 4
+FRM au_mxpntr  , 4
+FRM au_bin1max , 4
+FRM au_bin2max , 4
+FRM au_bout1max, 4
+FRM au_bout2max, 4
+FRM au_iinmax  , 4
+FRM au_iininv  , 4		;Input interrupt interval
+FRM au_clb     , 4		;Offset of USB CLB
+FRM au_ep0max  , 4
+FRM au_speed   , 4
+FRM au_spec    , 4
+FRM au_ven     , 4
+FRM au_dev     , 4
+FRM au_rel     , 4
+FRM au_devname , 16t
+FRM au_nmend   , 4
+FRM au_usbmnftr, 44t
+FRM au_usbprod , 44t
+FRM au_usbsernm, 44t
+au_SIZE=!$$$
+
+au_unit=!16t
+
+usbbulkaaddunit:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	au_SIZE, 0
+	CLRL	EAX
+	MOVL	au_ven[EBP], EAX
+	MOVL	au_dev[EBP], EAX
+	MOVL	au_rel[EBP], EAX
+	MOVL	au_usbmnftr[EBP], EAX
+	MOVL	au_usbprod[EBP], EAX
+	MOVL	au_usbsernm[EBP], EAX
+	MOVL	au_epbin1[EBP], EAX
+	MOVL	au_epbin2[EBP], EAX
+	MOVL	au_epiin[EBP], EAX
+	MOVL	au_iininv[EBP], EAX
+	MOVL	au_epbout1[EBP], EAX
+	MOVL	au_epbout2[EBP], EAX
+	MOVL	au_devname+0[EBP], EAX
+	MOVL	au_devname+4[EBP], EAX
+	MOVL	au_devname+8[EBP], EAX
+	MOVL	au_devname+12t[EBP], EAX
+	DECL	EAX
+	MOVL	au_gport[EBP], EAX
+	MOVL	au_addr[EBP], EAX
+	MOVL	au_speed[EBP], EAX
+	MOVL	au_mxpntr[EBP], #au_ep0max
+	MOVL	EAX, #8
+	MOVL	au_ep0max[EBP], EAX
+	MOVL	au_bin1max[EBP], EAX
+	MOVL	au_bin2max[EBP], EAX
+	MOVL	au_iinmax[EBP], EAX
+	MOVL	au_bout1max[EBP], EAX
+	MOVL	au_bout2max[EBP], EAX
+	PUSHL	#0			;Fail on bad names
+	PUSHL	#usbbulkaaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JS	30$			;If error
+	MOVL	EAX, au_gport[EBP]	;Did we get the required
+	ORL	EAX, au_addr[EBP]	;  characteristics?
+	ORL	EAX, au_speed[EBP]
+	INCL	EAX
+	JE	34$			;No - fail
+
+;Here with all required characteristics
+
+	CMPB	au_devname+0[EBP], #0
+	JNE	1$
+	MOVL	au_devname+0[EBP], #'BULK'
+	MOVL	au_nmend[EBP], #au_devname+4
+1$:	MOVL	EBX, au_nmend[EBP]
+	ADDL	EBX, EBP
+	MOVL	EAX, au_unit[EBP]	;Put in the unit number
+	CALL	knlPutDecNmbr##
+	PUSHL	#0
+	MOVL	EAX, ESP
+	LEAL	EDX, au_devname[EBP]
+	PUSHL	EDX
+	MOVL	EDX, #DS$DUPLEX|DS$PHYS|DS$REMOVE
+	CMPL	au_epbin1[EBP], #0
+	JE	2$
+	BTSL	EDX, #DS%QIN
+2$:	CMPL	au_epbout1[EBP], #0
+	JE	4$
+	BTSL	EDX, #DS%QOUT
+4$:	PUSHL	EDX
+	PUSHL	#-dcb_bulkuaINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	30$
+	PUSHL	EDI
+	PUSHL	#xosblkCcb##
+	CALL	sysIoLinkDcb##
+	MOVL	dcb_sdisp[EDI], #xosblkSDisp##
+	MOVL	dcb_bulkdsp[EDI], #usbbulkadsp
+	MOVL	dcb_typename[EDI], #'USBA'
+	MOVL	EAX, au_unit[EBP]	;Store unit number in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVL	EAX, au_gport[EBP]
+	MOVL	dcb_bulkuagport[EDI], EAX
+	MOVL	EAX, au_ep0max[EBP]
+	MOVW	dcb_bulkuaep0max[EDI], AX
+
+	MOVL	EAX, au_bin1max[EBP]
+	CMPB	au_epbin1[EBP], #0
+	JNE	6$
+	CLRL	EAX
+6$:	MOVW	dcb_bulkuabin1max[EDI], AX
+
+	MOVL	EAX, au_bin2max[EBP]
+	CMPB	au_epbin2[EBP], #0
+	JNE	8$
+	CLRL	EAX
+8$:	MOVW	dcb_bulkuabin2max[EDI], AX
+
+	MOVL	EAX, au_iinmax[EBP]
+	CMPB	au_epiin[EBP], #0
+	JNE	10$
+	CLRL	EAX
+10$:	MOVW	dcb_bulkuaiinmax[EDI], AX
+
+	MOVL	EAX, au_bout1max[EBP]
+	CMPB	au_epbout1[EBP], #0
+	JNE	12$
+	CLRL	EAX
+12$:	MOVW	dcb_bulkuabout1max[EDI], AX
+
+	MOVL	EAX, au_bout2max[EBP]
+	CMPB	au_epbout2[EBP], #0
+	JNE	14$
+	CLRL	EAX
+14$:	MOVW	dcb_bulkuabout2max[EDI], AX
+
+	MOVL	EAX, au_addr[EBP]
+	MOVB	dcb_bulkuaaddr[EDI], AL
+	MOVL	EAX, au_epbin1[EBP]
+	MOVB	dcb_bulkuaepbin1[EDI], AL
+	MOVL	EAX, au_epbin2[EBP]
+	MOVB	dcb_bulkuaepbin2[EDI], AL
+	MOVL	EAX, au_epiin[EBP]
+	MOVB	dcb_bulkuaepiin[EDI], AL
+	MOVL	EAX, au_epbout1[EBP]
+	MOVB	dcb_bulkuaepbout1[EDI], AL
+	MOVL	EAX, au_epbout2[EBP]
+	MOVB	dcb_bulkuaepbout2[EDI], AL
+	MOVL	EAX, au_iininv[EBP]
+	MOVB	dcb_bulkauiininv[EDI], AL
+	MOVL	EAX, au_speed[EBP]
+	MOVB	dcb_bulkuaspeed[EDI], AL
+	MOVL	EAX, au_spec[EBP]
+	MOVW	dcb_bulkuaspec[EDI], AX
+	MOVL	EAX, au_ven[EBP]
+	MOVW	dcb_bulkuaven[EDI], AX
+	MOVL	EAX, au_dev[EBP]
+	MOVW	dcb_bulkuadev[EDI], AX
+	MOVL	EAX, au_rel[EBP]
+	MOVW	dcb_bulkuarel[EDI], AX
+
+	MOVL	dcb_bulkuaiinri[EDI], #50t ;For now always request 50ms!
+
+	LEAL	EBX, au_usbmnftr[EBP]	;Store our text strings in the DCB
+	MOVL	EDX, #dcb_bulkuausbmnftr
+	CALL	copytext
+	LEAL	EBX, au_usbprod[EBP]
+	MOVL	EDX, #dcb_bulkuausbprod
+	CALL	copytext
+	LEAL	EBX, au_usbsernm[EBP]
+	MOVL	EDX, #dcb_bulkuausbsernm
+	CALL	copytext
+
+;Here with a DCB - now link to the USB device
+
+	PUSHL	EDI			;CDB (really our DCB)
+	PUSHL	au_gport[EBP]		;Global port
+	PUSHL	au_addr[EBP]		;USB bus address
+	PUSHL	au_speed[EBP]		;USB device speed
+	PUSHL	#removed		;Address of "removed" function
+	LEAL	EAX, dcb_bulkuaclb[EDI]	;Address of place to store address of
+	PUSHL	EAX			;  the CLB
+	CALL	xosusbLinkToDev##	;Link to the USB device
+	TESTL	EAX, EAX
+	JS	36$
+
+;Now create the USB endpoints
+
+	PUSHL	dcb_bulkuaclb[EDI]
+	PUSHL	#0			;Control endpoint
+	PUSHL	au_ep0max[EBP]
+	LEAL	EAX, dcb_bulkuapcb0[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	CMPL	au_epbin1[EBP], #0	;Do we need the first bulk input
+					;  endpoint?
+	JE	16$			;No
+	PUSHL	dcb_bulkuaclb[EDI]	;Yes
+	MOVZBL	EAX, au_epbin1[EBP]	;Bulk input endpoint
+	ORL	EAX, #PCB$XT_BULK|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_bin1max[EBP]
+	LEAL	EAX, dcb_bulkuapcbbin1[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+16$:	CMPL	au_epbin2[EBP], #0	;Do we need the second bulk input
+					;  endpoint?
+	JE	18$			;No
+	PUSHL	dcb_bulkuaclb[EDI]	;Yes
+	MOVZBL	EAX, au_epbin2[EBP]	;Bulk input endpoint
+	ORL	EAX, #PCB$XT_BULK|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_bin2max[EBP]
+	LEAL	EAX, dcb_bulkuapcbbin2[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+18$:	CMPL	au_epiin[EBP], #0	;Do we need the interrupt input
+					;  endpoint?
+	JE	20$
+	PUSHL	dcb_bulkuaclb[EDI]	;Yes
+	MOVL	EAX, au_iininv[EBP]	;Get the input interval
+	SHLL	EAX, #16t
+	MOVB	AL, au_epiin[EBP]	;Get the endpoint
+	ORL	EAX, #PCB$XT_INT|PCB$XT_INPUT ;Indicate interrupt input
+	PUSHL	EAX
+	PUSHL	au_iinmax[EBP]
+	LEAL	EAX, dcb_bulkuapcbiin[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	MOVL	EBX, dcb_bulkuapcbiin[EDI] ;Copy the actual interrupt rate to
+	MOVZBL	EAX, pcb_actrate[EBX]	   ;  the DCB
+	MOVB	dcb_bulkuaiinai[EDI], AL
+	MOVL	dcb_bulkuailist+bl_length[EDI], #8
+	LEAL	EAX, dcb_bulkuaibuffer[EDI]	   ;Construct the buffer list
+	MOVL	dcb_bulkuailist+bl_vaddr[EDI], EAX ; for interrupt input
+	MOVL	dcb_bulkuailist+bl_paddr[EDI], #0
+	MOVL	dcb_bulkuailist+bl_pid[EDI], #USBPID_IN
+
+20$:	CMPL	au_epbout1[EBP], #0	;Do we need the first bulk output
+					;  endpoint?
+	JE	24$			;No
+	PUSHL	dcb_bulkuaclb[EDI]	;Yes
+	MOVZBL	EAX, au_epbout1[EBP]	;Bulk output endpoint
+	ORL	EAX, #PCB$XT_BULK
+	PUSHL	EAX
+	PUSHL	au_bout1max[EBP]
+	LEAL	EAX, dcb_bulkuapcbbout1[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+24$:	CMPL	au_epbout2[EBP], #0	;Do we need the second bulk output
+					;  endpoint?
+	JE	28$			;No
+	PUSHL	dcb_bulkuaclb[EDI]	;Yes
+	MOVZBL	EAX, au_epbout2[EBP]	;Bulk output endpoint
+	ORL	EAX, #PCB$XT_BULK
+	PUSHL	EAX
+	PUSHL	au_bout2max[EBP]
+	LEAL	EAX, dcb_bulkuapcbbout2[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+28$:	MOVL	dcb_devchar[EDI], #usbbulkadchartbl ;Store offset of our device
+						    ;  characteristics table
+	CLRL	EAX
+30$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if required characteristic is missing
+
+34$:	MOVL	EAX, #ER_CHARM
+	JMP	30$
+
+;Here if error creating a pipe
+
+pipeerr:PUSHL	EAX
+	PUSHL	dcb_bulkuaclb[EDI]
+	CALL	xosusbUnlinkFromDevBgn##
+	POPL	EAX
+
+;Here error linking to USB device
+
+36$:	PUSHL	EAX
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	MOVL	knlTda+tdaDcb##, #0
+	POPL	EAX
+	JMP	30$
+.PAGE
+copytext:
+	ADDL	EDX, EDI
+4$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	EBX
+	LOOP	ECX, 4$
+6$:	MOVB	[EDX], #0
+	RET
+.PAGE
+;Subroutine called by sysIoCharValues for the NAME characteristic
+
+;The set subroutine is called as follows for a long string value:
+;	c{EBX} = Address of new string
+;	c{ECX} = Length of new string (may be 0 if string is null terminated)
+;	c{EDX} = Data value
+;	c{ESI} = Offset of table entry
+;	CALL	setsub
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+auname:	CMPL	ECX, #14t
+	JG	4$
+	MOVL	EDX, #au_devname
+2$:	MOVB	AL, [EBX]
+	MOVB	0[EBP+EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 2$
+	MOVL	au_nmend[EBP], EDX
+	CLRL	EAX
+	RET
+
+4$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBADDR characteristic
+
+auaddr:	CMPL	EAX, #127t		;Valid value?
+	JA	12$			;No
+	MOVL	au_addr[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBBINn characteristic
+
+auepbin:TESTL	EAX, EAX
+	JE	12$
+	CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	CMPL	au_epbin1[EBP], #0	;First one?
+	JNE	8$			;No
+	MOVL	au_epbin1[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_bin1max
+	CLC
+	RET
+
+8$:	CMPL	au_epbin2[EBP], #0	;Second one?
+	JNE	12$
+	MOVL	au_epbin2[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_bin2max
+	CLC
+	RET
+
+12$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBBOUTn characteristic
+
+auepbout:
+	TESTL	EAX, EAX
+	JE	12$
+	CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	CMPL	au_epbout1[EBP], #0	;FIrst one?
+	JNE	14$			;No
+	MOVL	au_epbout1[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_bout1max
+	CLC
+	RET
+
+14$:	CMPL	au_epbout2[EBP], #0	;Second one?
+	JNE	12$			;No
+	MOVL	au_epbout2[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_bout2max
+	CLC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBIIN characteristic
+
+auepiin:TESTL	EAX, EAX
+	JE	12$
+	CMPL	EAX, #15t
+	JA	12$
+	MOVL	au_epiin[EBP], EAX
+	MOVL	au_mxpntr[EBP], #au_iinmax
+	CLC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBIIINV characteristic
+
+aueiininv:
+	CMPL	EAX, #255t
+	JA	12$
+	MOVL	au_iininv[EBP], EAX
+	CLC
+	RET
+
+;Subroutine called by sysIoCharValues for the USBGPORT characteristic
+
+augport:MOVL	au_gport[EBP], EAX
+18$:	RET
+
+;Subroutine called by sysIoCharValues for the USBSPEED characteristic
+
+auspeed:CALL	xosusbCheckSpeed##
+	JC	18$
+	MOVL	au_speed[EBP], EAX
+	RET
+
+;Subroutine called by sysIoCharValues for the USBEP0MX characteristic
+
+auep0max:
+	MOVL	au_ep0max[EBP], EAX
+	RET
+
+;Subroutine called by sysIoCharValues for the USBPKTMX characteristic
+
+aupktmax:
+	MOVL	EDX, au_mxpntr[EBP]
+	ORL	EDX, EDX
+	JE	12$
+	MOVL	[EDX+EBP], EAX
+	RET
+
+;Subroutine called by sysIoCharValues for the USBMFCTR, USBMODE, and USBERNO
+;   characteristics
+
+autext:	ADDL	EDX, EBP
+20$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	22$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 20$
+22$:	CLRL	EAX
+	MOVB	[EDX], AL
+	RET
+
+auvalue:MOVL	0[EBP+EBX], EAX
+	CLC
+	RET
+.PAGE
+;Here for the bulkf_close BULK driver function - Close device
+;  This is needed to terminate possible interrupt input. This is not
+;  associated with any IO transfer, so it is not terminated by the normal
+;  device run-down.
+
+bulkuaclose:
+	PUSHL	EDI
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPB	dcb_bulkuaiinact[EDI], #0 ;Is interrupt input active now?
+	JE	10$			;No - nothing needed here
+	MOVL	EAX, dcb_bulksighndl[EDI] ;Yes - for this handle?
+	CMPL	EAX, knlTda+tdaHandle##
+	JNE	10$			;No
+	PUSHL	dcb_bulkuapcbiin[EDI]	;Yes - cancel it
+	CALL	xosusbCancelPipe##
+	MOVB	dcb_bulkuaiinact[EDI], #0
+10$:	POPL	EDI
+	RET
+.PAGE
+;Here for the bulkf_cdcb BULK driver function - Clear DCB
+;	void bulkuacdcb(void)
+
+bulkuacdcb:
+	MOVL	EDX, knlTda+tdaDcb##
+	TESTB	dcb_sts1[EDX], #D1$RMVRDY ;Are we ready to give up this device?
+	JE	10$			;No
+	PUSHL	dcb_bulkuaclb[EDX]	;Yes - finish unlinking it
+	CALL	xosusbUnlinkFromDevFin##
+	PUSHL	knlTda+tdaDcb##
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+10$:	RET
+.PAGE
+;Here for the bulkf_input BULK driver function - Input
+;	long bulkuainput(
+;	    char *bufr,		// Far address of buffer
+;	    long  len);		// Buffer length
+;  Value returned is 0 if normal or a negative XOS error code if error.
+;  Total amount actually input is stored in knlTdaCount.
+
+$$$=!0
+FRM puaop_pcb  , 4
+FRM puaop_blist, bl_SIZE
+puaop_SIZE=!$$$
+
+puaop_bufr =!12t
+puaop_len  =!8
+
+bulkuainput:
+	ENTER	puaop_SIZE,0
+	MOVL	EBX, knlTda+tdaDcb##
+	CMPL	dcb_bulkinchnl[EBX], #1
+	JA	2$
+	MOVL	EAX, dcb_bulkuapcbbin1[EBX]
+	JMP	4$
+
+2$:	MOVL	EAX, dcb_bulkuapcbbin2[EBX]
+4$:	MOVL	dcb_bulkuapcbbinc[EBX], EAX
+	MOVL	puaop_blist+bl_pid[EBP], #USBPID_IN
+	JMP	10$
+
+;Here for the bulkf_output BULK driver function - Output
+;	long = bulkuaoutput(
+;	    char *bufr,		// Address of buffer
+;	    long  len);		// Buffer length
+;  Value returned is 0 if normal or a negative XOS error code if error.
+;  Total amount actually output is stored in knlTdaAmount.
+
+bulkuaoutput:
+	ENTER	puaop_SIZE,0
+	MOVL	EBX, knlTda+tdaDcb##
+	CMPL	dcb_bulkoutchnl[EBX], #1
+	JA	6$
+	MOVL	EAX, dcb_bulkuapcbbout1[EBX]
+	JMP	8$
+
+6$:	MOVL	EAX, dcb_bulkuapcbbout2[EBX]
+8$:	MOVL	dcb_bulkuapcbboutc[EBX], EAX
+	MOVL	puaop_blist+bl_pid[EBP], #USBPID_OUT
+10$:	TESTL	EAX, EAX
+	JE	14$
+	MOVL	puaop_pcb[EBP], EAX
+	MOVL	EAX, puaop_bufr[EBP]	;Address of buffer
+	MOVL	puaop_blist+bl_vaddr[EBP], EAX
+	MOVZWL	EAX, puaop_len[EBP]	;Length
+	MOVL	puaop_blist+bl_length[EBP], EAX
+	MOVL	puaop_blist+bl_paddr[EBP], #0 ;Don't have physical address
+	PUSHL	knlTda+tdaDcb##		;DCB
+	PUSHL	puaop_pcb[EBP]		;PCB
+	LEAL	EAX, puaop_blist[EBP]	;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#0			;Address of callback function
+	PUSHL	#knlTda+tdaAmount##	;Address for returned amount
+	PUSHL	knlTda+tdaTimeOut##+4	;Timeout value
+	PUSHL	knlTda+tdaTimeOut##+0
+	CALL	xosusbTransfer##
+12$:	LEAVE
+	RET	8
+
+14$:	MOVL	EAX, #ER_VALUE
+	JMP	12$
+.PAGE
+;Callback function for interrupt input - This is called at device fork level
+;  when interrupt input is available.
+;	void bulkuahaveint(
+;	    PCB *pcb,
+;	    TDB *dcb,
+;	    long code,
+;	    long amount);
+
+buahi_pcb   =!24t
+buahi_dcb   =!20t
+buahi_code  =!16t
+buahi_amount=!12t
+
+bulkuahaveint::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, buahi_dcb[ESP]
+	CMPL	buahi_code[ESP], #0	;Error?
+	JNS	2$			;No - go on
+	CMPL	buahi_code[ESP], #ER_CANCL ;Yes - cancelling?
+	JE	10$			;Yes - must be removing the device
+	JMP	6$			;No - just try again (Really should
+					;  do something better there!!)
+
+;Here with good input - we simply request a signal with signal data consisting
+;  of the user's specified signal data followed by an item containing the
+;  length of this input packet followed by all of the data from the packet
+;  (0 filled to whole longs).
+
+2$:	CMPB	dcb_bulksigvect[EDI], #0 ;Have vector now?
+	JE	10$			;No - stop this!
+	MOVL	EAX, dcb_bulksigdata[EDI] ;Copy his signal data
+	MOVL	dcb_bulkuaidata[EDI], EAX
+	MOVL	EAX, buahi_amount[ESP]	;Copy the length to the signal data
+	MOVL	dcb_bulkuailength[EDI], EAX
+	MOVL	dcb_bulkuaibuffer[EDI+EAX], #0 ;Make sure last item is 0 filled
+	LEAL	EDX, dcb_bulkuaidata[EDI]
+	PUSHL	EDX
+	ADDL	EAX, #3			;Get number of data tiems
+	SHRL	EAX, #2
+	ADDL	EAX, #2
+	NEGL	EAX
+	PUSHL	EAX
+	PUSHL	dcb_bulksigpid[EDI]
+	PUSHL	#0			;No grant function
+	PUSHL	#0
+	MOVZBL	EAX, dcb_bulksigvect[EDI]
+	PUSHL	EAX
+	CALL	sysSchReqSignal##	;Request the signal
+	ADDL	ESP, #24t
+	ADDL	EAX, EAX		;Did it work?
+	JS	10$			;No - stop input
+6$:	PUSHL	EDI
+	PUSHL	dcb_bulkuapcbiin[EDI]
+	LEAL	EAX, dcb_bulkuailist[EDI] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#bulkuahaveint		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Time value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##	;Forget it if error starting the
+					;  transfer - That will hang the device
+					;  but that's better than a tight loop!
+10$:	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Here for the bulkf_outsts BULK driver function  - Get output status
+
+bulkuaoutsts:
+	CRASH	????
+
+;Here for the bulkf_inpsts BULK driver function - Get input status
+
+bulkuainpsts:
+	CRASH	????
+.PAGE
+;;here for the bulkf_setvect BULK driver function - Set signal vector
+;	long bulkuasetvect(void);
+
+bulkuasetvect:
+	CMPB	dcb_bulksigvect[EDI], #0 ;Have a vector now?
+	JNE	10$			;Yes
+	CMPB	dcb_bulkuaiinact[EDI], #0 ;No - is interrupt input active now?
+	JE	4$			;No - nothing needed here
+	PUSHL	dcb_bulkuapcbiin[EDI]	;Yes - cancel it
+	CALL	xosusbCancelPipe##
+	MOVB	dcb_bulkuaiinact[EDI], #0
+4$:	CLRL	EAX
+	RET
+
+;Here if have a signal vector now - Start interrupt input if its not running
+
+10$:	CMPB	dcb_bulkuaiinact[EDI], #0 ;Is interrupt input active now?
+	JNE	4$			;Yes - nothing needed here
+	PUSHL	EDI			;No - start interrupt input
+	PUSHL	dcb_bulkuapcbiin[EDI]
+	LEAL	EAX, dcb_bulkuailist[EDI] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#bulkuahaveint		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Timeout value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##
+	TESTL	EAX, EAX
+	JS	12$
+	MOVB	dcb_bulkuaiinact[EDI], #1 ;Indicate interrupt input is active
+12$:	RET
+.PAGE
+;Subroutine to clear stalled pipe
+;	long clearstall(
+;	    DCB *dcb);
+
+clrst_dcb=!12t
+
+clearstallin:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, clrst_dcb[ESP]
+
+;Reset the stall status on the input end-point
+
+	MOVL	EDX, dcb_bulkuapcb0[EDI]
+	MOVB	pcb_toggle[EDX], #0
+	PUSHL	EDI			;Address of DCB
+	PUSHL	dcb_bulkuapcb0[EBX]	;Address of PCB
+	MOVZBL	EAX, pcb_endpnt[EDI]	;SETUP data
+	ORB	AL, #0x80
+	PUSHL	EAX
+	PUSHL	#0x00000102
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	POPL	ESI
+	POPL	EDI
+	RET	4t
+
+clearstallout:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, clrst_dcb[ESP]
+
+;Reset the stall status on the output end-point
+
+	MOVL	EDX, dcb_bulkuapcb0[EDI]
+	MOVB	pcb_toggle[EDX], #0
+	PUSHL	EDI			;Address of DCB
+	PUSHL	dcb_bulkuapcb0[EDI]	;Address of PCB
+	MOVZBL	EAX, pcb_endpnt[EDI]	;SETUP data
+	PUSHL	EAX
+	PUSHL	#0x00000102
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;"removed" callback function
+;	void removed(
+;	    CLB *clb);		// Client link block
+
+;This is a very simple device. It has one DCB per USB device which can do
+;  input and output. There are no other links that we have worry about.
+
+rmvd_clb=!12t
+
+removed:PUSHL	EDI
+	PUSHL	knlTda+tdaDcb##
+	MOVL	EDX, rmvd_clb[ESP]	;Get address of the CLB
+	MOVL	EDI, clb_cdb[EDX]	;Get address of our DCB (which is also
+	MOVL	knlTda+tdaDcb##, EDI	;  the CDB)
+	PUSHL	EDI			;Unlink the DCB
+	CALL	sysIoUnlinkDcb##
+	PUSHL	rmvd_clb[ESP]		 ;Start disconnecting from the USB
+	CALL	xosusbUnlinkFromDevBgn## ;  controller
+	PUSHL	#0			;Start a timer
+	PUSHL	#ST_SECOND		;1 second
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#remove2
+	CALL	sysSchTmrCreate##
+	POPL	knlTda+tdaDcb##
+	POPL	EDI
+	RET	4
+
+;Timer function called 1 second after device is removed
+;	void remove2(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+rmv2_pda  =!20t
+rmv2_hndl =!16t
+rmv2_data1=!12t
+rmve_data2=!8
+
+remove2:PUSHL	EDI
+	MOVL	EDI, rmv2_data1[ESP]
+	CMPL	dcb_opencnt[EDI], #0	;Is the device in use?
+	JNE	8$			;Yes
+	PUSHL	dcb_bulkuaclb[EDI]	 ;No - finishing unlinking from the
+	CALL	xosusbUnlinkFromDevFin## ;  USB interface
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB (this completely
+	JMP	10$			;  removes the device from the system)
+
+;Here if the device is in use
+
+8$:	ORB	dcb_sts1[EDI], #D1$RMVRDY ;Indicate ready to remove the DCB
+10$:	POPL	EDI			  ;  when it is free
+	RET	16t
+.PAGE
+usbbulkagetspec:
+	MOVZWL	EAX, dcb_bulkuaspec[EDI]
+	JMP	knlDcGetBCDVer##
+
+usbbulkagetrel:
+	MOVZWL	EAX, dcb_bulkuarel[EDI]
+	JMP	knlDcGetBCDVer##
+
+usbbulkagetspeed:
+	MOVZBL	EAX, dcb_bulkuaspeed[EDI]
+	JMP	xosusbRtnSpeed##
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+drvname:.ASCII	"USBA"
+	.LONG	0
+
+	LKEEND
+

@@ -1,0 +1,523 @@
+	.TITLE	bulkcls - Bulk transfer class driver for XOS
+
+;*--------------------------------------------------------------------------*
+;* bulkcls.m86
+;*
+;* Written by: John R. Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosdos.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxbulk.par
+
+MAJV   =!1
+MINV   =!0
+EDITNUM=!0
+
+;This is a very simple class which mainly provides a common point for
+;  connecting generic data transfer drivers. It is mainly intended to
+;  provide a generic USB bulk-transfer only interface but is written
+;  as seperate class and link drivers to allow adding additional link
+;  drivers for other transports.
+
+	LKEHEAD	BULKCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosblkCcb
+	.EXPORT	xosblkSDisp
+
+	CODE
+
+	.SBTTL	SVC dispatch table for BULK class devices
+
+;SVC dispatch table for BULK class devices
+
+xosblkSDisp::
+	.LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	bulkcdcb	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	bulkopen	;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDev##	;sd_findfile = 16 - Device parameters
+	.LONG	knlIFnDev##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename   = 24 - Rename file
+	.LONG	bulkinpblk	;sd_inblock  = 28 - Input block
+	.LONG	bulkoutblk	;sd_outblock = 32 - Output block
+	.LONG	knlIFnDev##	;sd_getiosts = 36 - Get input/output status
+	.LONG	knlIFnDev##	;sd_special  = 40 - Special device function
+	.LONG	bulkclose	;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+	.LONG	bulkioparms	;sd_opnsdpt  = 64 - Open paramter table
+	.LONG	knlComDPParms##	;sd_opnddpt  = 68 - Device dependent paramaters
+BULKDSPSZ=!{$-xosblkSDisp}/4
+
+;Class function dispatch table for BULK class devices
+
+	.LONG	CLSFMX
+bulkcls:.LONG	bulkaddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	bulkunitinfo	;CF_PUNITS  =  9 - Get information about
+				;		     physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 10 - Get information about active
+				;		     units
+CLSFMX=!{$-bulkcls}/4
+
+;Class characteristics table for the BULK device class
+
+	DATA
+
+bulkcctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHAREND
+.PAGE
+;Device parameter table for BULK IO operations
+
+	CODE
+
+	.MOD	4
+	.LONG	PARMMAX
+bulkioparms:
+	.LONG	bulkiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+PARMMAX=!{$-bulkioparms}/4
+
+	.LONG	PARMGENMAX
+bulkiogenparms:
+	.LONG	0		;               = 0x0000
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN = 0x0001
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC = 0x0002
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS   = 0x0003
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM  = 0x0004
+	.LONG	knlIopGlbId##	;IOPAR_GLBID    = 0x0005
+	.LONG	knlIopDelay##	;IOPAR_DELAY    = 0x0006
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT  = 0x0007
+	.LONG	bulkinpsts	;IOPAR_INPSTS   = 0x0008
+	.LONG	bulkoutsts	;IOPAR_OUTSTS   = 0x0009
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT  = 0x000A
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT  = 0x000B
+	.LONG	bulksigvect	;IOPAR_SIGVECT1 = 0x000C
+	.LONG	0		;IOPAR_SIGVECT2 = 0x000D
+	.LONG	bulksigdata	;IOPAR_SIGDATA  = 0x000E
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN  = 0x000F
+	.LONG	0		;IOPAR_BUFRLMT  = 0x0010
+	.LONG	bulkchnlnum	;IOPAR_CHNLNUM  = 0x0011
+PARMGENMAX=!{$-bulkiogenparms}/4
+
+	CODE
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	bulkinit
+
+bulkinit:
+	PUSHL	#xosblkCcb		;Install the BULK class
+	CALL	sysIoNewClass##
+	TESTL	EAX, EAX
+	JS	10$			;This should not fail!
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+10$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	bulkaddunit - Class function to add unit
+
+;Here for the CL_ADDUNIT function
+;	long bulkaddunit(void);
+
+$$$=!0
+FRM au_unit , 4		;Unit number
+FRM au_type , 8		;Interface device type
+FRM au_name , 16t	;Device name base
+FRM au_nmend, 4		;Offset of character after name base
+au_SIZE=!$$$		;Type name
+
+;Description block for addunitchar
+
+	.MOD	4
+bulkaublk:
+ CHARBGN  3, 0
+ CHARENT  UNIT , DECV, , 1, 0, 0, bulkauunit, 0
+ CHARENT  TYPE , TEXT, , 8, 0, 0, bulkautype, 0
+ CHARENT  NAME , STR , ,16, 0, 0, bulkauname, 0
+ CHAREND
+
+bulkaddunit:
+	ENTER	au_SIZE, 0		;Set up and initialize our stack frame
+	CLRL	EAX
+	MOVL	au_name+0[EBP], EAX
+	MOVL	au_name+4[EBP], EAX
+	MOVL	au_name+8[EBP], EAX
+	MOVL	au_name+12t[EBP], EAX
+	DECL	EAX
+	MOVL	au_unit[EBP], EAX
+	MOVL	au_type[EBP], EAX
+	PUSHL	#1			;Ignore bad names here
+	PUSHL	#bulkaublk
+	CALL	sysIoCharValues##	;Process the characteristics
+	TESTL	EAX, EAX
+	JS	26$			;If no error
+
+;Here with all parameters processed
+
+8$:	CMPB	au_name+0[EBP], #0
+	JNE	10$
+	MOVL	au_name+0[EBP], #'BULK'
+	MOVL	au_nmend[EBP], #au_name+4
+10$:	MOVL	EAX, au_unit[EBP]
+	MOVL	EBX, au_nmend[EBP]
+	ADDL	EBX, EBP
+	CALL	knlPutDecNmbr##		;Put it in the name
+
+;NOTE: The following is really not right! It should do a global check for a
+;      name conflict but there is currently no easy way to do this!
+
+	MOVL	EAX, au_name+0[EBP]
+	MOVL	EBX, au_name+4[EBP]
+	MOVL	ECX, au_name+8[EBP]
+	MOVL	EDX, au_name+12t[EBP]
+
+	MOVL	EDI, xosblkCcb+ccb_dcbhead ;Point to first bulk transfer DCB
+20$:	TESTL	EDI, EDI
+	JE	30$			;If no more DCBs
+	CMPL	dcb_name+0[EDI], EAX
+	JNE	22$
+	CMPL	dcb_name+4[EDI], EBX
+	JNE	22$
+	CMPL	dcb_name+8[EDI], ECX
+	JNE	22$
+	CMPL	dcb_name+12t[EDI], EDX
+	JE	24$
+22$:	MOVL	EDI, dcb_next[EDI]	;Not this one - try next
+	JMP	20$			;Continue
+
+;Here if bulk transfer unit is already defined
+
+24$:	MOVL	EAX, #ER_DUADF
+26$:	MOVL	knlTda+tdaError##, EAX
+	JMP	32$
+
+;Here if unit is not defined now
+
+30$:	LEAL	EAX, au_type[EBP]
+	PUSHL	EAX			;Address of type name (on stack)
+	PUSHL	#xosblkCcb		;Address of first DLB for class
+	PUSHL	au_unit[EBP]		;Unit number
+	CALL	sysIoDriverAddUnit##
+	TESTL	EAX, EAX
+	JS	26$
+	MOVL	knlTda+tdaAmount##, #1
+32$:	CLRL	EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	LEAVE
+	RET
+.PAGE
+;Subroutine called by adduchars when "UNIT" characteristic found
+
+bulkauunit:
+	CMPL	EAX, #99t
+	JA	4$
+	MOVL	au_unit[EBP], EAX
+	CLC
+	RET
+
+;Subroutine called by adduchars when "TYPE" characteristic found
+
+bulkautype:
+	MOVL	au_type+0[EBP], EAX
+	MOVL	au_type+4[EBP], EDX
+	CLC
+	RET
+
+;Here if bad characteristic value
+
+4$:	MOVL	EAX, #ER_CHARV		;Get error code
+	STC				;Fail
+	RET
+
+;Here if bad characteristic size
+
+6$:	MOVL	EAX, #ER_CHARS		;Get error code
+	STC				;Fail
+	RET
+
+;Subroutine called by adduchars when "NAME" characteristic found
+
+bulkauname:
+	CMPL	ECX, #14t
+	JG	6$
+	MOVL	EDX, #au_name
+10$:	MOVB	AL, [EBX]
+	MOVB	0[EBP+EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 10$
+	MOVL	au_nmend[EBP], EDX
+	CLRL	EAX
+	RET
+.PAGE
+;Device check routine for bulk transfer devices
+;	long bulkdevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path);	// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;  Value returned is 0 if no match, 1 if found a match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+;This is a generic device. The device names may have any form, so there is
+;  no preliminary check we can make to eliminate impossible names.
+
+devc_name  =!12t
+devc_path  =!8
+devc_rtndcb=!4
+
+bulkdevchk:
+	MOVL	ECX, devc_name[ESP]
+	MOVL	EDX, xosblkCcb+ccb_dcbhead ;Yes - point to first bulk transfer
+	TESTL	EDX, EDX		   ;  DCB
+	JE	8$
+4$:	MOVL	EAX, dcb_name+0[EDX]	;Does name match?
+	CMPL	[ECX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+4[EDX]
+	CMPL	4[ECX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+8[EDX]
+	CMPL	8[ECX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+12t[EDX]
+	CMPL	12t[ECX], EAX
+	JE	12$			;Yes - this is it!
+6$:	MOVL	EDX, dcb_next[EDX]	;Not this one - try next
+	TESTL	EDX, EDX
+	JNE	4$			;Continue if another
+8$:	CLRL	EAX			;No match - return 0
+10$:	RET	12t
+
+;Here if found the device
+
+12$:	MOVL	EAX, #1
+	CMPL	devc_rtndcb[ESP], #0
+	JE	10$
+	MOVL	knlTda+tdaDcb##, EDX
+	JMP	10$
+.PAGE
+;Here for the open device entry
+;	c{EDI} = Offset of DCB
+
+bulkopen:
+	CLRL	EAX
+	RET	4
+.PAGE
+;Here for the close entry
+
+bulkclose:
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_bulkdsp[EDX]
+	CALLI	bulkf_close[EAX]
+	RET
+
+;Here for the clear DCB entry
+
+bulkcdcb:
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_bulkdsp[EDX]
+	CALLI	bulkf_cdcb[EAX]
+	RET
+.PAGE
+	.SBTTL	CF_PUNITS - Get device unit information
+
+;Here for the get device information entry
+;	c{EDI}    = Offset of DCB
+
+bulkunitinfo:
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+;Here for the write block entry
+
+bulkoutblk:
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	6$			;No
+	PUSHL	#bulkioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	10$
+6$:	MOVL	EAX, knlTda+tdaCount##	;Get count
+	TESTL	EAX, EAX
+	JE	14$
+	BTL	knlTda+tdaCmd##, #XO%OUT ;Is output allowed?
+	JNC	16$			;No - fail
+	PUSHL	knlTda+tdaBuffer1##	;OK - call the low-level driver to
+	PUSHL	EAX			;  do output
+	MOVL	EAX, dcb_bulkdsp[EDI]
+	CALLI	bulkf_output[EAX]
+8$:	TESTL	EAX, EAX
+	JNS	12$
+10$:	MOVL	knlTda+tdaError##, EAX
+12$:	CLRL	EAX
+14$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	RET
+
+16$:	MOVL	EAX, #ER_NOOUT
+	JMP	10$
+
+;Here for the read block entry
+
+bulkinpblk:
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	20$			;No
+	PUSHL	#bulkioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	10$
+20$:	MOVL	EAX, knlTda+tdaCount##	;Get count
+	TESTL	EAX, EAX
+	JE	14$
+	BTL	knlTda+tdaCmd##, #XO%OUT ;Is output allowed?
+	JNC	24$			;No - fail
+	PUSHL	knlTda+tdaBuffer1##	;OK - call the low-level driver to
+	PUSHL	EAX			;  do input
+	MOVL	EAX, dcb_bulkdsp[EDI]
+	CALLI	bulkf_input[EAX]
+	JMP	8$
+
+24$:	MOVL	EAX, ER_NOIN
+	JMP	10$
+
+.PAGE
+;Here for the IOPAR_OUTSTS parameter - Get output ready status
+
+	DPARMHDR  GET, HEXV
+bulkoutsts:
+	CRASH	????
+
+;Here for the IOPAR_INPSTS parameter - Get input ready status
+
+	DPARMHDR  GET, HEXV
+bulkinpsts:
+	CRASH	????
+
+;Here for the IOPAR_CHNLNUM parameter - Get or set channel number
+
+	DPARMHDR  BOTH, DECV
+bulkchnlnum:
+	CRASH	????
+.PAGE
+;Here for the IOPAR_SIVECT1 parameter - Get or set signal vector
+
+	DPARMHDR  BOTH, DECV
+bulksigvect:
+	TESTB	AH, #PAR$SET		;Want to change value?
+	JE	4$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get new value
+	JC	6$
+	TESTL	EAX, EAX
+	JE	2$
+	CMPL	EAX, #0x30		;Is it valid?
+	JB	10$
+	CMPL	EAX, #0xFF
+	JA	10$
+2$:	MOVL	dcb_bulksigvect[EDI], EAX ;Store it
+	MOVL	EAX, knlPda+pdaPid##	;Also store the current PID
+	MOVL	dcb_bulksigpid[EDI], EAX
+	MOVL	EAX, knlTda+tdaHandle##	  ;Also store the handle the device was
+	MOVL	dcb_bulksighndl[EDI], EAX ;  opened under
+	MOVL	EAX, dcb_bulkdsp[EDI]
+	CALLI	bulkf_setvect[EAX]
+	TESTL	EAX, EAX
+	JS	12$
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No
+	MOVL	EAX, dcb_bulksigdata[EDI] ;Yes - get value
+	JMP	knlStrParm4##		;Give it to him
+
+6$:	POPL	ECX			;Fix up the stack
+8$:	RET
+
+10$:	MOVL	EAX, #ER_PARMV
+12$:	POPL	ECX
+	STC
+	RET
+
+;Here for the IOPAR_SIDATA parameter - Get or set signal data
+
+	DPARMHDR  BOTH, DECV
+bulksigdata:
+	TESTB	AH, #PAR$SET		;Want to change value?
+	JE	14$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get new value
+	JC	6$
+	MOVL	dcb_bulksigdata[EDI], EAX ;Store it
+	POPL	EAX
+14$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No
+	MOVL	EAX, dcb_bulksigdata[EDI] ;Yes - get value
+	JMP	knlStrParm4##		;Give it to him
+.PAGE
+	.SBTTL	Bulk transfer class driver data
+
+	DATA
+
+fbulkdev:.LONG	0
+xosblkCcb::			;BULK CCB
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'BULK', 0	;ccb_name    - Name of this class
+	.LONG	0		;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	bulkdevchk	;ccb_devchk  - Address of device check routine
+	.LONG	bulkcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	bulkcctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+	LKEEND

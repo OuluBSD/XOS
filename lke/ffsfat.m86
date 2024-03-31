@@ -1,0 +1,1788 @@
+	.TITLE	ffsfat - FFS routines that deal with FAT tables
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+$$FATRING =!0
+$$CHKCHAIN=!0
+
+	CODE
+
+;NOTE: We would like to defer writing FAT blocks for as long as we can.
+;      Unfortunately, this can lead to unsafe failure modes which result
+;      In a file's FAT chain pointing to an unallocated block. (Which might
+;      later be allocated to another file!) Unfortunately, since FAT chains
+;      may out of and back into a block, there is no way to completely
+;      eliminate such a failure mode. It can be minimized by writing FAT
+;      blocks as quickly as possible. In partictular, when doing the initial
+;      allocation for a file, FAT blocks are written BEFORE the directory
+;      entry is written, ensuring that the directory entry really points to
+;      an allocated block. It is also desirable to write out all FAT blocks
+;      that have been modified when allocating space for a file at the same
+;      time to minimize the posibility that only some of them will actually
+;      be written. Unfortunately, since many files may allocate space out of
+;      a single FAT block, this is very difficult (or impossilble to do
+;      efficiently. We compromize by keeping a system wide list of unwritten
+;      FAT blocks. All blocks in this list are written whenever it is desired
+;      to commit any file's FAT changes to disk. This list is implimented with
+;      an array of pointers rather than as a linked list to minimize the
+;      amount of critial code required to add an entry to the list and to
+;      write out the blocks on the list.
+
+;Function to scan the FAT blocks for a structure and obtain the number of
+;  allocated clusters.
+;	long ffsscanfats(void)
+;  Value returned is the number of allocated clusters (positive) if normal,
+;    or a negative XOS error code if error. On normal return ucb_fatmode
+;    and ucb_total have been set.
+
+$$$=!0
+FRM scnf_fab  , fab_SIZE
+FRM scnf_total, 4
+sfats_SIZE=!$$$
+
+ffsscanfats::
+	PUSHL	ESI
+	ENTER	sfats_SIZE
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+	CLRL	EAX			;Clear total
+	MOVL	scnf_total[EBP],EAX
+	MOVL	ucb_avail[ESI], EAX	;Clear amount available on disk
+	MOVL	scnf_fab+fab_cnum[EBP], #-1
+	MOVL	scnf_fab+fab_clus[EBP], #2 ;Start with cluster 2
+	LEAL	EAX, scnf_fab[EBP]	;Read the first FAT block
+	PUSHL	EAX
+	CALL	ffsgetfatblkbyclus
+	TESTL	EAX, EAX
+	JS	scnfdn			;If error
+	MOVL	EDX, scnf_fab+fab_bufr[EBP] ;Get the FAT mode byte
+	MOVZBL	EAX, bfr_data[EDX]
+	MOVB	ucb_fatmode[ESI], AL
+4$:	LEAL	EAX, scnf_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsgetfatent		;Get fat entry
+	TESTL	EAX, EAX
+	JS	scnfdn			;  FAT mode byte
+	JNE	24$			;If not available
+	INCL	ucb_avail[ESI]		;Available - count it
+24$:	INCL	scnf_total[EBP]		;Bump total count
+	MOVL	EAX, scnf_total[EBP]
+	CMPL	EAX, ucb_total[ESI]	;Finished?
+	JB	4$			;No - continue
+	MOVL	ucb_satraa[ESI], #0	;Yes - no more FAT read-ahead
+	PUSHL	EAX
+	LEAL	EAX, scnf_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+	POPL	EAX
+scnfdn:	LEAVE
+	POPL	ESI
+	RET
+.PAGE
+;Function to scan FFS FATs for a file and set up pointers in the fake FIB
+;  - When called the first FIB pointer should contain the first cluster in
+;  the file (normally obtained for the directory entry). The pointer's count
+;  is not used and may be 0.
+;	long ffsscanfile(
+;	    FIB *fib);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+$$$=!0
+FRM sfile_alloc , 4	;Amount allocated to file
+FRM sfile_cfib  , 4	;Address of current FIB
+FRM sfile_fibpnt, 4	;Pointer to current FIB pointer
+FRM sfile_fab   , fab_SIZE
+sfile_SIZE=!$$$
+
+sfile_bfib=!20t
+
+ffsscanfile::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	sfile_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, sfile_bfib[EBP]	;Get address of base FIB
+	MOVL	sfile_cfib[EBP], EBX	;Which is also the initial current FIB
+					;  for us
+	MOVL	sfile_alloc[EBP], #0	;Clear amount allocated
+	MOVL	sfile_fab+fab_cnum[EBP], #-1
+	MOVL	EAX, ff_f1pnt+1[EBX]	;Get first cluster number
+	CMPL	EAX, #2			;Is this a valid cluster?
+	JB	16$			;No
+	CMPL	EAX, ucb_total[ESI]	;Maybe
+	JAE	16$			;No
+	MOVL	ESI, #ff_f1pnt		;Point to 1st FIB pointer
+	MOVL	sfile_fab+fab_clus[EBP], EAX
+4$:	MOVB	[ESI+EBX], #1		;Initialize count in the pointer
+	MOVL	1[ESI+EBX], EAX		;Store cluster number in pointer
+	LEAL	EAX, sfile_fab[EBP]	;Get the block containing the FAT entry
+	PUSHL	EAX
+	CALL	ffsgetfatblkbyclus
+	TESTL	EAX, EAX
+	JS	18$			;If error
+6$:	LEAL	EAX, sfile_fab[EBP]	;Get the FAT entry
+	PUSHL	EAX
+	CALL	ffsgetfatent
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	JE	16$			;Error if not in use!
+	CMPL	EAX, #0x0FFFFFF8	;EOF?
+	JAE	ateof			;Yes
+	CMPL	EAX, sfile_fab+fab_clus[EBP] ;No - is this cluster contiguous?
+	JNE	newpntr			;No
+	CMPB	[EBX+ESI], #0xFF	;Can we increase the count?
+	JE	newpntr			;No - start a new pointer
+	INCB	[EBX+ESI]		;Yes
+	JMP	6$
+
+;Here if need to start a new pointer, either because the next cluster is
+;  not contiguous or because the count is full
+
+newpntr:MOVL	sfile_fab+fab_clus[EBP], EAX ;Save next cluster
+	MOVZBL	EDX, [EBX+ESI]
+	ADDL	sfile_alloc[EBP], EDX	;Bump amount allocated
+	ADDL	ESI, #5			;Bump pointer to FIB pointer
+	CMPL	ESI, #bfr_data+512t-5	;More space in this FIB?
+	JBE	4$			;Yes - continue
+
+;Here if current FIB is full - Must allcoate another FIB.
+
+newfib:	PUSHL	#0
+	PUSHL	ESP
+	CALL	xosdskGetBufr##		;Get a system buffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	LEAL	EAX, bfr_rmb[EBX]	;Give up the buffer's resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	PUSHL	EBX
+	CALL	xosdskClrBufr##		;Clear the buffer
+	ORB	bfr_status[EBX], #BS$FFIB
+	MOVL	ff_label[EBX], #'XFIB'	;Store label for debugging
+	MOVL	EDX, sfile_cfib[EBP]	;Get previous FIB
+	MOVL	EAX, sfile_alloc[EBP]	;Get amount found allocated so far
+	MOVL	ff_roof[EDX], EAX	;Store as top of this FIB
+	MOVL	ff_nextfib[EDX], EBX	;Link next FIB
+	MOVL	ff_prevfib[EBX], EDX
+	MOVL	ff_floor[EBX], EAX	;Store as bottom of new FIB
+	MOVL	sfile_cfib[EBP], EBX	;Make this the new current FIB
+	LEAL	EAX, ff_fxpnt[EBX]
+	MOVL	sfile_fibpnt[EBP], EAX
+	MOVL	EAX, sfile_fab+fab_clus[EBP]
+	MOVL	ESI, #ff_fxpnt
+	JMP	4$			;Continue
+
+;Here if have bad cluster number in FAT
+
+16$:	MOVL	EAX, #ER_STFER		;Get error code
+
+;Here if error after a buffer might have been allocated
+
+18$:	PUSHL	EAX			;Save error code
+	MOVL	ECX, sfile_bfib[EBP]	;Point to the base FIB
+	MOVL	EBX, ff_nextfib[ECX]	;Give up any extended FIBs
+	TESTL	EBX, EBX
+	JE	22$
+	MOVL	ff_nextfib[ECX], #0
+20$:	PUSHL	ff_nextfib[EBX]	;Yes - save offset of next FIB (if any)
+	PUSHL	EBX
+	CALL	xosdskGiveBufr##	;Give up this one
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	20$
+22$:	MOVL	EBX, sfile_bfib[EBP]
+	PUSHL	EDI
+	CLRL	EAX
+	LEAL	EDI, ff_f1pnt+8[EBX]
+	PUSHL	DS
+	POPL	ES
+	MOVB	0-8[EDI], AL		;Clear the count in the first pointer
+	MOVB	5-8[EDI], AL		;Clear the following 3 bytes so the
+	MOVW	6-8[EDI], AX		;  RSTOSL can be long aligned
+	MOVL	ECX, #{512t+bfr_data-ff_f1pnt}/4-2
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+	POPL	EDI
+	DECL	EAX
+	MOVL	ff_alloc[EBX], EAX	;Put it back the way it was
+	POPL	EAX			;Restore error code
+	JMP	sfiledn
+
+;Here if already have a buffer allocated for an extended FIB - this should
+;  not be possible!
+
+24$:	CRASH	DDDE			;[DOS Disk Data Error]
+
+;Here at end of file
+
+ateof:	MOVZBL	EAX, [EBX+ESI]
+	ADDL	EAX, sfile_alloc[EBP]	;Get final amount allocated
+	MOVL	EBX, sfile_cfib[EBP]
+	MOVL	ff_roof[EBX], EAX	;Store as top of this FIB
+	MOVL	EBX, sfile_bfib[EBP]	;Restore address of base FIB
+	MOVL	ff_alloc[EBX], EAX	;Store total amount allocated
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZBL	ECX, ucb_clusshft[ESI]
+	ADDL	ECX, #9
+	SHLL	EAX, CL			;Get bytes allocated
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is this a directory?
+	JNE	30$			;Yes - always use this as the length
+	CMPL	ff_length[EBX], EAX	;No - is the given length too big?
+	JBE	34$			;No - don't change the length
+30$:	MOVL	ff_length[EBX], EAX	;Store allocated amount as file length
+34$:	CLRL	EAX
+sfiledn:PUSHL	EAX
+	LEAL	EAX, sfile_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+
+	PUSHL	EBX
+	CALL	ffsverifyfat
+
+	POPL	EAX
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to verify a file's FAT chain against the file's fake FIB.
+;	void ffsverifyfat(
+;	    FIB *fib);
+;  Crashes system if error found!
+
+$$$=!0
+FRM ffsvf_grpbgn , 4
+FRM ffsvf_ttlleft, 4
+FRM ffsvf_grpleft, 4
+FRM ffsvf_alloc  , 4
+FRM ffsvf_fab , fab_SIZE
+ffsvf_SIZE=!$$$
+
+ffsvf_fib=!20t
+
+ffsverifyfat::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	ffsvf_SIZE
+	MOVL	EBX, ffsvf_fib[EBP]
+	MOVL	EAX, ff_alloc[EBX]
+	CMPL	EAX, #-1		;Have we set up the pointers yet?
+	JNE	2$			;Yes
+	CMPB	ff_f1pnt+0[EBX], #0	;No - first pointer count should be 0
+	JE	50$
+	CRASH	BDFP
+
+2$:	TESTL	EAX, EAX		;Is anything allocated?
+	JNE	6$			;Yes
+	CMPB	ff_f1pnt+0[EBX], #0	;No
+	JNE	4$
+	CMPL	ff_f1pnt+1[EBX], #0	;First pointer should be 0
+	JE	50$
+4$:	CRASH	BDFP
+
+6$:	MOVL	ffsvf_ttlleft[EBP], EAX
+	MOVL	ffsvf_alloc[EBP], #0
+	MOVL	ffsvf_fab+fab_cnum[EBP], #-1
+	MOVL	ESI, #ff_f1pnt		;Point to first pointer
+verfbg:	MOVZBL	EAX, [EBX+ESI]		;Get size of the group
+	MOVL	ffsvf_grpleft[EBP], EAX
+	ADDL	ffsvf_alloc[EBP], EAX
+	SUBL	ffsvf_ttlleft[EBP], EAX	;Reduce clusters left
+	JNS	12$
+	CRASH	BDAL
+
+12$:	MOVL	EDI, 1[EBX+ESI]		;Get first cluster in group
+	MOVL	ffsvf_fab+fab_clus[EBP], EDI
+	LEAL	EAX, ffsvf_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsgetfatblkbyclus
+	TESTL	EAX, EAX
+	JNS	14$
+	CRASH	ERDF
+
+14$:	LEAL	EAX, ffsvf_fab[EBP]	;Get the FAT entry
+	PUSHL	EAX
+	CALL	ffsgetfatent
+	TESTL	EAX, EAX
+	JNS	16$
+	CRASH	ERDF
+
+16$:	DECL	ffsvf_grpleft[EBP]	;More in this group?
+	JE	verfeg			;No
+	INCL	EDI			;Yes - is the entry correct?
+	CMPL	EAX, EDI
+	JE	14$			;Yes - check next cluster
+	CRASH	BDFE
+
+;Here at end of a pointer group
+
+verfeg:	MOVL	ffsvf_grpbgn[EBP], EAX	;Save what should be first cluster in
+					;  the next group
+	ADDL	ESI, #5			;Advance to next group
+	CMPL	ffsvf_ttlleft[EBP], #0	;Is this the end of the file?
+	JE	verfae			;Yes
+	CMPL	ESI, #bfr_data+512t-5	;At end of this FIB?
+	JB	30$			;No
+
+;Here if at end of a FIB - check the ff_roof value and advance to the next
+;  FIB
+
+	MOVL	EAX, ffsvf_alloc[EBP]
+	CMPL	EAX, ff_roof[EBX]
+	JE	22$
+	CRASH	BDRV
+
+22$:	MOVL	EDX, ff_nextfib[EBX]	;No - get address of next FIB
+	CMPL	EBX, ff_prevfib[EDX]
+	JE	24$
+	CRASH	BDFP
+
+24$:	MOVL	EBX, EDX
+	CMPL	EAX, ff_floor[EBX]
+	JE	26$
+	CRASH	BDFV
+
+26$:	MOVL	ESI, #ff_fxpnt
+
+;Here to start next group
+
+30$:	MOVL	EDX, ffsvf_grpbgn[EBP]	;Get the value we are expecting
+	CMPL	EDX, 1[EBX+ESI]
+	JE	verfbg			;Go on if OK
+	CRASH	BDFP
+
+;Here if we think we are at the end of the file because we have accounted
+;  for the correct number of clusters. Make sure we are also at the end of
+;  the pointers
+
+verfae:	CMPL	ffsvf_grpbgn[EBP], #0x0FFFFFFF ;Is the final FIB link right?
+	JE	40$
+	CRASH	BDFL
+
+40$:	CMPL	ESI, #bfr_data+512t-5	;At end of the current FIB?
+	JA	46$			;Yes - that's OK
+	CMPB	[EBX+ESI], #0		;No - is next pointer empty?
+	JNE	42$			;No
+	CMPL	1[EBX+ESI], #0		;Maybe
+	JE	44$			;Yes
+42$:	CRASH	BDFP
+
+44$:	ADDL	ESI, #5
+	JMP	40$
+
+46$:	MOVL	EAX, ffsvf_alloc[EBP]	;Is the ff_roof value right?
+	CMPL	EAX, ff_roof[EBX]
+	JE	verfdn
+	CRASH	BDRF
+
+verfdn:	LEAL	EAX, ffsvf_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+50$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to reduce the allocated size of a file.
+;	long ffsreduce(
+;	    long length);	// Desired length in bytes
+;  Value returned is 0 if file was not reduced, 1 if it was reduced, or a
+;    negative XOS error code if error. If 1 is returned, the FIB has also
+;    been "written" (the directory has been updated from the FIB).
+
+;When reducing the length to 0, the directory MUST be updated first to
+;  eliminate a possible failure mode which could allow blocks to be doubly
+;  allocated. When not reducing to 0, the new EOF pointer MUST be written
+;  before any other FAT pointers are changed for the same reason.
+
+$$$=!0
+FRM rdc_numclus, 4		;Number of clusters to give up
+FRM rdc_fab    , fab_SIZE
+rdc_SIZE=!$$$
+
+rdc_len=!20t
+
+ffsreduce::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rdc_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+
+	PUSHL	EAX
+	PUSHL	dcb_dkbasefib[EDI]
+	CALL	ffsverifyfat
+	POPL	EAX
+
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	CMPL	ff_alloc[EBX], #-1	;Have we scanned the FATs yet?
+	JNE	4$			;Yes
+	PUSHL	EBX
+	CALL	ffsscanfile		;No - do it now
+	TESTL	EAX, EAX
+	JS	rdcdone			;If error
+4$:	TESTB	ucb_sts1[ESI], #U1$WPROT
+	JNE	52$
+	MOVL	EAX, rdc_len[EBP]	;Reducing written length?
+	CMPL	EAX, ff_length[EBX]
+	JAE	6$			;No
+	MOVL	ff_length[EBX], EAX	;Yes
+	ORB	bfr_status[EBX], #BS$CHNGD
+6$:	ADDL	EAX, ucb_bpclus[ESI]	;Round length up to whole clusters
+	DECL	EAX			;Get desired allocated length in
+	MOVZBL	ECX, ucb_clusshft[ESI]	;  clusters (round up)
+	ADDL	ECX, #9
+	SHRL	EAX, CL
+	CMPL	EAX, ff_alloc[EBX]	;Need to change the size?
+	JAE	50$			;No - nothing else to do here!
+	MOVL	rdc_fab+fab_cnum[EBP], #-1
+	TESTL	EAX, EAX		;Yes - reducing length to 0?
+	JNE	rdcnot0			;No
+
+;Here if reducing allocated length to 0
+
+rdcto0	:MOVL	EDX, ff_f1pnt+1[EBX]	;Get the first cluster
+	TESTL	EDX, EDX		;Nothing to do if nothing allocated now
+	JE	50$
+	MOVL	rdc_fab+fab_clus[EBP], EDX
+	MOVZBL	EDX, ff_f1pnt+0[EBX]	;And the size of the first group
+	MOVL	rdc_numclus[EBP], EDX
+	MOVL	ff_f1pnt+1[EBX], EAX	;Clear the first pointer
+	MOVB	ff_f1pnt+0[EBX], AL
+	MOVL	ff_alloc[EBX], EAX
+	MOVL	ff_roof[EBX], EAX
+	ORB	bfr_status[EBX], #BS$CHNGD
+	CMPL	ff_dirpos[EBX], #-1	;Is there a directory entry?
+	JE	8$			;No (must be deleting the file)
+	TESTB	bfr_status[EBX], #BS$CHNGD ;Has the FIB been changed?
+	JE	8$			;No - nothing needed here
+	PUSHL	EBX
+	CALL	ffswritefib#		;Must update the directory here to
+					;  eliminate possible dangerous failure
+	TESTL	EAX, EAX		;  mode
+	JS	rdcdone			;If error
+8$:	MOVL	ESI, #ff_f1pnt
+	JMP	24$
+
+;Here if not reducing file length to 0
+
+rdcnot0:MOVL	ff_alloc[EBX], EAX	;Store new allocated length
+	MOVL	EAX, rdc_len[EBP]	;Find pointer for last cluster to keep
+	DECL	EAX
+	PUSHL	#0
+	MOVL	EDX, ESP
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	ffsfindpnt#
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	rdcdone			;If error
+	MOVL	EBX, dcb_dkcurfib[EDI]	;Get last cluster to keep (EAX contains
+	MOVL	ECX, dcb_dkucb[EDI]	;  block in cluster group for the last
+	MOVZBL	ECX, ucb_clusshft[ECX]	;  block to keep) - This gives the new
+	SHRL	EAX, CL			;  count for this group.
+	INCL	EAX
+	MOVL	ECX, 1[EBX+ESI]		;Get cluster number for group
+	ADDL	ECX, EAX		;Get last cluster to keep
+	DECL	ECX
+	MOVL	rdc_fab+fab_clus[EBP], ECX ;Save number of last cluster to keep
+	MOVZBL	ECX, [EBX+ESI]		;Calculate clusters to give up
+	MOVB	[EBX+ESI], AL		;Update count for group
+	SUBL	ECX, EAX		;Get number of clusters to give up
+	MOVL	rdc_numclus[EBP], ECX
+
+;Here with the first group of clusters to keep
+
+	LEAL	EAX, rdc_fab[EBP]	;Get FAT block for new last cluster
+	PUSHL	EAX			;  in file (Cluster number has been
+	CALL	ffsgetfatblkbyclus	;  stored in fab_clus.)
+	TESTL	EAX, EAX
+	JS	46$
+	PUSHL	#0x0FFFFFFF		;Store end of file indicator in new
+	LEAL	EAX, rdc_fab[EBP]	;  last cluster for file
+	PUSHL	EAX
+	CALL	ffsputfatent
+	TESTL	EAX, EAX
+	JS	46$
+
+;Here to give up clusters
+
+24$:	MOVL	ECX, rdc_numclus[EBP]	;Get number of clusters to give up
+	TESTL	ECX, ECX		;  from this group
+	JE	32$			;If none
+	MOVL	EAX, rdc_fab+fab_clus[EBP] ;Get first cluster to give up (This
+					   ;  has been incremented by
+					   ;  ffsputfatent if we stored an EOF
+					   ;  indication.)
+
+;Here to give up next cluster group
+;	c{EAX} = First cluster to give up
+;	c{ECX} = Number of clusters to give up
+;	c{EBX} = Address of current FIB buffer
+;	c{ESI} = Offset in FIB of the pointer
+
+rdcnxtg:PUSHL	EAX
+	PUSHL	ECX
+	LEAL	EAX, rdc_fab[EBP]
+	PUSHL	EAX
+	CALL	deallocc
+	TESTL	EAX, EAX
+	JS	46$
+32$:	ADDL	ESI, #5			;Bump offset in FIB
+	CMPL	ESI, #bfr_data+508t	;Past end of this FIB?
+	JB	34$			;No
+	PUSHL	ff_nextfib[EBX]		;Yes - get offset of next FIB
+	PUSHL	EBX
+	CALL	chkffib			;Give up this FIB if should
+	POPL	EBX
+	TESTL	EBX, EBX		;Is there another?
+	JE	42$			;No - all done here
+	MOVL	dcb_dkcurfib[EDI], EBX	;Yes - make it the current FIB
+	MOVL	ESI, #ff_fxpnt
+34$:	MOVZBL	ECX, [EBX+ESI]		;Get cluster count for group
+	TESTL	ECX, ECX		;End of file?
+	JE	rdcfin			;Yes - finished
+	MOVL	EAX, 1[EBX+ESI]		;No - get first cluster in group
+	MOVB	[EBX+ESI], #0		;Clear the FIB pointer
+	MOVL	1[EBX+ESI], #0
+	JMP	rdcnxtg			;Continue
+
+;Here with all necessary clusters given up
+
+rdcfin:	PUSHL	EBX
+	CALL	chkffib			;Give up last FIB if need to
+42$:	MOVL	EBX, dcb_dkbasefib[EDI] ;Restore offset of base FIB
+	MOVL	dcb_dkcurfib[EDI], EBX	;And make it the current FIB
+46$:	LEAL	EAX, rdc_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+	TESTL	EAX, EAX
+	JS	rdcdone
+	MOVL	EAX, #1
+
+rdcdone:
+	PUSHL	EAX
+	PUSHL	dcb_dkbasefib[EDI]
+	CALL	ffsverifyfat
+	POPL	EAX
+
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if don't need to reduce the file - return 0
+
+50$:	CLRL	EAX
+	JMP	rdcdone
+
+52$:	MOVL	EAX, #ER_WPRER
+	JMP	rdcdone
+.PAGE
+;Function to check FIB that we have removed pointers from and see if it is
+;  still needed and, if so, update ff_roof. If its not needed, it's given up.
+;  In any case, ff_nextfib is cleared. (We don't need to fully unlink this
+;  FIB from the list of extended FIBs since we know that all externed FIBs
+;  following this one will be given up. Simply clearing ff_nextfib is enough.
+;  This also ensures that xosdskRelsFib will not try to give up any following
+;  FIBs!)
+;	void chkffib(
+;	    FIB *fib);
+
+chkf_fib=!4
+
+chkffib:MOVL	EDX, chkf_fib[ESP]
+	MOVL	ff_nextfib[EDX], #0
+
+	CMPL	ff_floor[EDX], #0	;Is this the base FIB?
+	JE	16$			;Yes
+	CMPB	ff_fxpnt[EDX], #0	;No - is it completely empty now?
+	JNE	16$			;No
+	CMPL	bfr_hnext[EDX], #-1	;Yes - make sure not in a hash list
+	JE	6$
+	CRASH	INHL
+
+6$:	CMPL	bfr_anext[EDX], #-1	;Make sure not in an allocation list
+	JE	8$
+	CRASH	INAL
+
+8$:	CMPW	bfr_rmb+rmb_usecnt[EDX], #0 ;Use count should aways be 0 in
+	JE	10$			    ;  an extended FIB
+	CRASH	UCN0
+
+10$:	PUSHL	EDX			;Push argument for xosdskGiveBufr
+	LEAL	EAX, bfr_rmb[EDX]	;Lock the buffer so we can give it
+	PUSHL	EAX			;  up the usual way
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	CALL	xosdskGiveBufr##	;Give up the extended FIB
+	JMP	20$
+
+;Here if base FIB or non-empty extended FIB
+
+16$:	MOVL	EAX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_dkbasefib[EAX] ;Update roof of the FIB
+	MOVL	EAX, ff_alloc[EAX]
+	MOVL	ff_roof[EDX], EAX
+20$:	RET	4
+.PAGE
+;Function to deallocate clusters on the disk - the specified number of
+;  contiguous clusters are deallocated
+;	CALL	ffsdeallocc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long ffsdeal(
+;	    long begin,
+;	    long cnt);
+
+$$$=!0
+FRM fdal_fab, fab_SIZE
+fdal_SIZE=!$$$
+
+fdal_bgn=!12t
+fdal_cnt=!8
+
+ffsdeallocc::
+	ENTER	fdal_SIZE
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[EDX]
+	TESTB	ucb_sts1[ECX], #U1$WPROT
+	JNE	12$
+	ORB	dcb_sts2[EDX], #D2$COMMIT ;Indicate need to write FATs
+	MOVL	fdal_fab+fab_cnum[EBP], #-1 ;Indicate have no buffer now
+	PUSHL	fdal_bgn[EBP]
+	PUSHL	fdal_cnt[EBP]
+	LEAL	EAX, fdal_fab[EBP]
+	PUSHL	EAX
+	CALL	deallocc
+	PUSHL	EAX
+	LEAL	EAX, fdal_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+	POPL	EAX
+10$:	LEAVE
+	RET	8
+
+12$:	MOVL	EAX, #ER_WPRER
+	JMP	10$
+
+;Internal (to ffsclsfat) function to deallocate clusters - The FAB is
+;  initialized and cleaned up outside this function.
+;	long dealloc(
+;	    long bgn,		// First cluster to give up
+;	    long cnt,		// Number of clusters to give up
+;	    FAB *fab);		// Address of the FAB
+
+deall_bgn=!12t
+deall_cnt=!8
+deall_fab=!4
+
+deallocc:
+	MOVL	EAX, deall_bgn[ESP]
+	MOVL	EDX, deall_fab[ESP]
+	MOVL	fab_clus[EDX], EAX
+	MOVL	EAX, deall_cnt[ESP]
+	MOVL	ECX, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[ECX]
+	ADDL	ucb_avail[ECX], EAX	;Increase count of total clusters
+	PUSHL	EDX			;Get the first buffer
+	CALL	ffsgetfatblkbyclus
+	TESTL	EAX, EAX
+	JS	8$
+4$:	PUSHL	#0
+	PUSHL	deall_fab+4[ESP]
+	CALL	ffsputfatent
+	TESTL	EAX, EAX
+	JS	8$
+	DECL	deall_cnt[ESP]
+	JNE	4$
+	CLRL	EAX
+8$:	RET	12t
+.PAGE
+	.SBTTL	ffsallocc - Subroutine to allocate clusters on the disk
+
+;Function to allocate clusters on the disk - This function tries to hit a
+;  balance between keeping the clusters in a file close to each other and
+;  minimizing fragmentation. If a requested cluster is specified and is
+;  available, it is allocated along with as many additional clusters as
+;  are available up to the number wanted. If the requested cluster is not
+;  available, the disk is searched starting with the cluster after the
+;  requested cluster. This search continues for N clusters (N is a settable
+;  parameter for the disk.) The search wraps from the end of the disk to the
+;  beginnning. The search stops if a block of available clusters equal to
+;  or larger than the amount wanted is found and the number of clusters
+;  wanted is allocated from the block. If no block that large is found, but
+;  some smaller block is found, it is allocated.  If no space is found at
+;  all, the remainder of the disk is searched. Again if first block large
+;  enough to fullfil the request is used. If no block that large is found
+;  the largest block found is used. If no space al all is found a failure
+;  return is given with an ER_DEVFL error. If no starting cluster is
+;  specified, the entire disk is searched as above starting following the
+;  last position what where space was allocated. Must be called with the
+;  disk resource!
+
+;	c{EAX} = Desired cluster number on disk or 0 if don't care
+;	c{ECX} = Number of clusters wanted
+;	CALL	fatallocc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = First cluster allocated
+;	  c{ECX} = Number of clusters allocated
+
+;	long ffsfallocc(
+;	    long  amount,	// Number of clusters wanted
+;	    long *first,	// Address of location containing requested
+;				//   cluster number (0 if don't care) - This
+;				//   is updated to contain the actual first
+;				//   cluster allocted on a normal return.
+;  Value returned is number of clusters obtained or a negative XOS error code
+;    if error. If a normal return, the FAB is filled in to access the first
+;    FAT entry allocated.
+
+$$$=!0
+FRM al_bestclus, 4
+FRM al_bestsize, 4
+FRM al_cnt     , 4
+FRM al_mnbr    , 4
+FRM al_fbegin  , 4		;Beginning cluster for first search
+FRM al_lcllmt  , 4		;Local limit cluster for first search
+FRM al_fab     , fab_SIZE
+al_SIZE=!$$$
+
+al_amount=!24t		;Number of clusters wanted
+al_first =!20t		;Address of location containing first cluster wanted
+			;  (location should contain 0 if don't care)
+
+ffsallocc::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	al_SIZE
+	MOVL	EAX, al_first[EBP]
+	MOVL	EAX, [EAX]
+	MOVL	al_fab+fab_clus[EBP], EAX
+	MOVL	al_fab+fab_cnum[EBP], #-1
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	al_amount[EBP], #0	;TEMP - Make sure amount is reasonable
+	JE	2$
+	CMPL	al_amount[EBP], #1000t
+	JB	4$
+2$:	CRASH	BDAR			;[Bad Disk Allocation Request]
+
+4$:	MOVL	ESI, dcb_dkucb[EDI]	;Get UCB address
+	TESTB	ucb_sts1[ESI], #U1$WPROT ;Is this disk write protected?
+	JNE	26$			;Yes - can't allocate anything!
+	ORB	dcb_sts2[EDI], #D2$COMMIT ;No - indicate need to update FATs
+	MOVL	EDX, knlTda+tdaAddr##	;Do we have the disk resource?
+	CMPL	ucb_resrmb+rmb_locktda[ESI], EDX
+	JE	6$
+	CRASH	DHDR			;[Don't Have Disk Resource]
+
+6$:	TESTL	EAX, EAX		;Was a cluster requested?
+	JNE	12$			;Yes
+	MOVL	EAX, ucb_lastalloc[ESI]	;No - start searching where we left off
+	CMPL	EAX, #2			;  last time
+	JAE	8$
+	MOVL	EAX, #2
+8$:	CMPL	EAX, ucb_total[ESI]
+	JB	10$
+	MOVL	EAX, #3
+10$:	MOVL	al_fab+fab_clus[EBP], EAX
+	SUBL	EAX, #2
+	JMP	22$
+
+;Here if a specific cluster was requested - first try to allocate starting
+;  with this cluster
+
+12$:	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsgetfatblkbyclus	;Get the first block to look at
+	TESTL	EAX, EAX
+	JS	allocdn
+	MOVL	EAX, al_amount[EBP]
+	MOVL	al_cnt[EBP], EAX
+	MOVL	al_mnbr[EBP], #0
+14$:	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsgetfatent
+	TESTL	EAX, EAX
+	JS	allocdn
+	JNE	16$
+	INCL	al_mnbr[EBP]
+	DECL	al_cnt[EBP]
+	JNE	14$
+	JMP	18$
+
+16$:	DECL	al_fab+fab_clus[EBP]
+18$:	MOVL	EAX, al_mnbr[EBP]	;Did we find anything here?
+	TESTL	EAX, EAX
+	JE	20$			;No - must search
+	SUBL	al_fab+fab_clus[EBP], EAX ;Yes - get first cluster
+	JMP	26$			;Use it
+
+;Here if nothing available at the requested cluster - Do a limited local search
+;  (amount is specified by ucb_lclsrch) starting with the next cluster which
+;  will continue to the end of the file structure if nothing is found
+;  locally.
+
+20$:	MOVL	EAX, al_first[EBP]
+	MOVL	EAX, [EAX]
+	INCL	EAX
+22$:	MOVL	al_fab+fab_clus[EBP], EAX
+	MOVL	al_fbegin[EBP], EAX	;Store limit for second search
+	ADDL	EAX, ucb_lclsrch[ESI]	;Get the local limit
+	MOVL	al_lcllmt[EBP], EAX
+	PUSHL	ucb_total[ESI]		;Search to the top of the structure
+	PUSHL	EAX			;Local limit
+	PUSHL	al_amount[EBP]
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	search
+	TESTL	EAX, EAX 
+	JS	allocdn
+	MOVL	EDX, al_fab+fab_clus[EBP] ;Found something - Was it the result
+	CMPL	EDX, al_lcllmt[EBP]	  ;  of the local part of the search?
+	JB	26$			;Yes - use it
+	CMPL	EAX, al_amount[EBP]	;No - did we get the full amount?
+	JAE	26$			;Yes - use it
+
+;Here if have searched up to the end of the structure and did not find the
+;  full amount we wanted. Now search from the beginning to where we started.
+
+	MOVL	al_bestsize[EBP], EAX	;Remember the best we have so far
+	MOVL	al_bestclus[EBP], EDX
+	MOVL	al_fab+fab_clus[EBP], #3 ;Start with cluster 3 (Clusters 0 and
+					 ;  1 don't exist and cluster 2 always
+					 ;  be in use.)
+	PUSHL	al_fbegin[EBP]		;Stop where we started
+	PUSHL	#0			;No local search this time
+	PUSHL	al_amount[EBP]
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	search
+	TESTL	EAX, EAX
+	JS	allocdn
+	CMPL	EAX, al_bestsize[EBP]	;Did we get more this time?
+	JA	26$			;Yes
+	MOVL	EAX, al_bestsize[EBP]	;No - use what we found before
+	MOVL	EDX, al_bestclus[EBP]
+	MOVL	al_fab+fab_clus[EBP], EDX
+
+;Here with a group of clusters to use found
+;	c{EAX}      = Number of clusters to allocate at this location
+;	c{fab_clus} = First cluster to allocate
+
+26$:	MOVL	al_cnt[EBP], EAX
+	MOVL	al_bestsize[EBP], EAX	;Save values to return
+	MOVL	EAX, al_fab+fab_clus[EBP]
+	MOVL	al_bestclus[EBP], EAX
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX			;Set to access the first pointer we
+	CALL	ffsgetfatblkbyclus	;  found
+	TESTL	EAX, EAX
+	JS	allocdn			;If error
+28$:	DECL	al_cnt[EBP]		;At last cluster?
+	JE	30$			;Yes
+	MOVL	EAX, al_fab+fab_clus[EBP] ;Get next cluster number
+	INCL	EAX
+	PUSHL	EAX			;Store it in this pointer
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsputfatent
+	TESTL	EAX, EAX
+	JNS	28$
+	JMP	allocdn
+	
+;Here to write the last pointer
+
+30$:	PUSHL	#0x0FFFFFFF		;Store EOF value
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsputfatent
+	TESTL	EAX, EAX
+	JS	allocdn
+	MOVL	EDX, al_first[EBP]
+	MOVL	EBX, al_bestclus[EBP]
+	MOVL	ECX, [EDX]
+	MOVL	[EDX], EBX
+	MOVL	EAX, al_bestsize[EBP]
+	TESTL	ECX, ECX		;Was a starting cluster specified?
+	JNE	32$			;Yes - don't remember this
+	ADDL	ECX, EBX		;No - get next cluster number
+	MOVL	ucb_lastalloc[ESI], ECX	;Remember it for next time
+32$:	SUBL	ucb_avail[ESI], EAX	;Reduce amount available on the disk
+allocdn:PUSHL	EAX
+	LEAL	EAX, al_fab[EBP]
+	PUSHL	EAX
+	CALL	ffsfinishfat
+	POPL	EAX
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to search for an available block.
+;	long search(
+;	    long high,		// Higest cluster + 1 to search
+;	    long local,		// Highest cluster + 1 for local search
+;	    long amnt,		// Number of clusters wanted
+;	    FAB *fab);		// Address of the FAB - value of fab_clus must
+;				//   be initialized before calling this
+;				//   function.
+;  Value returned is the number of clusters found (positive) if normal or a
+;    negative XOS error code if error. If normal, fab_clus contains the first
+;    cluster found. It is the caller's responsibility to specify maxcnt and
+;    lclcnt so that the search does not go beyond the highest cluster in the
+;    file system.
+
+$$$=!0
+FRM srch_bestsize, 4
+FRM srch_bestclus, 4
+FRM srch_cursize , 4
+FRM srch_curclus , 4
+srch_SIZE=!$$$
+
+srch_high =!28t
+srch_local=!24t
+srch_amnt =!20t
+srch_fab  =!16t
+
+search:	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	srch_SIZE
+	MOVL	ESI, srch_fab[EBP]
+	MOVL	srch_bestsize[EBP], #0	;Initialize best size so far
+	PUSHL	ESI			;Get the initial block
+	CALL	ffsgetfatblkbyclus
+	TESTL	EAX, EAX
+	JS	20$			;If error
+2$:	CLRL	EBX
+4$:	MOVL	EAX, fab_clus[ESI]	;At top?
+	CMPL	EAX, srch_high[EBP]
+	JAE	16$			;Yes
+	PUSHL	ESI			;No get next FAT entry
+	CALL	ffsgetfatent
+	TESTL	EAX, EAX
+	JS	20$
+	JNE	4$			;Continue looking if not available
+
+;Here with an availalble cluster
+
+	INCL	EBX
+	MOVL	EAX, fab_clus[ESI]	;Save the starting cluster
+	DECL	EAX
+	MOVL	srch_curclus[EBP], EAX
+10$:	MOVL	EAX, fab_clus[ESI]	;At top?
+	CMPL	EAX, srch_high[EBP]
+	JAE	12$			;Yes
+	CMPL	EBX, srch_amnt[EBP]	;Yes - Is this hole as big as we want?
+	JAE	14$			;Yes - return it
+	PUSHL	ESI			;No - get next FAT entry
+	CALL	ffsgetfatent
+	TESTL	EAX, EAX
+	JS	20$
+	JNE	12$			;If this cluster is not available
+	INCL	EBX			;Increment current size
+	JMP	10$			;Continue
+
+;Here at end of this hole
+
+12$:	CMPL	EBX, srch_bestsize[EBP]	;Is this hole bigger?
+	JBE	2$			;No
+	MOVL	srch_bestsize[EBP], EBX	;Yes - remember it
+	MOVL	EAX, srch_curclus[EBP]
+	MOVL	srch_bestclus[EBP], EAX
+	CMPL	EAX, srch_local[EBP]	;Did this hole start in the local area?
+	JA	2$			;No
+
+;Here with a hole big enough for the requested amount
+
+14$:	MOVL	EAX, EBX
+	MOVL	EDX, srch_curclus[EBP]
+	JMP	18$
+
+;Here when finished searching and did not find all we want
+
+16$:	MOVL	EAX, srch_bestsize[EBP]
+	MOVL	EDX, srch_bestclus[EBP]	;Get values to return
+18$:	MOVL	fab_clus[ESI], EDX
+20$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	RET	16t
+.PAGE
+;The following 5 functions impliment a scheme for reading and writing FAT
+;  blocks and FAT block entries. The emphsis is on sequential access to a
+;  series of FAT entries but random access is also supported. All of these
+;  functions use a FAB (FAT Argument Block) to contain arguments and state.
+;  tdaDCB must point to a DCB for the disk or partition.
+
+;Before calling any of these functions, a FAB must be allocated (usually in
+;  the current stack frame) and the fab_cnum item must be set to -1 (which
+;  indicates that no block has been obtained).
+
+;To read FAT block N, set fab_rnum to N and call ffsgetfatblkbynum.
+
+;To read the FAT block containing the entry for cluster N, set fab_clus to N
+;  and call ffsgetfatblkbyclus. On return the FAB items have been set for
+;  calling ffsgetfatent or ffsputfatent.
+
+;To obtain the FAT entry for cluster N, call ffsgetfatent after calling
+;  ffsgetfatblkbyclus as described above. This may be repeated (without calling
+;  ffgetfatblkbyclus) for successive entries. Reading of additional blocks as
+;  needed is automatic.
+
+;To store the FAT entry for cluster N, call ffsputfatent after calling
+;  ffsgetfatblkbyclus as described above. This may be repeated for successive
+;  entries. Reading and writing of blocks as needed is automatic.
+
+;When finished accessing the FAT, call ffsfinishfat. This will give up the
+;  last block used if necessary. Defered writing of modified FAT blocks is
+;  handled transparently by these functions.
+
+;Function to get entry from FAT - The items in the FAB must be set as follows:
+;    fab_bufr = Address of FAT block buffer (must be in use and not locked)
+;    fab_ofs  = Offset of desired entry from start of data in the buffer
+;    fab_rnum = FAT block number
+;    fab_clus = Cluster number
+;  These values are normall set by ffsgetfatblkbyclus, ffsgetfatent, or
+;  ffsputfatent.
+;	long ffsgetfatent(
+;	    FAB *fab);
+;  Value returned is 0 if normal or a negative XOS error code if error. If
+;    normal, the FAB values have been updated to access the next sequential
+;    FAT entry. If the buffer is advanced, the previous buffer has been
+;    released and the new buffer is in use and is not locked. In must cases
+;    the buffer is not advanced until the first entry of the new block is
+;    requested. The exceptions are the cases with 12-bit FATs where the
+;    requested entry is split across blocks.
+
+gfe_fab=!8
+
+ffsgetfatent::
+	PUSHL	ESI
+	MOVL	ESI, gfe_fab[ESP]
+	TESTB	fab_sts3[ESI], #U3$FAT12 ;Have 12-bit FAT entries?
+	JNE	gfe12			;Yes - go handle that case
+	CMPL	fab_ofs[ESI], #512t	;No - at end of FAT?
+	JB	4$			;No - go on
+	INCL	fab_rnum[ESI]		;Advance to next buffer
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum	;Get next buffer
+	TESTL	EAX, EAX
+	JS	gfedn			;If error
+	MOVL	fab_ofs[ESI], #0
+4$:	MOVL	EDX, fab_bufr[ESI]	;Get address of the desired entry
+	ADDL	EDX, fab_ofs[ESI]
+	TESTB	fab_sts3[ESI], #U3$FAT32 ;Have 32-bit FAT entries?
+	JE	gfe16			;No
+
+;Here to get entry from 32-bit FAT
+
+gfe32:	MOVL	EAX, bfr_data[EDX]	;Get entry
+	ANDL	EAX, #0x0FFFFFFF	;Remove the reserved bits
+	ADDL	fab_ofs[ESI], #4	;Bump offset
+	CMPL	EAX, #0x0FFFFFF8	;End of file?
+gfefin:	JB	10$			;No
+gfeeof:	MOVL	EAX, #0x0FFFFFFF	;Yes
+10$:	INCL	fab_clus[ESI]
+gfedn:	POPL	ESI
+	RET	4
+
+;Here to get entry from 16-bit FAT
+
+gfe16:	MOVZWL	EAX, bfr_data[EDX]	;Get entry
+	ADDL	fab_ofs[ESI], #2	;Bump offset
+	CMPL	EAX, #0xFFF8		;End of file?
+	JMP	gfefin
+.PAGE
+;Here to get next entry from 12-bit FAT - This is quite a bit more complex
+;  since entries are split across byte and block bountries. To make it even
+;  more complex, it uses strict LOBF ordering, so, unless the bytes are
+;  listed in reverse order, the parts of and entry do not appear to be
+;  contiguous! For even numbered clusters, the offset points to a LOBF word
+;  which contains the entry in bits 11-0. For odd numbered clusters, the
+;  offset points to a LOBF word which contains the entry in bits 15-4. Cluster
+;  341 (mod 1024) (odd cluster number) has an offset of 511. In this case the
+;  low order 4 bits of the entry are in the high order 4 bits of the last byte
+;  in the block and the low order 8 bits are in the first byte of the next
+;  block. Cluser 682 (mod 1024) (even cluster number) also has an offset of
+;  511. In this case the high order 8 bits of the entry are in the last byte
+;  of the block and the high order 4 bits are in the low order 4 bits of the
+;  first byte of the next block.
+
+gfe12:	CMPL	EDX, #511t		;At end of buffer?
+	JB	18$			;No
+	JE	16$			;If only one byte left
+	INCL	fab_rnum[ESI]		;Nothing left - advance to next buffer
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum
+	TESTL	EAX, EAX
+	JS	gfedn			;If error
+	MOVL	fab_ofs[ESI], #0
+	JMP	18$
+	
+;Here if have exactly one byte left in the current FAT buffer
+
+16$:	MOVZBL	EAX, bfr_data[EBX+EDX]	;Only one byte left - get it
+	PUSHL	EAX
+	INCL	fab_rnum[ESI]
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum	;Advance to next FAT block
+	TESTL	EAX, EAX
+	POPL	EDX
+	JS	gfedn			;If error
+	MOVL	fab_ofs[ESI], #-1
+	MOVL	EAX, EDX
+4$:	MOVL	EDX, fab_bufr[ESI]	;Get address of the desired entry
+	ADDL	EDX, fab_ofs[ESI]
+	MOVB	AH, bfr_data[EDX]	;Get high byte
+	JMP	20$
+
+;Here with full word available
+
+18$:	MOVL	EDX, fab_bufr[ESI]	;Get address of the desired entry
+	ADDL	EDX, fab_ofs[ESI]
+	MOVZWL	EAX, bfr_data[EDX]	;Get a word
+	INCL	fab_ofs[ESI]		;Bump offset
+20$:	TESTB	fab_clus[ESI], #1	;Odd entry?
+	JE	22$			;No
+	SHRL	EAX, #4			;Yes - adjust value
+	INCL	fab_ofs[ESI]		;And bump offset again
+22$:	ANDL	EAX, #0x0FFF		;Remove extra bits
+	CMPL	EAX, #0x0FF8		;End of file entry?
+	JMP	gfefin
+.PAGE
+;Function to store specified entry in a FAT
+;	long ffsputfatent(
+;	    long ent,
+;	    FAB *fab);
+
+;NOTE: This is the ONLY function that should be called to modify a FAT
+;      block. It correctlys handles deferred writing for FAT blocks.
+
+pfe_ent =!12t
+pfe_fab =!8
+
+ffsputfatent::
+	PUSHL	ESI
+	MOVL	ESI, pfe_fab[ESP]
+	TESTB	fab_sts3[ESI], #U3$FAT12 ;Have 12-bit FAT entries?
+	JNE	pfe12			;Yes - go handle that case
+	CMPL	fab_ofs[ESI], #512t	;No - at end of FAT?
+	JB	4$			;No - go on
+	INCL	fab_rnum[ESI]		;Advance to next buffer
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum	;Get next buffer
+	TESTL	EAX, EAX
+	JS	pfedn			;If error
+	MOVL	fab_ofs[ESI], #0
+4$:	MOVL	EAX, pfe_ent[ESP]
+	TESTB	fab_sts3[ESI], #U3$FAT32 ;Have 32-bit FAT entries?
+	JE	pfe16			;No
+
+;Here to store entry into a 32-bit FAT
+
+pfe32:	MOVL	EDX, fab_bufr[ESI]
+	ADDL	EDX, fab_ofs[ESI]
+	CMPL	bfr_data[EDX], #0	;Is the entry currently 0?
+	JE	8$			;Yes
+	CMPL	bfr_data[EDX], #0x0FFFFFF8 ;No - currently EOF?
+	JAE	10$			;Yes
+
+;Here if entry currently points to a cluster
+
+	TESTL	EAX, EAX		;Changing it to 0?
+	JE	12$			;Yes - that's OK
+	CMPL	EAX, #0x0FFFFFFF	;No - changing it to EOF?
+	JE	12$			;Yes - that's OK too
+6$:	CRASH	INFW			;[INvalid FAT Write]
+
+;Here if entry is currently 0
+
+8$:	TESTL	EAX, EAX		;Changing it to non-0?
+	JNE	12$			;Yes - that's OK
+	JMP	6$
+	
+;Here if entry is currently EOF
+
+10$:	CMPL	EAX, #0x0FFFFFFF	;Changing it to EOF?
+	JE	6$			;No - that's NOT OK
+12$:	ANDL	bfr_data[EDX], #0xF0000000 ;Ok -store entry preserving the
+	ORL	bfr_data[EDX], EAX	   ;  reserved bits
+	ADDL	fab_ofs[ESI], #4	;Bump offset
+pfefin:	INCL	fab_clus[ESI]
+	PUSHL	fab_bufr[ESI]
+	CALL	fatchanged
+	MOVL	EDX, knlTda+tdaDcb##
+	CLRL	EAX
+pfedn:	POPL	ESI
+	RET	8
+
+;Here to store entry into a 16-bit FAT
+
+pfe16:	MOVL	EDX, fab_bufr[ESI]
+	ADDL	EDX, fab_ofs[ESI]
+	CMPW	bfr_data[EDX], #0	;Is the entry currently 0?
+	JE	18$			;Yes
+	CMPW	bfr_data[EDX], #0xFFF8	;No - currently EOF?
+	JAE	20$			;Yes
+
+;Here if entry currently points to a cluster
+
+	TESTL	EAX, EAX		;Changing it to 0?
+	JE	22$			;Yes - that's OK
+	CMPL	EAX, #0x0FFFFFFF	;No - changing it to EOF?
+	JE	22$			;Yes - that's OK too
+16$:	CRASH	INFW			;[INvalid FAT Write]
+
+;Here if entry is currently 0
+
+18$:	TESTL	EAX, EAX		;Changing it to non-0?
+	JNE	22$			;Yes - that's OK
+	JMP	16$
+	
+;Here if entry is currently EOF
+
+20$:	CMPL	EAX, #0x0FFFFFFF	;Changing it to EOF?
+	JE	16$			;No - that's NOT OK
+22$:	MOVW	bfr_data[EDX], AX	;OK - store entry
+	ADDL	fab_ofs[ESI], #2	;Bump offset
+	JMP	pfefin
+.PAGE
+;Here to store entry into a 12-bit FAT - NOTE: We do not do a consistency
+;  check on the split entires - it would be more complex and does not seem
+;  to be worth it!
+
+pfe12:	MOVL	EAX, pfe_ent[ESP]	;Get the new value
+	MOVL	EDX, fab_bufr[ESI]	;Get address of the buffer
+	CMPL	EDX, #511t		;At end of buffer?
+	JB	14$			;No
+	JNE	12$			;If nothing left
+
+;Here if have exactly one byte left in the current FAT buffer
+
+	TESTB	fab_clus[ESI], #0x01	;Even cluster?
+	JNE	4$			;No
+	MOVB	bfr_data+511t[EDX], AL	;Yes - store the low byte
+	JMP	6$
+
+;Here have one byte for an odd cluster
+
+4$:	SHLL	EAX, #4			  ;Store the low 4 bits in the high 4
+	ANDB	bfr_data+511t[EDX], #0x0F ;  bits of the byte
+	ORB	bfr_data+511t[EDX], AL
+6$:	INCL	fab_rnum[ESI]
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum	;Advance to next FAT block
+	TESTL	EAX, EAX
+	JS	pfedn			;If error
+	PUSHL	fab_bufr[ESI]		;Indicate buffer changed
+	CALL	fatchanged
+	MOVL	EDX, fab_bufr[ESI]	;Get address of the buffer
+	MOVL	EAX, pfe_ent[ESP]	;Get the new value
+	TESTB	fab_clus[ESI], #0x01	;Even cluster?
+	JNE	10$			;No
+	SHRL	EAX, #4			;Yes - store the high order 4 bits in
+	ANDL	EAX, #0x0F	
+	ANDB	bfr_data[EDX], #0xF0
+	ORB	bfr_data[EDX], AL
+	JMP	pfefin
+
+;Here at beginning of block for split entry for odd cluster
+
+10$:	SHRL	EAX, #4			;Get high 8 bits
+	MOVB	bfr_data[EDX], AL
+	JMP	pfefin
+
+;Here if nothing left in the buffer - this happens every 3 blocks
+
+12$:	INCL	fab_rnum[ESI]		;Nothing left - advance to next buffer
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum
+	TESTL	EAX, EAX
+	JS	pfedn			;If error
+	MOVL	fab_ofs[ESI], #0	
+
+;Here with a full word available
+
+14$:	MOVL	EDX, fab_bufr[ESI]	;Get address of the entry
+	ADDL	EDX, fab_ofs[ESI]
+	ANDL	EAX, #0xFFF
+	TESTB	fab_clus[ESI], #1	;Odd entry?
+	JNE	22$			;Yes
+	MOVZWL	ECX, bfr_data[EDX]	;No - get current value
+	ANDL	EAX, #0x0FFF
+	TESTL	ECX, ECX		;Is the entry currently 0?
+	JNE	18$			;No
+	TESTL	EAX, EAX		;Yes - changing it to non-0?
+	JNE	20$			;Yes - that's OK
+16$:	CRASH	INFW
+
+18$:	TESTL	EAX, EAX		;Entry not now 0, changing it to 0?
+	JE	20$			;Yes - that's OK
+	CMPL	EAX, #0x0FFFFFFF	;No - changing it to EOF?
+	JNE	16$			;No - that's NOT OK!
+20$:	ANDW	bfr_data[EDX], #0x0FFF
+	JMP	34$
+
+;Here if odd entry
+
+22$:	MOVZWL	ECX, bfr_data[EDX]	;Get current value
+	SHRL	ECX, #4
+	TESTL	ECX, ECX		;Is the entry currently 0?
+	JNE	28$			;No
+	TESTL	EAX, EAX		;Yes - changing it to non-0?
+	JNE	30$			;Yes - that's OK
+26$:	CRASH	INFW
+
+28$:	TESTL	EAX, EAX		;Entry not now 0, changing it to 0?
+	JE	30$			;Yes - that's OK
+	CMPL	EAX, #0x0FFFFFFF	;No - changing it to EOF?
+	JNE	26$			;No - that's NOT OK!
+30$:	SHLL	EAX, #4			;Adjust the new value
+	ANDW	bfr_data[EDX], #0xFFF0
+	INCL	fab_ofs[ESI]
+34$:	INCL	fab_ofs[ESI]
+	ORW	bfr_data[EDX], AX
+	JMP	pfefin
+.PAGE
+;Function to get a FAT buffer containing a specified cluster - fab_clus must
+;  be set to the desired cluster.
+;	long ffsgetfatblkbyclus(
+;	    FAB *fab);
+;  Value returned is 0 if normal or a negative XOS error code if error. If
+;    normal, the items in the FAB are set:
+;      fab_bufr = Address of FAT block buffer
+;      fab_ofs  = Offset of desired entry from start of data in the buffer
+;      fab_rnum = FAT block number
+;      fab_clus = Cluster number (unchanged)
+;    Buffer returned is in use but is not locked.
+
+gfbc_fab=!8
+
+ffsgetfatblkbyclus::
+	PUSHL	ESI
+	MOVL	ESI, gfbc_fab[ESP]
+	MOVL	EAX, fab_clus[ESI]
+	MOVL	EDX, EAX
+	MOVL	ECX, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[ECX]
+	TESTB	ucb_sts3[ECX], #U3$FAT12 ;12-bit FAT entries?
+	JNE	gfbc12			;Yes
+	TESTB	ucb_sts3[ECX], #U3$FAT32 ;No - 32-bit FAT entries?
+	JE	gfbc16			;No
+					;Yes - fall into gfbc32
+
+;Here to find FAT block in a 32-bit FAT table
+
+gfbc32:	SHRL	EAX, #7			;Get block and offset in block
+	ADDL	EDX, EDX
+4$:	ADDL	EDX, EDX
+	ANDL	EDX, #0x1FF
+6$:	MOVL	fab_ofs[ESI], EDX
+	MOVL	fab_rnum[ESI], EAX
+	PUSHL	ESI
+	CALL	ffsgetfatblkbynum
+	POPL	ESI
+	RET	4
+
+;Here to find FAT block in a 16-bit FAT table
+
+gfbc16:	SHRL	EAX, #8			;Get block and offset in block
+	JMP	4$
+
+;Here to find a FAT block in a 12-bit FAT table
+
+gfbc12:	ADDL	EAX, EAX		;Get (cluster * 3) / 2
+	ADDL	EAX, EDX
+	SHRL	EAX, #1
+	MOVL	EDX, EAX
+	SHRL	EAX, #9			;Get block and offset in block
+	JMP	4$
+.PAGE
+;Function to get a FAT buffer given the FAT block number - fab_rnum must be
+;  be set to FAT block number.
+;	long ffsgetfatblkbynum(
+;	    FAB *fab);
+;  Value returned is 0 if normal or a negative XOS error code if error. If
+;    normal, the items in the FAB are set:
+;      fab_bufr = Address of FAT block buffer
+;      fab_ofs  = Unchanged
+;      fab_rnum = FAT block number (unchanged)
+;      fab_cnum = Current block number (same as in fab_rnum)
+;      fab_clus = Unchanged
+;    Buffer returned is in use but is not locked.
+
+gfbn_fab=!12t
+
+ffsgetfatblkbynum::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, gfbn_fab[ESP]
+	MOVL	EAX, fab_rnum[ESI]	;Get requested FAT
+	CMPL	EAX, fab_cnum[ESI]	;Do we already have it?
+	JE	8$			;Yes - nothing needed here
+	CMPL	fab_cnum[ESI], #-1	;Have a previous buffer?
+	JE	2$			;No
+
+	MOVL	EAX, fab_bufr[ESI]
+	MOVL	xxxbufr, EAX
+
+	PUSHL	fab_bufr[ESI]		;Yes
+	CALL	xosdskRelsBufr##	;Give up the FAT block
+	MOVL	fab_cnum[ESI], #-1
+2$:	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[EDI]
+	MOVZBL	EAX, ucb_sts3[ECX]	;Copy the ucb_sts3 value so it's
+	MOVB	fab_sts3[ESI], AL	;  easier to access
+	MOVL	EDX, ucb_satsize[ECX]	;Calculate maximum read-ahead blocks
+	SUBL	EDX, fab_rnum[ESI]
+	JLE	12$
+	CMPL	EDX, ucb_satraa[ECX]	;More than we want to do?
+	JBE	4$			;No
+	MOVL	EDX, ucb_satraa[ECX]	;Yes
+4$:	SHLL	EDX, #9t
+	MOVL	EAX, fab_rnum[ESI]
+	ADDL	EAX, ucb_ffatblk[ECX]	;Calculate block number
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], #0
+	PUSHL	#'SCB='
+	PUSHL	EDX
+	LEAL	EAX, fab_bufr[ESI]
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Get the FAT into a buffer
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	EAX, fab_rnum[ESI]
+	MOVL	fab_cnum[ESI], EAX
+	MOVL	ECX, fab_bufr[ESI]
+	TESTB	bfr_status[ECX], #BS$FAT ;Already set up as a FAT block?
+	JNE	8$			;Yes
+	ORB	bfr_status[ECX], #BS$FAT ;No - indicate this is a FAT block
+8$:	CLRL	EAX
+10$:	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here trying to read beyond the end of the FATs
+
+12$:	MOVL	EAX, #ER_STFER
+	JMP	10$
+
+xxxbufr::.LONG	0
+.PAGE
+;Function to clean up after accessing FAT blocks
+;	long ffsfinishfat(
+;	    FAB *fab);
+
+finfat_fab=!4
+
+ffsfinishfat::
+	MOVL	EDX, finfat_fab[ESP]
+	CMPL	fab_cnum[EDX], #-1	;Do we have a buffer now?
+	JE	6$			;No - nothing needed here
+	MOVL	fab_cnum[EDX], #-1	;Yes - but not now
+	PUSHL	fab_bufr[EDX]
+	CALL	xosdskRelsBufr##	;Give up the FAT block
+6$:	CLRL	EAX
+	RET	4
+.PAGE
+;Function to write all FAT buffers which have changed to the disk
+;	long ffswritefats(void);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+;An attempt is made to write all FAT blocks in the list, even if have an
+;  error. The last error is returned.
+
+$$$=!0
+FRM wf_error, 4
+FRM wf_cnt  , 4
+FRM wf_list , 4*FATLISTSZ
+wf_SIZE=!$$$
+
+ffswritefats::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	wf_SIZE
+	MOVL	EDX, knlTda+tdaDcb##
+	ANDB	dcb_sts3[EDX], #~D3$FATCHG
+	MOVL	ESI, dcb_dkucb[EDX]	;Get address of the UCB
+	ADDL	ESI, #ucb_fatlist
+	LEAL	EDI, wf_list[EBP]
+	MOVL	ECX, #FATLISTSZ
+	MOVL	EAX, DS			;Copy the FAT write list
+	MOVL	ES, EAX
+	CLD
+
+;;; SLOCK HERE!!
+
+	RMOVSL	[EDI], [ESI]
+
+	MOVL	EDI, dcb_dkucb[EDX]	;Clear the list
+	ADDL	EDI, #ucb_fatlist
+	MOVL	ECX, #FATLISTSZ
+	CLRL	EAX
+	RSTOSL	[EDI]
+
+;;; SUNLOCK HERE!!
+
+	MOVL	wf_error[EBP], #0
+	MOVL	ESI, dcb_dkucb[EDX]	;Get address of the UCB again
+	LEAL	EDI, wf_list[EBP]	;Point to our copy of the write list
+	MOVL	wf_cnt[EBP], #FATLISTSZ
+4$:	MOVL	EBX, [EDI]		;Get next entry
+	TESTL	EBX, EBX		;Any more?
+	JE	12$			;No - finished
+	LEAL	EAX, bfr_rmb[EBX]	;Lock the buffer (we will release it
+	PUSHL	EAX			;  when we do a second scan below)
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource##
+	PUSHL	EBX
+	CALL	xosdskWriteBufr##	;Write the block
+	TESTL	EAX, EAX		;Error?
+	JNS	6$			;No
+	MOVL	wf_error[EBP], EAX	;Yes
+6$:	TESTB	ucb_bits[ESI], #UB$DUPFAT ;Want to write the 2nd FAT?
+	JNE	10$			;Yes
+	DECW	bfr_usecnt[EBX]		;No - give it up now
+	JNS	8$
+	CRASH	BBUC			;[Bad Buffer Use Count]
+
+8$:	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+10$:	ADDL	EDI, #4
+	DECL	wf_cnt[EBP]
+	JNE	4$
+
+;Here with all the FAT blocks written to the disk - Now write the duplicate
+;  copies if we should.
+
+12$:	TESTB	ucb_bits[ESI], #UB$DUPFAT ;Want to write the 2nd FAT?
+	JE	20$			;No
+	CMPL	ucb_numsat[ESI], #2	;Yes - do we have a 2nd FAT?
+	JB	20$			;No
+	LEAL	EDI, wf_list[EBP]	;Yes - point to our copy of the write
+	MOVL	wf_cnt[EBP], #FATLISTSZ	;  list
+14$:	MOVL	EBX, [EDI]		;Get next entry (it is locked)
+	TESTL	EBX, EBX		;Any more?
+	JE	20$			;No - finished
+	MOVL	ECX, knlTda+tdaDcb##
+	MOVL	EAX, bfr_block+0[EBX]	;Get block number
+	MOVL	EDX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	ADDL	EAX, ucb_satsize[ESI]	;Make it the corresponding block in
+	ADDL	EDX, #0			;  the second FAT
+	MOVL	dcb_dkdskblk+0[ECX], EAX
+	MOVL	dcb_dkdskblk+4[ECX], EDX
+	MOVL	bfr_nextxfr[EBX], #0	;Can't call xosdskWriteBufr here since
+	PUSHL	#kf_writlist		;  we are writing to a different block
+	PUSHL	EBX			;  than indicated in the buffer header!
+	PUSHL	#512t
+	CALL	xosdskTransfer##	;Do the transfer
+	TESTL	EAX, EAX		;Error?
+	JNS	16$			;No
+	MOVL	wf_error[EBP], EAX	;Yes
+16$:	DECW	bfr_usecnt[EBX]		;Give up the buffer
+	JNS	18$
+	CRASH	BBUC			;[Bad Buffer Use Count]
+
+18$:	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	ADDL	EDI, #4
+	DECL	wf_cnt[EBP]
+	JNE	14$
+
+;Here when finished
+
+20$:	MOVL	EDX, knlTda+tdaDcb##
+	ANDB	dcb_sts2[EDX], #~D2$COMMIT ;All data has been committed here
+	MOVL	EAX, wf_error[EBP]
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+	.SBTTL	fatwritedir - Subroutine to output a directory block
+
+;Subroutine to output a directory block - This subroutine is only used to
+;  output a directory block which may be the first block of the root directory.
+;  It updates the root directory checksum if necessary.
+
+ffswritedir::
+	TESTL	ucb_dsp[ESI], #DS$REMOVE ;Is this disk removeable?
+	JE	4$			;No - don't bother with a checksum
+	MOVL	EAX, bfr_block+0[EBX]	;Yes - is this the first root block?
+	MOVL	EDX, bfr_block+4[EBX]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	JNE	6$
+	CMPL	ucb_rootblk[ESI], EAX
+	JNE	6$
+	PUSHL	EBX
+	CALL	ffsblkcs#		;Calculate block's checksum
+	POPL	EBX
+	MOVL	ucb_root1cs[ESI], EAX	;Store it
+4$:	PUSHL	EBX
+6$:	CALL	xosdskWriteBufr##	;Write out the block
+	RET
+.PAGE
+;Function to indicate that a FAT has changed
+;	void fatchanged(
+;	    FIB *fib);
+
+fchg_fib=!8
+
+fatchanged:
+	PUSHL	EBX
+	MOVL	EAX, knlTda+tdaDcb##
+	ORB	dcb_sts3[EAX], #D3$FATCHG ;Indicate we have changed a FAT
+	MOVL	EBX, fchg_fib[ESP]
+	TESTB	bfr_status[EBX], #BS$CHNGD ;Already marked as changed?
+	JNE	10$			;Yes - nothing needed here
+	ORB	bfr_status[EBX], #BS$CHNGD ;No - indicate this FAT changed
+
+2$:
+
+;;; SLOCK HERE!!
+
+	MOVL	EDX, dcb_dkucb[EAX]	;Point to the fat write list
+	ADDL	EDX, #ucb_fatlist
+	MOVL	ECX, #FATLISTSZ		;Maximum number of entries
+4$:	CMPL	[EDX], #0		;End of list?
+	JE	6$			;Yes
+	CMPL	EBX, [EDX]		;This block?
+	JE	8$			;Yes - finished
+	ADDL	EDX, #4
+	LOOP	ECX, 4$
+
+;;; SUNLOCK HERE!!
+
+;Here if the list is full - dump it now
+
+	CALL	ffswritefats
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	EAX, knlTda+tdaDcb##	;OK - restore DCB address
+	JMP	2$			;Continue
+
+;Here with an available list entry
+
+6$:	INCW	bfr_usecnt[EBX]		;Indicate buffer is in use
+	MOVL	[EDX], EBX		;Put the entry in the list
+
+8$:
+
+;;; SUNLOCK HERE!!
+
+10$:	POPL	EBX
+	RET	4
+.PAGE
+.IF NE $$CHKCHAIN
+
+;This routine checks for a valid FAT chain. It has not been used for quite a
+;  while and probably will not work as it stands!
+
+checkchain::
+	PUSHAL
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	TESTL	EBX, EBX
+	JE	2$
+	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	chainucb, ESI
+	JNE	10$
+	MOVL	ECX, chainblk
+	JREGZ	ECX, 10$
+	PUSHL	ES
+	PUSHL	dcb_dkdskblk+0[EDI]
+	PUSHL	dcb_dkdskblk+4[EDI]
+	PUSHL	dcb_dkbasefib[EDI]
+	PUSHL	dcb_dkcurfib[EDI]
+	PUSHL	#0
+4$:	CALL	ffsgetfatent
+	JC	$$$$c1
+	JS	6$
+	MOVL	ECX, EAX
+	INCL	[ESP]
+	JMP	4$
+
+chkchain1::
+	NOP
+6$:	INCL	[ESP]
+7$:	POPL	EAX
+	CMPL	chainmax, EAX
+	JBE	8$
+chkchain2::
+	NOP
+8$:	MOVL	chainmax, EAX
+	POPL	dcb_dkcurfib[EDI]
+	POPL	dcb_dkbasefib[EDI]
+	POPL	dcb_dkdskblk+4[EDI]
+	POPL	dcb_dkdskblk+0[EDI]
+	POPL	ES
+10$:	POPAL
+	RET
+.ENDC
+
+	DATA
+	.MOD	4
+
+.IF NE $$CHKCHAIN
+chainucb::.LONG	0
+chainblk::.LONG 0
+chainmax::.LONG 0
+.ENDC
+
+.IF NE $$FATRING
+fatringpnt::.LONG fatringbgn
+fatringbgn::.BLKB 512t*48t
+fatringend::.LONG 50505050h
+.ENDC
+
+	LKEEND

@@ -1,0 +1,661 @@
+	.TITLE	path - File system path routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+	.EXPORT	xosdskFixupFileSpec
+
+$$$=!0
+BLK pthd_pda   , 4
+BLK pthd_pheadp, 4
+BLK pthd_rmbits, 4
+BLK pthd_ppnb  , 4
+BLK pthd_pprevp, 8
+pthd_SIZE=!$$$
+
+	CODE
+
+	.SBTTL	pathfunc - Path function
+
+;Here for the queued IO path function
+;	c{ESI} = Offset of IORB
+;	CALL	pathfunc
+;	c{EAX} = Error code (0 if normal)
+;	c{EBX} = Queued IO status bits
+;	c{ECX} = 0 (if error) or 1 (if normal)
+
+$$$=!0
+FRM spath_pthd   , pthd_SIZE
+FRM spath_rslt   , rslt_SIZE
+FRM spath_ppath  , 4
+FRM spath_newlen , 4
+FRM spath_left   , 4
+FRM spath_fsbufr , FILESPCSIZE+4
+spath_SIZE=!$$$
+
+
+pathfunc::
+	ENTER	spath_SIZE, 0
+	MOVL	EAX, knlTda+tdaParm#
+	TESTL	EAX, EAX
+	JE	6$
+	IFFAULT	pathae1
+	CMPB	[EAX], #0
+	JE	6$
+	MOVL	EAX, #ER_PARMI
+	JMP	pather1
+
+;Here if no parameter specified
+
+6$:
+	MOVL	spath_ppath[EBP], #0
+	MOVL	EBX, knlTda+tdaBuffer1#	;Get address of the name
+	MOVL	ECX, #FILESPCSIZE	;Scan name to make sure no wild-card
+	IFFAULT	pathae1			;  characters and find the start of
+10$:	MOVZBL	EAX, [EBX]		;  the path string
+	CMPB	AL, #0
+	JE	16$
+	INCL	EBX
+	CMPB	AL, #':'
+	JNE	12$
+	CMPL	spath_ppath[EBP], #0
+	JNE	12$
+	MOVL	spath_ppath[EBP], EBX
+	MOVL	spath_newlen[EBP], #-1
+12$:	INCL	spath_newlen[EBP]
+	CMPB	AL, #'*'
+	JE	14$
+	CMPB	AL, #'?'
+	JNE	10$
+14$:	MOVL	EAX, #ER_BDSPC
+	JMP	pather1
+
+16$:	CMPL	spath_ppath[EBP], #0
+	JE	14$
+	MOVL	EAX, knlPda+pdaAddr##
+	MOVL	spath_rslt+rslt_pda[EBP], EAX
+	PUSHL	knlTda+tdaBuffer1##
+	LEAL	EAX, spath_rslt[EBP]
+	PUSHL	EAX
+	CALL	sysLogTransLogicalName##
+	TESTL	EAX, EAX		;Error?
+	JS	pather1			;Yes
+	CMPL	spath_rslt+rslt_plnb[EBP], #0
+					;No - did we find a substituted logical
+					;  or physical only name?
+	JE	tryphy			;No - assume physical name
+	MOVL	EAX, #pdaLogPath##	;Yes
+	JMP	dopath
+.PAGE
+;Here if didn't find a substituted logical name - now see if it's the name of
+;  a file structured device
+
+tryphy:	MOVL	EAX, #pdaPhyPath##
+dopath:	MOVL	spath_pthd+pthd_pheadp[EBP], EAX
+	MOVL	spath_pthd+pthd_rmbits[EBP], #RMBB$LOCKED
+	MOVL	EAX, knlPda+pdaAddr##
+	MOVL	spath_pthd+pthd_pda[EBP], EAX
+	LEAL	EAX, spath_rslt+rslt_nbfr[EBP]
+	ANDB	[EAX], #0x7F
+	PUSHL	EAX
+	LEAL	EAX, spath_pthd[EBP]
+	PUSHL	EAX
+	CALL	findpath
+	TESTL	EAX, EAX
+	JS	pather1
+
+;Note: When get here we have exclusive access to this path list.
+
+	TESTB	knlTda+tdaOption#, #POPT$SETPATH ;Want to change the path?
+	JE	rtnpath			;No - just return it if need to
+
+;Here if want to change the path
+
+	MOVL	EBX, spath_ppath[EBP]	;Was a new path specified?
+	CMPB	[EBX], #0
+	JE	delpath
+	CMPW	[EBX], #'\'
+	JNE	newpath			;Yes - go on
+
+;Here with an existing path and no new path - delete the existing path if
+;  there is one
+
+delpath:MOVL	ESI, spath_pthd+pthd_ppnb[EBP] ;Get existing PNB (if any)
+	TESTL	ESI, ESI
+	JE	rtnpath			;If no existing PNB
+	MOVL	EDX, spath_pthd+pthd_pprevp[EBP] ;Unlink it
+	MOVL	EAX, pnb_next[ESI]
+	MOVL	[EDX], EAX
+	PUSHL	ESI			;Give it up
+	CALL	sysMemGiveXmb##
+	MOVL	spath_pthd+pthd_ppnb[EBP], #0
+	JMP	rtnpath
+
+;Here if a new path was specified - copy the old path (if any) to our buffer
+;  if we need to
+
+newpath:MOVL	spath_left[EBP], #FILESPCSIZE
+	LEAL	EDI, spath_fsbufr[EBP]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CMPB	[EBX], #'\'		;Does new path begin with \?
+	JE	6$			;Yes - don't copy the old path
+	MOVL	ESI, spath_pthd+pthd_ppnb[EBP]
+	TESTL	ESI, ESI
+	JE	6$			;No
+	MOVZWL	ECX, pnb_pathlen[ESI]	;Yes - copy it to our buffer
+	SUBL	spath_left[EBP], ECX
+	JLE	toolng
+	ADDL	ESI, #pnb_path
+	RMOVSB	[EDI], [ESI]
+6$:	MOVL	ECX, spath_newlen[EBP]	;Now copy the new path
+	SUBL	spath_left[EBP], ECX
+	JS	toolng
+	MOVL	ESI, EBX
+	RMOVSB	[EDI], [ESI]
+	CMPB	-1[EDI], #'\'		;Did it end with \?
+	JE	8$			;Yes
+	MOVB	[EDI], #'\'		;No - add \
+	INCL	EDI
+8$:	MOVB	[EDI], #0		;Put a null at the end
+	LEAL	EAX, spath_fsbufr[EBP]	;Resolve . and .., remove null names
+	PUSHL	EAX
+	PUSHL	spath_rslt+rslt_plnb[EBP]
+	PUSHL	#1
+	CALL	xosdskFixupFileSpec
+	TESTL	EAX, EAX
+	JS	pather2
+	CMPW	spath_fsbufr+0[EBP], #'\' ;Did we wind up with an empty path?
+	JE	delpath			;Yes
+	CMPW	spath_fsbufr+0[EBP], #'\\'
+	JNE	10$
+	CMPB	spath_fsbufr+2[EBP], #0
+	JE	delpath			;Yes
+10$:	CMPB	spath_fsbufr+0[EBP], #'\' ;Does it start with \?
+	JE	12$			;Yes
+	INCL	EAX			;No - allow for the \ we will insert
+12$:	MOVL	spath_newlen[EBP], EAX
+	MOVL	ESI, spath_pthd+pthd_ppnb[EBP]
+	TESTL	ESI, ESI		;Have existing path?
+	JE	newpnb			;No
+	PUSHL	ESI			;Yes - see how big the block is
+	CALL	sysMemXmbSize##
+	SUBL	EAX, #pnb_path+1
+	MOVL	EDI, ESI
+	CMPL	EAX, spath_newlen[EBP]	;Is it big enough for the new path?
+	JAE	cpypath			;Yes
+newpnb:	MOVL	EAX, spath_newlen[EBP]	;No - get another XMB
+	ADDL	EAX, #pnb_path+1
+	PUSHL	EAX
+	LEAL	EAX, spath_pthd+pthd_ppnb[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	pather2
+	MOVL	EDI, spath_pthd+pthd_ppnb[EBP]
+	MOVL	pnb_label[EDI], #'PNB*'
+	MOVL	pnb_next[EDI], #0
+	MOVL	EAX, spath_rslt+rslt_nbfr+0[EBP]
+	MOVL	pnb_name+0[EDI], EAX
+	MOVL	EAX, spath_rslt+rslt_nbfr+4[EBP]
+	MOVL	pnb_name+4[EDI], EAX
+	MOVL	EAX, spath_rslt+rslt_nbfr+8[EBP]
+	MOVL	pnb_name+8[EDI], EAX
+	MOVL	EAX, spath_rslt+rslt_nbfr+12t[EBP]
+	MOVL	pnb_name+12t[EDI], EAX
+	MOVL	EBX, spath_pthd+pthd_pprevp[EBP]
+	TESTL	ESI, ESI		;Have an old PNB?
+	JE	14$			;No
+	MOVL	EAX, pnb_next[ESI]	;Yes - replace it in the list with
+	MOVL	pnb_next[EDI], EAX	;  the new PNB
+	MOVL	[EBX], EDI
+	PUSHL	ESI			;Give up the old block (This results in
+	CALL	sysMemGiveXmb##		;  an invalid block for a short time,
+	JMP	cpypath			;  but that's OK since we have it locked
+					;  for exclusive access!)
+
+;Here if no old PNB
+
+14$:	MOVL	EAX, [EBX]		;Add the new PNB to the list
+	MOVL	pnb_next[EDI], EAX
+	MOVL	[EBX], EDI
+
+;Here to copy the path to the PNB
+
+cpypath:MOVL	ECX, spath_newlen[EBP]
+	MOVW	pnb_pathlen[EDI], CX
+	INCL	ECX
+	ADDL	EDI, #pnb_path
+	LEAL	ESI, spath_fsbufr[EBP]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CMPB	[ESI], #'\'		;Need initial \?
+	JE	20$			;No
+	MOVB	[EDI], #'\'		;Yes
+	INCL	EDI
+20$:	RMOVSB	[EDI], [ESI]
+.PAGE
+rtnpath:TESTB	knlTda+tdaOption##, #POPT$GETDEV|POPT$GETPATH
+					;Need to return something?
+	JE	pathdn2			;No
+	CLRL	ECX			;Yes
+	TESTB	knlTda+tdaOption##, #POPT$GETDEV ;Does he want the device name?
+	JE	10$			;No
+	LEAL	ECX, spath_rslt+rslt_nbfr[EBP]
+	MOVL	EDX, ECX		;Get the length of the device name
+4$:	CMPB	[ECX], #0
+	JE	6$
+	INCL	ECX
+	JMP	4$
+
+6$:	SUBL	ECX, EDX
+	LEAL	EAX, 1[ECX]		;Get total length needed
+10$:	CLRL	EDX
+	TESTB	knlTda+tdaOption##, #POPT$GETPATH ;Does he want the path?
+	JE	14$			;No
+	MOVL	ESI, spath_pthd+pthd_ppnb[EBP] ;Yes
+	TESTL	ESI, ESI
+	JNE	12$
+	INCL	EDX			;No path defined - we give him "\"
+	JMP	14$
+
+12$:	MOVZWL	EDX, pnb_pathlen[ESI]
+14$:	LEAL	EAX, 1[EDX+EAX]		;Get total length (including the final
+					;  0) required
+	CMPL	EAX, knlTda+tdaCount##	;Will it fit?
+	JGE	toolng			;No - fail
+	DECL	EAX
+	MOVL	spath_newlen[EBP], EAX	;Save number of characters to give him
+	TESTB	knlTda+tdaOption##, #POPT$LENGTH ;Just want the length?
+	JNE	22$			;Yes
+	CMPL	knlTda+tdaBuffer2##, #0
+	JE	22$
+	MOVL	EDI, knlTda+tdaBuffer2## ;No - get address of his buffer
+	PUSHL	DS
+	POPL	ES
+	CLD
+	TESTB	knlTda+tdaOption##, #POPT$GETDEV ;Does he want the device name?
+	JE	16$			;No
+	LEAL	ESI, spath_rslt+rslt_nbfr[EBP] ;Yes
+	LEAL	EAX, 1[ECX]
+	ADDL	knlTda+tdaAmount#, EAX
+	IFFAULT	pathae2
+	RMOVSB	[EDI], [ESI]		;Store the device name
+	IFFAULT	pathae2
+	MOVB	[EDI], #':'		;Followed by a colon
+	INCL	EDI
+16$:	TESTB	knlTda+tdaOption##, #POPT$GETPATH ;Does he want the path?
+	JE	20$			;No
+	MOVL	ECX, EDX		;Yes - store the path string
+	TESTL	ECX, ECX
+	MOVL	ESI, spath_pthd+pthd_ppnb[EBP]
+	TESTL	ESI, ESI
+	JNE	18$
+	IFFAULT	pathae2
+	MOVB	[EDI], #'\'
+	INCL	EDI
+	JMP	20$
+
+18$:	ADDL	ESI, #pnb_path
+	LEAL	EAX, 1[ECX]
+	ADDL	knlTda+tdaAmount#, EAX
+	IFFAULT	pathae2
+	RMOVSB	[EDI], [ESI]
+	IFFAULT	pathae2
+20$:	MOVB	[EDI], #0
+22$:	MOVL	EAX, spath_newlen[EBP]
+	MOVL	knlTda+tdaAmount#, EAX
+pathdn2:MOVL	EAX, spath_pthd+pthd_pda[EBP]
+	ADDL	EAX, #pdaPhyPRmb##	;???????????????????
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+pathdn1:LEAVE
+	CLRL	EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	RET
+
+toolng:	MOVL	EAX, #ER_NTLNG
+	JMP	pather2
+
+	FAULTHDR
+pathae1:MOVL	EAX, #ER_ADRER
+pather1:MOVL	knlTda+tdaError##, EAX
+	JMP	pathdn1
+
+	FAULTHDR
+pathae2:MOVL	EAX, #ER_ADRER
+pather2:MOVL	knlTda+tdaError##, EAX
+	JMP	pathdn2
+.PAGE
+	.SBTTL	adddevpath - Function to add current path to file specification
+
+;Function to add current path to a file specification
+;	long adddevpath(
+;	    char *name,		// Buffer for device name (16 bytes zero filled
+;				//   on the stack)
+;	    char *spec,		// Buffer containing file specification (on the
+;				//   stack - must be at least FILESPCSIZE + 4
+;				//   bytes)
+;	    PDA  *pda);
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    file specfication is modified to include the path string if necessary.
+;    It is also processed by xosdskFixupFileSpec.
+
+$$$=!0
+FRM addp_pthd, pthd_SIZE
+addp_SIZE=!$$$
+
+addp_name=!24t
+addp_spec=!20t
+addp_pda =!16t
+
+adddevpath::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	addp_SIZE, 0
+	MOVL	EBX, addp_spec[EBP]	;Does the file spec begin with \?
+	CMPB	[EBX], #'\'
+	JE	6$			;Yes - no path needed
+	MOVL	addp_pthd+pthd_pheadp[EBP], #pdaPhyPath##
+	MOVL	EAX, addp_pda[EBP]
+	MOVL	addp_pthd+pthd_pda[EBP], EAX
+	MOVL	addp_pthd+pthd_rmbits[EBP], #0
+	PUSHL	addp_name[EBP]
+	LEAL	EAX, addp_pthd[EBP]
+	PUSHL	EAX
+	CALL	findpath
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EBX, addp_pthd+pthd_ppnb[EBP]
+	TESTL	EBX, EBX		;If no path found
+	JE	4$
+	MOVL	ECX, #FILESPCSIZE
+	MOVL	EDI, addp_spec[EBP]	;Find length of the file spec
+	PUSHL	DS
+	POPL	ES
+	CLRL	EAX
+	RNSCASB	[EDI]
+	JNE	10$
+	DECL	EDI
+	MOVL	ECX, EDI
+	SUBL	ECX, addp_spec[EBP]
+	INCL	ECX
+	MOVZWL	EAX, pnb_pathlen[EBX]
+	ADDL	EAX, ECX
+	CMPL	EAX, #FILESPCSIZE
+	JAE	10$			;If resulting string is too long
+					;Move the string down to make room
+	MOVL	ESI, EDI		;  for the path string
+
+	MOVZWL	EAX, pnb_pathlen[EBX]
+	ADDL	EDI, EAX
+	STD				;Copy backwards
+	RMOVSB	[EDI], [ESI]
+	LEAL	ESI, pnb_path[EBX]	;Copy the path before the spec
+	MOVL	EDI, addp_spec[EBP]
+	MOVL	ECX, EAX
+	CLD
+	RMOVSB	[EDI], [ESI]
+4$:	MOVL	EAX, spath_pthd+pthd_pda[EBP]
+	ADDL	EAX, #pdaPhyPRmb##	;????????????????????
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+6$:	PUSHL	addp_spec[EBP]
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xosdskFixupFileSpec
+10$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+.PAGE
+;Function to find an LNB for a device name
+;	long findpath(
+;	    char *name,		// Device name (16 byte zero filled on the
+;				//   stack)
+;	    PTHD *pthd);	// Path data block
+;  When called, nbfr must be filled in with the device name, pthd_pda with
+;    the actual address of the process or session PDA, pthd_pheadp with the
+;    offset of pdaLogPath or pdaPhyPath in the PDA, and pthd_rmbits with the
+;    "bits" argument for sysSchGetResource.
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return, pthd_ppnb and pthd_pprevp are filled in. Note that if the
+;    request block is not found a normal return is given. This is indicated
+;    by the value stored in pthd_ppnb rather than an error return. On a
+;    normal return, the resource for the list is retained.
+
+fpth_pnbfr=!16t
+fpth_ppthd=!12t
+
+findpath::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, fpth_ppthd[ESP]
+	MOVL	EAX, pthd_pda[EDI]
+	TESTL	EAX, EAX
+	JE	20$
+	MOVL	EAX, pdaSesPda##[EAX]
+	MOVL	pthd_pda[EDI], EAX
+	ADDL	EAX, pthd_pheadp[EDI]
+	ADDL	EAX, #4
+	PUSHL	EAX
+	PUSHL	pthd_rmbits[EDI]
+	CALL	sysSchGetResource##
+	TESTL	EAX, EAX
+	JS	14$
+	MOVL	EDX, fpth_pnbfr[ESP]
+	MOVL	EAX, [EDX]
+	MOVL	EBX, 4[EDX]
+	MOVL	ECX, 8[EDX]
+	MOVL	EDX, 12t[EDX]
+	MOVL	ESI, pthd_pda[EDI]
+	ADDL	ESI, pthd_pheadp[EDI]
+4$:	MOVL	EDI, [ESI]
+	TESTL	EDI, EDI
+	JE	10$
+	CMPL	EAX, pnb_name+0[EDI]
+	JNE	6$
+	CMPL	EBX, pnb_name+4[EDI]
+	JNE	6$
+	CMPL	ECX, pnb_name+8[EDI]
+	JNE	6$
+	CMPL	EDX, pnb_name+12t[EDI]
+	JE	10$
+6$:	LEAL	ESI, pnb_next[EDI]
+	JMP	4$
+
+10$:	MOVL	EBX, fpth_ppthd[ESP]
+	MOVL	pthd_ppnb[EBX], EDI
+	MOVL	pthd_pprevp+0[EBX], ESI
+	MOVL	pthd_pprevp+4[EBX], ES
+	CLRL	EAX
+14$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+20$:	CRASH	BSLP			;[Bad Session Level Process]
+.PAGE
+	.SBTTL	giveallpaths - Function to give up all paths for process
+
+;Subroutine to give up all paths for a process - Called as a process is being
+;  killed.
+;	void giveallpaths(void);
+
+giveallpaths::
+	PUSHL	#knlPda+pdaPhyPath##
+	CALL	givepaths2
+	PUSHL	#knlPda+pdaLogPath##
+	CALL	givepaths2
+	RET
+
+gp2_pheadp=!8
+
+givepaths2:
+	PUSHL	EDI
+	MOVL	EDI, gp2_pheadp[ESP]	;Get exclusive access to the list (This
+	LEAL	EAX, 4[EDI]		;  is probably not necessary here since
+	PUSHL	EAX			;  we know the process is being given
+	PUSHL	#RMBB$LOCKED		;  up but it does no harm and is cheap
+	CALL	sysSchGetResource##	;  when it's not needed.)
+	MOVL	EBX, [EDI]
+4$:	TESTL	EBX, EBX
+	JE	8$
+	PUSHL	pnb_next[EBX]
+	PUSHL	EBX
+	CALL	sysMemGiveXmb##
+	POPL	EBX
+	JMP	4$	
+
+8$:	MOVL	[EDI], #0		;Clear the head pointer to be safe!
+	LEAL	EAX, 4[EDI]
+	PUSHL	EAX
+	CALL	sysSchGiveResource##
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to remove ., .., and multiple / (null names) where possible in a
+;  path string
+;	long xosdskFixupFileSpec(
+;	    char *ppath,	// Address of path string (on the stack)
+;	    long  iniddok,	// Non-zero if one or more initial .. is OK
+;	    long  frcfbs);	// TRUE to force a final \
+;  Value returned is the final length of the path string (positive) if normal
+;    or a negative XOS error code if error.
+
+fup_ppath  =!20t
+fup_iniddok=!16t
+fup_frcfbs =!12t
+
+xosdskFixupFileSpec::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, fup_ppath[ESP]
+	CMPB	[EDI], #'\'		;Leading \?
+	JNE	2$			;No
+	INCL	EDI			;Yes - leave it alone
+2$:	MOVL	ESI, EDI
+	MOVL	ECX, EDI
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EDX
+6$:	MOVZBL	EAX, [ESI]		;Get first character in name
+	CMPB	AL, #0			;Finished?
+	JE	atend			;Yes
+	INCL	ESI
+	CMPB	AL, #'\'		;Null name?
+	JE	6$			;Yes
+	CMPB	AL, #'.'		;Does the name start with .?
+	JNE	28$			;No
+	CMPB	[ESI], #0		;Yes - is it just .?
+	JE	20$			;Yes
+	CMPB	[ESI], #'\'		;Maybe
+	JNE	bgndot			;No
+	INCL	ESI			;Yes - skip the .
+	JMP	20$
+
+;Here with name which begins with . which is not just .
+
+bgndot:	CMPB	[ESI], #'.'		;Is it ..?
+	JNE	28$			;No
+	CMPB	1[ESI], #0		;Yes - anything else
+	JE	hvdotdot		;No - have ..
+	CMPB	1[ESI], #'\'		;Maybe
+	JNE	28$			;Yes - not ..
+
+;Here with .. - Scan backwards and remove the previous directory name. If hit
+;  beginning of path leave the .. there if that is allowed, otherwise return
+;  an error.
+
+hvdotdot:
+	INCL	ESI
+	CMPL	EDI, ECX		;At beginning of string?
+	JNE	14$			;No
+
+;Here if ..\ is at the beginning of the string
+
+12$:	CMPL	fup_iniddok[ESP], #0	;Is this OK?
+	JNE	24$			;Yes
+	MOVL	EAX, #ER_DIRNF		;No - fail
+	JMP	40$
+
+;Here if .. is not at the beginning of the string
+
+14$:	DECL	EDI
+20$:	CMPL	EDI, ECX
+	JE	12$
+	DECL	EDI
+	CMPL	EDI, ECX		;At beginning now?
+	JE	bgnprev
+	CMPB	[EDI], #'\'		;At previous \?
+	JNE	20$			;No - continue going back
+
+;Here at the beginning of the previous directory name - If we are allowing
+;  initial .. this might be an initial .. what we left there. In this case
+;  we must also leave this one. If we are not allowing initial .. this cannot
+;  be .. .
+
+bgnprev:CMPL	fup_iniddok[ESP], #0
+	JE	30$
+	CMPW	[EDI], #'..'
+	JNE	30$
+24$:	ADDL	EDI, #2
+	JMP	30$
+
+;Here to copy the directory name
+
+28$:	STOSB	[EDI]
+30$:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JE	atend
+32$:	STOSB	[EDI]
+	CMPB	AL, #'\'		;Start of name?
+	JNE	30$
+	JMP	6$			;Yes
+
+;Here at end of the string
+
+atend:	CMPL	fup_frcfbs[ESP], #0	;Do we care about a final \?
+	JE	36$			;No
+	CMPB	-1[EDI], #'\'		;Yes - was there a final \?
+	JE	36$			;Yes
+	MOVW	[EDI], #'\'		;No - add one
+	INCL	EDI
+36$:	MOVB	[EDI], #0		;Make sure have a final 0
+	MOVL	EAX, EDI		;Return the length
+	SUBL	EAX, fup_ppath[ESP]
+40$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+	LKEEND

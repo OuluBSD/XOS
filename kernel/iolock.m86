@@ -1,0 +1,476 @@
+	.TITLE	iolock - Routines to lock memory for IO
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;Format of a locked memory entry (8 bytes):
+
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |    Number of pages    |     First page number in msect + 1    |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |                      Address of MDB                           |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+;If there is only one entry, it is stored in the locktbl as follows:
+
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |    Number of pages    |     First page number in msect + 1    |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |                      Address of MDB                           |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |                     Total lock count                          |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+;If there is more than one entry, an XMB is allocated and the locktbl
+;  contains the following:
+
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |No. of entires |                      0                        |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |              Address of XMB containing the table              |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;  |                     Total lock count                          |
+;  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+;The format of the XMB is as follows:
+;  Name    Offset Size Description
+;  mll_label  0    4   Debug label = 'MLL*'
+;  mll_next   4    4   Address of next XMB in list
+;  mll_lock   8    8   First lock data (see above)
+;            16    8 
+;            24    8
+;            32    8   Additional locked memory entries
+;            40    8
+;            48    8
+;            56    8
+
+;Generally the locktbl is in the DCB of the device which has locked the pages.
+
+;Pages are not locked unless the device is doing IO directly to or from user
+;  memory. Most devices buffer data through an XMB or a disk cache buffer and
+;  do not lock pages. (This is different from versions of XOS before V4 which
+;  generally locked all pages involved in an IO operation.)
+
+;Function to lock memory pages
+;	long sysIoLockMem(
+;	    int      bits,	// Bit 0 (LCKB$CHANGE) set to lock if buffer
+;				//       contents may be changed
+;				// Bit 1 (LCKB$NOCACHE) set to make pages
+;				//       non-cachable
+;	    LOCKTBL *locktbl,	// Address of lock table
+;	    uchar   *buffer,	// Address of buffer to lock
+;	    long     length);	// Length of the buffer
+;  Value returned is the number of pages locked (positive) if normal or a
+;    negative XOS error code if error. If an error is indicated, any locks
+;    obtained in this call have been given up.
+
+$$$=!0
+FRM lpgs_fptent, 4t		;Offset of page table entry for first page
+				;  locked
+FRM lpgs_fpage , 4t		;Page number in msect for first page locked + 1
+FRM lpgs_num   , 4t		;Number of pages locked
+FRM lpgs_count , 4t		;Number of pages left to lock
+FRM lpgs_top   , 4t		;Offset of highest location to lock
+lpgs_SIZE=!$$$
+
+lpgs_bits   =!32t
+lpgs_locktbl=!28t
+lpgs_buffer =!24t
+lpgs_length =!20t
+
+sysIoLockMem::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	lpgs_SIZE, 0
+	CMPL	lpgs_length[EBP], #MAXXFER ;Is the buffer too big?
+	JA	badcnt			;Yes - fail
+	MOVL	ESI, lpgs_locktbl[EBP]	;No - get address of the lock table
+6$:	MOVL	lpgs_num[EBP], #0
+	IFFAULT	lockadrer
+	MOVL	EBX, lpgs_buffer[EBP]
+	IFFAULT	lockadrer
+	MOVB	AL, [EBX]		;Touch the first page
+	MOVL	EDX, EBX
+	SHRL	EDX, #12t		;Change to page table index
+	LEAL	EDX, knlPgTable#[EDX*4]	;Point to page table entry
+	TESTB	[EDX], #01		;Valid page?
+	JE	lockadrer		;No - fail
+	TESTB	lpgs_bits[EBP], #LCKB$CHANGE ;Yes - need a changable page here?
+	JE	12$			;No - go on
+	TESTB	[EDX], #02		;Yes - is the page writable?
+	JE	lockadrer		;No - fail!
+12$:	PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE#		;Yes - get memory table entry
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	lockadrer		;If not an allocated page
+	TESTB	2[EAX], #0x80		;User page?
+	JE	40$			;No - don't need to lock this!
+	MOVL	lpgs_fptent[EBP], EDX	;Yes
+	SHLL	EDX, #10t		;Get linear address of the page (NOTE:
+					;  this counts on the low 22 bits of
+					;  the offset of knlPgTable being 0!)
+	TESTB	2[EAX], #0x10		;Shared page?
+	JE	privpg			;No
+
+;Here if have a buffer in a shared section
+
+sharpg:	MOVL	FS, 4[EAX]		;Get selector for the section's SDA
+	MOVL	EDI, sdaMdbHead#	;Get offset of first MDB
+16$:	CMPL	mdb_label[EDI], #'MDB*'	;Make sure its realy an MDB!
+	JE	17$
+	CRASH	NMDB
+
+17$:	MOVL	ECX, SS			;Does this section belong to the right
+	CMPW	CX, mdb_pda[EDI]	;  process?
+	JNE	18$			;No - go on
+	CMPL	EDX, mdb_base[EDI]	;Yes - is address in this section?
+	JB	18$			;No
+	MOVL	ECX, mdb_size[EDI]	;Maybe
+	SHLL	ECX, #12t
+	ADDL	ECX, mdb_base[EDI]
+	CMPL	EDX, ECX
+	JB	22$			;Yes
+18$:	MOVL	EDI, mdb_segnext[EDI]	;No - advance to next MDB
+	TESTL	EDI, EDI
+	JNE	16$			;Continue if more to check
+	CRASH	CFSS			;[Can't Find Shared Section]
+
+;Here if have a private user page
+
+privpg:	MOVL	EDI, 4[EAX]		;Get offset of the MDB
+	CMPL	mdb_label[EDI], #'MDB*'	;Make sure its realy an MDB!
+	JE	22$
+	CRASH	NMDB
+
+;Here with MDB for msect containing the first page to lock
+;	c{EAX} = Offset of memory table entry for first page
+;	c{EBX} = Address of buffer
+;	c{EDX} = Address for first page containing the buffer
+;	c{EDI} = Offset of MDB
+
+22$:	PUSHL	EAX
+	MOVL	EAX, EBX
+	ADDL	EAX, lpgs_length[EBP]	;Get offset of top of buffer
+	MOVL	ECX, mdb_size[EDI]	;Get linear address of top of msect
+	SHLL	ECX, #12t
+	ADDL	ECX, mdb_base[EDI]
+	CMPL	EAX, ECX		;Does buffer extend past top of msect?
+	JBE	24$			;No
+	MOVL	EAX, ECX		;Yes - only check what is in this msect
+24$:	MOVL	lpgs_top[EBP], EAX	;  this time around
+	DECL	lpgs_top[EBP]
+	SUBL	EAX, EBX		;Get length of buffer which is in this
+	SUBL	lpgs_length[EBP], EAX	;  msect
+	ADDL	lpgs_buffer[EBP], EAX
+
+;Now calculate number of pages spanned by the part of the buffer we are
+;  checking this time
+
+	MOVL	ECX, EBX		;Get linear address of bottom of buffer
+	ADDL	EAX, ECX		;Get linear address of top of buffer
+	ADDL	EAX, #0x0FFF		;Round up top linear address
+	ANDL	ECX, #0x0FFFFF000
+	ANDL	EAX, #0x0FFFFF000	;Round down bottom linear address
+	SUBL	EAX, ECX		;Get difference
+	SHRL	EAX, #12t		;Change to number of pages
+	MOVL	lpgs_count[EBP], EAX	;No - store number of pages to lock here
+	SUBL	EDX, mdb_base[EDI]	;Get page number in the msect
+	SHRL	EDX, #12t
+	INCL	EDX			;Plus 1
+	MOVL	lpgs_fpage[EBP], EDX	;Remember this
+	MOVL	EDX, lpgs_fptent[EBP]	;Restore offset of page table entry
+	POPL	EAX			; for first page
+
+;Here when ready to check a page
+
+chkpage:CMPB	3[EAX], #0xFF		;Too many users for this page?
+	JE	toomusr			;Yes - fail
+	INCB	3[EAX]			;No - bump the IO lock count
+	INCL	lpgs_num[EBP]
+	INCL	mdb_lockcnt[EDI]	;Bump lock count for section in case its
+	INCL	memlockcnt#		;  a shared section!
+	INCW	8[ESI]			;Also bump lock count for the device
+	TESTB	lpgs_bits[EBP], #LCKB$NOCACHE ;Want to make this non-cachable?
+	JE	27$			;No
+	PUSHL	ES			;Yes
+	PUSHL	EDX
+	PUSHL	EBX
+	SHLL	EDX, #10t		;Change page table entry address to
+	PUSHL	EDX			;  linear address
+	PUSHL	#0
+	CALL	sysMemCacheCtlLA#	;Make the page non-cachable
+	POPL	EBX
+	POPL	EDX
+	POPL	ES
+27$:	ADDL	EBX, #0x1000		;Bump buffer offset
+	CMPL	EBX, lpgs_top[EBP]	;Too high an offset?
+	JB	28$			;No
+	MOVL	EBX, lpgs_top[EBP]	;Yes - check the last byte
+28$:	ADDL	EDX, #4			;Bump page table offset
+	DECL	lpgs_count[EBP]
+	JE	blkfin
+
+;Here to advance to next page
+
+	IFFAULT	lockadrer		;Touch the page
+	MOVB	AL, [EBX]
+	TESTB	[EDX], #01		;Valid page?
+	JE	lockadrer		;No - fail
+	CMPB	lpgs_bits[EBP], #LCKB$CHANGE ;Yes - need changable page?
+	JNE	30$			;No
+	TESTB	[EDX], #02		;Yes - is the page writable?
+	JE	lockadrer		;No - fail!
+30$:	PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE#		;Get memory table entry
+	POPL	EDX
+	TESTL	EAX, EAX
+	JNE	chkpage			;Go on if page is allocated
+	JMP	lockadrer
+
+;Here when finished locking a block of memory
+
+blkfin:	MOVL	ECX, lpgs_num[EBP]	;Get number of pages locked
+	SHLL	ECX, #20t		;Construct page table entry
+	ORL	ECX, lpgs_fpage[EBP]
+	MOVL	EBX, [ESI]		;Already have a pointer table?
+	TESTL	EBX, EBX
+	JE	44$			;No - don't need one yet
+	TESTL	EBX, #0xFFFFF		;Maybe
+	JE	hvptbl			;Yes
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	EBX
+	PUSHL	ECX
+	PUSHL	#-XMBX_64
+	PUSHL	EAX
+	CALL	sysMemGetXmb#		;Allocate a pointer table
+	POPL	ECX
+	POPL	EBX
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	42$			;If can't
+	MOVL	[EDX], #'MLL*'		;OK
+	MOVL	4[EDX], #0
+	MOVL	8[EDX], EBX		;Save current pointer
+	MOVL	EAX, 4[ESI]
+	MOVL	12t[EDX], EAX
+	MOVL	16t[EDX], ECX
+	MOVL	20t[EDX], EDI
+	MOVL	[ESI], #0x02000000
+	MOVL	4[ESI], EDX
+38$:	MOVL	ECX, lpgs_length[EBP]	;Have anything left over?
+	TESTL	ECX, ECX
+	JNE	lckmore			;Yes - continue
+40$:	CLRL	EAX
+42$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if have more to lock (will get here if buffer spans more than 1 msect,
+;  which is very unlikely but is possible)
+
+lckmore:MOVL	EBX, lpgs_buffer[EBP]	;Restore offset of buffer
+	JMP	6$			;Continue
+
+;Here if don't have a pointer table and don't need one yet (this is the
+;  first buffer locked)
+
+44$:	MOVL	[ESI], ECX		;Just store the information in the
+	MOVL	4[ESI], EDI		;  lock table
+	JMP	38$
+
+;Here if already have a pointer table
+
+hvptbl:	SHRL	EBX, #21t		;Get offset in table
+	ADDL	EBX, #8
+	CMPB	BL, #qe_SIZE		;Have too many pointers?
+	JAE	toompnt			;Yes - fail!
+	ADDL	EBX, 4[ESI]		;No - point to pointer table
+	MOVL	[EBX], ECX		;Store new pointer
+	MOVL	4[EBX], EDI
+	INCB	3[ESI]			;Bump pointer count
+	JMP	38$
+
+;Here if bad count - nothing has been locked so far
+
+badcnt:	MOVL	EAX, #ER_ICDEV
+	JMP	42$	
+
+;Here if have too many pointers - must unlock any pages already locked
+
+toompnt:PUSHL	#ER_TMIOP
+	JMP	50$
+
+;Here if too many users for a page - must unlock any pages already locked
+
+toomusr:PUSHL	#ER_TMIOM		;Get error code
+	JMP	50$
+
+;Here if pages to be locked does not exist - must unlock any pages already
+;  locked
+
+	FAULTHDR
+lockadrer:
+	PUSHL	#ER_ADRER
+50$:	PUSHL	lpgs_locktbl[EBP]
+	CALL	sysIoUnlockMem
+	POPL	EAX
+	JMP	42$
+.PAGE
+;Subroutine to unlock all memory pages locked by a device
+;	void sysIoUnlockMem(
+;	    LOCKTBL *tbl);	// Address of the locktbl
+
+iounlm_tbl=!16t
+
+sysIoUnlockMem::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, iounlm_tbl[ESP]
+	MOVL	ECX, [EDI]		;Get memory lock pointer count
+	JREGZ	ECX, 10$		;If nothing to unlock
+	MOVL	[EDI], #0
+	TESTL	ECX, #0xFFFFF		;Have a single pointer?
+	JE	4$			;No
+	MOVL	EAX, 4[EDI]		;Yes - get offset of the MDB
+	CALL	unlockp
+	JMP	10$
+
+;Here if have a lock pointer table
+
+4$:	SHRL	ECX, #24t		;Get number of pointers
+	PUSHL	ECX
+	MOVL	ESI, 4[EDI]		;Get pointer to the table
+	CMPL	[ESI], #'MLL*'
+	JE	8$
+	CRASH	NMLL			;[Not a Memory Lock List]
+
+8$:	ADDL	ESI, #8			;Point to first entry
+	MOVL	ECX, [ESI]
+	MOVL	EAX, 4[ESI]
+	PUSHL	EDI
+	PUSHL	ESI
+	CALL	unlockp
+	POPL	ESI
+	POPL	EDI
+	DECL	[ESP]
+	JNE	8$
+	POPL	EAX			;Fix up the stack
+	PUSHL	4[EDI]			;Give up the pointer table
+	CALL	sysMemGiveXmb#
+10$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+unlockp:CMPL	mdb_label[EAX], #'MDB*'	;Make sure its realy an MDB!
+	JE	12$
+	CRASH	NMDB
+
+12$:	MOVL	EDX, ECX		;Get page number
+	DECL	EDX
+	SHLL	EDX, #12t		;Change to offset
+	SHRL	ECX, #20t		;Get number of pages
+	ADDL	EDX, mdb_base[EAX]	;Get address of first page
+	SHRL	EDX, #10t		;Change to page table offset
+	ADDL	EDX, #knlPgTable#
+.PAGE
+;	c{EDX} = Address of page table entry for first page to unlock
+;	c{ECX} = Number of pages to unlock
+;	c{EDI} = Address of the locktbl
+
+unlockmem:
+8$:	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE#		;Get memory table entry
+	POPL	EDX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JE	16$
+	CMPB	3[EAX], #0		;Is the page locked?
+	JE	16$			;No!
+	DECB	3[EAX]			;Yes - reduce the lock count
+	DECL	memlockcnt		;Reduce system-wide locked page count
+	JS	18$
+	DECL	8[EDI]			;Reduce locked page count
+	JS	18$
+	TESTB	2[EAX], #0x80		;User page?
+	JE	22$			;No
+	TESTB	2[EAX], #0x10		;Shared page?
+	JE	22$			;No
+
+	CRASH	SHRM
+
+	PUSHL	ECX			;Yes - save registers we need here
+	PUSHL	EDX
+	MOVL	FS, 4[EAX]		;Get selector for the section's SDA
+	MOVL	EBX, sdaMdbHead#	;Get offset of first mdb
+	SHLL	EDX, #10t		;Get linear address of page
+10$:	MOVL	ECX, SS			;Assume at main program level
+
+	CMPW	CX, mdb_pda[EBX]	;Does this section belong to the right
+					;  process?
+	JNE	14$			;No - go on
+	CMPL	EDX, mdb_base[EBX]	;Yes - is address in this section?
+	JB	14$			;No
+	MOVL	ECX, mdb_size[EBX]	;Maybe
+	SHLL	ECX, #12t
+	ADDL	ECX, mdb_base[EBX]
+	CMPL	EDX, ECX
+	JB	20$			;Yes
+14$:	MOVL	EBX, mdb_segnext[EBX]	;No - advance to next MDB
+	TESTL	EBX, EBX
+	JNE	10$
+	CRASH	CFSS			;[Can't Find Shared Section]
+
+16$:	CRASH	MPNL			;[Memory Page Not Locked]
+
+18$:	CRASH	BMLC			;[Bad Memory Lock Count]
+
+;Here with MDB for the shared section
+
+20$:	DECL	mdb_lockcnt[EBX]	;Reduce lock count for shared section
+	JS	24$
+	POPL	EDX
+	POPL	ECX
+22$:	ADDL	EDX, #4			;Bump page table pointer
+	DECL	ECX			;Continue if more to unlock
+	JNE	8$
+	RET				;Finished
+
+24$:	CRASH	BSLC			;[Bad Shared section Lock Count]
+
+	END

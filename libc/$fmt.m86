@@ -1,0 +1,673 @@
+	.TITLE	$fmt - Formated output routines
+	.SBTTL	STDC run-time library for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\STDIO.PAR
+
+	.PROC	80386
+
+	.STDSEGS
+
+;Define bits used in pf_special
+
+SF$LEFT  =!00004000h	;Value should be left justified in field
+  SF%LEFT  =!14t
+SF$PLUS  =!00002000h	;Always insert + before positive values
+  SF%PLUS  =!13t
+SF$SPACE =!00001000h	;Always insert space before positive values
+  SF%SPACE =!12t
+SF$PREFIX=!00000800h	;Insert 0 before octal output or 0x before hex output
+  SF%PREFIX=!11t
+SF$UPPER =!00000400h	;Output hex digits using upper case
+  SF%UPPER =!10t
+SF$SIGNED=!00000100h	;Output signed value
+  SF%SIGNED=!8t
+SF$LEAD0 =!00000080h	;Leading 0 fill
+  SF%LEAD0 =!7t
+SF$COMMA =!00000040h	;Commas
+  SF%COMMA =!6t
+
+BUFRSIZE=!160t		;Size of our local output buffer
+
+;Define our local stack frame
+
+$$$=!0
+FRM pf_usrbufr , 4t	;Address of user buffer
+FRM pf_pntr    , 4t	;Output pointer
+FRM pf_limit   , 4t	;Output limit
+FRM pf_func    , 4t	;Address of the output function
+FRM pf_special , 4t	;Special processing flag bits
+FRM pf_arg     , 4t	;Pointer to argument list
+FRM pf_radix   , 4t	;Current radix
+FRM pf_digcnt  , 4t	;Digit count
+FRM pf_negative, 1t	;Non-zero if negative value
+FRM pf_longcnt , 1t	;Count of L's seen
+FRM            , 2t
+FRM pf_prec    , 4t	;Field precision
+FRM pf_width   , 4t	;Field width
+FRM pf_total   , 4t	;Total characters output
+FRM pf_commacnt, 4t	;Comma count
+pf_SIZE=!$$$
+
+	.PSECT	_TEXT_p
+
+;Routine to do the work for printf and friends - the caller must push EDI and
+;  ESI and load the following registers:
+;	c{EBX} = Address of first value argument
+;	c{ECX} = Maximum number of characters to output
+;	c{EDX} = Address of output function
+;	c{EDI} = Stream pointer or address of caller's buffer
+;	c{ESI} = Address of format string
+;	JMP	fmt
+
+	.ENTRY	$fmt
+$fmt:	ENTER	pf_SIZE, 0
+	MOVL	pf_arg[EBP], EBX	;Store address of first value argument
+	MOVL	pf_limit[EBP], ECX	;Store output limit
+	MOVL	pf_func[EBP], EDX	;Store address of the output function
+	CMPL	EDX, #$fmtputc		;Is "output" to a user buffer?
+	JNE	1$			;No
+	MOVL	pf_usrbufr[EBP], EDI	;Yes - store address of his buffer
+	LEAL	EDI, pf_usrbufr[EBP]
+1$:	MOVL	pf_pntr[EBP], EDI
+
+	MOVL	pf_total[EBP], #0	;Clear the grand total
+loop:	MOVB	AL, [ESI]		;Get format character
+	INCL	ESI
+	CMPB	AL, #0			;End of format?
+	JE	finish			;Yes
+	CMPB	AL, #'%'		;No - format specification?
+	JE	2$			;Yes - go handle it
+chrput:	CALL	pfoutchr		;Store character in buffer
+	JMP	loop			;Continue
+
+;Here with format specification
+
+2$:	CLRL	EAX
+	MOVL	pf_special[EBP], EAX	;Initialize format data
+	MOVL	pf_width[EBP], EAX
+	MOVL	pf_prec[EBP], EAX
+	MOVB	pf_longcnt[EBP], AL
+4$:	MOVB	AL, [ESI]		;Get next format character
+	INCL	ESI
+	CMPB	AL, #0			;End?
+	JE	finish			;Yes
+	CMPB	AL, #'-'		;No - check for special character
+	JE	8$			;If want minus sign
+	CMPB	AL, #'+'
+	JE	10$			;If want plus sign
+	CMPB	AL, #' '
+	JE	12$			;If want space fill
+
+	CMPB	AL, #'l'
+	JE	6$			;If have long value (ignored)
+	CMPB	AL, #'L'
+	JE	6$
+
+	CMPB	AL, #'#'
+	JE	14$			;If want numeric value prefix
+	CMPB	AL, #','		;If want commas
+	JE	16$
+	CMPB	AL, #'0'
+	JNE	20$			;If want leading 0 (old style)
+	BTSL	pf_special[EBP], #SF%LEAD0
+	JMP	4$
+
+;Here if have l or L
+
+6$:	INCB	pf_longcnt[EBP]
+	JMP	4$
+
+8$:	BTSL	pf_special[EBP], #SF%LEFT
+	JMP	4$
+
+10$:	BTSL	pf_special[EBP], #SF%PLUS
+	JMP	4$
+
+12$:	BTSL	pf_special[EBP], #SF%SPACE
+	JMP	4$
+
+14$:	BTSL	pf_special[EBP], #SF%PREFIX
+	JMP	4$
+
+16$:	BTSL	pf_special[EBP], #SF%COMMA
+	JMP	4$
+
+;Here at end of the format specification
+
+finish:	MOVL	EAX, pf_total[EBP]	;Get number of characters output
+	CMPL	pf_func[EBP], #$fmtputc	;Outputting to a user buffer?
+	JNE	18$			;No
+	CMPL	EAX, pf_limit[EBP]	;Yes - is the buffer full?
+	JA	18$			;Yes
+	MOVL	EDX, pf_usrbufr[EBP]	;No - store a final 0
+	MOVB	[EDX], #0
+18$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	POPL	EBX
+	RET
+
+;Here if don't have format prefix character
+
+20$:	CALL	getvalue		;Get possible field width
+	MOVL	pf_width[EBP], ECX	;Store field width
+	CMPB	AL, #0
+	JE	finish			;If end here
+	MOVL	pf_prec[EBP], #0	;Assume precision is 0
+	CMPB	AL, #'.'		;Is percision next?
+	JNE	22$			;No
+	MOVB	AL, [ESI]		;Yes
+	INCL	ESI
+	CALL	getvalue		;Get it
+	MOVL	pf_prec[EBP], ECX	;Store precision
+	CMPB	AL, #0			;End here?
+	JE	finish			;Yes
+22$:	CMPB	AL, #'l'		;No - can have l or L here, which we
+	JE	24$			;  ignore
+	CMPB	AL, #'L'
+	JNE	28$
+24$:	MOVB	AL, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JNE	22$
+26$:	RET
+
+;Here with character after field with and precision
+
+28$:	CMPB	AL, #0			;Allow for end here!
+	JE	26$
+	CMPB	AL, #'X'		;Hex value with caps?
+	JE	Xformat			;Yes
+	CMPB	AL, #'x'		;Hex value with lower case?
+	JE	xformat			;Yes
+
+	CMPB	AL, #'C'		;Unicode character?
+	JE	Cformat
+	CMPB	AL, #'c'
+	JE	cformat
+	MOVB	AH, AL			;No - convert to upper case
+	CMPB	AH, #'a'
+	JB	30$
+	ADDB	AH, #'A'-'a'
+30$:	CMPB	AH, #'O'		;Octal value?
+	JE	oformat			;Yes
+	CMPB	AH, #'B'		;Binary value?
+	JE	bformat
+	CMPB	AH, #'D'		;Signed decimal value?
+	JE	dformat			;Yes
+	CMPB	AH, #'I'		;Also allow I here
+	JE	dformat			;Yes
+	CMPB	AH, #'U'		;Unsigned decimal value?
+	JE	uformat			;Yes
+	CMPB	AH, #'S'		;String?
+	JE	sformat			;Yes
+	CMPB	AH, #'V'
+	JE	vformat
+	JMP	chrput
+.PAGE
+;Here for c format specification - output value as character
+
+cformat:MOVL	EAX, pf_arg[EBP]	;Point to value
+	ADDL	pf_arg[EBP], #4
+	MOVZBL	EAX, [EAX]		;Get value
+	JMP	chrput			;Output it as a character
+
+;Here for C format specification - output value as UTF8 multibyte character
+
+Cformat:MOVL	EAX, pf_arg[EBP]
+	ADDL	pf_arg[EBP], #4
+	MOVL	EAX, [EAX]
+	CMPL	EAX, #0x7F		;Single byte character?
+	JBE	chrput			;Yes - just like c format
+	CMPL	EAX, #0x1FFF		;Two byte character?
+	JA	4$			;No
+
+;Here if have a two byte character
+
+	PUSHL	EAX
+	SHRL	EAX, #6
+	ORL	EAX, #0xC0
+	CALL	pfoutchr
+2$:	POPL	EAX
+	ANDL	EAX, #0x3F
+	ORL	EAX, #0x80
+	JMP	chrput
+
+;Here if not a two byte character
+
+4$:	CMPL	EAX, #0xFFFF		;Three byte character?
+	JA	8$			;No
+
+;Here if have a three byte character
+
+	PUSHL	EAX
+	SHRL	EAX, #12t
+	ORL	EAX, #0xE0
+	CALL	pfoutchr
+6$:	MOVL	EAX, [ESP]
+	SHRL	EAX, #6
+	ANDL	EAX, #0x3F
+	ORL	EAX, #0x80
+	CALL	pfoutchr
+	JMP	2$
+
+;Here if have a four byte character
+
+8$:	CMPL	EAX, #0x10FFFF		;Valid code?
+	JA	10$			;No
+	PUSHL	EAX
+	MOVL	EAX, EBX
+	SHRL	EAX, #18t
+	ORL	EAX, #0xE0
+	CALL	pfoutchr
+	MOVL	EAX, [ESP]
+	SHRL	EAX, #12t
+	ANDL	EAX, #0x3F
+	ORL	EAX, #0x80
+	CALL	pfoutchr
+	JMP	6$
+
+;Here if not a valid UTF8 value
+
+10$:	MOVL	EAX, #'?'
+	JMP	chrput
+.PAGE
+;Here for o format specification - output as octal value
+
+oformat:MOVL	EAX, #8t		;Get radix value
+	JMP	4$
+
+;Here for b format specification - output as binary value
+
+bformat:MOVL	EAX, #2t		;Get radix value
+	JMP	4$
+
+;Here for X format specification - output as hex value using upper case
+
+Xformat:BTSL	pf_special[EBP], #SF%UPPER ;Indicate want upper case
+
+;Here for X format specification - output as hex value using lower case
+
+xformat:MOVL	EAX, #16t		;Get radix value
+	JMP	4$			;Continue
+
+;Here for d format specification - output as signed decimal value
+
+dformat:BTSL	pf_special[EBP], #SF%SIGNED ;Indicate signed value
+
+;Here for u format specification - output as unsigned decimal value
+
+uformat:MOVL	EAX, #10t		;Get radix value
+4$:	MOVL	pf_radix[EBP], EAX	;Store radix
+	BTL	pf_special[EBP], #SF%LEAD0 ;Old style leading 0 request?
+	JNC	6$			;No
+	MOVL	EAX, pf_width[EBP]	;Yes - is precision too small?
+	CMPL	pf_prec[EBP], EAX
+	JAE	6$			;No
+	MOVL	pf_prec[EBP], EAX	;Yes - fix it up
+6$:	CLRL	ECX			;Clear the digit counter
+	MOVL	pf_commacnt[EBP], #100000 ;Assume don't want commas (get a
+					  ;  large number)
+	BTL	pf_special[EBP], #SF%COMMA
+	JNC	7$			;Really want commas?
+	MOVL	pf_commacnt[EBP], #3t	;Yes - set the comma count
+7$:	MOVB	pf_negative[EBP], #0	;Assume not negative value
+	MOVL	EBX, pf_arg[EBP]	;Get offset of next argument
+	MOVL	EAX, [EBX]		;Get value of argument
+	CMPB	pf_longcnt[EBP], #2	;Is this a 64-bit value?
+	JAE	20$			;Yes
+
+;Here for a 32-bit value
+
+	ADDL	pf_arg[EBP], #4		;Bump pointer
+	BTL	pf_special[EBP], #SF%SIGNED ;Signed value?
+	JNC	10$			;No
+	TESTL	EAX, EAX		;Yes - is it negative?
+	JNS	10$			;No
+	NEGL	EAX			;Yes - make it positive
+	INCB	pf_negative[EBP]	;And remember that it was negative
+10$:	INCL	ECX			;Count a digit
+	CLRL	EDX
+	DIVL	pf_radix[EBP]		;Get value of next digit
+	CMPB	DL, #9			;Greater than 9?
+	JBE	12$			;No
+	ADDB	DL, #'A'-'9'-1		;Yes - fix it up
+	BTL	pf_special[EBP], #SF%UPPER ;Should it be upper case?
+	JC	12$			;Yes
+	ADDB	DL, #'a'-'A'		;No - make it lower case
+12$:	ADDB	DL, #'0'		;Make into ASCII character
+	PUSHL	EDX			;Stack it
+	TESTL	EAX, EAX		;More to get?
+	JE	30$			;No
+	DECL	pf_commacnt[EBP]	;Yes - need a comma here?
+	JNE	10$			;No - continue
+	PUSHL	#','			;Yes - stack a comma
+	INCL	ECX			;Count it
+	MOVB	pf_commacnt[EBP], #3	;Reset the comma count
+	JMP	10$			;Continue
+
+;Here for a 64-bit value
+
+20$:	MOVL	EDX, 4[EBX]		;Get rest of value
+	ADDL	pf_arg[EBP], #8		;Bump pointer
+	BTL	pf_special[EBP], #SF%SIGNED ;Signed value?
+	JNC	22$			;No
+	TESTL	EDX, EDX		;Yes - is it negative?
+	JNS	22$			;No
+	NOTL	EAX			;Yes - make it positive
+	NOTL	EDX
+	ADDL	EAX, #1			;Note: INC does not set carry!
+	ADCL	EDX, #0
+	INCB	pf_negative[EBP]	;And remember that it was negative
+22$:	TESTL	EDX, EDX		;Really a 64-bit value?
+	JE	10$			;No - do it the easy way
+24$:	INCL	ECX			;Count a digit
+	PUSHL	EAX
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	pf_radix[EBP]		;Get value of next digit
+	XCHGL	EAX, [ESP]
+	DIVL	pf_radix[EBP]
+	CMPB	DL, #9			;Greater than 9?
+	JBE	26$			;No
+	ADDB	DL, #'A'-'9'-1		;Yes - fix it up
+	BTL	pf_special[EBP], #SF%UPPER ;Should it be upper case?
+	JC	26$			;Yes
+	ADDB	DL, #'a'-'A'		;No - make it lower case
+26$:	ADDB	DL, #'0'		;Make into ASCII character
+	XCHGL	EDX, [ESP]		;Stack it, restore EDX
+	TESTL	EAX, EAX		;More to get?
+	JNE	28$
+	TESTL	EDX, EDX
+	JE	30$			;No
+28$:	DECL	pf_commacnt[EBP]	;Yes - need a comma here?
+	JNE	24$			;No - continue
+	PUSHL	#','			;Yes - stack a comma
+	INCL	ECX			;Count it
+	MOVB	pf_commacnt[EBP], #3	;Reset the comma count
+	JMP	24$			;Continue
+
+;Here with all digits stacked
+
+30$:	MOVL	pf_digcnt[EBP], ECX	;Remember number of digit we stacked
+	MOVL	EAX, pf_prec[EBP]	;Calculate number of leading 0s required
+	SUBL	EAX, ECX		;  for the value
+	BTL	pf_special[EBP], #SF%PREFIX ;Want prefix?
+	JNC	34$			;No
+	CMPL	pf_radix[EBP], #10t	;Yes - do we need one?
+	JE	34$			;No
+	DECL	EAX			;Yes - assume octal
+	CMPL	pf_radix[EBP], #16t	;Is it hex?
+	JNE	34$			;No
+	DECL	EAX			;Yes
+34$:	TESTL	EAX, EAX		;Too small?
+	JNS	36$			;No
+	CLRL	EAX			;Yes - make it 0
+36$:	MOVL	EDX, pf_width[EBP]	;Calculate amount of leading fill needed
+	SUBL	EDX, ECX
+	SUBL	EDX, EAX
+	BTL	pf_special[EBP], #SF%PLUS ;Need plus or minus?
+	JC	38$			;Yes
+	CMPB	pf_negative[EBP], #0	;Maybe
+	JE	40$			;No
+38$:	DECL	EDX			;Yes - allow for it
+40$:	MOVL	pf_width[EBP], EDX	;c(pf_width) = Number of field fill
+					;  characters
+	MOVL	pf_prec[EBP], EAX	;c(pf_prec) = Number of leading 0s
+
+	BTL	pf_special[EBP], #SF%LEFT ;Want it left justified in field?
+	JC	44$			;Yes
+42$:	DECL	pf_width[EBP]		;No - need a space?
+	JS	44$			;No
+	MOVB	AL, #' '		;Yes - output a space
+	CALL	pfoutchr
+	JMP	42$
+
+;Here with leading spaces (if any) output
+
+44$:	CMPB	pf_negative[EBP], #0	;Need -?
+	JE	46$			;No
+	MOVB	AL, #'-'		;Yes - output it
+	CALL	pfoutchr
+	JMP	48$			;Continue
+
+46$:	BTL	pf_special[EBP], #SF%PLUS ;Need +?
+	JNC	48$			;No
+	MOVB	AL, #'+'		;Yes - output it
+	CALL	pfoutchr
+48$:	BTL	pf_special[EBP], #SF%PREFIX ;Need prefix?
+	JNC	52$			;No
+	CMPL	pf_radix[EBP], #10t	;Maybe
+	JE	52$			;No
+	MOVB	AL, #'0'		;Yes - output first prefix character
+	CALL	pfoutchr
+	CMPL	pf_radix[EBP], #16t	;Need more?
+	JNE	52$			;No
+	MOVB	AL, #'X'		;Yes - output second prefix character
+	BTL	pf_special[EBP], #SF%UPPER ;Should it be lower case?
+	JC	52$			;No
+	MOVB	AL, #'x'		;Yes
+50$:	CALL	pfoutchr
+52$:	DECL	pf_prec[EBP]		;Need leading 0?
+	JS	54$			;No
+	MOVB	AL, #'0'		;Yes - output a zero
+	CALL	pfoutchr
+	JMP	52$			;Continue
+
+54$:	POPL	EAX			;Get a digit
+	CALL	pfoutchr		;Output it
+	DECL	pf_digcnt[EBP]		;Have another character?
+	JNE	54$			;Yes - continue
+	BTL	pf_special[EBP], #SF%LEFT ;Was value left justified in field?
+	JNC	loop			;No - finished here
+56$:	DECL	pf_width[EBP]		;Yes - fill it out with spaces
+	JS	loop
+	MOVB	AL, #' '
+	CALL	pfoutchr
+	JMP	56$			;Continue
+.PAGE
+;Here for v format specification - This is a special format for inserting XWS
+;  format functions. It consumes one or two values from the value list
+;  depending on the first value and inserts two to six bytes into the text
+;  stream. If the first value has bit 31 clear and is less than 0xF0, the value
+;  0x10 is inserted as a single byte. The first value is always inserted as a
+;  single byte. If the first value is:
+;    0x00 - 0x3F - Only the one byte is inserted. Only one value is comsumed.
+;    0x40 - 0x7F - The second value is inserted as a single byte.
+;    0x80 - 0xBF - The second value is inserted as two bytes, LOBF.
+;    0xC0 - 0xEF - The second value is inserted as four bytes, LOBF.
+;  If the first value is greater than or equal to 0xF0 a single byte with value
+;  0xFF is inserted. No additional value is consumed.
+;  If bit 31 is set in the first value, nothing is inserted. If the value,
+;  excluding bit 31 is between 0x40 and 0xEF inclusive an additional value
+;  is consumed from the input stream.
+;  Any width or precision specified is ignored but should be unspecified for
+;  future compatability.
+
+vformat:MOVL	EBX, pf_arg[EBP]	;Point to the value
+	ADDL	pf_arg[EBP], #4
+	MOVL	EBX, [EBX]		;Get the first value
+	BTZL	EBX, #31t		;Want to suppress this?
+	JC	10$			;Yes
+	CMPL	EBX, #0xF0		;Valid value?
+	JAE	14$			;No
+	PUSHL	EBX
+	MOVL	EAX, #0x10		;Yes - put in the prefix value
+	CALL	pfoutchr
+	MOVL	EAX, [ESP]		;Put in the function byte
+	CALL	pfoutchr
+	POPL	EDX
+	CMPL	EDX, #0x3F		;Need any more?
+	JBE	loop			;No - finished
+	MOVL	pf_width[EBP], #1	;Assume need one byte	
+	CMPL	EDX, #0x7F
+	JBE	4$
+	INCL	pf_width[EBP]		;Assume 2
+	CMPL	EDX, #0xBF
+	JBE	4$
+	ADDL	pf_width[EBP], #2	;Must be 4
+4$:	MOVL	EBX, pf_arg[EBP]	;Get the second value
+	ADDL	pf_arg[EBP], #4
+	MOVL	EBX, [EBX]		;Get the first value
+6$:	MOVZBL	EAX, BL
+	SHRL	EBX, #8
+	PUSHL	EBX
+	CALL	pfoutchr
+	POPL	EBX
+	DECL	pf_width[EBP]
+	JNE	6$
+	JMP	loop
+
+;Here if want to suppress output of this
+
+10$:	CMPL	EBX, #0x3F		;Need to consume another value?
+	JB	loop			;No
+	CMPL	EDX, #0xF0		;Maybe
+	JAE	loop			;No
+	ADDL	pf_arg[EBP], #4		;Yes
+	JMP	loop
+
+;Here if have an invalid value - just emit 0xFF
+
+14$:	MOVL	EAX, #0xFF
+	CALL	pfoutchr
+	JMP	loop
+.PAGE
+;Here for s format specification - output text string
+
+sformat:MOVL	EBX, pf_arg[EBP]	;Point to value
+	ADDL	pf_arg[EBP], #4
+	MOVL	EDI, [EBX]		;Get offset of string
+	CMPL	pf_width[EBP], #0	;Need any leading fill?
+	JE	10$			;No
+	BTL	pf_special[EBP], #SF%LEFT ;Maybe
+	JC	10$			;No
+	PUSHL	EDI			;Yes - get length of string
+	CALL	strlen#
+	ADDL	ESP, #4
+	CMPL	pf_prec[EBP], #0	;Was precision specified?
+	JE	4$			;No
+	CMPL	EAX, pf_prec[EBP]	;Yes - less than length of string?
+	JBE	4$			;No
+	MOVL	EAX, pf_prec[EBP]	;Yes - just use that much
+4$:	SUBL	pf_width[EBP], EAX
+
+6$:	MOVB	AL, #' '		;Assume want leading space fill
+	BTL	pf_special[EBP], #SF%LEAD0
+	JNC	8$
+	MOVB	AL, #'0'
+8$:	DECL	pf_width[EBP]
+	JS	10$
+	PUSHL	EAX
+	CALL	pfoutchr
+	POPL	EAX
+	JMP	8$			;Continue
+
+10$:	MOVB	AL, [EDI]		;Get character from string
+	INCL	EDI
+	CMPB	AL, #0			;End of string?
+	JE	12$			;Yes
+	CALL	pfoutchr
+	DECL	pf_width[EBP]
+	DECL	pf_prec[EBP]		;Need more?
+	JNE	10$			;Yes
+12$:	DECL	pf_width[EBP]		;Need trailing space?
+	JS	loop			;No - finished here
+	MOVB	AL, #' '		;Yes - output it
+	CALL	pfoutchr
+	JMP	12$			;Continue
+.PAGE
+;Subroutine to get value from format string
+;	c(AL) = Current character
+;	CALL	getvalue
+;	c(AL)  = Stopper character
+;	c{ECX} = Value
+
+getvalue:
+	CMPB	AL, #'*'		;Want value from argument?
+	JE	4$			;Yes - go hanble that
+	CLRL	ECX			;Clear value
+	CMPB	AL, #'-'		;Negative?
+	JE	8$			;Yes
+2$:	CMPB	AL, #'0'		;No - digit?
+	JB	6$			;No
+	CMPB	AL, #'9'		;Maybe
+	JA	6$			;No
+	IMULL	ECX, #10t		;Yes
+	ANDL	EAX, #0x0F
+	ADDL	ECX, EAX
+	MOVB	AL, [ESI]		;Get next format character
+	INCL	ESI
+	JMP	2$			;Continue
+
+;Here if want value of argument
+
+4$:	MOVL	EBX, pf_arg[EBP]	;Get offset of next argument
+	ADDL	pf_arg[EBP], #4
+	MOVL	ECX, [EBX]		;Get value
+	MOVB	AL, [ESI]		;Get next character as stopper
+	INCL	ESI
+6$:	RET
+
+;Here if want negative value
+
+8$:	CALL	getvalue		;Get value
+	NEGL	EAX			;Make it negative
+	RET
+.PAGE
+	.SBTTL	pfoutchr - Subroutine to output character
+
+;Subroutine to output character
+;	c(AL) = Character to output
+;	CALL	pfoutchr
+
+pfoutchr:
+	INCL	pf_total[EBP]		;Count the character
+	MOVL	EDX, pf_total[EBP]	;Can we output another?
+	CMPL	EDX, pf_limit[EBP]
+	JA	4$			;No
+	PUSHL	pf_pntr[EBP]		;Yes - do that
+	PUSHL	EAX
+	CALLI	pf_func[EBP]
+	ADDL	ESP, #8
+4$:	RET
+.PAGE
+	.SBTTL	$outc
+
+;	int $fmtputc(
+;	    int    chr,
+;	    char **pnt);
+
+arg_chr=!4
+arg_pnt=!8
+
+	.ENTRY	$fmtputc
+$fmtputc:
+	MOVL	EBX, arg_pnt[ESP]
+	MOVL	EDX, [EBX]
+	INCL	[EBX]
+	MOVL	EAX, arg_chr[ESP]
+	MOVB	[EDX], AL
+	RET
+
+	.END

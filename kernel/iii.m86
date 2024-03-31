@@ -1,0 +1,17 @@
+;Subroutine to set IO vector
+;	c{EAX} = Offset of exit instruction (if sharable)
+;	c{EDX} = Offset of name of requestor (in data segment)
+;	c{EBX} = Offset of interrupt service routine
+;	c{CL}  = Interrupt number (bit 7 set if sharable)
+;	c(CH)  = Descriptor type
+;	CALL	knlSetIRq
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long sysIoSetIRq(
+;	    char *name,		// Address of name
+;	    long  irq,		// Interrupt number (bit 7 set if sharable)
+;	    long  vt,		// Vector type
+;	    INS  *isr,		// Address of interrupt service routine
+;	    INS  *exit);	// Address of exit instruction (NULL if not

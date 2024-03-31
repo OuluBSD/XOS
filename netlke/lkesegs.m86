@@ -1,0 +1,37 @@
+
+
+
+
+
+	.SEG	x_DATA_s   , 32BIT    , SELECT=GS_XDATA, DATA, READ, WRITE
+	.MSECT	x_DATA_m   , x_DATA_s , MOD=0x10
+	.PSECT	x_DATA_p   , x_DATA_m , MOD=0x10
+databgn::
+	.PSECT	x_BSS_p    , x_DATA_m , MOD=0x10
+	.PSECT	xCONST_p   , x_DATA_m , MOD=0x10
+	.PSECT	xCONST2_p  , x_DATA_m , MOD=0x10
+	.PSECT	xCONSTZ_p  , x_DATA_m , MOD=0x10
+
+	.MSECT	symbols_m  , x_DATA_s
+	.PSECT	_symbols_p , symbols_m, OVER
+	.LONG	0
+;;;symbols::
+	.PSECT	$$SYMBOLS_p, x_DATA_m, MOD=4
+	.PSECT	$$TYPES_p  , x_DATA_m, MOD=4
+	.PSECT	datatop_p  , x_DATA_m, MOD=0x10
+datatop::
+
+	.SEG	x_CODE_s , 32BIT   , SELECT=GS_XCODE, CODE
+	.MSECT	x_CODE_m , x_CODE_s, MOD=0x10
+	.PSECT	x_CODE_p , x_CODE_m, MOD=0x10
+	.PSECT	codetop_p, x_CODE_m, MOD=0x10
+codetop::
+	.PSECT	x_ODATA_p, x_CODE_m, MOD=0x10
+	.PSECT	x_ONCE_p , x_CODE_m, MOD=0x10
+oncebgn::
+
+
+
+
+
+

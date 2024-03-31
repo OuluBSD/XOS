@@ -1,0 +1,2137 @@
+	.TITLE	usbdskalnk - UDB block tranfer only disk device interface routine
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.includ	xosinc:\xmac\xos.par
+	.includ	xosinc:\xmac\xosx.par
+	.includ	xosinc:\xmac\xostime.par
+	.includ	xosinc:\xmac\xoserr.par
+	.includ	xosinc:\xmac\pcat.par
+	.includ	xosinc:\xmac\xosxdisk.par
+	.includ	xosinc:\xmac\xosdisk.par
+	.includ	xosinc:\xmac\xoslke.par
+	.includ	xosinc:\xmac\xosxlke.par
+	.includ	xosinc:\xmac\xosxusb.par
+	.includ	scsi.par
+
+MAJV   =!4
+MINV   =!0
+EDITNUM=!0
+
+
+;Define offsets in the device dependent part of the KCB for USB type A disks
+
+$$$=!kcb_devdep
+BLK kcb_usbaclb    , 4
+BLK kcb_usbapcb0   , 4
+BLK kcb_usbapcbin  , 4
+BLK kcb_usbapcbout , 4
+BLK kcb_usbaspec   , 2
+BLK kcb_usbaxfrsts , 1
+BLK                , 1
+BLK kcb_usbaspeed  , 1
+BLK kcb_usbaaddr   , 1
+BLK kcb_usbaepin   , 1
+BLK kcb_usbaepout  , 1
+BLK kcb_usbaunit   , 1
+BLK kcb_usbanumluns, 1
+BLK kcb_usbaep0max , 2
+BLK kcb_usbagport  , 4
+BLK kcb_usbainmax  , 2
+BLK kcb_usbaoutmax , 2
+BLK kcb_usbawrtamnt, 4		;Amount written to device
+BLK kcb_usbaseq    , 4		;Request sequence number
+BLK kcb_usbaerror  , 4
+BLK kcb_usbasetup  , 8		;Setup data
+BLK kcb_usbacbw    , 32t
+BLK kcb_usbacsw    , 16t
+
+BLK kcb_usbablist1, 31t*bl_SIZE+bl_SIZE
+BLK kcb_usbablist2, bl_SIZE
+kcb_usbaSIZE=!$$$
+
+;Define bits for kcb_usbaxfrsts
+
+XFRS$STALL =!0x10		;Input or output was stalled
+XFRS$REQERR=!0x08		;Error occured on request transfer
+XFRS$DONE  =!0x04		;Initial transfer is done
+XFRS$REQDN =!0x02		;Request transfer complete
+XFRS$RSPDN =!0x01		;Response transfer complete
+
+;Define offsets in the device dependent part of the UCB for USB type A disks
+
+$$$=!ucb_kondep
+ucb_usbaSIZE=!$$$
+
+cbw_sig  =!0x00			;Block signature (USBC)
+cbw_tag  =!0x04			;Tag
+cbw_dtl  =!0x08			;Data transfer length
+cbw_flags=!0x0C			;Flags
+cbw_lun  =!0x0D			;Logical unit number
+cbw_cbl  =!0x0E			;Command block length
+cbw_cmd  =!0x0F			;Command block
+
+;Define values for cbw_flags
+
+CBW_INPUT =!0x80
+
+csw_sig=!0x00			;Block signature (USBS)
+csw_tag=!0x04			;Tag value
+csw_res=!0x08			;Data residue
+csw_sts=!0x0C			;Status
+
+	LKEHEAD	USBDSKALNK, MAJV, MINV, EDITNUM, LKETYPE_LINK
+
+	CODE
+
+;USB bulk transfer only disk device driver dispatch table. The kf_ functions
+;  are only called through the xosdskTransfer function. The ks_ functions are
+;  called directly and do not require access to the controller.
+
+usbdskadsp:
+	.LONG	0		;kf_init      =  0. - Initialize controller
+	.LONG	0		;kf_getparms  =  4. - Get drive parameters
+	.LONG	0		;kf_getaparms =  8. - Get alternate drive
+				;		       parameters
+	.LONG	0		;kf_setparms  = 12. - Set drive parameters
+	.LONG	knlIFnDev##	;kf_readraw   = 16. - Read raw
+	.LONG	knlIFnDev##	;kf_readdata  = 20. - Read block
+	.LONG	usbdskareadlist	;kf_readlist  = 24. - Read buffer list
+	.LONG	0		;kf_readid    = 28. - Read ID field
+	.LONG	knlIFnDev##	;kf_writraw   = 32. - Write raw
+	.LONG	knlIFnDev##	;kf_writdata  = 36. - Write block
+	.LONG	usbdskawritlist	;kf_writlist  = 40. - Write buffer list
+	.LONG	usbdskaformat	;kf_format    = 44. - Format track
+	.LONG	0		;kf_chkwp     = 48. - Check write protect status
+	.LONG	usbdskachkchgf	;kf_chkchg    = 52. - Check disk changed status
+	.LONG	usbdskagettoc	;kf_gettoc    = 56. - Get CD-ROM TOC data
+	.LONG	usbdskagettrks	;kf_gettrks   = 60. - Get CD-ROM track data
+	.LONG	usbdskamedia	;ks_media     = 64. - Determine media type
+	.LONG	knlRtnZero##	;ks_chkwp     = 69. - Check write protect status
+	.LONG	usbdskachkchg	;ks_chkchg    = 72. - Check disk changed status
+	.LONG	usbdskasenchg	;ks_senchg    = 76. - Sense disk changed status
+	.LONG	usbdskaaddunit	;ks_addunit   = 80. - Add disk unit
+	.LONG	usbdskremovebgn	;ks_removebgn = 84. - Begin removing disk
+	.LONG	usbdskremovefin	;ks_removefin = 88. - Finish removing disk
+USBDSKADSPSZ=!{$-usbdskadsp}/4
+
+;USB bulk transfer only disk (type UDKA) device characteristics table
+
+	.MOD	4
+usbdskadchartbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, ,   8, knlDcMsgClass##    , knlDcGetClass##  , knlDcSetClass##   , 0
+ CHARENT  TYPE    , TEXT, ,   4, knlDcMsgType##     , knlDcGet4Byte##  , 0                 , dcb_typename
+ CHARENT  USBGPORT, HEXV, ,   4, xosusbMsgGPort##   , xosdskGtK1Byte## , 0                 , kcb_usbagport
+ CHARENT  USBADDR , DECV, ,   4, xosusbMsgBusAddr## , xosdskGtK1Byte## , 0                 , kcb_usbaaddr
+ CHARENT  USBSPEC , STR , ,   8, xosusbMsgUsbSpec## , usbdskagetspec   , 0                 , 0
+ CHARENT  USBSPEED, TEXT, ,   8, xosusbMsgSpeed##   , usbdskagetspeed  , 0                 , 0
+ CHARENT  USBEP0MX, DECV, ,   4, xosusbMsgEP0Max##  , xosdskGtK1Byte## , 0                 , kcb_usbaep0max
+ CHARENT  USBEPIN , DECV, ,   4, msgepin            , xosdskGtK1Byte## , 0                 , kcb_usbaepin
+ CHARENT  USBINMX , DECV, ,   4, msginpktmax        , xosdskGtK2Byte## , 0                 , kcb_usbainmax
+ CHARENT  USBEPOUT, DECV, ,   4, msgepout           , xosdskGtK1Byte## , 0                 , kcb_usbaepout
+ CHARENT  USBOUTMX, DECV, ,   4, msgoutpktmax       , xosdskGtK2Byte## , 0                 , kcb_usbaoutmax
+ CHARENT  LUN     , DECV, ,   4, xosdskMsgLUn##     , xosdskGtU1Byte## , 0                 , ucb_lun
+ CHARENT  NUMLUNS , DECV, ,   4, msgnumluns         , xosdskGtK1Byte## , 0                 , kcb_usbanumluns
+ CHARENT  USBVEN  , HEXV, ,   2, xosusbMsgVendor##  , xosdskGtK2Byte## , 0                 , kcb_ven
+ CHARENT  USBDEV  , HEXV, ,   2, xosusbMsgDevice##  , xosdskGtK2Byte## , 0                 , kcb_dev
+ CHARENT  USBREL  , STR , ,   6, xosusbMsgRelease## , usbdskagetrel    , 0                 , 0
+ CHARENT  USBMNFTR, STR , ,  44, xosusbMsgMnftr##   , xosdskGtUStr##   , 0                 , ucb_ifmnftr
+ CHARENT  USBPROD , STR , ,  44, xosusbMsgProd##    , xosdskGtUStr##   , 0                 , ucb_ifprod
+ CHARENT  USBSERNM, STR , ,  44, xosusbMsgSerNm##   , xosdskGtUStr##   , 0                 , ucb_ifsernm
+ CHARENT  DSKMNFTR, STR , ,  44, knlDcMsgManufctr## , xosdskGtUStr##   , 0                 , ucb_manufctr
+ CHARENT  DSKPROD , STR , ,  44, knlDcMsgModel##    , xosdskGtUStr##   , 0                 , ucb_model
+ CHARENT  DSKREV  , STR , ,  12, knlDcMsgRevision## , xosdskGtUStr##   , 0                 , ucb_revision
+ CHARENT  UNITTYPE, TEXT, ,   4, knlDcMsgUnitType## , xosdskUnitType## , 0                 , 0
+ CHARENT  MSENSOR , TEXT, ,   4, xosdskMsgMSensor## , xosdskGetBits##  , xosdskSetBits##   , UB$MEDIAC
+ CHARENT  REMOVE  , TEXT, ,   4, xosdskMsgRemove##  , xosdskGetRemove##, 0                 , 0
+ CHARENT  VOLNAME , TEXT, ,  16, xosdskMsgVolName## , xosdskGtU16Byte##, xosdskStU8Byte##  , ucb_volname
+ CHARENT  DOSNAME , TEXT, ,  16, xosdskMsgDosName## , xosdskGtU16Byte##, xosdskSetDosName##, ucb_dosname
+;;;; DCHARH    dosnmdc , xosdskGetHdDosNm##, xosdskFindDosNm##
+ CHARENT  PARTN   , HEXV, ,   1, xosdskMsgPartn##   , xosdskGtU1Byte## , 0                 , ucb_partnx
+ CHARENT  PARTOFF , DECV, ,   4, xosdskMsgPartOff## , xosdskGtU4Byte## , 0                 , ucb_partnoff
+ CHARENT  BASEDEV , STR , ,  20, xosdskMsgBaseDev## , xosdskGtBaseDev##, 0                 , 0
+ CHARENT  VOLLABEL, STR , ,  34, xosdskMsgVolLabel##, xosdskGtUStr##   , 0                 , ucb_vollabel
+ CHARENT  VOLCDT  , DT  , ,   8, xosdskMsgVolCDT##  , xosdskGtU8Byte## , 0                 , ucb_volcdt
+ CHARENT  VOLMDT  , DT  , ,   8, xosdskMsgVolMDT##  , xosdskGtU8Byte## , 0                 , ucb_volmdt
+ CHARENT  VOLXDT  , DT  , ,   8, xosdskMsgVolXDT##  , xosdskGtU8Byte## , 0                 , ucb_volxdt
+ CHARENT  VOLEDT  , DT  , ,   8, xosdskMsgVolEDT##  , xosdskGtU8Byte## , 0                 , ucb_voledt
+ CHARENT  CBLKSZ  , DECV, ,   2, xosdskMsgCBlkSz##  , xosdskGtU4Byte## , 0                 , ucb_csecsz
+ CHARENT  CHEADS  , DECV, ,   1, xosdskMsgCHeads##  , xosdskGtU1Byte## , 0                 , ucb_cheads
+ CHARENT  CSECTS  , DECV, ,   4, xosdskMsgCSects##  , xosdskGtU4Byte## , 0                 , ucb_csects
+ CHARENT  CCYLNS  , DECV, ,   4, xosdskMsgCCylns##  , xosdskGtU4Byte## , 0                 , ucb_ccylns
+ CHARENT  CBLOCKS , DECV, ,   4, xosdskMsgCBlocks## , xosdskGtU4Byte## , 0                 , ucb_cblocks
+ CHARENT  LBAMODE , TEXT, ,   4, xosdskMsgLbaMode## , knlDcGetYES##    , 0                 , 0
+ CHARENT  IBLKSZ  , DECV, ,   2, xosdskMsgIBlkSz##  , xosdskGtU4Byte## , 0                 , ucb_isecsz
+ CHARENT  IHEADS  , DECV, ,   1, xosdskMsgIHeads##  , xosdskGtU1Byte## , 0                 , ucb_iheads
+ CHARENT  ISECTS  , DECV, ,   4, xosdskMsgISects##  , xosdskGtU4Byte## , 0                 , ucb_isects
+ CHARENT  ICYLNS  , DECV, ,   4, xosdskMsgICylns##  , xosdskGtU4Byte## , 0                 , ucb_icylns
+ CHARENT  IBLOCKS , DECV, ,   4, xosdskMsgIBlocks## , xosdskGtU4Byte## , 0                 , ucb_iblocks
+ CHARENT  WTMAX   , DECV, ,   4, knlDcMsgWTMax##    , xosdskGtU4Byte## , xosdskSetWTMax##  , ucb_wtmax
+ CHARENT  RAMAX   , DECV, ,   4, knlDcMsgRAMax##    , xosdskGtU4Byte## , xosdskSetRAMax##  , ucb_ramax
+ CHARENT  DTHLIMIT, DECV, ,   4, knlDcMsgDTHLimit## , xosdskGtU4Byte## , 0                 , ucb_dthlimit
+ CHARENT  BLOCKIN , DECV, ,   4, xosdskMsgBlockIn## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_blockin
+ CHARENT  BLOCKOUT, DECV, ,   4, xosdskMsgBlockOut##, xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_blockout
+ CHARENT  BYTEIN  , DECV, ,   4, knlDcMsgByteIn##   , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_bytein
+ CHARENT  BYTEOUT , DECV, ,   4, knlDcMsgByteOut##  , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_byteout
+ CHARENT  SHRDELAY, DECV, ,   4, xosdskMsgShrDelay##, xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_shrdelay
+ CHARENT  SHRRETRY, DECV, ,   4, xosdskMsgShrRetry##, xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_shrretry
+ CHARENT  SHRFAIL , DECV, ,   4, xosdskMsgShrFail## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_shrfail
+ CHARENT  TDEVERR , DECV, ,   4, knlDcMsgTDevErr##  , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_tdeverr
+ CHARENT  HDEVERR , DECV, ,   4, knlDcMsgHDevErr##  , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hdeverr
+ CHARENT  TDATAERR, DECV, ,   4, knlDcMsgTDataErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_tdataerr
+ CHARENT  HDATAERR, DECV, ,   4, knlDcMsgHDataErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hdataerr
+ CHARENT  TSEEKERR, DECV, ,   4, xosdskMsgTSeekErr##, xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_tseekerr
+ CHARENT  HSEEKERR, DECV, ,   4, xosdskMsgHSeekErr##, xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hseekerr
+ CHARENT  TIDFERR , DECV, ,   4, xosdskMsgTIdFErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_tidferr
+ CHARENT  HIDFERR , DECV, ,   4, xosdskMsgHIdFErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hidferr
+ CHARENT  TRNFERR , DECV, ,   4, xosdskMsgTRNFErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_trnferr
+ CHARENT  HRNFERR , DECV, ,   4, xosdskMsgHRNFErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hrnferr
+ CHARENT  TOVRNERR, DECV, ,   4, knlDcMsgTOvrnErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_tovrnerr
+ CHARENT  HOVRNERR, DECV, ,   4, knlDcMsgHOvrnErr## , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hovrnerr
+ CHARENT  HUNGERR , DECV, ,   4, knlDcMsgHungErr##  , xosdskGtU4Byte## , xosdskStU4Byte##  , ucb_hungerr
+ CHARENT  DISKID  , HEXV, ,   4, xosdskMsgDiskID##  , xosdskGtU4Byte## , 0                 , ucb_diskid
+ CHARENT  PRTNTYPE, DECV, ,   1, xosdskMsgPrtnType##, xosdskGtU1Byte## , 0                 , ucb_prtntype
+ CHARENT  FSTYPE  , TEXT, ,   8, xosdskMsgFSType##  , xosdskGtU8Byte## , 0                 , ucb_fsname
+ CHARENT  CLSSZ   , DECV, ,   4, xosdskMsgClsSz##   , xosdskGtU4Byte## , 0                 , ucb_clussize
+ CHARENT  CLUSTERS, DECV, ,   4, xosdskMsgClsters## , xosdskGtU4Byte## , 0                 , ucb_total
+ CHARENT  AVAIL   , DECV, ,   4, xosdskMsgAvail##   , xosdskGtU4Byte## , 0                 , ucb_avail
+ CHARENT  RESERVED, DECV, ,   4, xosdskMsgReserved##, xosdskGtU4Byte## , 0                 , ucb_ffatblk
+ CHARENT  FATMODE , HEXV, ,   1, xosdskMsgFatMode## , xosdskGtU1Byte## , 0                 , ucb_fatmode
+ CHARENT  DUPFAT  , TEXT, ,   4, xosdskMsgDupFat##  , xosdskGetBits##  , xosdskSetBits##   , UB$DUPFAT
+ CHARENT  DEFER   , TEXT, ,   4, xosdskMsgDupFat##  , xosdskGetBits##  , xosdskSetBits##   , UB$DEFER
+ CHARENT  FATSIZE , DECV, ,   4, xosdskMsgFatSize## , xosdskGtU4Byte## , 0                 , ucb_satsize
+ CHARENT  NUMFATS , DECV, ,   4, xosdskMsgNumFats## , xosdskGtU4Byte## , 0                 , ucb_numsat
+ CHARENT  ROOTCLS , DECV, ,   4, xosdskMsgRootBlk## , xosdskGtU4Byte## , 0                 , ucb_rootcls
+ CHARENT  ROOTBLK , DECV, ,   4, xosdskMsgRootBlk## , xosdskGtU4Byte## , 0                 , ucb_rootblk
+ CHARENT  ROOTSIZE, DECV, ,   4, xosdskMsgRootSize##, xosdskGtU4Byte## , 0                 , ucb_rootsize
+ CHAREND
+
+msgepout:    CHARINFO  {Bulk output endpoint}
+msgoutpktmax:CHARINFO  {Maximum packet size for bulk output}
+msgepin:     CHARINFO  {Bulk input endpoint}
+msginpktmax: CHARINFO  {Maximum packet size for bulk input}
+msgnumluns:  CHARINFO  {Number of logical units}
+.PAGE
+	.SBTTL	Initialization
+
+	INITSUB	initusbdska
+
+	ONCE
+
+initusbdska::
+	PUSHL	#usbdskaname
+	PUSHL	#usbdskaaddunit
+	PUSHL	#xosdskCcb##
+	CALL	sysIoDriverRegister##
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	EBX, lkei_pctop-4[ESP]	;OK
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+usbdskaname:
+	.ASCII	"UDKA"
+
+	CODE
+.PAGE
+	.SBTTL	usbdskaaddunit - Subroutine to add disk unit
+
+;Subroutine to add disk unit
+;	c{EAX} = Unit number
+;	c{EBX} = Address of KCB for controller (0 if none)
+;	c{ECX} = Index on controller
+;	c{EDX} = Address of characteristics list
+;	c{ESI} = Base IO register
+;	CALL	usbdskaaddunit
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count (number of units added)
+
+;The ADDUNIT function must specify all of the details describing how the
+;  USB device is connected. This is done in one of two ways:
+;    1. By specifying the USB controller name, port on the controller, USB
+;         bus address, bus speed, maximum packet size and endpoints to use.
+;         This method must be used when adding logical unit 0.
+;    2. By specifying the disk unit number for logical unit 0. This method
+;         must be used when adding other logical units.
+;  In either case, the USBVEN, USBREL, USBMNFTR, USBPROD, USBSERNM, DSKVEN,
+;  DSKPROD, and DSKREV value should also be specified. These values are
+;  normally obtained by from the device's USB descriptors. Normally this
+;  function is issued by the USBCTL symbiont which provices this information.
+
+;This function may create up to 8 disk units, one for each logical unit
+;  on the device. The unit number is incremented for each additional disk
+;  unit. It is strongly suggested that the specified disk unit number be
+;  even mod 8, although nothing here enforces this restriction.
+
+;Each usb disk device unit has its own KCB with a UCB for each logical unit.
+;  Scheduling between logical units is done by the disk class driver.
+;  Scheduling between different USB disk devices is done by the USB class
+;  driver.
+
+$$$=!0
+FRM au_logunit , 4		;Logical unit number
+FRM au_baseunit, 4		;Base disk unit number
+FRM au_gport   , 4		;Global port
+FRM au_addr    , 4		;USB address
+FRM au_epin    , 4		;Input end-point number
+FRM au_epout   , 4		;Output end-point number
+FRM au_mxpntr  , 4
+FRM au_inmax   , 4
+FRM au_outmax  , 4
+FRM au_kcb     , 4		;Offset of disk KCB
+FRM au_ucb     , 4		;Offset of disk UCB
+FRM au_clb     , 4		;Offset of USB CLB
+FRM au_buffer  , 4		;Address of data buffer
+FRM au_ep0max  , 4
+FRM au_usbspec , 4
+FRM au_speed   , 4
+FRM au_ucbcnt  , 4
+FRM au_usbven  , 4
+FRM au_usbdev  , 4
+FRM au_usbrel  , 4
+FRM au_usbmnftr, 44t
+FRM au_usbprod , 44t
+FRM au_usbsernm, 44t
+FRM au_dskmnftr, 44t
+FRM au_dskprod , 44t
+FRM au_dskrev  , 16t
+au_SIZE=!$$$
+
+	.MOD	4
+usbdskaaublk:				;Characteristics description block
+ CHARBGN  3, 0				;  for addunit
+ CHARENT  TYPE    , TEXT, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  UNIT    , DECV, ,  4, 0, 0, knlRtnZero##, 0
+$$$t=!{au_baseunit<16t}+99t
+ CHARENT  BASEUNIT, DECV, ,  4, 0, 0, auvalue     , $$$t
+$$$t=!{au_logunit<16t}+7
+ CHARENT  LOGUNIT , DECV, ,  4, 0, 0, auvalue     , $$$t
+$$$t=!au_gport<16t
+ CHARENT  USBGPORT, DECV, ,  4, 0, 0, auvalue     , $$$t
+$$$t=!{au_addr<16t}+127t
+ CHARENT  USBADDR , DECV, ,  4, 0, 0, auvalue     , $$$t
+$$$t=!au_usbspec<16t
+ CHARENT  USBSPEC , HEXV, ,  2, 0, 0, auvalue     , $$$t
+ CHARENT  USBSPEED, TEXT, ,  4, 0, 0, auspeed     , 0
+$$$t=!{au_ep0max<16t}+64t
+ CHARENT  USBEP0MX, DECV, ,  4, 0, 0, auvalue     , $$$t
+ CHARENT  USBPKTMX, DECV, ,  4, 0, 0, aupktmax    , 0
+$$$t=!{au_epin<16t}+15t
+ CHARENT  USBBIN  , DECV, ,  4, 0, 0, auepin      , $$$t
+$$$t=!{au_epout<16t}+15t
+ CHARENT  USBBOUT , DECV, ,  4, 0, 0, auepout     , $$$t
+$$$t=!{au_usbdev<16t}+0xFFFF
+ CHARENT  USBDEV  , HEXV, ,  2, 0, 0, auvalue     , $$$t
+$$$t=!{au_usbven<16t}+0xFFFF
+ CHARENT  USBVEN  , HEXV, ,  2, 0, 0, auvalue     , $$$t
+$$$t=!{au_usbrel<16t}+0xFFFF
+ CHARENT  USBREL  , HEXV, ,  2, 0, 0, auvalue     , $$$t
+ CHARENT  USBMNFTR, STR , , 42, 0, 0, autext      , au_usbmnftr
+ CHARENT  USBPROD , STR , , 42, 0, 0, autext      , au_usbprod
+ CHARENT  USBSERNM, STR , , 42, 0, 0, autext      , au_usbsernm
+ CHARENT  DSKVEN  , STR , , 42, 0, 0, autext      , au_dskmnftr
+ CHARENT  DSKPROD , STR , , 42, 0, 0, autext      , au_dskprod
+ CHARENT  DSKREV  , STR , , 14, 0, 0, autext      , au_dskrev
+ CHAREND
+
+au_unit=!20t		;Unit number
+
+usbdskaaddunit:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	au_SIZE
+	CLRL	EAX
+	MOVL	au_logunit[EBP], EAX
+	MOVL	au_usbven[EBP], EAX
+	MOVL	au_usbdev[EBP], EAX
+	MOVL	au_usbrel[EBP], EAX
+	MOVL	au_usbmnftr[EBP], EAX
+	MOVL	au_usbprod[EBP], EAX
+	MOVL	au_usbsernm[EBP], EAX
+	MOVL	au_dskmnftr[EBP], EAX
+	MOVL	au_dskprod[EBP], EAX
+	MOVL	au_dskrev[EBP], EAX
+	MOVL	au_gport[EBP], EAX
+	DECL	EAX
+	MOVL	au_addr[EBP], EAX
+	MOVL	au_speed[EBP], EAX
+	MOVL	au_epin[EBP], EAX
+	MOVL	au_epout[EBP], EAX
+	MOVL	au_ep0max[EBP], EAX
+	MOVL	au_inmax[EBP], EAX
+	MOVL	au_outmax[EBP], EAX
+	MOVL	au_baseunit[EBP], EAX
+	PUSHL	#0
+	PUSHL	#usbdskaaublk
+	CALL	sysIoCharValues##	;Process characteristics
+	TESTL	EAX, EAX
+	JS	audone			;If error
+	CMPL	au_baseunit[EBP], #0	;Was a base unit specified?
+	JNS	2$			;Yes
+	CMPL	au_gport[EBP], #0	;No - did we get the required
+	JE	20$			;  characteristics?
+	MOVL	EAX, au_addr[EBP]
+	ORL	EAX, au_speed[EBP]
+	ORL	EAX, au_epin[EBP]
+	ORL	EAX, au_epout[EBP]
+	ORL	EAX, au_ep0max[EBP]
+	ORL	EAX, au_inmax[EBP]
+	ORL	EAX, au_outmax[EBP]
+	JS	20$			;No - fail
+2$:	MOVB	AL, #'D'		;See if this unit is defined now
+	MOVB	AH, au_unit[EBP]
+	CALL	xosdskSrchUnit##
+	JNE	4$			;OK
+	MOVL	EAX, #ER_DUADF		;Defined - fail
+	JMP	audone
+
+;Here if the requested disk unit does not already exist
+
+4$:	CMPL	au_baseunit[EBP], #0	;Was a base unit specified?
+	JNS	10$			;Yes
+	CMPL	au_logunit[EBP], #0	;No - is the LUN 0?
+	JE	8$			;Yes - go on
+6$:	MOVL	EAX, #ER_SLUNI		;No - fail
+	JMP	audone
+
+;Here if logical unit number is 0
+
+8$:	PUSHL	#0			;Make a KCB
+	MOVL	EAX, ESP
+	PUSHL	#KB$AHEAD+KB$DEFER
+	PUSHL	#kcb_usbaSIZE
+	PUSHL	#usbdskadsp
+	PUSHL	#'UDKA'
+	PUSHL	#usbdskakcb
+	PUSHL	EAX
+	CALL	xosdskMakeKcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	audone
+	MOVL	au_kcb[EBP], EDI	;Remember where our KCB is
+	MOVL	EAX, au_epin[EBP]
+	MOVB	kcb_usbaepin[EDI], AL
+	MOVL	EAX, au_epout[EBP]
+	MOVB	kcb_usbaepout[EDI], AL
+	MOVL	EAX, au_ep0max[EBP]
+	MOVW	kcb_usbaep0max[EDI], AX
+	MOVL	EAX, au_inmax[EBP]
+	MOVW	kcb_usbainmax[EDI], AX
+	MOVL	EAX, au_outmax[EBP]
+	MOVW	kcb_usbaoutmax[EDI], AX
+	MOVL	EAX, au_gport[EBP]
+	MOVL	kcb_usbagport[EDI], EAX
+	MOVL	EAX, au_usbspec[EBP]
+	MOVW	kcb_usbaspec[EDI], AX
+	MOVL	EAX, au_usbven[EBP]
+	MOVW	kcb_ven[EDI], AX
+	MOVL	EAX, au_usbdev[EBP]
+	MOVW	kcb_dev[EDI], AX
+	MOVL	EAX, au_usbrel[EBP]
+	MOVW	kcb_rel[EDI], AX
+	PUSHL	EDI			;CDB (really our KCB)
+	PUSHL	au_gport[EBP]		;Global port
+	PUSHL	au_addr[EBP]		;USB bus address
+	PUSHL	au_speed[EBP]		;USB device speed
+	PUSHL	#removed		;Address of "removed" function
+	LEAL	EAX, au_clb[EBP]	;Address of place to store address of
+	PUSHL	EAX			;  the CLB
+	CALL	xosusbLinkToDev##	;Link to the USB device
+	TESTL	EAX, EAX
+	JS	auerr3
+	MOVL	EAX, au_addr[EBP]
+	MOVB	kcb_usbaaddr[EDI], AL
+	MOVL	EAX, au_speed[EBP]
+	MOVB	kcb_usbaspeed[EDI], AL
+	MOVL	EAX, au_clb[EBP]	;Store address of the USB CLB
+	MOVL	kcb_usbaclb[EDI], EAX
+	CALL	aumkucb			;Make the UCB
+	JC	auerr2			;If error
+	MOVL	au_ucb[EBP], ESI
+
+;Now create the USB endpoints
+
+	PUSHL	au_clb[EBP]
+	PUSHL	#0			;Control endpoint
+	PUSHL	au_ep0max[EBP]
+	LEAL	EAX, kcb_usbapcb0[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	9$
+	PUSHL	au_clb[EBP]
+	MOVZBL	EAX, au_epin[EBP]	;Bulk in endpoint
+	ORL	EAX, #PCB$XT_BULK|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_inmax[EBP]
+	LEAL	EAX, kcb_usbapcbin[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	9$
+	PUSHL	au_clb[EBP]
+	MOVZBL	EAX, au_epout[EBP]	;Bulk out endpoint
+	ORL	EAX, #PCB$XT_BULK
+	PUSHL	EAX
+	PUSHL	au_outmax[EBP]
+	LEAL	EAX, kcb_usbapcbout[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JNS	addunit1		;All endpoints ceated - go on
+
+;Here if error after the disk unit was linked to the USB device when
+;  creating LUN 0 - we must unlink the disk unit here.
+
+9$:	PUSHL	EAX
+	PUSHL	au_clb[EBP]		;Disconnect from the USB controller
+	CALL	xosusbUnlinkFromDev##
+	POPL	EAX
+	JMP	auerr1
+
+;Here if a base disk unit was specified - this means we want to define an
+;  additional logical unit for the same USB device
+
+10$: 	CMPL	au_logunit[EBP], #0	;Is the LUN 0?
+	JE	6$			;Yes - error
+	MOVB	AL, #'D'		;No - find the base unit
+	MOVB	AH, au_baseunit[EBP]
+	CALL	xosdskSrchUnit##
+	JE	14$
+	MOVL	EAX, ER_NSDEV
+	JMP	audone
+
+;Here if required characteristic is missing
+
+20$:	MOVL	EAX, #ER_CHARM
+	JMP	audone
+
+;Here with the base unit (the disk unit for LUN 0) found
+
+14$:	MOVL	EDI, ucb_kcb[EDX]
+	MOVL	au_kcb[EBP], EDI
+	CALL	aumkucb			;Make the UCB
+	JC	auerr2			;If error
+	MOVL	au_ucb[EBP], ESI
+.PAGE
+;Here to finish setting up USB disk unit. We first reset the device and, if
+;  this is logical unit 0, obtain the number of LUNs implemented.  We also
+;  determine if media is present, and if we can, determine the capacity of
+;  the disk (if the disk is removable and is not present, the capacity will
+;  generally not be available).
+
+;Resetting the USB disk and determining the number of LUNs are done using
+;  control transfers on endpont 0. All other set up is done using SCSI/RBC
+;  commands over the bulk transfer endpoints.
+
+;This disk device is somewhat unique in that the "controller" (the USB device
+;  itself) is removable. Also, Each LUN may (or may not) also be removable
+;  from the basic device.
+
+addunit1:
+	PUSHL	#0			;Get a disk DCB
+	PUSHL	#0
+	PUSHL	#'INIT'
+	PUSHL	#'UDKA'
+	MOVL	EDX, ESP
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	EDX
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xosdskGetDcb##
+	POPL	EDI
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JS	28$			;If can't get a DCB
+	MOVL	EBX, au_kcb[EBP]
+	MOVL	kcb_curdcb[EBX], EDI
+	MOVL	EAX, knlTda+tdaAddr##
+	MOVL	dcb_outtda[EDI], EAX	;OK - store actual address of the TDA
+	MOVL	knlTda+tdaDcb##, EDI
+	CLRL	EAX			;Just to be safe, clear some vectors
+	MOVL	dcb_sdisp[EDI], EAX
+
+;It seened like a good idea to do a disk reset here, but some disks get
+;  very unhappy if we do this and it does not seem to be needed.
+
+;;;	PUSHL	EDI			;Reset the disk
+;;;	CALL	resetdevice
+;;;	TESTL	EAX, EAX
+;;;	JS	28$
+
+	CMPB	ucb_lun[ESI], #0	;Is this LUN 0?
+	JNE	10$			;No
+					;Yes - get number of logical units
+	PUSHL	EDI			;Address of DCB
+	PUSHL	kcb_usbapcb0[EBX]	;Address of PCB
+	PUSHL	#0x00010000		;SETUP data
+	PUSHL	#0x0000FEA1
+	PUSHL	#knlTda+tdaOption##	;Address of the data buffer
+	PUSHL	#1			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#knlTda+tdaCount##	;Address to receive data count
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbControl##
+	TESTL	EAX, EAX
+	JNS	6$			;If normal
+	CMPL	EAX, #ER_USBST		;Error - was it a stall?
+	JNE	30$			;No - fail
+	CLRL	EAX			;Yes - this is OK and means only 1 LUN
+	JMP	8$
+
+;Here with the number of LUNs
+
+6$:	CMPL	knlTda+tdaCount##, #1	;Did it respond with one byte?
+	JNE	38$			;No - say bad format
+	MOVZBL	EAX, knlTda+tdaOption##	;Yes
+8$:	INCL	EAX
+	CMPL	EAX, #16t
+	JA	30$
+	MOVB	kcb_usbanumluns[EBX], AL
+10$:	PUSHL	#-XMBX_4096
+	LEAL	EAX, au_buffer[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##		;Get a 4096 byte buffer to use here
+	TESTL	EAX, EAX
+	JS	30$
+
+;Set up an inquiry command
+
+;Do an INQUIRY and a READ CAPACITY command for this logical unit. The READ
+;  CAPACITY command will probably fail if no media is present.
+
+	MOVL	EDI, kcb_curdcb[EBX]
+	MOVL	knlTda+tdaDcb##, EDI
+	MOVB	kcb_usbacbw+cbw_cbl[EBX], #6t ;Do an INQUIRY command
+	MOVB	kcb_usbacbw+cbw_cmd+0[EBX], #0x12
+	MOVB	kcb_usbacbw+cbw_cmd+1[EBX], #0
+	MOVB	kcb_usbacbw+cbw_cmd+2[EBX], #0
+	MOVW	kcb_usbacbw+cbw_cmd+3[EBX], #0x2400
+	MOVB	kcb_usbacbw+cbw_cmd+5[EBX], #0
+	MOVL	kcb_usbablist1+bl_length[EBX], #36t
+	MOVL	kcb_usbablist1+bl_pid[EBX], #USBPID_IN
+	MOVL	EAX, au_buffer[EBP]
+	MOVL	kcb_usbablist1+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist1+bl_paddr[EBX], #0
+	PUSHL	#1			;Number of buffers in buffer list
+	PUSHL	#36t			;Total length of all buffers
+	CALL	readdevice
+	TESTL	EAX, EAX
+	JS	28$			;Fail if error!
+	MOVL	ECX, au_buffer[EBP]
+	MOVL	EAX, #ER_DEVER
+	CMPL	kcb_amount[EBX], #2	;Did we get at least 2 bytes?
+	JB	28$			;No - fail
+	ANDB	ucb_bits[ESI], #~UB$MEDIAC ;Yes - Assume not removable
+	ANDL	ucb_dsp[ESI], #~DS$REMOVE
+	MOVL	EAX, [ECX]		;Get the device type
+	TESTB	AH, #0x80		;Removable disk?
+	JE	12$			;No
+	ORB	ucb_bits[ESI], #UB$MEDIAC ;Yes
+	ORL	ucb_dsp[ESI], #DS$REMOVE
+12$:	ANDL	EAX, #0x1F		;This sets AH to 0 which is DT_HARD
+	MOVL	ECX, #9			;Default is 512 byte blocks
+	CMPB	AL, #5t			;Is it a CD-ROM?
+	JNE	14$			;No
+	MOVB	AH, #DT_CDRM		;Yes
+	MOVL	ECX, #11t
+14$:	CMPB	AL, #4t			;Is it a WORM?
+	JNE	16$			;No
+	MOVB	AH, #DT_WORM		;Yes
+	MOVL	ECX, #11t
+16$:	CMPB	AL, #7t			;Is it an optical disk?
+	JNE	18$			;No
+	MOVB	AH, #DT_OPTD		;Yes
+18$:	MOVB	ucb_unittype[ESI], AH
+	MOVB	ucb_blockshft[ESI], CL
+	MOVL	EAX, #1
+	SHLL	EAX, CL
+	MOVL	ucb_isecsz[ESI], EAX
+	MOVL	ucb_csecsz[ESI], EAX
+	SHRL	EAX, #9t
+	MOVL	ucb_pblksz[ESI], EAX
+	PUSHL	au_buffer[EBP]		;Copy the vendor identication if we
+	PUSHL	ucb_kcb[ESI]		;  got it
+	PUSHL	#8t
+	PUSHL	#8t
+	LEAL	EAX, ucb_manufctr[ESI]
+	PUSHL	EAX
+	CALL	copytext
+	PUSHL	au_buffer[EBP]		;Copy the product identification if we
+	PUSHL	ucb_kcb[ESI]		;  got it
+	PUSHL	#16t
+	PUSHL	#16t
+	LEAL	EAX, ucb_model[ESI]
+	PUSHL	EAX
+	CALL	copytext
+	PUSHL	au_buffer[EBP]		;Copy the produce revision level if we
+	PUSHL	ucb_kcb[ESI]		;  got it
+	PUSHL	#32t
+	PUSHL	#4t
+	LEAL	EAX, ucb_revision[ESI]
+	PUSHL	EAX
+	CALL	copytext
+
+;Try to get the capacity - This will fail if the media is removable and is
+;  not present.
+
+20$:	MOVL	ucb_pblksz[ESI], #1	;Assume 512 byte blocks
+	PUSHL	ESI
+	CALL	getdskcap
+	MOVL	EDX, #DHTS_4K		;Assume want 4K pointers
+	CMPL	ucb_iblocks+4[ESI], #0	;Very large disk?
+	JNE	24$			;Yes - use the biggest hash table
+	MOVL	ECX, ucb_iblocks+0[ESI]	;No - get size
+	CMPL	ECX, #2000000t		;Less than about 1GB or unknown?
+	JB	26$			;Yes - use 4K
+	ADDL	EDX, #DHTS_8K-DHTS_4K	;No - assume should use 8K
+	CMPL	ECX, #20000000t		;More than about 10GB
+	JB	26$			;No - use 8K
+24$:	MOVL	EDX, #DHTS_16K		;Yes - use 16K pointers
+26$:	PUSHL	ESI
+	PUSHL	EDX
+	CALL	xosdskMakeHashTbl##	;Create the hash table (all USB
+	TESTL	EAX, EAX		;  disks are dynamic)
+	JS	30$
+	MOVL	EAX, #1
+28$:	PUSHL	EAX
+	PUSHL	au_buffer[EBP]
+	CALL	sysMemGiveXmb##
+	POPL	EAX
+
+;Here when finished
+;	c{EAX} = 1 if OK or error code if error
+
+30$:	PUSHL	EAX
+	TESTL	EAX, EAX		;Error?
+	JNS	34$			;No
+	CMPB	ucb_lun[ESI], #0	;Yes - is this LUN 0?
+	JNE	34$			;No
+	PUSHL	kcb_usbaclb[EBX]	;Yes - disconnect from the USB
+	MOVL	kcb_usbaclb[EBX], #0	;  controller
+	CALL	xosusbUnlinkFromDev##
+34$:	MOVL	kcb_curdcb[EBX], #0
+	CALL	xosdskClearDcb##	;Give up the DCB we were using
+	MOVL	knlTda+tdaDcb##, #0
+	POPL	EAX
+	TESTL	EAX, EAX
+	JS	auerr1
+	MOVL	EAX, #1
+audone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here have invalid format when getting the number of LUNs
+
+38$:	MOVL	EAX, #ER_USBDF
+	JMP	30$
+.PAGE
+;Here if error. If this is LUN 0 We will have disconnected from the USB device.
+
+auerr1:	PUSHL	EAX
+	PUSHL	au_ucb[EBP]
+	CALL	xosdskGiveUpUcb##	;Give up the UCB we just made
+	POPL	EAX
+auerr2:	CMPL	kcb_fucb[EBX], #0	;Was this the only UCB?
+	JNE	audone			;No - leave everything alone and just
+					;  return the error
+
+;Here if have error after the KCB is set up when setting up the first logical
+;  unit. We must give up the KCB.
+
+auerr3:	PUSHL	EAX
+	PUSHL	au_kcb[EBP]
+	PUSHL	#usbdskakcb
+	CALL	xosdskUnlinkKcb##
+	PUSHL	au_kcb[EBP]
+	CALL	sysMemGiveXmb##
+	POPL	EAX
+	JMP	audone
+.PAGE
+aumkucb:PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'D'			;First letter for the name
+	PUSHL	au_unit[EBP]		;Unit number
+	PUSHL	au_kcb[EBP]		;Address of KCB
+	PUSHL	#ucb_usbaSIZE		;Size of the UCB
+	PUSHL	EAX
+	CALL	xosdskMakeUcb##		;Make a UCB
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	EAX, au_logunit[EBP]
+	MOVB	ucb_lun[ESI], AL	
+	MOVL	ucb_dthlimit[ESI], #16t
+	MOVL	ucb_ramax[ESI], #16t	;Also store it as the initial read-ahead
+	MOVL	ucb_wtmax[ESI], #16t	;  and write maximums
+	MOVL	ucb_devchar[ESI], #usbdskadchartbl ;Store offset of our device
+						   ;  characteristics table
+	LEAL	EBX, au_usbmnftr[EBP]
+	MOVL	EDX, #ucb_ifmnftr
+	CALL	aucpytext
+	LEAL	EBX, au_usbprod[EBP]
+	MOVL	EDX, #ucb_ifprod
+	CALL	aucpytext
+	LEAL	EBX, au_usbsernm[EBP]
+	MOVL	EDX, #ucb_ifsernm
+aucpytext:
+	ADDL	EDX, ESI
+4$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	EBX
+	LOOP	ECX, 4$
+6$:	MOVB	[EDX], #0
+10$:	RET
+.PAGE
+;Function called for the USBEPIN characteristic
+
+auepin:	MOVL	au_mxpntr[EBP], #au_inmax
+	JMP	auvalue
+
+;Function called for the USBEPOUT characteristic
+
+auepout:CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	MOVL	au_epout[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_outmax
+
+auvalue:MOVZWL	EDX, BX			;Get the maximum value
+	SARL	EBX, #16t		;Get the stack offset
+	TESTL	EDX, EDX		;Is there a maximum?
+	JE	4$			;No
+	CMPL	EAX, EDX		;Yes - check it
+	JA	12$			;If too large
+4$:	MOVL	0[EBP+EBX], EAX		;OK - store the value
+	CLC
+	RET
+
+;Function called for the USBSPEED characteristic
+
+auspeed:CALL	xosusbCheckSpeed##
+	JC	6$
+	MOVL	au_speed[EBP], EAX
+6$:	RET
+
+;Function called for the USBPKTMX characteristic
+
+aupktmax:
+	MOVL	EDX, au_mxpntr[EBP]
+	ORL	EDX, EDX
+	JE	12$
+	MOVL	[EDX+EBP], EAX
+	RET
+
+12$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Function called for the USBMNFTR, USBMODE, and USBERNO characteristics
+
+autext:	ADDL	EDX, EBP
+	TESTL	EBX, EBX
+	JE	22$
+20$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	22$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 20$
+22$:	CLRL	EAX
+	MOVB	[EDX], AL
+	RET
+.PAGE
+;Function to get block size and capacity for a disk. This function will fail
+;  if there is no media mounted.
+;	long getdskcap(
+;	    UCB *ucb);
+;  Value returned is 0 if normal or a negative XOS error code if error. On
+;  a good return the ucb_iblocks, ucb_cblocks, ucb_isecsz, ucb_csecsz, and
+;  ucb_pblksz items have been updated in the UCB.
+
+gdc_ucb=!8t
+
+getdskcap:
+	PUSHL	ESI
+	MOVL	ESI, gdc_ucb[ESP]
+	MOVL	ECX, #8			;Do this up to 8 times. Some devices
+					;  have been observed to require 2
+					;  accesses to clear the device
+					;  attention condition caused by a
+					;  media change or reset. Allowing
+					;  an extra try seems like a good
+					;  idea!
+4$:	MOVL	EBX, ucb_kcb[ESI]
+	MOVL	kcb_usbacbw+cbw_cbl[EBX], #10t
+	MOVL	kcb_usbacbw+cbw_cmd+0[EBX], #0x25
+	MOVL	kcb_usbacbw+cbw_cmd+4[EBX], #0
+	MOVL	kcb_usbacbw+cbw_cmd+8[EBX], #0
+	MOVL	kcb_usbablist1+bl_length[EBX], #8t
+	MOVL	kcb_usbablist1+bl_pid[EBX], #USBPID_IN
+	MOVL	EAX, au_buffer[EBP]
+	MOVL	kcb_usbablist1+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist1+bl_paddr[EBX], #0
+	PUSHL	ECX
+	PUSHL	#1			;Number of buffers in buffer list
+	PUSHL	#8t			;Total length of all buffers
+	CALL	readdevice
+	POPL	ECX
+	TESTL	EAX, EAX
+	JNS	8$			;Go on if it worked
+
+	PUSHL	ECX
+	PUSHL	#0
+	PUSHL	#TICKPERSEC/2
+	CALL	sysSchTimeWait##	;Wait for 1/10 second (Some devices
+	POPL	ECX			;  seem to need this!)
+	LOOP	ECX, 4$			;Error - try again if we should
+	JMP	10$			;Too many failures - return the error
+
+;Here if the read capacity command worked
+
+8$:	MOVL	EDX, au_buffer[EBP]
+	MOVL	EAX, 4[EDX]		;Get physical block size
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	TESTL	EAX, #0x01FF		;Is it a multiple of 512?
+	JNE	14$			;No - fail!
+	MOVL	ucb_isecsz[ESI], EAX	;Yes - store the new size
+	MOVL	ucb_csecsz[ESI], EAX
+	SHRL	EAX, #9			;Get the number of 512 bytes cache
+	MOVL	ucb_pblksz[ESI], EAX	;  blocks per physical disk block
+	MOVL	EAX, [EDX]		;Get highest block on the device
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	INCL	EAX
+	MOVL	ucb_iblocks[ESI], EAX
+	MOVL	ucb_cblocks[ESI], EAX
+	CLRL	EAX
+10$:	POPL	ESI
+	RET	4t
+
+;Here if invalid block size
+
+14$:	MOVL	EAX, #ER_INCBL
+	JMP	10$
+.PAGE
+
+ctxt_bfr=!20t
+ctxt_kcb=!16t
+ctxt_ofs=!12t
+ctxt_len=!8t
+ctxt_dst=!4t
+
+copytext:
+	MOVL	EBX, ctxt_dst[ESP]
+	MOVL	EAX, ctxt_kcb[ESP]
+	MOVL	ECX, ctxt_len[ESP]
+	MOVL	EDX, kcb_amount[EAX]	;Did we get any of this?
+	SUBL	EDX, ctxt_ofs[ESP]
+	JLE	12$			;No
+	CMPL	ECX, EDX		;Yes - want more than we got?
+	JL	4$			;No
+	MOVL	ECX, EDX		;Yes - reduce amount
+4$:	MOVL	EDX, ctxt_bfr[ESP]
+	ADDL	EDX, ctxt_ofs[ESP]
+6$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 6$
+8$:	DECL	EBX
+	CMPL	EBX, ctxt_dst[ESP]
+	JB	10$
+	CMPB	[EBX], #' '
+	JNE	10$
+	MOVB	[EBX], #0
+	JMP	8$
+
+10$:	INCL	EBX
+12$:	MOVB	[EBX], #0
+	RET	20t
+.PAGE
+;Here for the begin removing disk function - Nothing is needed here.
+;	void dskusbremovebgn
+;	    UCB *ucb,
+;	    long rmv);
+
+durb_ucb=!8
+durb_rmv=!4
+
+usbdskremovebgn:
+	RET	8
+
+;Here for the finish removing disk function - It would seem cleaner to give
+;  up the KCB on the last call for the USB device but we have no good way to
+;  determine this and giving it up first does no harm. The same is true for
+;  callint xosusbUnlinkFromDevFin.
+;	void dskusbremovefin
+;	    UCB *ucb,
+;	    long rmv);
+
+durf_ucb=!12t
+durf_rmv=!8
+
+usbdskremovefin:
+	PUSHL	ESI
+	MOVL	ESI, durf_ucb[ESP]
+	CMPB	durf_rmv[ESP], #0	;Want to remove the unit?
+	JE	6$			;No
+	CMPB	ucb_lun[ESI], #0	;Yes - for LUN 0?
+	JNE	4$			;No
+	CMPL	ucb_baseucb[ESI], ESI	;Yes - is it the base UCB?
+	JNE	4$			;No
+	MOVL	EDX, ucb_kcb[ESI]	;Yes - finish unlinking from the USB
+	PUSHL	kcb_usbaclb[EDX]	;  interface
+	CALL	xosusbUnlinkFromDevFin##
+	MOVL	EDX, durf_ucb[ESP]
+	PUSHL	ucb_kcb[ESI]		;Give up the KCB
+	CALL	sysMemGiveXmb##
+4$:	MOVL	ucb_kcb[ESI], #0
+6$:	POPL	ESI
+	RET	8
+.PAGE
+;Subroutine to write data to the disk. Caller must set up the command block
+;  (including the block length in the CBW) and the first buffer list (starting
+;  with the second entry) In the KCB before calling this. All buffer list
+;  entries must specify USBPID_OUT. Short packet check (bit 28) must not be
+;  set.
+;	long writedevice(
+;	    int  bcnt,		// Number of buffer list items  
+;	    int  tlen);		// Total amount to be transfered
+
+wrdv_bcnt=!24t
+wrdv_tlen=!20t
+
+writedevice:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	dcb_label[EDI], #'DCB*'
+	JE	2$
+	CRASH	NDCB
+
+2$:	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	ucb_label[ESI], #'UCB*'
+	JE	4$
+	CRASH	NUCB
+
+4$:	MOVL	EBX, ucb_kcb[ESI]
+	CMPL	kcb_label[EBX], #'KCB*'
+	JE	6$
+	CRASH	NKCB
+
+6$:	CLRL	EAX
+	MOVL	kcb_usbaerror[EBX], EAX
+	MOVB	kcb_usbaxfrsts[EBX], AL
+	MOVL	kcb_usbawrtamnt[EBX], EAX
+	MOVL	kcb_amount[EBX], EAX
+
+;Set up the CBW
+
+	MOVL	kcb_usbacbw+cbw_sig[EBX], #'USBC'
+	INCL	kcb_usbaseq[EBX]
+	MOVL	EAX, kcb_usbaseq[EBX]	;Transfer sequence number
+	MOVL	kcb_usbacbw+cbw_tag[EBX], EAX
+	MOVL	EAX, rddv_tlen[EBP]	;Total length of transfer
+	MOVL	kcb_usbacbw+cbw_dtl[EBX], EAX
+	MOVB	kcb_usbacbw+cbw_flags[EBX], #0
+	MOVZBL	EAX, ucb_lun[ESI]	;Logical unit number
+	MOVB	kcb_usbacbw+cbw_lun[EBX], AL
+
+;Set up the second buffer list for the response
+
+	MOVL	kcb_usbablist2+bl_length[EBX], #13t
+	MOVL	kcb_usbablist2+bl_pid[EBX], #USBPID_IN
+	LEAL	EAX, kcb_usbacsw[EBX]
+	MOVL	kcb_usbablist2+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist2+bl_paddr[EBX], #0
+
+;Start response input
+
+	PUSHL	EDI			;DCB
+	PUSHL	kcb_usbapcbin[EBX]	;PCB
+	LEAL	EAX, kcb_usbablist2[EBX] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;BUffer list length
+	PUSHL	#rspcallback		;Address of callback function
+	PUSHL	#0			;Address for returned count
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbTransfer##
+	TESTL	EAX, EAX
+	JS	xferdn2			;If error
+
+;Finish setting up the first buffer list for the request
+
+	MOVL	kcb_usbablist1+bl_length[EBX], #31t
+	MOVL	kcb_usbablist1+bl_pid[EBX], #USBPID_OUT
+	LEAL	EAX, kcb_usbacbw[EBX]
+	MOVL	kcb_usbablist1+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist1+bl_paddr[EBX], #0
+
+;Send the request and the data to the device
+
+	PUSHL	EDI			;DCB
+	PUSHL	kcb_usbapcbout[EBX]	;PCB
+	LEAL	EAX, kcb_usbablist1[EBX] ;Address of buffer list
+	PUSHL	EAX
+	MOVL	EAX, wrdv_bcnt[EBP]	;Number of entries in buffer list
+	INCL	EAX			;  including the CBW packet
+	PUSHL	EAX
+	JMP	xfer2			;Continue with common code
+.PAGE
+;Function to read data from the disk. Caller must set up the command block
+;  (including the block length in the CBW) and the first buffer list (starting
+;  with the first entry) in the KCB before calling this. All buffer list
+;  entries must specify UDBPID_IN.
+;	long readdevice(
+;	    int  bcnt,		// Number of buffer list items	    
+;	    int  tlen);		// Total amount to be transfered
+
+;The second buffer list in the KCB is used to send the request to the disk.
+;  The first buffr list in the KCB is used to read the response. The caller
+;  sets up the items in the first list for all of the buffers to receive data.
+;  This function adds one more item to this list which reads the CSW.
+
+rddv_bcnt=!24t
+rddv_tlen=!20t
+
+readdevice:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	dcb_label[EDI], #'DCB*'
+	JE	2$
+	CRASH	NDCB
+
+2$:	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	ucb_label[ESI], #'UCB*'
+	JE	4$
+	CRASH	NUCB
+
+4$:	MOVL	EBX, ucb_kcb[ESI]
+	CMPL	kcb_label[EBX], #'KCB*'
+	JE	6$
+	CRASH	NKCB
+
+6$:	CLRL	EAX
+	MOVL	kcb_usbaerror[EBX], EAX
+	MOVB	kcb_usbaxfrsts[EBX], AL
+	MOVL	kcb_usbawrtamnt[EBX], EAX
+	MOVL	kcb_amount[EBX], EAX
+
+;Set up the CBW
+
+	MOVL	kcb_usbacbw+cbw_sig[EBX], #'USBC'
+	INCL	kcb_usbaseq[EBX]
+	MOVL	EAX, kcb_usbaseq[EBX]	;Transfer sequence number
+	MOVL	kcb_usbacbw+cbw_tag[EBX], EAX
+	MOVL	EAX, rddv_tlen[EBP]	;Total length of transfer
+	MOVL	kcb_usbacbw+cbw_dtl[EBX], EAX
+	MOVB	kcb_usbacbw+cbw_flags[EBX], #CBW_INPUT
+	MOVZBL	EAX, ucb_lun[ESI]	;Logical unit number
+	MOVB	kcb_usbacbw+cbw_lun[EBX], AL
+
+;Finish setting up the first buffer list for the response
+
+	MOVL	EDX, rddv_bcnt[EBP]
+	MOVL	EAX, EDX
+	SHLL	EAX, #4
+	LEAL	ECX, kcb_usbablist1[EBX+EAX]
+	MOVL	bl_length[ECX], #13t
+	MOVL	bl_pid[ECX], #USBPID_IN
+	LEAL	EAX, kcb_usbacsw[EBX]
+	MOVL	bl_vaddr[ECX], EAX
+	MOVL	bl_paddr[ECX], #0
+	INCL	EDX
+
+;Start reading the response
+
+	PUSHL	EDI			;DCB
+	PUSHL	kcb_usbapcbin[EBX]	;PCB
+	LEAL	EAX, kcb_usbablist1[EBX] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	EDX			;Buffer list length
+	PUSHL	#rspcallback		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbTransfer##	;Start input - this will return
+	TESTL	EAX, EAX		;  immediately
+	JS	xferdn2			;If error starting input
+
+;Set up the second buffer list for the request
+
+	MOVL	kcb_usbablist2+bl_length[EBX], #31t
+	MOVL	kcb_usbablist2+bl_pid[EBX], #USBPID_OUT
+	LEAL	EAX, kcb_usbacbw[EBX]
+	MOVL	kcb_usbablist2+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist2+bl_paddr[EBX], #0
+
+;Send the request to the device
+
+	PUSHL	EDI			;DCB
+	PUSHL	kcb_usbapcbout[EBX]	;PCB
+	LEAL	EAX, kcb_usbablist2[EBX] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Number of entries in buffer list
+xfer2:	PUSHL	#reqcallback		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbTransfer##	;Start output of the CBW - this will
+	TESTL	EAX, EAX		;  return immediately
+	JS	reqfail			;If error starting output
+
+;Here with output and input started - wait unit it is done
+
+8$:	TOFORK
+	TESTB	kcb_usbaxfrsts[EBX], #XFRS$DONE
+	JNE	10$
+	PUSHL	#-1			;No timeout (we count of the xfer
+	PUSHL	#-1			;  timeouts)
+	PUSHL	#THDS_DW2
+	CALL	sysIoWait##
+	TESTB	kcb_usbaxfrsts[EBX], #XFRS$DONE
+	JNE	xfercmp
+	JMP	8$
+
+10$:	FROMFORK
+.PAGE
+;Here with the transfer complete
+
+xfercmp:TESTB	kcb_usbaxfrsts[EBX], #XFRS$RSPDN ;Are we really complete?
+	JNE	16$			;Yes
+	CMPL	kcb_usbaerror[EBX], #0	;No - was there an error?
+	JS	4$			;No!
+	CRASH	XINC			;[Xfer Is Not Complete]
+
+4$:	PUSHL	kcb_usbaerror[EBX]	;Yes - save the error
+	TESTB	kcb_usbaxfrsts[EBX], #XFRS$REQERR ;Was the error on the request?
+	JNE	8$			;Yes
+
+;Here if had on error on the response - Make sure the request is complete!
+;  This is very strange but is probably possible so we need to check for it.
+
+	PUSHL	kcb_usbaerror
+	PUSHL	kcb_usbapcbout[EBX]
+	JMP	10$
+
+;Here if had an error writing the request to the device - Cancel the input
+;  transfer and then handle the error.
+
+8$:	PUSHL	kcb_usbapcbin[EBX]
+10$:	CALL	xosusbCancelPipe##
+	POPL	kcb_usbaerror[EBX]
+
+;Here if had error on the request
+
+reqerr:	CMPL	kcb_usbaerror[EBX], #ER_USBST ;Is it a stall?
+	JE	hvstall			;Yes - go handle that
+	PUSHL	EDI			;No - just return the error after
+	CALL	resetdevice		;  trying to reset the device
+	MOVL	EAX, kcb_usbaerror[EBX]
+	JMP	xferdn2
+
+;Here if no error and the response is not complete - This should not be
+;  possible since the callback routines will not wake us up unless there is
+;  an error or both transfers are complete!
+
+
+;Here with both request and response complete
+
+16$:	CMPL	kcb_usbaerror[EBX], #0	;Have an error?
+	JS	reqerr			;Yes
+	TESTB	kcb_usbacbw+cbw_flags[EBX], #CBW_INPUT ;No - doing input?
+	JE	outputcmp		;No - output
+.PAGE
+;Here with an input transfer complete without any device errors
+
+inputcmp:
+	SUBL	kcb_amount[EBX], #13t
+	MOVL	EAX, kcb_amount[EBX]	;Did we get everything we asked for?
+	CMPL	EAX, rddv_tlen[EBP]
+	JE	chkcsw			;Yes - finish up
+
+;Here if did not get the expected amount - We must have a short packet which
+;  means we did not get the CSW yet.
+
+4$:	JLE	6$			;Did we get too much? (This should not
+					;  be possible!)
+	CRASH	BDCT			;[Bad Data CounT]
+
+;Here if we got less than we expected. This usually means we were stopped by
+;  a short data packet which means we have the complete data but no CSW.
+;  Unfortunately, some devices have been observed to return no data at all in
+;  some cases (Which seems to violate the spec! - It should return an empty
+;  packet!! This have been observed when doing an IDENTIFY command to some
+;  cheap devices!) In that case we get the CSW instead of data in the first
+;  data block. If the amount returned is exactly 13 bytes and the signature,
+;  sequence number, and residue values match and the status code is valid we
+;  assume we had no data packet. This should never happen with actual data
+;  transfers.
+
+6$:	TESTL	EAX, EAX		;Did we get exacly 13 bytes?
+	JNE	getcsw			;No
+	MOVL	EDX, kcb_usbablist1+bl_vaddr[EBX] ;Yes - get address of first
+						  ;  buffer
+	CMPL	csw_sig[EDX], #'USBS'	;Check signature
+	JNE	getcsw
+	MOVL	EAX, kcb_usbaseq[EBX]	;Check sequence number
+	CMPL	EAX, csw_tag[EDX]
+	JNE	getcsw
+	CMPB	csw_sts[EDX], #2	;Is the status code valid?
+	JA	getcsw			;No
+	JE	8$			;Don't check residue if phase error
+	MOVL	EAX, rddv_tlen[EBP]	;Check residue (which should be equal
+	CMPL	EAX, csw_res[EDX]	;  to the amount we asked for)
+	JNE	getcsw
+
+;Here if everything matches - we assume that we had a missing data transfer.
+;  We copy the status byte to where it should be (since we have checked
+;  everything here that's the only thing we care about beyond this point) and
+;  zero the first 13 bytes of the buffer (just to be safe).
+
+8$:	MOVB	AL, csw_sts[EDX]
+	MOVB	kcb_usbacsw+csw_sts[EDX], AL
+	CLRL	EAX
+	MOVL	[EDX], EAX
+	MOVL	4[EDX], EAX
+	MOVL	8[EDX], EAX
+	MOVB	12t[EDX], AL
+	JMP	havecsw
+.PAGE
+;Here with an output transfer complete without any device errors
+
+outputcmp:
+	MOVL	EDX, kcb_amount[EBX]
+	MOVL	EAX, kcb_usbawrtamnt[EBX]
+	SUBL	EAX, #31t
+	JG	4$
+	CRASH	BDCT			;[Bad Data CounT]
+
+4$:	MOVL	kcb_amount[EBX], EAX
+	CMPL	EDX, #13t		;Is the response the right size for
+					;  the CSW?
+	JE	chkcsw			;Yes
+dvder:	MOVL	EAX, #ER_DVDER		;No
+	JMP	xferdn2
+.PAGE
+;Here if either the input or output pipe stalled
+
+hvstall:ORB	kcb_usbaxfrsts[EBX], #XFRS$STALL
+	TESTB	kcb_usbaxfrsts[EBX], #XFRS$REQERR ;Yes - on request output?
+	JE	4$			;No
+	PUSHL	EDI			;Yes - clear the output stall
+	CALL	clearstallout
+4$:	PUSHL	EDI			;Always clear the input stall
+	CALL	clearstallin
+	JMP	getcsw			;Try again to read the CSW, which
+					;  indicate an error
+
+;Here if we need to do another read to get the CSW. This is common to input
+;  and output.
+
+getcsw:	MOVL	kcb_usbablist1+bl_length[EBX], #13t
+	MOVL	kcb_usbablist1+bl_pid[EBX], #USBPID_IN
+	LEAL	EAX, kcb_usbacsw[EBX]
+	MOVL	kcb_usbablist1+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist1+bl_paddr[EBX], #0
+	PUSHL	EDI			;DCB
+	PUSHL	kcb_usbapcbin[EBX]	;PCB
+	LEAL	EAX, kcb_usbablist1[EBX] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;BUffer list length
+	PUSHL	#0			;Address of callback function
+	LEAL	EAX, kcb_usbawrtamnt[EBX] ;Address for returned count
+	PUSHL	EAX
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbTransfer##
+	TESTL	EAX, EAX
+	JS	12$
+	CMPL	kcb_usbawrtamnt[EBX], #13t ;Did we get the right amount?
+	JNE	badcsw			;No - error
+chkcsw:	CMPL	kcb_usbacsw+csw_sig[EBX], #'USBS' ;Check signature
+	JNE	badcsw
+	MOVL	EAX, kcb_usbacbw+cbw_tag[EBX] ;Check sequence number
+	CMPL	EAX, kcb_usbacsw+csw_tag[EBX]
+	JNE	badcsw
+	CMPB	kcb_usbacsw+csw_sts[EBX], #2 ;Valid status value?
+	JA	badcsw			;No
+	JE	havecsw			;If phase error don't check residue
+
+;;;;	MOVL	EAX, kcb_usbacsw+csw_res[EBX] ;Check residue
+;;;;	ADDL	EAX, kcb_amount[EBX]
+;;;;	CMPL	EAX, rddv_tlen[EBP]
+;;;;	JNE	badcsw
+
+havecsw:CMPB	kcb_usbacsw+csw_sts[EBX], #1 ;Error indicated?
+	JAE	10$			;Yes
+xferdn:	MOVL	EAX, knlSchCounts##	;No - remember when we did this
+	MOVL	ucb_acstime[ESI], EAX
+	CLRL	EAX			;We have a good transfer!
+xferdn2:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if error indicated
+
+10$:	JE	getsense		;Get sense data if not phase error
+
+;Here if the CSW is invalid or if it reported a phase error - reset the
+;  device and return the error
+
+badcsw:	PUSHL	EDI
+	CALL	resetdevice
+	MOVL	EAX, #ER_DEVER
+	JMP	xferdn2
+
+;Here if error reading the CSW by itself
+
+12$:	PUSHL	EAX
+	PUSHL	EDI
+	CALL	resetdevice		;Try to reset the device
+	POPL	EAX
+	JMP	xferdn2
+
+;Here if error starting the request transfer - cancel the response input
+;  and return the error
+
+reqfail:PUSHL	EAX
+	PUSHL	kcb_usbapcbin[EBX]
+	CALL	xosusbCancelPipe##
+	POPL	EAX
+	JMP	xferdn2
+.PAGE
+;Here if an error was indicated in a valid CSW - Do a request sense command
+;  to try and determine what is wrong.
+
+getsense:
+	CMPB	kcb_usbacbw+cbw_cmd+0[EBX], #0x03 ;Were we doing a sense
+						  ;  command?
+	JE	10$			;Yes - don't do it again!
+	PUSHL	#-XMBX_256		;No - get a buffer for the sense
+	LEAL	EAX, rddv_tlen[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	xferdn2
+	MOVB	kcb_usbacbw+cbw_cbl[EBX], #6t
+	MOVL	kcb_usbacbw+cbw_cmd+0[EBX], #0x03
+	MOVL	kcb_usbacbw+cbw_cmd+4[EBX], #252t
+	MOVL	kcb_usbablist1+bl_length[EBX], #255t
+	MOVL	kcb_usbablist1+bl_pid[EBX], #USBPID_IN
+	MOVL	EAX, rddv_tlen[EBP]
+	MOVL	kcb_usbablist1+bl_vaddr[EBX], EAX
+	MOVL	kcb_usbablist1+bl_paddr[EBX], #0
+	PUSHL	#1			;Number of buffers in buffer list
+	PUSHL	#255t			;Total length of all buffers
+	CALL	readdevice
+	TESTL	EAX, EAX
+	JS	6$
+	CMPL	kcb_amount[EBX], #8	;Did we get at least 8 bytes?
+	JAE	4$			;Yes
+	MOVL	EAX, #ER_ERROR		;No!
+	JMP	6$
+
+4$:	PUSHL	rddv_tlen[EBP]
+	PUSHL	#0
+	CALL	xosscsMapError##
+6$:	PUSHL	EAX
+	MOVL	ESI, rddv_tlen[EBP]
+	CALL	knlGiveQel##
+	POPL	EAX
+	JMP	xferdn2
+	
+10$:	MOVL	EAX, #ER_SENSE
+	JMP	xferdn2
+.PAGE
+;Following are the callback routines for input and output. There are several
+;  possible compbinations here:
+;  1) Get request callback first without error: This is the normal case. We
+;     just indicate this.
+;  2) Get request callback first with error: This is expected if there is a
+;     serious problem with the device. We indicate this and wake up the input
+;     function which will cancel input and wait until that happens.
+;  3) Get response callback after normal request callback without error: This
+;     is the normal case. We indicate this and wake up the read function. 
+;  4) Get response callback after error request callback: This really should
+;     never happen but if it does we indicate it and wake up the input
+;     function which will fail because of the request error.
+;  5) Get response callback before the request callback: This might happen due
+;     to the order in which the request are terminated but is very unlikely.
+;     We indicate this and wait for hte request callback.
+;  6) Get request callback after the response callback: Indicate this and wake
+;     up the input function.
+
+;Request callback function - This is called at device fork level when the
+;  request has been sent to the device.
+;	void reqcallback(
+;	    PCB *pcb,		// Address of PCB
+;	    DCB *dcb,		// Address of DCB
+;	    long code,		// Error code
+;	    long amount)	// Amount transfered
+
+cb_pcb   =!16t
+cb_dcb   =!12t
+cb_code  =!8
+cb_amount=!4
+
+;We should get here before we get to rddatacallback but we don't count on it!
+
+reqcallback:
+	MOVL	EDX, cb_dcb[ESP]
+	MOVL	ECX, dcb_dkucb[EDX]
+	MOVL	ECX, ucb_kcb[ECX]
+	ORB	kcb_usbaxfrsts[ECX], #XFRS$REQDN
+	CMPL	cb_code[ESP], #0	;Error reported?
+	JNS	2$			;No
+	ORB	kcb_usbaxfrsts[ECX], #XFRS$REQERR ;Yes
+	JMP	12$
+
+2$:	MOVL	EAX, cb_amount[ESP]	;Give him the total amount written
+	MOVL	kcb_usbawrtamnt[ECX], EAX
+4$:	TESTB	kcb_usbaxfrsts[ECX], #XFRS$RSPDN ;No - already have the response
+						 ;  callback?
+	JE	10$			;No
+6$:	ORB	kcb_usbaxfrsts[ECX], #XFRS$DONE ;Yes - transfer is complete
+	PUSHL	dcb_outtda[EDX]		;Wake him up
+	PUSHL	#0
+	CALL	sysIoResumeThread##
+10$:	RET	16t
+
+;Response callback function  - This is called at device fork level when the
+;  response has been read from the device.
+;	void rspcallback(
+;	    PCB *pcb,		// Address of PCB
+;	    DCB *dcb,		// Address of DCB
+;	    long code,		// Error code
+;	    long amount)	// Amount transfered
+
+;We should get here after we get to rdreqcallback but we don't count on it!
+
+cb_pcb   =!16t
+cb_dcb   =!12t
+cb_code  =!8
+cb_amount=!4
+
+rspcallback:
+	MOVL	EDX, cb_dcb[ESP]
+	MOVL	ECX, dcb_dkucb[EDX]
+	MOVL	ECX, ucb_kcb[ECX]
+	ORB	kcb_usbaxfrsts[ECX], #XFRS$RSPDN
+	CMPL	kcb_usbaerror[ECX], #0	;Already have an error?
+	JS	6$			;Yes - just wake him up
+	CMPL	cb_code[ESP], #0	;Have read error?
+	JS	12$			;Yes - give him the error
+	MOVL	EAX, cb_amount[ESP]	;Give him the total amount read
+	MOVL	kcb_amount[ECX], EAX
+	TESTB	kcb_usbaxfrsts[ECX], #XFRS$REQDN ;Is the request done?
+	JNE	4$			;Yes - wake him up
+	JMP	10$			;No - strange but probably possible!
+
+;Here if have error on the transfer
+
+12$:	MOVL	EAX, cb_code[ESP]	;No - give him the error
+	MOVL	kcb_usbaerror[ECX], EAX
+	JMP	6$
+.PAGE
+;Subroutine to reset the device - This is what is refered to as a "reset
+;  recovery" in the standard.
+
+;	long resetdevice(
+;	    DCB *dcb);
+
+rdev_dcb=!12t
+
+resetdevice:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, rdev_dcb[ESP]
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ECX, ucb_kcb[ESI]
+
+;First do a "bulk-only mass storage reset"
+
+	PUSHL	EDI			;Address of DCB
+	PUSHL	kcb_usbapcb0[ECX]	;Address of PCB
+	PUSHL	#0x00000000		;SETUP data
+	PUSHL	#0x0000FF21
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value (always 3 seconds)
+	PUSHL	#ST_SECOND*3
+	CALL	xosusbControl##
+	TESTL	EAX, EAX
+	JS	4$
+	PUSHL	EDI
+	CALL	clearstallin
+	PUSHL	EDI
+	CALL	clearstallout
+4$:	POPL	ESI
+	POPL	EDI
+	RET	4t
+.PAGE
+;Subroutine to clear stalled pipe
+;	long clearstall(
+;	    DCB *dcb);
+
+clrst_dcb=!4t
+
+clearstallin:
+	MOVL	EAX, #kcb_usbapcbin
+	JMP	4$
+
+clearstallout:
+	MOVL	EAX, #kcb_usbapcbout
+4$:	MOVL	ECX, clrst_dcb[ESP]
+	MOVL	EDX, dcb_dkucb[ECX]
+	MOVL	EDX, ucb_kcb[EDX]
+	PUSHL	ECX
+	PUSHL	kcb_usbapcb0[EDX]
+	PUSHL	[EDX+EAX]
+	CALL	xosusbClearPipe##
+	RET	4t
+.PAGE
+;"Removed" callback function
+;	void removed(
+;	    CLB *clb);		// Client link block
+
+;This function is called while processing a QFNC_SPECIAL/DISCONNECT function
+;  for the UCB device which is supporting a UDKA device. It is called in the
+;  context of the process running USBCTL.
+
+;A USB disk device is a controller and one to 8 disk units. We must eventually
+;  safely destroy all of of these. We initially call xosdskUnmount with a
+;  remove argument of 3 for each base unit on the USB device. This will
+;  unlink the base unit UCB and all partition UCBs for that base unit and
+;  will mark all DCBs as removed. This calls our ks_removebgn (which is not
+;  used) for each UCB. It also starts a timer for each UCB to do the 2nd part
+;  of the disk remove processing in 0.5 seconds. When xosdskUnmount returns
+;  all units associated with the USB device still exist but are invisible to
+;  the system and all references to any of them should cease "very soon". We
+;  then unlink the KCB and call the xosusbUnlinkFromDevBgn function to start
+;  unlinking from the USB device. 0.5 seconds later our ks_removefin function
+;  will be called for each UCB. This function gives up each UCB. When called
+;  for the base UCB for LUN 0 it also gives up the KCB and calls
+;  xosusbUnlinkFromDevFin to finish unlinking from the USB device.
+
+rmvd_clb=!20t
+
+removed:PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	PUSHL	knlTda+tdaDcb##		;Save address of the UCB device DCB
+	MOVL	EBX, rmvd_clb[ESP]
+	MOVL	EBX, clb_cdb[EBX]	;Get address of the KCB (which is the
+					;  CDB)
+
+;Get a DCB to keep some of the disk routines happy (even though we will not
+;  be doing any IO here) Any errors we encounter here are serious enough that
+;  we crash the system! In general an error here means we are so low on
+;  some resource that its unlikely the system would stay up long anyway!!
+
+	MOVL	ESI, kcb_fucb[EBX]	;Get first UCB - This will be the UCB
+					;  for the base physical unit for LUN 0.
+	MOVL	EDX, #xosdskCcb##	;Get a disk DCB
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#'RMVD'
+	PUSHL	#'UDKA'
+	MOVL	EDX, ESP
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	EDX
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xosdskGetDcb##
+	POPL	EDI
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JNS	6$
+	CRASH	CGDD			;[Can't Get Disk DDB]
+
+6$:	DECL	ucb_dcbcnt[ESI]
+	MOVL	EBX, ucb_kcb[ESI]
+	MOVL	kcb_curdcb[EBX], EDI
+	MOVL	EAX, knlTda+tdaAddr##
+	MOVL	dcb_outtda[EDI], EAX
+	MOVL	knlTda+tdaDcb##, EDI
+
+;;;;	CLRL	EAX			;Just to be safe, clear some vectors
+;;;;	MOVL	dcb_sdisp[EDI], EAX
+
+scloop:	MOVL	ESI, kcb_fucb[EBX]	;Get the next UCB, which should be a
+	TESTL	ESI, ESI		;  base UCB
+	JE	givkcb			;Almost finished if no UCBs left
+10$:	CMPL	ucb_baseucb[ESI], ESI
+	JE	14$
+	CRASH	NTBU			;[NoT a Base UCB
+
+;Here with a base UCB
+
+14$:	MOVL	dcb_dkucb[EDI], ESI	;Attach the UCB to our DCB but don't
+					;  increment ucb_dcbcnt so xosdskUnmount
+					;  will give up the UCB
+	PUSHL	ESI			;Unmount the disk, removing all UCBs
+	PUSHL	#1			;  and the KCB
+	CALL	xosdskUnmount##
+	JMP	scloop			;Continue until we have removed all
+					;  logical units.
+
+;Here with all UCBs given up - Now unlink the KCB
+
+givkcb:	MOVL	dcb_dkucb[EDI], #0
+	PUSHL	EBX			;Unlink the KCB (This makes it
+	PUSHL	#usbdskakcb		;  invisible to the system.)
+	CALL	xosdskUnlinkKcb##
+
+	CALL	xosdskClearDcb##	;Give up the DCB we used here
+
+	PUSHL	rmvd_clb[ESP]		 ;Start disconnecting from the USB
+	CALL	xosusbUnlinkFromDevBgn## ;  device
+	POPL	knlTda+tdaDcb##		;Restore the UCB DCB
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+usbdskagetspec:
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	MOVZWL	EAX, kcb_usbaspec[ESI]
+	JMP	knlDcGetBCDVer##
+
+usbdskagetrel:
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	MOVZWL	EAX, kcb_rel[ESI]
+	JMP	knlDcGetBCDVer##
+
+usbdskagetspeed:
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	MOVZBL	EAX, kcb_usbaspeed[ESI]
+	JMP	xosusbRtnSpeed##
+.PAGE
+	.SBTTL	ks_media - Function to determine media type
+
+usbdskamedia:
+	CLRL	EAX			;Do hard disk partition set up
+	JMP	xosdskHdkMedia##
+.PAGE
+;Here for the get CD TOC data function (kf_gettoc) - This will fail for other
+;  types of optical disks!
+;	long usbdskagettoc(
+;	    char *buffer,
+;	    long  length);
+
+usbdskagettoc:
+	PUSHL	#0x020000+CMD_READTOC
+	JMP	4$
+
+;Here for the get optical disk track data function (kf_gettrks) - This should
+;  work for all types of optical disks, although the data is only useful for
+;  CDs.
+;	long usbdskagettrks(
+;	    char *buffer,
+;	    long  length);
+
+;  Data returned in the buffer is the raw data received from the drive
+
+kfgt_buffer=!12t
+kfgt_length=!8
+
+usbdskagettrks:
+	PUSHL	EBX
+	PUSHL	#CMD_READTOC
+4$:	MOVL	EBX, knlTda+tdaDcb##
+	MOVL	EBX, ucb_kcb[EBX]
+	LEAL	ECX, kcb_usbablist1[EBX]
+	MOVL	bl_pid[ECX], #USBPID_IN
+	MOVL	EAX, kfgt_buffer[ESP]
+	MOVL	bl_vaddr[ECX], EAX
+	MOVL	bl_paddr[ECX], #0
+	MOVL	kcb_usbacbw+cbw_cbl[EBX], #10t ;Set up the SCSI command block
+	POPL	kcb_usbacbw+cbw_cmd+0[EBX]
+	MOVL	kcb_usbacbw+cbw_cmd+3[EBX], #0
+	MOVL	EAX, kfgt_length[ESP]
+	MOVL	bl_length[ECX], EAX
+	MOVL	ECX, EAX
+	XCHGB	AL, AH
+	MOVW	kcb_usbacbw+cbw_cmd+7[EBX], AX
+	MOVB	kcb_usbacbw+cbw_cmd+9[EBX], #0
+	PUSHL	#1			;Number of buffers in buffer list
+	PUSHL	ECX			;Total length of all buffers
+	CALL	readdevice		;Do the transfer
+	TESTL	EAX, EAX
+	JS	10$
+	CLRL	EAX
+10$:	POPL	EBX
+	RET	8
+.PAGE
+;Here for the read buffer list function (kf_readlist)
+;	long usbdskareadlist(
+;	    char *buffer,
+;	    long  length);
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    amount transfered has been added to kcb_amount.
+
+;  We do NOT attempt to retry media changed errors. Media changed detection
+;    on USB disks is reliable and trying to continue if the media was not
+;    really changed is messy and error prone and does not seem worth the
+;    trouble. Besides, most USB disks have fixed media. It is the controller
+;    that is removable.
+
+kfrl_buffer=!20t
+kfrl_length=!16t
+
+usbdskareadlist:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]	
+	MOVL	EAX, ucb_csecsz[ESI]	;Valid length?
+	DECL	EAX
+	TESTL	kfrl_length[ESP], EAX
+	JE	4$			;Yes
+	MOVL	EAX, #ER_ICDEV		;No
+	JMP	rldone
+
+;Here with a valid count
+
+4$:	MOVL	EDX, ucb_kcb[ESI]
+	ADDL	EDX, #kcb_usbablist1
+	MOVL	EBX, kfrl_buffer[ESP]
+	MOVL	ECX, #16t
+
+;Set up the buffer list
+
+6$:	DECL	ECX
+	JNS	7$
+	CRASH	BLTL			;[Buffer List is Too Long]
+
+7$:	MOVL	bl_length[EDX], #512t
+	MOVL	bl_pid[EDX], #USBPID_IN
+	LEAL	EAX, bfr_data[EBX]
+	MOVL	bl_vaddr[EDX], EAX
+	MOVL	EAX, bfr_paddr[EBX]
+	MOVL	bl_paddr[EDX], EAX
+	ADDL	EDX, #bl_SIZE
+	MOVL	EBX, bfr_nextxfr[EBX]
+	TESTL	EBX, EBX
+	JNE	6$
+	MOVL	EBX, ucb_kcb[ESI]
+	SUBL	EDX, EBX
+	SUBL	EDX, #kcb_usbablist1
+	SHRL	EDX, #4
+
+	MOVL	EAX, kfrl_length[ESP]
+	PUSHL	EDX			;Stack arguments for readdevice
+	PUSHL	EAX
+
+	MOVL	kcb_usbacbw+cbw_cbl[EBX], #10t ;Set up the SCSI command block
+	MOVL	kcb_usbacbw+cbw_cmd+0[EBX], #0x28
+	MOVB	kcb_usbacbw+cbw_cmd+6[EBX], #0 ;Clear a reserved byte
+	MOVB	kcb_usbacbw+cbw_cmd+9[EBX], #0
+	MOVZBL	ECX, ucb_blockshft[ESI]	;Convert byte count to number of blocks
+	SHRL	EAX, CL
+	XCHGB	AL, AH			;High byte first
+	MOVW	kcb_usbacbw+cbw_cmd+7[EBX], AX ;Store the block count
+
+	CMPB	dcb_dkdskblk+7[EDI], #0	;Make sure not trying to transfer a
+	JE	8$			;  fake FIB!!
+	CRASH	BDDA
+
+8$:	MOVL	EAX, dcb_dkdskblk+0[EDI]
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	ADDL	EAX, ucb_partnoff+0[ESI] ;Add in position of start of partition
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	SUBL	ECX, #9			;Convert to number of native blocks if
+	JE	10$			;  necessary
+	SHRDL	EAX, EDX, CL
+	SHRL	EAX, CL
+10$:	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	kcb_usbacbw+cbw_cmd+2[EBX], EAX
+	CALL	readdevice		;Do the transfer
+	MOVL	EDX, EAX
+	ORL	EDX, #0xFFFFF000
+
+;Scan the buffers and mark as full all that we actually read. If there was
+;  one or more that we did not read, store the error code returned in the
+;  first that was not read.
+
+	MOVL	EBX, ucb_kcb[ESI]
+	MOVL	ECX, kcb_amount[EBX]
+	MOVL	EBX, kfrl_buffer[ESP]
+12$:	SUBL	ECX, #512t
+	JS	14$
+	ORB	bfr_status[EBX], #BS$FULL
+	MOVW	bfr_errcode[EBX], #0
+	MOVL	EBX, bfr_nextxfr[EBX]
+	TESTL	EBX, EBX
+	JNE	12$
+14$:	TESTL	EAX, EAX
+	JNS	16$
+	MOVW	bfr_errcode[EBX], DX
+16$:	MOVL	EBX, ucb_kcb[ESI]
+rldone:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Here for the write buffer list function (kf_writlist)
+;	long usbdskawritlist(
+;	    char *buffer,
+;	    long  length);
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    amount transfered has been added to tdaDevAmnt.
+
+;  We do NOT attempt to retry media changed errors. Media changed detection
+;    on USB disks is reliable and trying to continue if the media was not
+;    really changed is messy and error prone and does not seem worth the
+;    trouble.
+
+kfwl_buffer=!20t
+kfwl_length=!16t
+
+usbdskawritlist:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_csecsz[ESI]	;Valid length?
+	DECL	EAX
+	TESTL	kfwl_length[ESP], EAX
+	JE	4$			;Yes
+	MOVL	EAX, #ER_ICDEV		;No
+	JMP	wldone
+
+;Set up the buffer list
+
+4$:	MOVL	EDX, ucb_kcb[ESI]
+	ADDL	EDX, #kcb_usbablist1+bl_SIZE
+	MOVL	EBX, kfwl_buffer[ESP]
+
+;Set up the buffer list
+
+6$:	MOVL	bl_length[EDX], #512t
+	MOVL	bl_pid[EDX], #USBPID_OUT
+	LEAL	EAX, bfr_data[EBX]
+	MOVL	bl_vaddr[EDX], EAX
+	MOVL	EAX, bfr_paddr[EBX]
+	MOVL	bl_paddr[EDX], EAX
+	ADDL	EDX, #bl_SIZE
+	MOVL	EBX, bfr_nextxfr[EBX]
+	TESTL	EBX, EBX
+	JNE	6$
+	MOVL	EBX, ucb_kcb[ESI]	;Get number of buffers we put in the
+	SUBL	EDX, EBX		;  list
+	SUBL	EDX, #kcb_usbablist1+bl_SIZE
+	SHRL	EDX, #4
+
+	MOVL	EAX, kfwl_length[ESP]
+	PUSHL	EDX			;Stack arguments for writedevice
+	PUSHL	EAX
+
+	MOVL	kcb_usbacbw+cbw_cbl[EBX], #10t ;Set up the SCSI command block
+	MOVL	kcb_usbacbw+cbw_cmd+0[EBX], #0x2A
+	MOVB	kcb_usbacbw+cbw_cmd+6[EBX], #0
+	MOVB	kcb_usbacbw+cbw_cmd+9[EBX], #0
+	MOVZBL	ECX, ucb_blockshft[ESI]	;Convert byte count to number of blocks
+	SHRL	EAX, CL
+	XCHGB	AL, AH			;High byte first
+	MOVW	kcb_usbacbw+cbw_cmd+7[EBX], AX ;Store the block count
+
+	CMPB	dcb_dkdskblk+7[EDI], #0	;Make sure not trying to write a
+	JE	8$			;  fake FIB!!
+	CRASH	BDDA
+
+8$:	MOVL	EAX, dcb_dkdskblk+0[EDI]
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	ADDL	EAX, ucb_partnoff+0[ESI] ;Add in position of start of partition
+	ADCL	EDX, ucb_partnoff+4[ESI]
+	SUBL	ECX, #9			;Convert to native block numer if
+	JE	10$			;  necessary
+	SHRDL	EAX, EDX, CL
+	SHRL	EAX, CL
+10$:	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	kcb_usbacbw+cbw_cmd+2[EBX], EAX
+	CALL	writedevice		;Do the transfer
+	MOVL	EBX, ucb_kcb[ESI]
+wldone:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Here for the format track function (kf_format)
+;	long usbdakaformat(
+;	    char *buffer,
+;	    long  length);
+
+usbdskaformat:
+	MOVL	EAX, #ER_NIYT
+	RET	8
+.PAGE
+;Function to sense if a disk has changed (ks_senchg dispatch) - This function
+;  is called to determine if a disk has been changed when obtaining a block
+;  from the cache.  If there has been disk activity within the last second,
+;  it assumes the disk has not been changed.  Otherwise it sends a test unit
+;  ready command to the disk. This will give a disk changed error if the disk
+;  has been changed since the last IO operation.
+;	long usbdskasenchg(void);
+;  Value returned is:
+;	<0 - Error, value is XOS error code
+;	 0 - Disk not changed
+;	 1 - Disk might be changed (no media sensor - never returned here)
+
+;Unfortunately, it appears that many (if not all) USB disks indicate that they
+;  are removable, even if the only way they can be removed is by unplugging
+;  them from the USB bus (which is detected immediately by the low level USB
+;  routines). We only need to do the check here if the media can be removed
+;  from the  controller (such as with a media reader). There appears to be no
+;  general way to determine if this is the case so, to be safe we must beleive
+;  that the disk is removable if it says it is. Thus we slow things down a bit
+;  for all USB disks. (Although since we only do this if the disk has been
+;  idle for a while, it isn't too bad!)
+
+usbdskasenchg:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ucb_dsp[ESI], #DS$REMOVE ;Is this disk removable?
+	JE	2$			;No - it can't be changed!
+	MOVL	EAX, knlSchCounts##	;Yes - do we need to do this now?
+	SUBL	EAX, ucb_acstime[ESI]
+	CMPL	EAX, #SPPERSEC
+	JAE	4$			;Yes - must check
+2$:	CLRL	EAX			;No - indicate not changed
+chgdone:POPL	ESI
+	POPL	EDI
+	RET
+
+;Function to check if a disk has changed (kschkchg dispatch) - This function
+;  is called to determine if a disk has been changed when mounting a disk. It
+;  always sends a check unit ready command to the disk.  This will give a disk
+;  changed error if the disk has been changed since the last IO operation.
+;	long usbdskachkchg(void);
+;  Value returned is:
+;	<0 - Error, value is XOS error code
+;	 0 - Disk not changed
+;	 1 - Disk might be changed (no media sensor - never returned here)
+
+usbdskachkchg:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ucb_dsp[ESI], #DS$REMOVE ;Is this disk removable?
+	JE	2$			;No - it can't have been changed!
+	TESTB	ucb_sts2[ESI], #U2$MCHG
+	JNE	6$
+4$:	PUSHL	#kf_chkchg		;See if the disk has been changed
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xosdskTransfer##
+	TESTL	EAX, EAX
+	JNS	2$			;Not changed if no error
+	JMP	chgdone
+
+6$:	MOVL	EAX, #ER_MDCHG
+	JMP	chgdone
+.PAGE
+;Here for the check for disk change function (kf_chkchgf) - This function is
+;  called to determine if a disk has been changed by obtaining the state of
+;  the media sensor for the disk.  Note that this function is only called from
+;  the usbdskasenchg (ks_senchg) and dskchkchg (ks_chkchg) routines in this
+;  module.
+;	long usbdskachkchgf(
+;	    long buffer,
+;	    long length);
+
+usbdskachkchgf:
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	EDX, dcb_dkucb[EDX]
+	TESTL	EDX, EDX
+	JE	10$
+	MOVL	EDX, ucb_kcb[EDX]
+	MOVL	kcb_usbacbw+cbw_cbl[EDX], #6 ;Do a test unit ready command
+	MOVL	kcb_usbacbw+cbw_cmd+0[EDX], #0
+	MOVL	kcb_usbacbw+cbw_cmd+4[EDX], #0
+	MOVL	kcb_usbablist1+bl_length[EDX], #0
+	MOVL	kcb_usbablist1+bl_pid[EDX], #USBPID_IN
+	PUSHL	#0			;Number of buffers in buffer list
+	PUSHL	#0			;Total length of all buffers
+	CALL	readdevice
+	TESTL	EAX, EAX
+	JNS	8$	
+	ORL	EAX, #0xFFFFF000
+8$:	RET	8
+
+;Here if no unit
+
+10$:	MOVL	EAX, #ER_NTRDY
+	JMP	8$
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+	.MOD	4
+usbdskakcb:.LONG  0		;Offset of first USBA disk KCB
+
+testbfr:.BLKB	2048t
+testcsw:.BLKB	32t
+testcnt:.LONG	0
+debugpnt:.LONG	0
+
+
+	LKEEND

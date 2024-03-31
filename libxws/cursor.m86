@@ -1,0 +1,799 @@
+	.TITLE	cursor - Routines to manage the graphic cursor
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to create the standard cursor during initialization
+;	CALL	xwsInitCursor
+
+	.ENTRY	xwsInitCursor
+xwsInitCursor::
+	PUSHL	#ARRXSZ
+	PUSHL	#ARRYSZ
+	PUSHL	#ARRXHOT
+	PUSHL	#ARRYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#arrpat+80000000h
+	PUSHL	#arrmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurPoint, EAX
+	MOVL	xws_WinParContainerDefault#+wp_cursor, EAX
+	MOVL	xws_WinParListDefault#+wp_cursor, EAX
+	MOVL	xws_WinParEditDefault#+wp_cursor, EAX
+	MOVL	xws_WinParContainerPlain#+wp_cursor, EAX
+	PUSHL	#FNGXSZ
+	PUSHL	#FNGYSZ
+	PUSHL	#FNGXHOT
+	PUSHL	#FNGYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#fngpat+80000000h
+	PUSHL	#fngmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurFinger, EAX
+	MOVL	xws_WinParButtonDefault#+wp_cursor, EAX
+	PUSHL	#MOVXSZ
+	PUSHL	#MOVYSZ
+	PUSHL	#MOVXHOT
+	PUSHL	#MOVYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#movpat+80000000h
+	PUSHL	#movmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurMove, EAX
+	PUSHL	#SNSXSZ
+	PUSHL	#SNSYSZ
+	PUSHL	#SNSXHOT
+	PUSHL	#SNSYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#snspat+80000000h
+	PUSHL	#snsmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurSizeNS, EAX
+	PUSHL	#SEWXSZ
+	PUSHL	#SEWYSZ
+	PUSHL	#SEWXHOT
+	PUSHL	#SEWYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#sewpat+80000000h
+	PUSHL	#sewmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurSizeEW, EAX
+	PUSHL	#SNESWXSZ
+	PUSHL	#SNESWYSZ
+	PUSHL	#SNESWXHOT
+	PUSHL	#SNESWYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#sneswpat+80000000h
+	PUSHL	#sneswmsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurSizeNESW, EAX
+	PUSHL	#SNWSEXSZ
+	PUSHL	#SNWSEYSZ
+	PUSHL	#SNWSEXHOT
+	PUSHL	#SNWSEYHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#snwsepat+80000000h
+	PUSHL	#snwsemsk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurSizeNWSE, EAX
+	PUSHL	#TEXTC1XSZ
+	PUSHL	#TEXTC1YSZ
+	PUSHL	#TEXTC1XHOT
+	PUSHL	#TEXTC1YHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#textc1pat+80000000h
+	PUSHL	#textc1msk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurText1, EAX
+	PUSHL	#TEXTC2XSZ
+	PUSHL	#TEXTC2YSZ
+	PUSHL	#TEXTC2XHOT
+	PUSHL	#TEXTC2YHOT
+	PUSHL	#colors
+	PUSHL	#2
+	PUSHL	#textc2pat+80000000h
+	PUSHL	#textc2msk+80000000h
+	CALL	xwsCurCreate
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	xws_CurText2, EAX
+	MOVL	xws_WinParEditDefault#+wp_cursor, EAX
+
+;;;	MOVL	xws_ScreenDRW#+drw_updcursor, #xwsupdatecursor
+;;;	MOVL	xws_ScreenDRW#+drw_dspcursor, #xwsdisplaycursor
+
+	RET
+
+
+4$:	PUSHL	EAX
+	PUSHL	#msgcur
+	CALL	xwsFail#
+
+msgcur:	.ASCIZ	"Error creating cursor"
+.PAGE
+;Function to create a cursor
+;	long   xsize
+;	long   ysize
+;	long   xhot
+;	long   yhot
+;	long  *colors
+;	long   num
+;	uchar *patbm
+;	uchar *maskbm
+;	CUR *xwsCurCreate(xsize, ysize, xhot, yhot, colors, num ,patbm, maskbm);
+
+;This function uses the Pascal calling sequence
+
+cc_xsize =!48t
+cc_ysize =!44t
+cc_xhot  =!40t
+cc_yhot  =!36t
+cc_colors=!32t
+cc_num   =!28t
+cc_patbm =!24t
+cc_maskbm=!20t
+
+$$$=!0
+FRM cc_bmsize, 4t
+cc_SIZE=!$$$
+
+	.ENTRY	xwsCurCreate
+xwsCurCreate::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	cc_SIZE
+	MOVL	ECX, #cur_SIZE		;Determine how much space we need for
+	MOVL	EDX, cc_xsize[EBP]	;  the CUR
+	ADDL	EDX, #7t
+	SHRL	EDX, #3t
+	IMULL	EDX, cc_ysize[EBP]
+	MOVL	cc_bmsize[EBP], EDX
+	TESTL	cc_patbm+3[EBP], #0x80
+	JNE	2$
+	ADDL	ECX, EDX
+2$:	TESTL	cc_maskbm+3[EBP], #0x80
+	JNE	4$
+	ADDL	ECX, EDX
+4$:	PUSHL	ECX			;Allocate the space
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	16$			;If error
+	MOVL	[EAX], #'CUR*'
+	MOVL	EDX, cc_xsize[EBP]	;Store size
+	MOVL	cur_xsize[EAX], EDX
+	MOVL	EDX, cc_ysize[EBP]
+	MOVL	cur_ysize[EAX], EDX
+	MOVL	EDX, cc_xhot[EBP]	;Store hot-spot position
+	MOVL	cur_xhot[EAX], EDX
+	MOVL	EDX, cc_yhot[EBP]
+	MOVL	cur_yhot[EAX], EDX
+	MOVL	EBX, cc_colors[EBP]	;Store colors
+	CLRL	EDX
+	DECL	cc_num[EBP]
+	JS	6$
+	MOVL	EDX, [EBX]
+6$:	MOVL	cur_color1[EAX], EDX
+	CLRL	EDX
+	DECL	cc_num[EBP]
+	JS	8$
+	MOVL	EDX, 4[EBX]
+8$:	MOVL	cur_color2[EAX], EDX
+	LEAL	EBX, cur_SIZE[EAX]
+	MOVL	ESI, cc_patbm[EBP]	;Get offset of pattern bitmap
+	BTZL	ESI, #31t		;Is it static?
+	JNC	10$			;No - must copy it
+	MOVL	cur_patbm[EAX], ESI	;Yes - just store offset
+	JMP	12$
+
+10$:	MOVL	cur_patbm[EAX], EBX
+	CALL	copybm
+12$:	MOVL	ESI, cc_maskbm[EBP]	;Get offset of mask bitmap
+	BTZL	ESI, #31t		;Is it static?
+	JNC	14$			;No - must copy it
+	MOVL	cur_maskbm[EAX], ESI	;Yes - just store offset
+	JMP	16$
+
+14$:	MOVL	cur_maskbm[EAX], EBX
+	CALL	copybm
+16$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	32t
+
+copybm:	MOVL	EDI, EBX
+	PUSHL	DS
+	POPL	ES
+	MOVL	ECX, cc_bmsize[EBP]
+	ADDL	EBX, ECX
+	ADDL	ECX, #3
+	SHRL	ECX, #2
+	CLD
+	RMOVSL	[EDI], [ESI]
+	RET
+.PAGE
+;Function to destroy a cursor object
+;	void xwsCurDestroy(
+;	    CUR *cur);
+
+	.ENTRY	xwsCurDestroy
+xwsCurDestroy::
+	RET	4t
+.PAGE
+;Function to set the cursor position on the screen
+;	void xwsCurSetPos(
+;	    long xpos,
+;	    long ypos);
+
+;This function uses the Pascal calling sequence
+
+csp_xpos=!8t
+csp_ypos=!4t
+
+	.ENTRY	xwsCurSetPos
+xwsCurSetPos::
+	MOVL	EAX, csp_xpos[ESP]
+	MOVL	xwscursorx, EAX
+	MOVL	EAX, csp_ypos[ESP]
+	MOVL	xwscursory, EAX
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_shwcursor[EAX]	;Update the cursor
+	RET	8t
+.PAGE
+;Function to find window which contains the mouse cursor
+;	int XOSFCN xwsfindcursorwindow(
+;	    XWSWIN &pwin)
+;  Value returned is the new cursor state value
+
+;	CALL	xwsfindcursorwindow
+;	c{EAX} = New cursor state value
+;	c{EDI} = Offset of WIN
+
+fcw_winp=!16t
+
+	.ENTRY	xwsfindcursorwindow
+xwsfindcursorwindow::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, xwscursorgrabwin#	;Has anyone grabbed the cursor?
+	TESTL	EDI, EDI
+	JNE	12$			;Yes
+	MOVL	EDI, xws_ScreenWIN#	;No
+	MOVL	xwscursorwin, EDI
+	CLRL	EAX
+2$:	MOVL	ESI, win_basfchild[EDI]
+	TESTL	ESI, ESI
+	JE	14$
+	MOVL	EBX, xwscursorx
+	MOVL	EDX, xwscursory
+4$:	CMPL	ESI, xwscurwin#		;Skip the cursor window!
+	JE	6$
+	MOVL	ECX, win_basscnxpos[ESI]
+	CMPL	EBX, ECX
+	JL	6$
+	ADDL	ECX, win_baswidth[ESI]
+	CMPL	EBX, ECX
+	JGE	6$
+	MOVL	ECX, win_basscnypos[ESI]
+	CMPL	EDX, ECX
+	JL	6$
+	ADDL	ECX, win_basheight[ESI]
+	CMPL	EDX, ECX
+	JGE	6$
+	MOVL	xwscursorwin, ESI
+6$:	MOVL	ESI, win_bassibling[ESI]
+	TESTL	ESI, ESI
+	JNE	4$
+	CMPL	EDI, xwscursorwin	;Did we find a child with the cursor?
+	JE	14$			;No - finished
+	MOVL	EDI, xwscursorwin	;Yes
+	PUSHL	EDI
+	CALL	checkborder		;Is the cursor in the border area?
+	TESTL	EAX, EAX
+	JNE	fcwdone			;Yes
+	JMP	2$
+
+	CMPB	win_bastype[EDI], #XWS_WINTYPE_CONTAINER ;No - container?
+	JLE	2$			;Yes - continue checking
+	CMPB	win_bastype[EDI], #XWS_WINTYPE_COMPOSITE ;Or a composite window?
+	JGE	2$			;Yes
+	JMP	fcwdone
+
+12$:	MOVZBL	EAX, win_basmoving[EDI]
+fcwdone:MOVL	EDX, fcw_winp[ESP]
+	MOVL	[EDX], EDI
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+14$:	PUSHL	EDI
+	CALL	checkborder
+	JMP	fcwdone
+.PAGE
+;Function to determine the new cursor state
+;	int XOSFNC checkborder(
+;	    XWSWIN *win);
+;  Value returned is the new cursor state
+
+chkb_win=!8
+
+checkborder:
+	PUSHL	EDI
+	MOVL	EDI, chkb_win[ESP]
+	MOVL	EAX, xwscursorx
+	MOVL	EDX, xwscursory
+	TESTB	win_basbits[EDI], #WB2$MOVEABLE|WB2$SIZEABLE
+	JE	notborder
+	SUBL	EAX, win_basscnxpos[EDI]
+	SUBL	EDX, win_basscnypos[EDI]
+	MOVZWL	ECX, win_baslbwidth[EDI] ;Over left border?
+	CMPL	EAX, ECX
+	JGE	6$			;No
+	MOVL	ECX, win_bastbheight[EDI] ;Yes - also over top border?
+	CMPL	EDX, ECX
+	JGE	2$			;No
+	MOVL	EAX, #CS_SIZETL		;Yes - top-left
+	JMP	18$
+
+;Here if cursor is over left border but not top border
+
+2$:	MOVZWL	ECX, win_basbbheight[EDI]
+	NEGL	ECX
+	ADDL	ECX, win_basclntheight[EDI] ;Also over bottom border?
+	CMPL	EDX, ECX
+	JLE	4$			;No
+	MOVL	EAX, #CS_SIZEBL		;Yes - bottom-left
+	JMP	18$
+
+;Here if cursor is over left border only
+
+4$:	MOVL	EAX, #CS_SIZEL		;Yes - left
+	JMP	18$
+
+;Here if cursor is not over the left border
+
+6$:	MOVZWL	ECX, win_basrbwidth[EDI]
+	NEGL	ECX
+	ADDL	ECX, win_basclntwidth[EDI] ;Over right border?
+	DECL	ECX
+	CMPL	EAX, ECX
+	JLE	12$			;No
+	MOVZWL	ECX, win_bastbheight[EDI] ;Yes - also over top border?
+	CMPL	EDX, ECX
+	JGE	8$			;No
+	MOVL	EAX, #CS_SIZETR		;Yes - assume top-right
+	JMP	18$
+
+;Here if cursor is over right border but not top border
+
+8$:	MOVZWL	ECX, win_basbbheight[EDI]
+	NEGL	ECX
+	ADDL	ECX, win_basclntheight[EDI] ;Also over bottom border?
+	DECL	ECX
+	CMPL	EDX, ECX
+	JLE	10$			;No
+	MOVL	EAX, #CS_SIZEBR		;Yes - assume bottom-right
+	JMP	18$
+
+;Here if cursor is over right border only
+
+10$:	MOVL	EAX, #CS_SIZER
+	JMP	18$
+
+;Here if cursor is not over the right border
+
+12$:	MOVL	EAX, xwscursorx
+	MOVZWL	ECX, win_bastbheight[EDI] ;Over top border?
+	CMPL	EDX, ECX
+	JGE	16$			;No
+	MOVL	EAX, #CS_SIZET		;Yes
+	JMP	18$
+
+;Here if cursor is not over the top border
+
+16$:	MOVZWL	ECX, win_basbbheight[EDI]
+	NEGL	ECX
+	ADDL	ECX, win_basclntheight[EDI] ;Over bottom border?
+	DECL	ECX
+	CMPL	EDX, ECX
+	JLE	notborder
+	MOVL	EAX, #CS_SIZEB
+
+18$:	TESTB	win_basbits[EDI], #WB2$SIZEABLE ;Is it actually resizeable?
+	JNE	chkbdn
+	MOVL	EAX, #CS_MOVE
+	JMP	chkbdn
+
+;Here if cursor is not over the window's border or the window is not sizeable
+;  or moveable
+
+notborder:
+	CLRL	EAX
+chkbdn:	POPL	EDI
+	RET	4
+.PAGE
+	.ENTRY	xwsupdatecursor
+xwsupdatecursor::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	PUSHL	#0
+	PUSHL	ESP
+	CALL	xwsfindcursorwindow
+	POPL	EDI
+	TESTL	EAX, EAX
+	JE	2$
+	MOVL	EAX, xwscurtbl-4[EAX*4]
+	MOVL	EBX, [EAX]
+	JMP	4$
+
+2$:	MOVL	EBX, win_bascursor[EDI]
+4$:	ORL	EBX, EBX
+	JE	6$
+	PUSHL	EBX
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_setcursor[EAX]
+6$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+	.PSECT	_DATA_p
+
+colors:	.LONG	00000h		;Foreground color
+	.LONG	0FFFFh		;Background color
+
+	.ENTRY	xws_CurPoint, xws_CurFinger, xws_CurSizeNS, xws_CurSizeEW
+	.ENTRY	xws_CurSizeNESW, xws_CurSizeNWSE
+	.ENTRY	xwscursorx, xwscursory
+	.ENTRY	xwscurtbl
+
+xws_CurPoint::
+	.LONG	0
+xws_CurFinger::
+	.LONG	0
+xws_CurMove::
+	.LONG	0
+xws_CurSizeNS::
+	.LONG	0
+xws_CurSizeEW::
+	.LONG	0
+xws_CurSizeNESW::
+	.LONG	0
+xws_CurSizeNWSE::
+	.LONG	0
+xws_CurText1::
+	.LONG	0
+xws_CurText2::
+	.LONG	0
+
+xwscursorx::
+	.LONG	0
+xwscursory::
+	.LONG	0
+xwscursorwin::
+	.LONG	0
+xwswheelinc::
+	.LONG	0
+
+xwscurtbl::
+	.LONG	xws_CurMove	;CS_MOVE   = 1
+	.LONG	xws_CurSizeNS	;CS_SIZET  = 2
+	.LONG	xws_CurSizeEW	;CS_SIZEL  = 3
+	.LONG	xws_CurSizeNS	;CS_SIZEB  = 4
+	.LONG	xws_CurSizeEW	;CS_SIZER  = 5
+	.LONG	xws_CurSizeNWSE	;CS_SIZETL = 6
+	.LONG	xws_CurSizeNESW	;CS_SIZETR = 7
+	.LONG	xws_CurSizeNESW	;CS_SIZEBL = 8
+	.LONG	xws_CurSizeNWSE	;CS_SIZEBR = 9
+
+	.PSECT	_TEXT_p
+
+
+	.MACRO	CURSOR  NAME, name, xsize, xhot, yhot
+
+NAME'XSZ=!xsize
+NAME'XHOT=!xhot
+NAME'YHOT=!yhot
+
+	.MACRO	LINE data
+;;;;;	.NLIST
+NAME'YSZ=!NAME'YSZ+1
+$$$cnt=!7
+$$$val=!0
+	.IRPC	q,{data}
+  .IF IDN {q}{@}
+    $$$val=!$$$val|{01h<$$$cnt}
+  .ENDC
+  $$$cnt=!$$$cnt-1
+  .IF EQ $$$cnt+1
+	.BYTE	$$$val
+    $$$val=!0
+    $$$cnt=!7
+  .ENDC
+	.ENDR
+  .IF NE $$$cnt-7
+	.BYTE	$$$val
+  .ENDC
+	.LIST
+	.ENDM
+
+NAME'YSZ=!0
+
+	.MOD	4
+name'pat:BITMAP
+
+	.MACRO	LINE data
+;;;;	.NLIST
+$$$cnt=!7
+$$$val=!0
+	.IRPC	q,{data}
+  .IF IDN {q}{.}
+    $$$val=!$$$val|{01h<$$$cnt}
+  .ENDC
+  $$$cnt=!$$$cnt-1
+  .IF EQ $$$cnt+1
+	.BYTE	$$$val
+    $$$val=!0
+    $$$cnt=!7
+  .ENDC
+	.ENDR
+  .IF NE $$$cnt-7
+	.BYTE	$$$val
+  .ENDC
+	.LIST
+	.ENDM
+
+	.MOD	4
+name'msk:BITMAP
+	.ENDM
+
+
+	.MACRO	BITMAP
+	LINE	{@.............}
+	LINE	{@@............}
+	LINE	{@*@...........}
+	LINE    {@**@..........}
+	LINE	{@***@.........}
+	LINE	{@****@........}
+	LINE    {@*****@.......}
+	LINE	{@******@......}
+	LINE	{@*******@.....}
+	LINE	{@********@....}
+	LINE	{@*********@...}
+	LINE	{@**********@..}
+	LINE	{@***********@.}
+	LINE	{@*******@@@@@@}
+	LINE	{@******@......}
+	LINE	{@**@@***@.....}
+	LINE	{@*@.@***@.....}
+	LINE	{@@...@***@....}
+	LINE	{@....@***@....}
+	LINE	{.....@***@....}
+	LINE	{......@***@...}
+	LINE	{......@***@...}
+	LINE	{......@**@@...}
+	LINE	{.......@@@....}
+	.ENDM
+
+	CURSOR	ARR, arr, 14t, 0t, 0t
+
+	.MACRO	BITMAP
+	LINE	{....@@..........}
+	LINE	{...@**@.........}
+	LINE	{...@**@.........}
+	LINE	{...@**@.........}
+	LINE	{...@**@.........}
+	LINE	{...@**@@@.@@.@@.}
+	LINE	{...@**@**@**@**@}
+	LINE	{...@**@**@**@**@}
+	LINE	{@@@@**@**@**@**@}
+	LINE	{@**@**@**@**@**@}
+	LINE	{@**@***********@}
+	LINE	{@**@***********@}
+	LINE	{@**************@}
+	LINE	{@**************@}
+	LINE	{.@*************@}
+	LINE	{..@***********@@}
+	LINE	{...@**********@.}
+	LINE	{...@**********@.}
+	LINE	{...@**********@.}
+	LINE	{...@**********@.}
+	LINE	{...@**********@.}
+	LINE	{...@@@@@@@@@@@@.}
+	.ENDM
+
+	CURSOR	FNG, fng, 16t, 4t, 0t
+
+	.MACRO	BITMAP
+	LINE	{..........@..........}
+	LINE	{.........@*@.........}
+	LINE	{........@***@........}
+	LINE	{.......@*****@.......}
+	LINE	{......@*******@......}
+	LINE	{......@@@@*@@@@......}
+	LINE	{....@@...@*@...@@....}
+	LINE	{...@*@...@*@...@*@...}
+	LINE	{..@**@...@*@...@**@..}
+	LINE	{.@***@@@@@*@@@@@***@.}
+	LINE	{@*******************@}
+	LINE	{.@***@@@@@*@@@@@***@.}
+	LINE	{..@**@...@*@...@**@..}
+	LINE	{...@*@...@*@...@*@...}
+	LINE	{....@@...@*@...@@....}
+	LINE	{......@@@@*@@@@......}
+	LINE	{......@*******@......}
+	LINE	{.......@*****@.......}
+	LINE	{........@***@........}
+	LINE	{.........@*@.........}
+	LINE	{..........@..........}
+	.ENDM
+
+	CURSOR	MOV, mov, 21t, 10t, 10t
+
+	.MACRO	BITMAP
+	LINE	{....@....}
+	LINE	{...@*#...}
+	LINE	{..@***@..}
+	LINE	{.@*****@.}
+	LINE	{@*******@}
+	LINE	{@@@@*@@@@}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{...@*@...}
+	LINE	{@@@@*@@@@}
+	LINE	{@*******@}
+	LINE	{.@*****@.}
+	LINE	{..@***@..}
+	LINE	{...@*#...}
+	LINE	{....@....}
+	.ENDM
+
+	CURSOR	SNS, sns, 9t, 5t, 11t
+
+	.MACRO	BITMAP
+	LINE	{....@@.........@@....}
+	LINE	{...@*@.........@*@...}
+	LINE	{..@**@.........@**@..}
+	LINE	{.@***@@@@@@@@@@@***@.}
+	LINE	{@*******************@}
+	LINE	{.@***@@@@@@@@@@@***@.}
+	LINE	{..@**@.........@**@..}
+	LINE	{...@*@.........@*@...}
+	LINE	{....@@.........@@....}
+	.ENDM
+
+	CURSOR	SEW, sew, 21t, 11t, 5t
+
+	.MACRO	BITMAP
+	LINE	{@@@@@@@........}
+	LINE	{@*****@........}
+	LINE	{@****@.........}
+	LINE	{@***@..........}
+	LINE	{@**@*@.........}
+	LINE	{@*@.@*@........}
+	LINE	{@@...@*@.......}
+	LINE	{......@*@......}
+	LINE	{.......@*@...@@}
+	LINE	{........@*@.@*@}
+	LINE	{.........@*@**@}
+	LINE	{..........@***@}
+	LINE	{.........@****@}
+	LINE	{........@*****@}
+	LINE	{........@@@@@@@}
+	.ENDM
+
+	CURSOR	SNWSE, snwse, 15t, 7t, 7t
+
+	.MACRO	BITMAP
+	LINE	{........@@@@@@@}
+	LINE	{........@*****@}
+	LINE	{.........@****@}
+	LINE	{..........@***@}
+	LINE	{.........@*@**@}
+	LINE	{........@*@.@*@}
+	LINE	{.......@*@...@@}
+	LINE	{......@*@......}
+	LINE	{@@...@*@.......}
+	LINE	{@*@.@*@........}
+	LINE	{@**@*@.........}
+	LINE	{@***@..........}
+	LINE	{@****@.........}
+	LINE	{@*****@........}
+	LINE	{@@@@@@@........}
+	.ENDM
+
+	CURSOR	SNESW, snesw, 15t, 7t, 7t
+
+	.MACRO	BITMAP
+	LINE	{....@@@@@@@....}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{....@@@@@@@....}
+	.ENDM
+
+	CURSOR	TEXTC1, textc1, 15t, 7t, 8t
+
+	.MACRO	BITMAP
+	LINE	{....@@@@@@@....}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{.......@.......}
+	LINE	{....@@@@@@@....}
+	.ENDM
+
+	CURSOR	TEXTC2, textc2, 15t, 7t, 9t
+
+	.END

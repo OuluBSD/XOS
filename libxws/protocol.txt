@@ -1,0 +1,260 @@
+Each message starts with a four byte header.  The first byte contains a
+one bit notify flag (high order bit) and a seven bit message type.  The second
+byte contains a message sequence number.  The next two bytes contain the length
+of the message (not including the header bytes), high order byte first.
+The maximum allowable message length 1400 bytes.  When using RCP transport,
+multiple messages may be sent in a single packet, but messages may not be
+split between packets.  When using shared memory transport, a message may not
+wrap past the end of the buffer.
+
+The message sequence number should be a non-zero value in all messages sent by
+the client which should increment for each message sent.  Messages sent by the
+server which are associated with a partictular client message contain the same
+messages sequence number as the client message.  Message sent by the server
+which are not associated with a partictular client message contain a message
+sequence number of 0.
+
+Types for messages sent by the server and by the client are defined seperately.
+
+The server never sets the notify flag bit.  When this bit is set in a client
+message, it indicates that a notification is to be sent when the operation
+requested by the message is complete.  This notification will be either a
+XWSS_COMPLETE or a XWSS_ERROR message.
+
+Messages sent by the server:
+
+XWSS_CONFIG = 1
+
+This message is sent by the server as soon as a connection is established.  It
+specifies the server's configuration.
+
+Type  Description
+1     Display format (1 = 16-bit (X1R5G5B5), 2 = 16-bit (R5G6B5), 3 = 32-bit
+        (X8R8G8B8)
+2     Horizontal resolution
+2     Vertical resolution
+
+XWSS_COMPLETE = 2
+
+This message is sent by the server upon successful completion of an operation
+when the notify flag bit was set in the message which requested the operation.
+
+Type  Description
+4     Status code, exact meaning depends on operation
+
+XWSS_ERROR = 3
+
+This message is sent by the server when an error occures.
+
+Type  Description
+4     Status code
+2     Error code
+
+XWSS_REDRAW = 4
+
+This message indicates that a window needs to be redrawn.
+
+Type  Description
+U2    Window handle
+S2    X position of bounding box of redraw region
+S2    Y position of bounding box of redraw region
+U2    Width of bouding box of redraw region
+U2    Height of bounding box of redraw region
+
+XWSS_REDRAWL = 5
+
+This message indicates that a window needs to be redrawn.
+
+Type  Description
+U2    Window handle
+S4    X position of bounding box of redraw region
+S4    Y position of bounding box of redraw region
+U4    Width of bouding box of redraw region
+U4    Height of bounding box of redraw region
+
+XWSS_EVENT = 6
+
+This message reports a window event.  The argument items are optional.  The
+message may end at any point past the "event type" value.
+
+Size  Description
+2     Window handle
+1     Event type
+S2    Argument 1
+S2    Argument 2
+S2    Argument 3
+S4    Argument 4
+
+XWSS_EVENTL = 7
+
+This message reports a window event.  The argument items are optional.  The
+message may end at any point past the "event type" value.
+
+Size  Description
+2     Window handle
+1     Event type
+S4    Argument 1
+S4    Argument 2
+S4    Argument 3
+S4    Argument 4
+
+Messages sent by the client:
+
+Several messages sent by the client include a parameter list.  This list is
+made up of a series of parameter items.  The list starts with a 1 or 2 byte
+count value.  If the high order bit of the first byte is set, the low order 7
+bits of that byte are combined with the next byte to make a 15 bit count value.
+If the high order bit is clear, the low oder 7 bits of the first bit contain
+the count value.  Each parameter item consists of a two byte header and 1 to 4
+value bytes.  The header has the following format:
+
+    ttttttttttttszzz
+
+Where t represents a 12-byte type value, s is the sign of the value (0 = +,
+1 = -) and zzz is the length of the value.  This may be 0, 1, 2, 3, 4, or 7.
+A value between 0 and 4 indicaets the number of value bytes.  A value of 7
+indicates an extended value.  The next 1 or 2 bytes contain the number of
+value bytes which follow.  The parameter list must exactly fit in the number
+of bytes specified in the initial byte count value.
+
+Text strings are stored as a simple sequence of ASCII characters terminated by
+a 0 byte or by the end of the message.
+
+All handles are assigned by the client.  All object which are identified by
+handle use a single number space for handles.  The client must specify the
+maximum handle which will be used before creating any object.  If a handle
+is reused, the object previously identified by the handle is destroyed.
+
+Generally, no notification is generated when an operation is complete unless
+the "notify" flag bit is set in the message header flags byte.
+
+
+XWSC_SETUP = 1
+
+This must be the first message sent by the client.  It specifies the sizes of
+the color map and font map in the client's environment block and initial
+contents for these maps.
+
+Type  Description
+U1    Number of color map entries
+U2    Number of font map entries
+U3*n  Color map entries (3 bytes per entry, always specified as R8G8B8,
+        regardless of the display format)
+TX*n  Font names, each name starts with a one byte count (maximum of 255
+        character per name, followed by the name)
+
+XWSS_CREATECONTAINER = 2
+
+This message creates a container window.
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S2    X position
+S2    Y position
+U2    Width
+U2    Height
+U4    Event mask
+PL    Parameter list
+
+XWSS_CREATECONTAINERL = 3
+
+This message creates a container window.
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S4    X position
+S4    Y position
+U4    Width
+U4    Height
+U4    Event mask
+PL    Parameter list
+
+XWSS_CREATEBUTTON = 4
+
+This message creates a button
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S2    X position
+S2    Y position
+U2    Width
+U2    Height
+U4    Event mask
+PL    Parameter list
+TX    Initial button text
+
+XWSS_CREATEBUTTONL = 5
+
+This message creates a button
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S4    X position
+S4    Y position
+U4    Width
+U4    Height
+U4    Event mask
+PL    Parameter list
+TX    Initial button text
+
+XWSS_CREATEEDIT = 6
+
+This message creates an edit window
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S2    X position
+S2    Y position
+U2    Width
+U2    Height
+U4    Event mask
+PL    Parameter list
+TX    Initial window text
+
+XWSS_CREATEEDITl = 7
+
+This message creates an edit window
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S4    X position
+S4    Y position
+U4    Width
+U4    Height
+U4    Event mask
+PL    Parameter list
+TX    Initial window text
+
+XWSS_CREATELIST = 8
+
+This message creates a list window
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S2    X position
+S2    Y position
+U2    Width
+U2    Height
+U4    Event mask
+PL    Parameter list
+
+XWSS_CREATELISTL = 9
+
+This message creates a list window
+
+Type  Description
+U2    Window handle
+U2    Parent handle
+S4    X position
+S4    Y position
+U4    Width
+U4    Height
+U4    Event mask
+PL    Parameter list

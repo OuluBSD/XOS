@@ -1,0 +1,88 @@
+	.TITLE	$_reqrdio
+
+;*--------------------------------------------------------------------------*
+;* command.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+
+;**********************************************
+; Function: $_reqrdio - Handle the RDIO request
+; Returned: Nothing
+;**********************************************
+
+;Request format:
+;  Offset Size Description
+;     0     1  Size (Invalid values read a byte.)
+;		 0 = Byte
+;		 1 = Word
+;		 2 = Long
+;		 3 = Quad (64-bit platforms only)
+;     1     2  IO port
+
+;Response format:
+;  Offset Size Description
+;     0     1  Size (echoed)
+;     1     2  IO port (echoed)
+;     3     4  Value (Values less than 32 bits are 0 extended.)
+
+;If the port number is not aligned for the size, the results are undefined.
+;  Some devices may support unaligned read, but most do not.
+
+	.ENTRY	$_reqrdio
+$_reqrdio::
+	CMPL	$_reqlength#, #3	;Make sure long enough
+	JB	$_badlength#
+	MOVZBL	EAX, $_dbbufr#+0	;Get size
+	MOVZWL	EDX, $_dbbufr#+1	;Get IO port
+	TESTL	EAX, EAX
+	JG	4$
+2$:	INB	[DX]			;Input a byte
+	JMP	10$
+
+4$:	DECL	EAX
+	JNE	8$
+	INW	[DX]			;Input a word
+	JMP	10$
+
+8$:	DECL	EAX
+	JNE	2$
+	INL	[DX]			;Input a long
+10$:	MOVL	$_dbbufr+3, EAX
+	PUSHL	#DBRQ_RDIO
+	PUSHL	#7
+	CALL	$_sendresponse#
+	RET
+
+	END

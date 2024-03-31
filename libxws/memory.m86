@@ -1,0 +1,145 @@
+	.TITLE	memory
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function dispatch table
+
+	.ENTRY	xwsmemdsp
+xwsmemdsp::
+	.LONG	ret002			;gfx_waitidle   =  0 - Wait until idle
+	.LONG	ret002			;gfx_update     =  4 - Display update
+	.LONG	xwsgethicolor#		;gfx_getcolor   =  8 - Get color
+	.LONG	xwsexphicolor#		;gfx_expcolor   = 12 - Expand color
+	.LONG	xwscomhicolor#		;gfx_comcolor   = 16 - Compress color
+	.LONG	xwsmemrgnfill#		;gfx_rgnfill    = 20 - Fill region
+	.LONG	xwsmemrgncopy#		;gfx_rgncopysame= 24 - Copy region
+	.LONG	xwsmemrgncopy#		;gfx_rgncopydiff= 28 - Copy region
+	.LONG	xwsmemrectfillsc#	;gfx_rectfillsc = 32 - Fill rectangle
+	.LONG	xwsmemrectfillmp#	;gfx_rectfillmp = 36
+	.LONG	xwsmemchardraw#		;gfx_chardraw   = 40 - Draw Character
+	.LONG	ret002			;gfx_setcursor  = 44 - Set cursor
+	.LONG	ret002			;gfx_shwcursor  = 48 - Show cursor
+
+ret002:	RET
+
+;Function to create a new memory drawing context and its base window
+;	long xwsWinCreateMemory(
+;	    long   width,	// Width
+;	    long   height,	// Height
+;	    long   type,	// Type (1 = monochrome, 2 = 256-color,
+;				//   3 = hi-color, 4 = true-color) MUST BE 3!
+;	    PAR   *parms,	// Parameter structure
+;	    void (*draw)(WIN *win),
+;				// Pointer to caller's draw function
+;	    long (*event)(WIN *win, long arg1, long arg2, long arg3, long arg3);
+;				// Pointer to caller's event function
+;	    long   evmask,	// Event mask
+;	    EDB   *edb,		// Pointer to caller's environment data block
+;	    WIN  **pwin);	// Pointer to the address where the address
+;				//   of the win created is stored
+;	Value returned is 0 if normal or a negative error code if error
+
+;This function uses the Pascal calling sequence
+
+wm_width =!48t
+wm_height=!44t
+wm_type  =!40t
+wm_parms =!36t
+wm_event =!32t
+wm_evmask=!28t
+wm_edb   =!24t
+wm_pwin  =!20t
+
+	.ENTRY	xwsWinCreateMemory
+xwsWinCreateMemory::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EAX, wm_width[EBP]	;Get size of the buffer
+	IMULL	EAX, wm_height[EBP]
+	ADDL	EAX, EAX
+	MOVL	ESI, EAX
+	ADDL	EAX, #drw_SIZE		;Plus size of the DRW
+	PUSHL	EAX
+	CALL	xwsMalloc#		;Get the memory
+	TESTL	EAX, EAX
+	JE	12$			;If error
+	MOVL	EDI, EAX
+	ADDL	EAX, #drw_SIZE		;Get offset of buffer
+	MOVL	drw_label[EDI], #'DRW#'	;Set up the DRW
+	MOVB	drw_type[EDI], #DRWTYPE_MEMORY
+	MOVL	drw_buffer[EDI], EAX
+	MOVL	drw_bufsize[EDI], ESI
+	MOVL	drw_pixelsize[EDI], #2t
+	MOVL	drw_funcdsp[EDI], #xwsmemdsp
+	PUSHL	#0			;Parent window
+	PUSHL	#XWS_WINTYPE_CONTAINER	;Window type
+	PUSHL	#win_conSIZE		;Size of the WIN
+	PUSHL	#0			;X position
+	PUSHL	#0			;Y position
+	MOVL	EAX, wm_width[EBP]	;Width
+	MOVL	drw_width[EDI], EAX
+	PUSHL	EAX
+	MOVL	drw_pixelspan[EDI], EAX
+	ADDL	EAX, EAX
+	MOVL	drw_bytespan[EDI], EAX
+	MOVL	EAX, wm_height[EBP]	;Height
+	MOVL	drw_height[EDI], EAX
+	PUSHL	EAX
+	PUSHL	wm_parms[EBP]		;Window parameters
+	PUSHL	wm_event[EBP]		;Event function
+	PUSHL	wm_evmask[EBP]		;Event mask
+	PUSHL	wm_edb[EBP]		;EDB
+	PUSHL	EDI			;DRW
+	PUSHL	wm_pwin[EBP]		;Pointer to WIN pointer
+	CALL	xwscreatewindow#	;Allocate and initialize the WIN
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EBX, wm_pwin[EBP]
+	MOVL	EBX, [EBX];
+	CLRL	EAX			;Scale factor is 1
+	MOVL	win_basxsfr[EBX], EAX
+	MOVL	win_basysfr[EBX], EAX
+	INCL	EAX
+	MOVL	win_basxsfd[EBX], EAX
+	MOVL	win_basysfd[EBX], EAX
+	MOVL	EAX, win_basbgcoln[EBX]	;Get background color
+	MOVL	EDI, win_basdrw[EBX]
+	MOVL	ECX, drw_bufsize[EDI]	;Get buffer size in bytes
+	SHRL	ECX, #2
+	MOVL	EDI, drw_buffer[EDI]
+	MOVL	EDX, EAX		;Fill the memory buffer with the
+	SHLL	EAX, #16t		;  background color
+	MOVW	AX, DX
+	MOVL	EDX, DS
+	MOVL	ES, EDX
+	CLD
+	RSTOSL	[EDI]
+	MOVL	EAX, wm_pwin[EBP]
+	MOVL	[EAX], EBX
+	CLRL	EAX
+10$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	32t
+
+12$:	MOVL	EAX, errno#
+	NEGL	EAX
+	JMP	10$
+
+	.END

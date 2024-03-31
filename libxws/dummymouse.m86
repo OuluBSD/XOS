@@ -1,0 +1,17 @@
+	.TITLE	dummymouse
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\defines.par
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.ENTRY	xwsdomouse
+xwsdomouse::
+	RET
+
+	.END

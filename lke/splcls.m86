@@ -1,0 +1,596 @@
+	.TITLE	splcls - Spooled class driver for XOS
+
+;*--------------------------------------------------------------------------*
+;* SPLCLS.M86
+;*
+;* Written by: John R. Goltz
+;*
+;* Edit History:
+;* 1.0.0  8-Nov-92 JRG - Original version
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!1t
+MINV   =!1t
+EDITNUM=!0t
+
+;This class driver is a redirector only.  It implements only a minimal device
+;  which is only useful for setting or reading device characteristics values.
+;  It only supports physical or raw mode opens and does not support any IO
+;  operations. Non-physical or raw mode opens are redirected to the device
+;  specified by the device's SPLDEV and SPLPATH characteristic values.
+
+;SPL units are normally created by PTRSRV when a new service instance is
+;  created.  PTRSRV first scans the spooling directory and determines the
+;  value for the SEQNUM characteristic. This is necessary because this device
+;  makes no attempt to find an unused sequence number for a spooled file. It
+;  simply uses the next number. The sequnce number is a full 32 bits, so
+;  overflow should not be a problem.
+
+	LKEHEAD	SPLCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+;Define offsets in the SPL DCB
+
+$$$=!dcb_devdep
+BLK dcb_spseqnum , 4		;File name sequence number
+BLK dcb_spsplplen, 4
+BLK dcb_spclsdata, 4
+BLK dcb_spclspid , 4
+BLK dcb_spclsvect, 1
+BLK              , 3
+BLK dcb_spptrdev , 20t		;Name of physical printer
+BLK dcb_spptrlang, 20t		;Printer language
+BLK dcb_spclsmsg , 32t		;Close message destination
+BLK dcb_spsplpath, 48t		;Path specification for spooling directory (This
+				;  could be generated on the fly when needed
+				;  but generating it once and storeing it is
+				;  similier and does not really cost anything
+				;  since it does not put the DCB into the next
+				;  larger exec buffer size).
+BLK dcb_spspldev , 20t		;Device name for spooling directory
+BLK dcb_spspldevx, 16t		;Device name for spooling directory without a
+				;  colon
+dcb_spSIZE=!$$$
+
+	CODE
+
+;SVC dispatch table for SPL class devices
+
+spldsp: .LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	knlRtnZero##	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	splopen		;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDev##	;sd_findfile = 16 - Find file
+	.LONG	knlIFnDev##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename   = 24 - Rename file
+	.LONG	knlIllInp##	;sd_inblock  = 28 - Input block
+	.LONG	knlIllOut##	;sd_outblock = 32 - Output block
+	.LONG	knlIFnDev##	;sd_getiosts = 36 - Get input/output status
+	.LONG	knlIFnDev##	;sd_special  = 40 - Special device function
+	.LONG	0		;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 5C - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+SPLDSPSZ=!{$-spldsp}/4
+
+;Device parameter table for SPL class open operations - We only need enough
+;  here to keep the open routine happy!
+
+	.MOD	4
+	.LONG	PARMMAX
+splopnparms:
+	.LONG	splopngenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+PARMMAX=!{$-splopnparms}/4
+
+	.LONG	PARMGENMAX
+splopngenparms:
+	.LONG	0		;               = 0x0000
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN = 0x0001
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC = 0x0002
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS   = 0x0003
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM  = 0x0004
+	.LONG	knlIopGlbId##	;IOPAR_GLBID    = 0x0005
+	.LONG	knlIopDelay##	;IOPAR_DELAY    = 0x0006
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT  = 0x0007
+	.LONG	0		;IOPAR_INPSTS   = 0x0008
+	.LONG	0		;IOPAR_OUTSTS   = 0x0009
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT  = 0x000A
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT  = 0x000B
+PARMGENMAX=!{$-splopngenparms}/4
+
+;Class function dispatch table for SPL class devices
+
+	.LONG	CLSFMX
+splcls:	.LONG	spladdunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	splunitinfo	;CF_PUNITS  =  9 - Get information about
+				;		     physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 10 - Get information about active
+				;		     units
+CLSFMX=!{$-splcls}/4
+
+;Class characteristics table for the SPL device class
+
+splcctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHAREND
+.PAGE
+;Device characteristics for SPL class devices
+
+	.MOD	4
+spldctbl:
+ CHARBGN  2, sysIoCharValues##
+ CHARENT  CLASS  , TEXT, ,  8, knlDcMsgClass##, knlDcGetClass##  , knlDcSetClass##, 0
+ CHARENT  SEQNUM , HEXV, ,  4, msgseqnum      , knlDcGet4Byte##  , knlDcSet4Byte##, dcb_spseqnum
+ CHARENT  SPLPATH, STR , , 48, msgsplpath     , knlDcGetStr##    , dcsetsplpath   , dcb_spsplpath
+ CHARENT  SPLDEV , STR , , 16, msgspldev      , knlDcGetStr##    , dcsetspldev    , dcb_spspldev
+ CHARENT  PTRDEV , STR , , 16, msgptrdev      , knlDcGetStr##    , knlDcSetStr##  , dcb_spptrdev
+ CHARENT  PTRLANG, STR , , 16, msgptrlang     , knlDcGetStr##    , knlDcSetStr##  , dcb_spptrlang
+ CHARENT  CLSPID , HEXV, ,  4, msgclspid      , knlDcGet4Byte##  , knlDcSet4Byte##, dcb_spclspid
+ CHARENT  CLSVECT, DECV, ,  4, msgclsvect     , knlDcGet1Byte##  , dcsetclsvect   , dcb_spclsvect
+ CHARENT  CLSDATA, HEXV, ,  4, msgclsdata     , knlDcGet4Byte##  , knlDcSet4Byte##, dcb_spclsdata
+ CHAREND
+
+msgseqnum: CHARINFO  {Spooled name sequence number}
+msgsplpath:CHARINFO  {Spooling directory path}
+msgspldev: CHARINFO  {Spooling directory device}
+msgptrdev: CHARINFO  {Printer device}
+msgptrlang:CHARINFO  {Printer control language}
+msgclspid: CHARINFO  {PID for close signal}
+msgclsvect:CHARINFO  {Vector for close signal}
+msgclsdata:CHARINFO  {Data for close signal}
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	splinit
+
+splinit:PUSHL	#splccb
+	CALL	sysIoNewClass##
+	TESTL	EAX, EAX
+	JS	10$			;This should not fail!
+	MOVL	EBX, lkei_pctop-4[ESP]
+	CLRL	EAX
+	MOVL	[EBX], #codetop
+10$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	spladdunit - Class function to add unit
+
+;Here for the CL_ADDUNIT function
+;	c{EBX} = Offset of CCB
+;	CALL	spladdunit
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count (number of units added)
+
+;This device handles device names in a non-standard way. A specified "name
+;  suffix" is used to form the device name.  The device name used is formed
+;  by concatenating the spool name prefix, "PTR" with the suffix specified.
+;  If the unit number is 0, it is not used as part of the name. If a non-zero
+;  unit number is specified, it is included as the last part of the device
+;  name. For example, if SPLNAME=LASER and UNIT=0, the spooled device name
+;  is PTRLASER:. If UNIT=2, the name is PTRLASER2:. The total length of the
+;  resulting device name must be 16 characters or less.
+
+;The system's convention is that the spool directory is XOSSPL:\splname\. It
+;  is up to the program adding the spool device to expand this logical name
+;  and supply the actual physical disk name and the full directory path. This
+;  will normally be _D0P1:\XOS\SPL\splname\ (assuming that XOSSPL: is defined
+;  as _D0P1:\XOS\SPL\). The physical device name specified for PTRNAME is
+;  simply stored and is available to the print server. The spool device does
+;  not use it otherwise.
+
+$$$=!0
+FRM au_unit   , 4t	;Unit number
+FRM au_splname, 20t	;Spool name
+au_SIZE=!$$$
+
+;Description block for addunitchar
+
+	.MOD	4
+splaublk:
+ CHARBGN  3, 0
+ CHARENT  UNIT   , DECV, ,  1, 0, 0, splauunit   , 0
+ CHARENT  SPLNAME, TEXT, , 16, 0, 0, splausplname, 0
+ CHAREND
+
+spladdunit:
+	ENTER	au_SIZE, 0		;Set up and initialize our stack frame
+	CLRL	EAX
+	MOVL	au_splname+0[EBP], EAX
+	MOVL	au_splname+4[EBP], EAX
+	MOVL	au_splname+8[EBP], EAX
+	MOVL	au_splname+12t[EBP], EAX
+	MOVL	au_splname+16t[EBP], EAX
+	DECL	EAX
+	MOVL	au_unit[EBP], EAX
+	MOVL	EDX, knlTda+tdaBuffer2## ;Get address of add-unit
+					 ;  characteristics
+	PUSHL	#0			;Fail on bad names here
+	PUSHL	#splaublk
+	CALL	sysIoCharValues##	;Process the characteristics
+	TESTL	EAX, EAX
+	JNS	18$			;If no error
+aufail:	MOVL	knlTda+tdaError##, EAX
+	JMP	audone
+
+;Here if unit is already defined
+
+12$:	MOVL	EAX, #ER_DUADF
+	JMP	aufail
+
+;Here if required characteristic is missing
+
+14$:	MOVL	EAX, #ER_CHARM
+	JMP	aufail
+
+;Here if the spool name is too long
+
+16$:	MOVL	EAX, #ER_CHARS
+	JMP	aufail
+
+;Here with all parameters processed
+
+18$:	CMPL	au_splname[EBP], #0	;Did we get the spool name?
+	JE	14$
+	MOVL	EAX, au_unit[EBP]	;Get unit number
+	CMPL	EAX, #-1		;Was it specified?
+	JE	14$			;No - fail
+	LEAL	EBX, au_splname+3[EBP]	;OK - find the end of the spool name
+	MOVL	EDX, EBX
+20$:	CMPB	[EBX], #0
+	JE	22$
+	INCL	EBX
+	JMP	20$
+
+22$:	MOVL	ECX, EBX		;Get length of the name
+	SUBL	ECX, EDX
+	MOVL	EAX, au_unit[EBP]
+	TESTL	EAX, EAX		;Adjust length for unit number
+	JE	24$
+	INCL	ECX
+	CMPL	EAX, #9
+	JLE	24$
+	INCL	ECX
+24$:	CMPL	ECX, #13t
+	JG	16$			;Fail if name is too long
+	TESTL	EAX, EAX		;Is unit number 0?
+	JE	26$			;Yes
+	CALL	knlPutDecNmbr##		;No - Add unit number to name
+26$:	MOVL	EDI, splccb+ccb_dcbhead	;Point to first SPL DCB
+	MOVL	EAX, au_splname+0[EBP]	;Get name for compares
+	MOVL	EDX, au_splname+4[EBP]
+	MOVL	ECX, au_splname+8[EBP]
+	MOVL	EBX, au_splname+12t[EBP]
+28$:	TESTL	EDI, EDI
+	JE	nameok			;If no more DCBs
+	CMPL	EAX, dcb_name+0[EDI]	;Same name?
+	JNE	30$
+	CMPL	EDX, dcb_name+4[EDI]
+	JNE	30$
+	CMPL	ECX, dcb_name+8[EDI]
+	JNE	30$
+	CMPL	EBX, dcb_name+12t[EDI]
+	JE	12$			;Yes - fail
+30$:	MOVL	EDI, [EDI]		;Not this one - try next
+	JMP	28$			;Continue
+.PAGE
+;Here if error when have exec memory resource
+
+6$:	MOVL	dcb_name[EDI], #0	;Clear name in DCB so device can not
+					;  be used!
+8$:	CALL	knlGiveXRes##		;Give up the exec memory resource
+	JMP	aufail
+
+;Here if unit is not defined now
+
+nameok:	CALL	knlGetXRes##		;Get exec memory resource
+	MOVL	ECX, #dcb_spSIZE	;Create a DCB
+	MOVL	EBX, #DS$SPOOL|DS$MLTUSER|DS$QOUT
+	MOVL	EDI, #spldsp
+	CALL	knlMakeDcb##
+	JC	8$
+	PUSHL	EDI
+	PUSHL	#splccb
+	CALL	sysIoLinkDcb##
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	EAX, au_splname+0[EBP]	;Store the device name
+	MOVL	dcb_name+0[EDI], EAX
+	MOVL	EAX, au_splname+4[EBP]
+	MOVL	dcb_name+4[EDI], EAX
+	MOVL	EAX, au_splname+8[EBP]
+	MOVL	dcb_name+8[EDI], EAX
+	MOVL	EAX, au_splname+12t[EBP]
+	MOVL	dcb_name+12t[EDI], EAX
+	MOVL	dcb_devchar[EDI], #spldctbl ;Store offset of devchar table
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+audone:	CLRL	EAX			;Get our return value
+	MOVL	knlTda+tdaAmount##, #1
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	LEAVE
+	RET
+.PAGE
+;Subroutine called by adduchars when "UNIT" characteristic found
+
+splauunit:
+	CMPL	EAX, #99t
+	JAE	4$
+	MOVL	au_unit[EBP], EAX
+	CLC
+	RET
+
+;Here if bad characteristic value
+
+4$:	MOVL	EAX, #ER_CHARV		;Get error code
+	STC				;Fail
+	RET
+
+;Subroutine called by adduchars when "SPLNAME" characteristic found
+;	c{EBX} = Address of name string
+;	c{ECX} = Length of name
+
+splausplname:
+	MOVL	au_splname+0[EBP], #'PTR'
+	LEAL	EDX, au_splname+3[EBP]
+	IFFAULT	knlRtnAdrEr##
+6$:	MOVZBL	EAX, [EBX]
+	TESTL	EAX, EAX
+	JE	8$
+	INCL	EBX
+	MOVB	[EDX], AL
+	INCL	EDX
+	LOOP	ECX, 6$
+8$:	CLRL	EAX
+	RET
+.PAGE
+
+;Here to set the CLSVECT device characteristic
+
+dcsetclsvect:
+	MOVB	dcb_spclsvect[EDI], AL	;Store the vector number
+	MOVL	EAX, knlPda+pdaPid##	;Also store his PID
+	MOVL	dcb_spclspid[EDI], EAX
+	CLC
+	RET
+
+;Here to set the SPLPATH device characteristic
+
+dcsetsplpath:
+	MOVL	dcb_spsplplen[EDI], ECX
+	JMP	knlDcSetStr##
+
+;Here to set the SPLDEV device characteristic
+
+dcsetspldev:
+	CLRL	EAX
+	MOVL	dcb_spspldevx+0[EDI], EAX
+	MOVL	dcb_spspldevx+4[EDI], EAX
+	MOVL	dcb_spspldevx+8[EDI], EAX
+	MOVL	dcb_spspldevx+12t[EDI], EAX
+	MOVL	EDX, #16t
+	LEAL	ESI, dcb_spspldev[EDI]
+4$:	MOVB	AL, [EBX]
+	MOVB	[ESI], AL
+	CMPB	AL, #':'
+	JE	6$
+	CMPB	AL, #0
+	JE	6$
+	DECL	EDX
+	JS	knlBadParmS##
+	MOVB	dcb_spspldevx-dcb_spspldev[ESI], AL
+	INCL	EBX
+	INCL	ESI
+	LOOP	ECX, 4$
+	MOVB	[ESI], #0
+	CLC
+6$:	RET
+.PAGE
+;Device check routine for SPL class devices
+;	long spldevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 0 if no match, 1 if found a match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+;Spooled device names consist of a class name (currently only PTR is supported)
+;  followed by a name which identifies the specific device. For USB printers
+;  this is currently derived from the model name returned by the device. In
+;  the future this will probably be obtained with a database accessed using the
+;  device's full ID. Currently there is no provision for supporting more than
+;  one device of the same type.
+
+devc_name  =!16t
+devc_path  =!12t
+devc_rtndcb=!8
+
+spldevchk:
+	PUSHL	EBX
+	MOVL	EBX, devc_name[ESP]
+	CMPB	3[EBX], #'A'
+	JB	devcnot			;No
+	CMPB	3[EBX], #'Z'
+	JBE	6$			;Yes
+devcnot:CLRL	EAX
+devcrtn:POPL	EBX
+	RET	12t
+
+6$:	MOVL	EDX, splccb+ccb_dcbhead	;Point to first spooled DCB
+	TESTL	EDX, EDX
+	JE	devcnot
+10$:	MOVL	EAX, dcb_name+0[EDX]	;Does name match?
+	CMPL	[EBX], EAX
+	JNE	12$			;No
+	MOVL	EAX, dcb_name+4[EDX]
+	CMPL	4[EBX], EAX
+	JNE	12$			;No
+	MOVL	EAX, dcb_name+8[EDX]
+	CMPL	8[EBX], EAX
+	JNE	12$			;No
+	MOVL	EAX, dcb_name+12t[EDX]
+	CMPL	12t[EBX], EAX
+	JE	havespl			;Yes - this is it!
+12$:	MOVL	EDX, dcb_next[EDX]	;Not this one - try next
+	TESTL	EDX, EDX
+	JNE	10$			;Continue if another
+	JMP	devcnot
+.PAGE
+;Here with a match on the device name
+
+havespl:CMPL	devc_rtndcb[ESP], #0	;Want a DCB?
+	JE	3$			;No
+	CMPB	knlTda+tdaFunc##, #QFNC_OPEN ;Yes - open function?
+	JNE	2$			 ;No
+	TESTL	knlTda+tdaOption##, #XO$RAW|XO$PHYS ;Want raw or physical mode?
+	JNE	2$
+	TESTL	knlTda+tdaOption##, #XO$OUT ;Want to do output?
+	JNE	6$			;Yes
+2$:	MOVL	knlTda+tdaDcb##, EDX
+3$:	MOVL	EAX, #1			;Yes - return 1
+	JMP	devcrtn
+
+;Here if no spool string specified - say no such device!
+
+4$:	MOVL	EAX, #ER_NSDEV
+	JMP	devcrtn
+
+;Here if not opening device in raw or physical mode - We need to redirect this
+;  to the indicated spool device and directory and generate a unique file name
+;  from our sequence number. We make it look like the user specified the
+;  device and path. We also set up an SLB that will be used when the file is
+;  closed to interrupt PTRSRV.
+
+6$:	MOVL	ECX, devc_name[ESP]
+	MOVL	EAX, dcb_spspldevx+0[EDX] ;Copy new physical device name
+	MOVL	[ECX], EAX
+	MOVL	EAX, dcb_spspldevx+4[EDX]
+	MOVL	4[ECX], EAX
+	MOVL	EAX, dcb_spspldevx+8[EDX]
+	MOVL	8[ECX], EAX
+	MOVL	EAX, dcb_spspldevx+12t[EDX]
+	MOVL	12t[ECX], EAX
+	MOVL	ECX, dcb_spsplplen[EDX]
+	TESTL	ECX, ECX
+	JE	4$
+	PUSHL	EDI
+	PUSHL	ESI
+	ADDL	ECX, #3
+	SHRL	ECX, #2
+	LEAL	ESI, dcb_spsplpath[EDX]	;Copy new directory path
+	MOVL	EDI, devc_path+8[ESP]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVL	EBX, devc_path+8[ESP]	;Add the file name
+	ADDL	EBX, dcb_spsplplen[EDX]
+	MOVL	EAX, dcb_spseqnum[EDX]
+	MOVL	EDI, EDX
+	CALL	knlPutHex8Nmbr##
+	MOVL	[EBX], #'.SPL'		;Add the extension
+	MOVB	4[EBX], #0
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#-XMBX_64
+	PUSHL	EAX
+	CALL	sysMemGetXmb##		;Get a small XMB
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	10$			;Forget it if error! (unlikely!)
+	MOVL	slb_label[ESI], #'SLB*'
+	MOVZBL	EAX, dcb_spclsvect[EDI]	;Store the close signal vector number
+	MOVL	slb_vector[ESI], EAX
+	MOVL	EAX, dcb_spclspid[EDI]	;Store the close signal PID (This is
+	MOVL	slb_gdata[ESI], EAX	;  stored in slb_gdata for now - the
+					;  code in ioclosefin picks it up from
+					;   here.)
+	MOVL	slb_dcnt[ESI], #4	;There are 4 data items
+	MOVL	EAX, dcb_spseqnum[EDI]	;Store the sequence number
+	MOVL	slb_data+0[ESI], EAX
+	MOVL	EAX, dcb_spclsdata[EDI] ;Store the close signal data value
+	MOVL	slb_data+4[ESI], EAX
+	MOVL	slb_data+8[ESI], #0	;Clear the date/time value
+	MOVL	slb_data+12t[ESI], #0
+	MOVL	knlTda+tdaCloseSlb##, ESI
+10$:	INCL	dcb_spseqnum[EDI]	;Increment the sequence number
+	ORB	knlTda+tdaQSts1##, #XF1$SPOOL ;Indicate spooled device
+	POPL	ESI
+	POPL	EDI
+	MOVL	EAX, #2			;Return 2 to request restart of the
+	JMP	devcrtn			;  device search
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry
+;	c{EDI} = Offset of DCB
+
+splopen:CLRL	EAX
+	BTL	knlTda+tdaCmd##, #XO%ODFS
+	JNC	2$			;If no illegal options
+	MOVL	EAX, #ER_NTFIL
+2$:	RET
+.PAGE
+	.SBTTL	CF_PUNITS - Get device unit information
+
+;Here for the get device information entry
+;	c{EDI}    = Offset of DCB
+
+splunitinfo:
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+	.SBTTL	SPL class driver data
+
+	DATA
+
+splccb:	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'SPL', 0	;ccb_name    - Name of this class
+	.LONG	0xFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'PTR'		;ccb_npfxval - Name prefix part value
+	.LONG	spldevchk	;ccb_devchk  - Address of device check routine
+	.LONG	splcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	splcctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+	LKEEND

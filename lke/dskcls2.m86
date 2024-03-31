@@ -1,0 +1,1250 @@
+	.TITLE	dskcls2 - Controller independent hard disk routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+;;;;	.INCLUD	XOSINC:\xmac\xosxhdk.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+	.EXPORT	xosdskGiveUpUcb
+	.EXPORT	xosdskHdkMedia
+	.EXPORT	xosdskHdkSetCyln
+	.EXPORT	xosdskHdkSetHead
+	.EXPORT xosdskHdkSetSec
+	.EXPORT	xosdskUnmount
+
+	CODE
+
+;Here for the determine media type function - calling this routine for the
+;  base unit of a disk sets up units for each partition on the disk
+;	c[EDI] = Address of DCB
+;	CALL	xosdskHdkMedia
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = Disk may be file structured
+;	  Z:clr = Disk cannot be file structured
+
+;If the disk is a physical unit (instead of a partition), this routine scans
+;  the partition table in block 0 and sets up units for each partition on
+;  the disk. The order in which partition number are assigned has changed
+;  starting with XOS version 3.2.4. Previously, an attempt was made to copy
+;  the order used by DOS. Currently, partition numbers are assigned based
+;  only on the positions of partitions in the partition table(s). It does
+;  not depend on the partition types. The base 4 entry partition table is
+;  scanned forwards only two times. The first time only normal (not extended)
+;  partitions are processed. The second time only extended partitions are
+;  partitions are processed. In the eextended partition tables anything other
+;  than a link to another extended partition is ignored. If more than one
+;  extended partition is found each extended partition if processed completely
+;  before going on to the next. This change has been made in the expectation
+;  that additional partition types will be supported, making the definition
+;  of "supported" partitions uncertain and subject to change.
+
+$$$=!0
+FRM hm_voffset, 4t	;Offset for block in extended partition
+FRM hm_doffset, 4t
+FRM hm_count  , 4t	;Number of partitions set up
+FRM hm_index  , 4t	;Partition index
+FRM hm_unit   , 4t	;Unit numbers
+FRM hm_sects  , 4t	;Number of sectors
+FRM hm_heads  , 4t	;Number of heads
+FRM hm_track  , 4t	;Track number
+FRM hm_retry  , 4t	;Retry counter for getting CD track info
+FRM hm_trkbufr, 4t
+FRM hm_left0  , 4t
+FRM hm_left1  , 4t
+hm_SIZE=!$$$
+
+xosdskHdkMedia::
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ESI, ESI
+	JNE	1$
+	MOVL	EAX, #ER_MDCHG
+	STC
+	RET
+
+1$:	CMPL	ucb_baseucb[ESI], ESI	;Is this a partition?
+	JE	2$			;No
+	CLRL	EAX			;Yes - set Z to indicate might contain
+					;  a file structure
+ret002:	RET				;Nothing to do here
+
+;Here if this is the real physical disk
+
+2$:	ENTER	hm_SIZE, 0		;Set up our stack frame
+	CLRL	EAX
+	MOVL	hm_count[EBP], EAX
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EAX
+	MOVL	hm_sects[EBP], EAX
+	MOVL	hm_heads[EBP], EAX
+	MOVZBL	EAX, ucb_punit[ESI]	;Initialize unit and partition number
+	MOVB	AH, #1
+	MOVL	hm_unit[EBP], EAX
+	CMPB	ucb_unittype[ESI], #DT_CDRM ;Is this a CD-ROM?
+	JE	cdrom			;Yes
+medread:PUSHL	#0			;No - try to read block 0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	#0
+	PUSHL	EAX
+	CALL	xosdskFindBlock#
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	meddone			;If error, give up buffer and return
+	ORB	ucb_sts1[ESI], #U1$VALID ;Indicate disk contains valid data
+ 	CMPW	bfr_data+0x1FE[EBX], #0xAA55 ;Is this a valid boot block?
+	JNE	medmaybe		;No!
+	MOVL	EAX, bfr_data+0x1B8[EBX] ;Yes - store the disk ID
+	MOVL	ucb_diskid[ESI], EAX
+	LEAL	EDX, bfr_data+0x1BE[EBX] ;Point to data for first partition
+	CLRL	EAX			 ;  table entry
+	MOVL	ECX, #4
+6$:	CMPB	[EDX], #0		;Valid boot indicator value?
+	JE	8$			;Yes
+	CMPB	[EDX], #0x80		;Maybe
+	JNE	medmaybe		;No - assume disk not partitioned
+8$:	CMPB	4[EDX], #0		;Is the partition type 0?
+	JE	10$			;Yes - go on
+	CMPB	2[EDX], #0		;No - are the sector numbers non-0?
+	JE	10$
+	CMPB	6[EDX], #0
+	JE	10$
+	INCL	EAX			;OK - count the valid partition entry
+10$:	ADDL	EDX, #0x10
+	LOOP	ECX, 6$
+	TESTL	EAX, EAX		;Did we find at least one valid entry?
+	JE	medmaybe		;No - return with Z set to indicate the
+					;  raw disk might contain a valid file
+					;  structure
+					;Yes - fall into medpart on next page
+.PAGE
+;Here with what looks like a valid partition table - Scan the table and
+;  make sure the heads and sectors values are reasonable.
+
+medpart:LEAL	EDX, bfr_data+0x1BE[EBX] ;Point to data for first partition
+	MOVL	ECX, #4
+6$:	CMPB	4t[EDX], #0		;Is this partition in use?
+	JE	12$			;No
+	CMPB	4t[EDX], #0x55		;Yes - is this an EZ-Drive partition?
+	JNE	8$			;No - go on
+	CMPL	hm_count[EBP], #0	;Yes - is it the first partition?
+	JNE	8$			;No
+	PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Yes - finished with block 0
+	INCL	dcb_dkdskblk+0[EDI]	;Use block 1 instead!
+	INCL	hm_count[EBP]
+	JMP	medread
+
+;Here if not an EZ-Drive partition indicator
+
+8$:	INCL	hm_count[EBP]
+	MOVZWL	EAX, 5[EDX]		;Get number of heads and sectors
+	ANDL	EAX, #0x3FFF
+	INCB	AL
+	CMPL	hm_sects[EBP], #0	;Do we already have values?
+	JNE	10$			;Yes - go check the values
+	MOVB	hm_sects[EBP], AH	;No - store the values
+	MOVB	hm_heads[EBP], AL
+	JMP	12$
+
+;Here if already have head and sector values
+
+10$:	CMPB	hm_sects[EBP], AH	;Do these values match?
+	JNE	mednorm			;No
+	CMPB	hm_heads[EBP], AL	;Maybe
+	JNE	mednorm			;No
+12$:	ADDL	EDX, #16t
+	LOOP	ECX, 6$
+	CMPL	hm_sects[EBP], #0	;Do we have parameters?
+	JE	mednorm			;No - go on
+	MOVL	EAX, hm_sects[EBP]	;Yes - Update number of sectors
+	MOVL	ucb_csects[ESI], EAX
+	MOVL	ECX, hm_heads[EBP]	;Update number of heads
+	MOVL	ucb_cheads[ESI], ECX
+	IMULL	ECX, EAX		;Calculate adjusted number of cylinders
+	TESTL	ECX, ECX		;Make sure we don't divide by 0
+	JE	14$
+	MOVL	EAX, ucb_iblocks[ESI]
+	CLRL	EDX
+	DIVL	ECX
+	MOVL	ucb_ccylns[ESI], EAX
+
+;;;;	IMULL	EAX, ucb_cheads[ESI]	;Calculate adjusted total number of
+;;;;	IMULL	EAX, ucb_csects[ESI]	;  blocks
+;;;;	MOVL	ucb_cblocks[ESI], EAX
+
+14$:	MOVL	EAX, ucb_disp[ESI]	;Do we need to set parameters?
+	CMPL	kf_setparms[EAX], #0
+	JE	mednorm			;No
+	TESTB	ucb_bits[ESI], #UB$LBA	;Maybe
+	JNE	mednorm			;No
+	PUSHL	#kf_setparms		;Yes - get function
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xosdskTransfer#		;Do it
+
+;Here to set up normal partitions
+
+mednorm:LEAL	EDX, bfr_data+0x1BE[EBX] ;Point to data for first partition
+	MOVL	hm_left0[EBP], #4
+16$:	MOVL	hm_doffset[EBP], #0	;Clear the extended partition drive
+					;  offset
+	MOVZBL	EAX, 4[EDX]		;Is this partition in use?
+	CMPB	AL, #0
+	JE	22$			;No
+	MOVL	ECX, 8[EDX]		;Yes - get highest block in partition
+	ADDL	ECX, 12t[EDX]
+	CMPL	ECX, ucb_cblocks[ESI]	;Can we access the whole partition?
+	JA	20$			;No - ignore the partition
+	CMPB	AL, #5			;Is this an normal partition?
+	JE	22$			;No
+	CMPB	AL, #0x0F		;Maybe
+	JE	22$			;No
+	MOVB	AH, AL			;Is it a SpeedStor partition?
+	ANDB	AH, #0x64
+	CMPB	AH, #0x60
+	JNE	18$			;No
+	TESTB	AL, #0x10		;Yes - extended speed stor partition?
+	JE	22$			;Yes
+	ANDB	AL, #0xFD		;No - remove the read-only bit
+18$:	PUSHL	EAX			;Yes
+	LEAL	EAX, bfr_data+0x1AE[EBX]
+	SUBL	EAX, EDX
+	NEGL	EAX
+	SHRL	EAX, #4
+	MOVL	hm_index[EBP], EAX
+	POPL	EAX
+
+	PUSHL	EBX
+	PUSHL	EDX
+	PUSHL	hm_unit[EBP]		;Unit numbers
+	PUSHL	hm_index[EBP]		;Partition index
+	PUSHL	EAX			;Partition type
+	PUSHL	EBX			;Address of boot block buffer
+	PUSHL	EDX			;Address of partition table entry
+	PUSHL	hm_doffset[EBP]
+	PUSHL	EDI			;Address of DCB
+	PUSHL	ESI			;Address of base (physical device) UCB
+	CALL	setpart			;Set up normal partition
+	POPL	EDX
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	meddone			;If error
+	INCB	hm_unit+1[EBP]		;Bump secondary unit number
+20$:	MOVB	4[EDX], #0
+22$:	ADDL	EDX, #16t		;Bump partition pointer
+	DECL	hm_left0[EBP]		;More to do for first scan?
+	JNE	16$			;Yes - continue
+					;No - fall into doext on next page
+.PAGE
+;Here with all normal partitions set up - Now set up extended partitions.
+;  Note that since the code above cleared the partition type in the buffer
+;  for each partition that it set up, any that are left must be extended
+;  partitions.
+
+medext:	LEAL	EDX, bfr_data+0x1BE[EBX] ;No - reset pointer to start of
+	MOVL	hm_left0[EBP], #4	 ;  partition table, reset count
+
+2$:	CLRL	EAX			;Clear the extended partition drive
+	MOVL	hm_doffset[EBP], EAX	;  offset
+	MOVB	AL, 4t[EDX]		;Get partition type
+	TESTB	AL, AL			;Is this partition in use?
+	JE	24$			;No
+	MOVB	AH, AL			;Yes - is it a SpeedStor partition?
+	ANDB	AH, #0x64
+	CMPB	AH, #0x60
+	JNE	4$			;No
+	ANDB	AL, #0xFD		;Yes - remove the read-only bit
+4$:	LEAL	EAX, bfr_data+0x1AE[EBX]
+	SUBL	EAX, EDX
+	NEGL	EAX
+	SHRL	EAX, #4
+	MOVL	hm_index[EBP], EAX
+	PUSHL	EBX
+	PUSHL	EDX
+	ORB	hm_index[EBP], #0x80	;Indicate extended partition
+	MOVL	EAX, 8t[EDX]		;Get block number for boot block for
+	MOVL	hm_voffset[EBP], EAX	;  extended volume
+
+;Here with the disk address for what should be an extended partition table
+;  block.
+
+12$:	MOVL	hm_doffset[EBP], EAX
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], #0	;FIX THIS FOR 64-BIT!!!
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	#0
+	PUSHL	EAX
+	CALL	xosdskFindBlock#	;Read it
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	22$			;If error
+	CMPW	bfr_data+0x1FE[EBX], #0xAA55 ;Is this a valid boot block?
+	JNE	20$			;No
+
+;Here with an extended partition table block. This contains a funny
+;  partition table which should only have 2 entries. We will handle additional
+;  entries if they are there.
+
+	LEAL	EDX, bfr_data+0x1BE[EBX] ;Point to first partition table entry
+	MOVL	hm_left1[EBP], #4	;There are 4 entries to look at
+14$:	MOVB	AL, 4t[EDX]		;Get logical drive type
+	TESTB	AL, AL			;In use?
+	JE	16$			;No - go on
+	CMPB	AL, #5			;Yes - pointer to next extended volume?
+	JE	16$			;Yes - skip it for now
+	PUSHL	EBX
+	PUSHL	EDX
+	PUSHL	hm_unit[EBP]		;Unit numbers
+	PUSHL	hm_index[EBP]		;Partition index
+	PUSHL	EAX			;Partition type
+	PUSHL	EBX			;Address of boot block buffer
+	PUSHL	EDX			;Address of partition table entry
+	PUSHL	hm_doffset[EBP]
+	PUSHL	EDI			;Address of DCB
+	PUSHL	ESI			;Address of base (physical disk) UCB
+	CALL	setpart			;No - set up the logical drive
+	POPL	EDX
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	20$			;If error
+	INCB	hm_unit+1[EBP]		;Bump secondary unit number
+16$:	ADDL	EDX, #16t		;Bump logical drive table pointer
+	DECL	hm_left1[EBP]		;Continue if more table entries
+	JNE	14$
+
+;Here when have set up all partitions defined in this table - Now look for
+;  a link to the next partition table block.
+
+	LEAL	EDX, bfr_data+0x1BE[EBX] ;Point to data for first partition again
+	MOVL	hm_left1[EBP], #4	;There are 4 entries to look at
+18$:	CMPB	4[EDX], #5		;Is this a pointer to the next extended
+					;  volume?
+	JE	30$			;Yes
+	ADDL	EDX, #16t		;No - advance pointer
+	DECL	hm_left1[EBP]		;Continue if more to check
+	JNE	18$
+
+;Here if did not find a pointer to another extended partition table - We are
+;  finished with this extended partition.
+
+20$:	PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Give up the block
+22$:	POPL	EDX			;Restore previous state
+	POPL	EBX
+24$:	ADDL	EDX, #16t		;Bump partition pointer
+	DECL	hm_left0[EBP]
+	JNE	2$
+meddone:PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Finished with the partition table
+26$:	LEAVE				;Clear Z to indicate this disk cannot
+	TESTL	ESP, ESP		;  be file structured
+	RET				;Return
+                
+;Here if have another extended partition table (type 5 entry in an extended
+;  parition table)
+
+30$:	PUSHL	8[EDX]			;Save block number of next boot block
+	PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Give up the bufffer
+	POPL	EAX			;Restore block number
+	ADDL	EAX, hm_voffset[EBP]	;Make in relative to start of the disk
+	JMP	12$			;Go process next logical drive
+
+;Here if don't have a standard MBR in block 0 indicate have raw disk which
+;  might contain a file system
+
+medmaybe:
+	PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Thats all
+	LEAVE				;Set Z to indicate this disk can be
+	CLRL	EAX			;  file structured
+	RET				;Return
+.PAGE
+;Here if this is a CD-ROM drive - CD-ROMs are not partitioned, but they can
+;  be divided into "sessions" which we treat much like partitions.  The
+;  data structures are completely different, however.  Sessions are defined
+;  as part of the low-level format of the CD-ROM.
+
+2$:	LEAVE
+	RET
+
+cdrom:	MOVL	hm_retry[EBP], #5
+redotrk:PUSHL	ESI
+	MOVL	ECX, #5			;Get a 2048 byte buffer (this is big
+	CALL	knlGetXmb##		;  enough to hold data for about 25
+	MOVL	EBX, ESI		;  sessions, which should be enough!)
+	POPL	ESI
+	JC	2$
+	MOVL	hm_trkbufr[EBP], EBX
+4$:	MOVL	[EBX], #0xFFFFFFFF
+	PUSHL	#kf_gettoc		;Get the TOC data
+	PUSHL	EBX
+	PUSHL	#2048t
+	CALL	xosdskTransfer#
+	TESTL	EAX, EAX
+	JNS	5$
+	ORL	EAX, #0xFFFFF000
+	CMPL	EAX, #ER_MDCHG
+	JE	45$
+	CMPL	EAX, #ER_NTRDY
+	JNE	notvalid
+45$:	DECL	hm_retry[EBP]
+	JNS	4$
+	JMP	notvalid
+
+;Here with the raw TOC data from the CD-ROM drive.  All we need from this is
+;  the number of sessions and the number of the initial track for each session.
+;  We scan this data and discard everything else.  When we are finished, we
+;  have constructed a list containing the number of the first track of each
+;  session followed by 4 unused bytes at the beginning of the buffer.  hm_count
+;  contains the number of sessions.  If the data is invalid (which probably
+;  means that the drive does not support multiple sessions), we assume the
+;  session contains one session starting with track 0 (which means the first
+;  track on the disk).
+
+5$:	CMPL	[EBX], #0xFFFFFFFF	;Did we get any data?
+	JE	notvalid		;No
+	MOVZWL	EAX, [EBX]		;Get count from the header
+	XCHGB	AL, AH
+	ADDL	EAX, #2			;Plus 2 bytes
+	CMPL	EAX, ECX		;Did we get this much data?
+	JG	notvalid		;No - not valid!
+	SUBL	EAX, #4t		;Yes - get number descriptors
+	CLRL	EDX
+	DIVL	knlLit11##
+	CMPL	EAX, #1			;Do we have at least one descriptor?
+	JL	notvalid		;No - not valid!
+	MOVL	ECX, EAX		;Yes
+	CMPB	4[EBX], #0		;Is the session number in the first
+					;  descriptor valid? (If this is 0,
+					;  we probably have an old drive which
+					;  does not return full TOC data.)
+	JE	notvalid		;No - not valid!
+	MOVB	AL, 2[EBX]		;Get first session number
+	MOVB	hm_index[EBP], AL
+	LEAL	EDX, 4[EBX]
+	PUSHL	EBX
+	MOVB	[EBX], #0xFF		;Indicate no track number yet
+6$:	MOVB	AL, [EDX]		;Get session number from descriptor
+	CMPB	AL, hm_index[EBP]	;Same session?
+	JE	7$			;Yes
+	JB	14$			;No - not valid if smaller
+	CMPB	[EBX], #0xFF		;Did we get a track number for the last
+					;  session?
+	JE	14$			;No - not valid!
+	MOVB	hm_index[EBP], AL	;Yes - store new session number
+	INCL	hm_count[EBP]		;Count the session
+	ADDL	EBX, #5t		;Advance to next session
+	MOVB	[EBX], #0xFF		;Indicate no track number yet
+7$:	CMPB	1[EDX], #0x14		;Is the ADR/control value right?
+	JE	8$			;Yes
+	CMPB	1[EDX], #0x16		;Maybe
+	JNE	10$			;No - skip this descriptor
+8$:	CMPB	3[EDX], #0xA0		;Is this the first track item?
+	JNE	10$			;No - skip this descriptor
+	MOVB	AL, 8[EDX]		;Yes - get the track number
+	MOVB	[EBX], AL		;Store the track number
+	MOVL	1[EBX], #0xFFFFFFFF	;Set the next 4 bytes to make
+					;  debugging easier (It serves no
+					;  other purpose!)
+10$:	ADDL	EDX, #11t		;Advance to next descriptor
+	LOOP	ECX, 6$			;Continue if more descriptors
+	CMPB	[EBX], #0xFF		;No - did we get a track number for the
+	POPL	EBX			;  last session?
+	JE	notvalid		;No - not valid!
+	INCL	hm_count[EBP]		;Yes - count the last session
+	JMP	hvlist			;Continue
+
+;Here if data is not valid
+
+14$:	POPL	EBX			;Restore EBX
+					;Fall into notvalid on next page
+
+.PAGE
+;Here if the TOC data is not valid - We assume we have a disk with one data
+;  track per session.  This is likely if we have a non-standard mode 1
+;  multi-session disk in a drive which does not support the multi-media
+;  commands or if we have a normal single session mode 1 disk in that drive.
+;  Assuming that disk has a single data track (which is a pretty good
+;  assumtion), this will work in both cases!
+
+notvalid:
+	CALL	gettrkdata
+	JC	badtrkdata
+	PUSHL	EBX
+	MOVL	hm_count[EBP], #0
+4$:	CMPB	1[EDX], #14h		;Is the ADR/control value right?
+	JE	6$			;Yes
+	CMPB	1[EDX], #16h		;Maybe
+	JNE	8$			;No - skip this descriptor
+6$:	MOVB	AL, 2[EDX]		;Yes - get track number
+	CMPB	AL, #0			;Valid track number?
+	JE	8$			;No
+	CMPB	AL, #99t		;Maybe
+	JA	8$			;No
+	MOVB	[EBX], AL		;Yes - store track number
+	MOVL	EAX, 4[EDX]		;Get the logical block number
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	[EBX], EAX		;Store it
+	INCL	hm_count[EBP]		;Count the partition
+	ADDL	EBX, #5t
+8$:	ADDL	EDX, #8t
+	LOOP	ECX, 4$
+	CMPL	hm_count[EBP], #0	;Did we find any valid tracks?
+	JE	onesession		;No - try to set it up with one session!
+	JMP	hvblks			;Yes - continue
+.PAGE
+;Here if error getting the track data
+
+badtrkdata:
+	CMPL	EAX, #ER_NTRDY		;Is the error not ready?
+	JNE	12$			;No - assume have one session
+	JMP	sesdone			;Yes - don't set up any partitions here
+
+;Here with the list of initial tracks constructed at the beginning of our
+;  buffer.  hm_count contains the number of sessions.  We now have to find
+;  the logical block numbers which corresponding the to beginning of each
+;  track.  If we get invalid data here, we assume we have one session starting
+;  with logical block 0.
+
+hvlist:	CALL	gettrkdata
+	JNC	2$
+	ORL	EAX, #0xFFFFF000
+	CMPL	EAX, #ER_MDCHG
+	JE	1$
+	CMPL	EAX, #ER_NTRDY
+	JNE	badtrkdata
+1$:	DECL	hm_retry[EBP]
+	JNS	redotrk
+	JMP	badtrkdata
+
+2$:	MOVL	EAX, hm_count[EBP]
+	TESTL	EAX, EAX
+	JE	12$
+	MOVL	hm_index[EBP], EAX
+	PUSHL	EBX
+4$:	CMPB	1[EDX], #14h		;Is the ADR/control value right?
+	JE	6$			;Yes
+	CMPB	1[EDX], #16h		;Maybe
+	JNE	8$			;No - skip this descriptor
+6$:	MOVB	AL, [EBX]		;Is this the track we are looking for
+	CMPB	AL, 2[EDX]		;  now?
+	JNE	8$			;No
+	MOVL	EAX, 4[EDX]		;Yes - get the logical block number
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	MOVL	1[EBX], EAX
+	ADDL	EBX, #5t
+	DECL	hm_index[EBP]		;More to find?
+	JE	hvblks			;No - finished
+8$:	ADDL	EDX, #8t
+	LOOP	ECX, 4$
+
+;Here if the track data is not valid - Assume we have a single session starting
+;  with logical block 0!
+
+onesession:
+	POPL	EBX
+12$:	MOVL	1[EBX], #0
+	MOVL	hm_count[EBP], #1
+	JMP	16$
+
+;Here with the starting logical blocks for all sessions found
+
+hvblks:	POPL	EBX
+16$:	PUSHL	EBX
+	MOVL	hm_index[EBP], #1
+20$:	PUSHL	ESI
+	MOVB	AL, #0
+
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	hm_unit[EBP]
+	PUSHL	hm_index[EBP]
+	PUSHL	#0
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	setpart2
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	22$
+
+;;;;; IS THIS RIGHT ?????
+
+	INCB	hm_unit+1[EBP]		;Bump secondary unit number
+	MOVL	EAX, 1[EBX]
+	IMULL	EAX, ucb_pblksz[ESI]
+	MOVL	ucb_partnoff[ESI], EAX
+	MOVL	ucb_cblocks[ESI], #0FFFFFFh
+	MOVL	ucb_iblocks[ESI], #0FFFFFFh
+22$:	POPL	ESI
+	ADDL	EBX, #5t
+	INCL	hm_index[EBP]
+	DECL	hm_count[EBP]
+	JNE	20$
+	POPL	EBX
+sesdone:PUSHL	hm_trkbufr[EBP]
+	CALL	sysMemGiveXmb##
+	LEAVE				;Clear Z to indicate this partition can
+	CLRL	EAX			;  not be file structured
+	INCL	EAX
+	RET				;Return
+.PAGE
+gettrkdata:
+	PUSHL	#kf_gettrks		;Get the track data
+	ADDL	EBX, #512t
+	PUSHL	EBX
+	PUSHL	#2048t-512t
+	CALL	xosdskTransfer#
+	TESTL	EAX, EAX
+	JS	6$
+	MOVZWL	EAX, 512t[EBX]		;Get count from the header
+	XCHGB	AL, AH
+	ADDL	EAX, #2t		;Plus 2 bytes
+	CMPL	EAX, ECX		;Did we get this much data?
+	JG	4$			;No - not valid!
+	SUBL	EAX, #4t		;Yes - get number descriptors
+	SHRL	EAX, #3t
+	CMPL	EAX, #1			;Do we have at least one descriptor?
+	JL	4$			;No - not valid!
+	MOVL	ECX, EAX		;Yes
+	LEAL	EDX, 516t[EBX]
+	CLC
+	RET
+
+4$:	STC
+6$:	RET
+.PAGE
+;Function to set up a disk partition
+;	long setpart(
+;	    long   unit,	// Unit numbers
+;	    long   pindex,	// Partition index
+;	    long   ptype,	// Partition type
+;	    uchar *boot,	// Address of buffer containing boot block
+;	    uchar *ptbl,	// Address of partition table entry in boot
+;				//   block buffer
+;	    long   dofs,	//
+;	    DCB   *dcb,		// Address of DCB
+;	    UCB   *bucb);	// Address of base (physical device) UCB
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+stpt_unit  =!40t
+stpt_pindex=!36t
+stpt_ptype =!32t
+stpt_boot  =!28t
+stpt_ptbl  =!24t
+stpt_dofs  =!20t
+stpt_dcb   =!16t
+stpt_bucb  =!12t
+
+setpart:PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	stpt_unit+4[ESP]	;Unit numbers
+	PUSHL	stpt_pindex+8[ESP]	;Partition index
+	PUSHL	stpt_ptype+12t[ESP]	;Partition type
+	PUSHL	stpt_dcb+16t[ESP]	;Address of DCB
+	PUSHL	stpt_bucb+20t[ESP]	;Address of base UCB
+	PUSHL	EAX			;Address of pointer to receive address
+	CALL	setpart2		;  of the new USB
+	POPL	ESI
+	TESTL	EAX, EAX
+	JS	2$
+	MOVL	EDX, stpt_ptbl[ESP]
+	MOVL	EAX, 8[EDX]		;Store relative position on disk
+	ADDL	EAX, stpt_dofs[ESP]
+	MOVL	ucb_partnoff[ESI], EAX
+	MOVL	EAX, 12t[EDX]		;Store total blocks
+	MOVL	ucb_cblocks[ESI], EAX
+	MOVL	ucb_iblocks[ESI], EAX
+	MOVZWL	ECX, 2[EDX]		;Calculate number of cylinders
+	XCHGB	CL, CH
+	SHRB	CH, #6
+	MOVZWL	EAX, 6[EDX]
+	XCHGB	AL, AH
+	SHRB	AH, #6
+	SUBL	EAX, ECX
+	INCL	EAX
+	MOVL	ucb_icylns[ESI], EAX	;Store number of cylinders
+	CALL	setcyln2
+	CLRL	EAX
+2$:	POPL	ESI
+	POPL	EDI
+	RET	#32t
+
+;Function to set up a disk partition - Called for both hard disks (from
+;  setpart and for CD-ROMs)
+;	long setpart2(
+;	    long  unit,		// Unit numbers
+;	    long  pindex,	// Partition index
+;	    long  ptype,	// Partition type
+;	    DCB  *dcb,
+;	    UCB  *bucb,
+;	    UCB **ppucb);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+stp2_unit  =!32t
+stp2_pindex=!28t
+stp2_ptype =!24t
+stp2_dcb   =!20t
+stp2_bucb  =!16t
+stp2_ppucb =!12t
+
+setpart2:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EBX, stp2_bucb[ESP]
+	MOVZBL	EAX, ucb_name+0[EBX]	;First letter for device name
+	PUSHL	EAX
+	PUSHL	stp2_unit+4[ESP]	;Unit numbers
+	PUSHL	ucb_kcb[EBX]		;Address of the KCB
+	PUSHL	#ucb_hdSIZE		;Size of the UCB to create
+	MOVL	ESI, stp2_ppucb+16t[ESP] ;Place to store address of new UCB
+	PUSHL	ESI
+	CALL	xosdskMakeUcb#		;Create a UCB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ESI, [ESI]
+	MOVL	EAX, stp2_ptype[ESP]
+	MOVB	ucb_prtntype[ESI], AL	;Store partition type
+	MOVB	ucb_fsspec[ESI], AL
+	MOVL	EAX, stp2_pindex[ESP]	;Store partition index
+	MOVB	ucb_partnx[ESI], AL
+	MOVL	ECX, stp2_bucb[ESP]	;Get address of physical unit UCB
+	INCB	ucb_numpartn[ECX]	;Increase number of partitions for
+	MOVL	ucb_baseucb[ESI], ECX	;Store address of the physical unit UCB
+	MOVB	AL, ucb_sts1[ECX]
+	ANDB	AL, #U1$WPROT|U1$FIXCFG
+	ORB	AL, #U1$VALID	
+	MOVB	ucb_sts1[ESI], AL
+	MOVB	AL, ucb_sts2[ECX]
+	MOVB	ucb_sts2[ESI], AL
+	MOVB	AL, ucb_sts3[ECX]
+	ANDB	AL, #U3$CMDINT|U3$ATAPIRSP
+	MOVB	ucb_sts3[ESI], AL
+	MOVB	AL, ucb_select[ECX]
+	MOVB	ucb_select[ESI], AL
+	MOVL	EAX, ucb_disp[ECX]
+	MOVL	ucb_disp[ESI], EAX
+	MOVL	EAX, ucb_dsp[ECX]
+	MOVL	ucb_dsp[ESI], EAX
+	MOVB	AL, ucb_bits[ECX]
+	MOVB	ucb_bits[ESI], AL
+	MOVB	AL, ucb_unittype[ECX]
+	MOVB	ucb_unittype[ESI], AL
+	MOVL	EAX, ucb_pblksz[ECX]	;Store physical block size
+	MOVL	ucb_pblksz[ESI], EAX
+	MOVZBL	EAX, ucb_blockshft[ECX]
+	MOVB	ucb_blockshft[ESI], AL
+	MOVL	EAX, ucb_csecsz[ECX]	;Store sector size
+	MOVL	ucb_csecsz[ESI], EAX
+	MOVL	ucb_isecsz[ESI], EAX
+	MOVL	EAX, ucb_csects[ECX]	;Store number of sectors
+	MOVL	ucb_csects[ESI], EAX
+	MOVL	ucb_isects[ESI], EAX
+	MOVL	EAX, ucb_cheads[ECX]	;Store number of heads
+	MOVL	ucb_cheads[ESI], EAX
+	MOVL	ucb_iheads[ESI], EAX
+	MOVL	EAX, ucb_kcb[ECX]
+	MOVL	ucb_kcb[ESI], EAX
+	MOVL	EAX, ucb_devchar[ECX]	;Store offset of devchar table
+	MOVL	ucb_devchar[ESI], EAX
+	MOVL	EAX, ucb_wtmax[ECX]	;Store data transfer limits
+	MOVL	ucb_wtmax[ESI], EAX
+	MOVL	EAX, ucb_ramax[ECX]
+	MOVL	ucb_ramax[ESI], EAX
+	MOVL	EAX, ucb_dthlimit[ECX]
+	MOVL	ucb_dthlimit[ESI], EAX
+	MOVL	EAX, ucb_hashtbl[ECX]	;Store hash table data
+	MOVL	ucb_hashtbl[ESI], EAX
+	MOVL	EAX, ucb_hashmsk[ECX]
+	MOVL	ucb_hashmsk[ESI], EAX
+	MOVB	AL, ucb_index[ECX]	;Store index on controller
+	MOVB	ucb_index[ESI], AL
+	MOVL	EAX, ucb_scsiicb[ECX]
+	MOVL	ucb_scsiicb[ESI], EAX
+	MOVL	EAX, ucb_scsitar[ECX]
+	MOVL	ucb_scsitar[ESI], EAX
+	MOVL	EAX, ucb_diskid[ECX]	;Store the disk ID
+	MOVL	ucb_diskid[ESI], EAX
+	MOVZBL	EAX, ucb_lun[ECX]	;Store logical unit number
+	MOVB	ucb_lun[ESI], AL
+	LEAL	EAX, ucb_cdrmb[ECX]	;Change the cache device RMB pointer to
+	MOVL	ucb_pcdrmb[ESI], EAX	;  point to the RMB for the base device
+	MOVL	EDX, ucb_dosnmdct[ECX]	;Get first DOSNAME block
+4$:	ORL	EDX, EDX
+	JE	8$			;If none
+	MOVB	AL, ucb_sunit[ESI]	;Get our secondary unit number
+	CMPB	dct_dosnmpart[EDX], AL	;This one?
+	JE	6$			;Yes
+
+;;;;;;;;;;;; FIX THIS ??????????
+
+	MOVL	EDX, dct_next[EDX]	;No - advance to next block
+	JMP	4$
+
+6$:	MOVL	EAX, dct_dosnmname[EDX] ;Found it - get DOS name
+	MOVL	ucb_dosname[ESI], EAX	;Store it
+8$:	LEAL	EAX, ucb_hdfcopy[ESI]
+	PUSHL	EAX
+	LEAL	EAX, ucb_hdfcopy[ECX]
+	PUSHL	EAX
+	PUSHL	#hdfcopy_NUM
+	CALL	sysLibMemCpyLong##
+	CLRL	EAX
+10$:	POPL	ESI
+	POPL	EDI
+	RET	24t
+.PAGE
+;Here to begin unmounting a disk - This is the general unmount routine that
+;  handles all types of disk units and partitions. There are several cases:
+;    1) Base fixed physical unit: All associated open DCBs are marked that
+;       the disk has been changed. All cache blocks are discarded. Current
+;       IO operations are not aborted but will return a ER_DKRMV error when
+;       complete. The UCB is not given up. Note that in this case "fixed"
+;       refers to the drive, not the media, so, for example, ATAPI CDs are
+;       considered fixed here. Any partitions are also unmounted.
+;    2) Base removable physical unit: Same as above except that the UCB is
+;       also unlinked from the KCBs UCB list and is marked as removed. It
+;       will be given up when the last active IO operation completes.
+;    3) Partition (fixed or removable physical unit): Same as 2 above (except
+;       for unmounting partitions).
+
+;If the unit is not to be removed (rmv argument is 0), all DCBs for the unit
+;  are marked as removed but are left pointing to the UCB, which is NOT
+;  removed from the system. If it is a base unit, its cache is flushed and
+;  any partitions are removed (rmv argument is 1).
+
+;If the unit is to be removed (rmv argument is 1), all DCBs for the the unit
+;  are marked as removed and are left pointing to the UCB for a short time.
+;  The UCB is unlinked from the system's lists of UCB so as to make it
+;  invisible to any new requests for the unit. It is deleted after it is
+;  certain that it is not being accessed. Fixed base units cannot be removed.
+;  If a removable base unit is removed, the physical device is completely 
+;  removed from the system. If there are multiple base units associated with
+;  the physical device, ALL of the assocoated base units are removed. The
+;  device will not be accessable again until it has been physically
+;  disconnected and reconnected. In order to remove a disk device, it must
+;  be mounted when this function is executed. Removable of the physical
+;  device is handled by the low level driver.
+
+;Removing a disk is a 2-step process. This function immediately unlinks
+;  the UCB from the system so it is not visible for new requests, andfunction
+;  cancels all active IO for the disks, and marks all DCBs as removed. If
+;  called for a base unit it also flushes all blocks for the unit from the
+;  disk cache. No attempt is made to write to the disk.
+
+;0.5 seconds later all DCBs are disconnected from the USB and the USB is
+;  given up. All active DCS must be idle by this time.
+
+;This routine never does any IO on the disk. It is normally called when it is
+;  determined that a removable disk has been changed but can be called for any
+;  disk if a serious error is detected.
+
+;	void xosdskUnmount(
+;	    UCB *ucb,		// Address of UCB (It may or may not be
+;				//   associated with the current DCB.)
+;	    int  rmv);		// TRUE if should remove the unit
+
+unmnt_ucb=!16t
+unmnt_rmv=!12t
+
+xosdskUnmount::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, unmnt_ucb[ESP]
+	CMPB	unmnt_rmv[ESP], #0	;Want to completely remove the unit?
+	JE	4$			;No
+	CMPL	ucb_baseucb[ESI], ESI	;Yes - is this a partition?
+	JNE	4$			;Yes - can always remove it
+	TESTB	ucb_dsp+3[ESI], #DS$FIXED>24t ;No - is it a fixed unit?
+	JE	10$			;No - OK to remove it
+	MOVB	unmnt_rmv[ESP], #0	;Yes - can't remove it
+4$:	PUSHL	ESI
+	PUSHL	unmnt_rmv+4[ESP]
+	CALL	dounmount
+6$:	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here to completely remove a physical device - This removes all units for the
+;  physical device (KCB).
+
+10$:	MOVL	ESI, ucb_kcb[ESI]	;Get first UCB which should be for
+12$:	MOVL	EAX, kcb_fucb[ESI]	;  a base unit
+	TESTL	EAX, EAX
+	JE	6$			;If finished
+	PUSHL	EAX			;Remove the base unit and all of its
+	PUSHL	#0x01			;  partitions
+	CALL	dounmount
+	JMP	12$			;Continue (The unit was unlinked so
+					;  we will see the next base unit as
+					;  the first unit.)
+.PAGE
+;Function to unmount a single disk unit
+;	void dounmount(
+;	    UCB *ucb,		// Address of UCB (It may or may not be
+;				//   associated with the current DCB.)
+;	    int  rmv);		// TRUE if should remove the unit
+
+dunm_ucb=!16t
+dunm_rmv=!12t
+
+dounmount:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dunm_ucb[ESP]
+	ANDB	ucb_sts1[ESI], #~U1$MOUNT ;Indicate not mounted
+
+;First see if we want to completely remove the unit and make the UCB
+;  invisible to new requests if so
+
+2$:	CMPL	ucb_baseucb[ESI], ESI	;Is this a partition?
+	JNE	8$			;Yes
+4$:	MOVL	EDX, ucb_next[ESI]	;No - get next UCB
+	TESTL	EDX, EDX
+	JE	8$
+	CMPL	ucb_baseucb[EDX], ESI	;For this base unit?
+	JNE	8$			;No
+	PUSHL	EDX			;Yes - unmount it
+	PUSHL	#1			;  unmounting the base unit
+	CALL	dounmount
+	JMP	4$			;Continue (This UCB will be unlinked,
+					;  so next time around we will see the
+					;  next UCB.)
+
+;Here with all partitions given up if base unit
+
+8$:	CMPB	dunm_rmv[ESP], #0	;Want to keep the unit?
+	JE	keep			;Yes
+
+;Here if want to remove the unit - Make it disapear by removing it from the
+;  UCB list for the controller
+
+	ANDB	ucb_sts1[ESI], #~U1$MOUNT ;Indicate not mounted
+	ORB	ucb_sts2[ESI], #U2$DCHG	;Indicate unit removed
+	CMPL	ucb_next[ESI], #-1	;Is this UCB in the UCB list?
+	JE	keep			;No
+	MOVL	ECX, ucb_kcb[ESI]	;Yes - remove it from the list
+	ADDL	ECX, #kcb_fucb
+14$:	CMPL	[ECX], ESI
+	JE	18$
+	MOVL	ECX, [ECX]
+	TESTL	ECX, ECX
+	JE	16$
+	ADDL	ECX, #ucb_next
+	JMP	14$
+
+16$:	CRASH	NUCB
+
+18$:	MOVL	EAX, ucb_next[ESI]
+	MOVL	[ECX], EAX
+	MOVL	ucb_next[ESI], #-1
+	DECL	ucbcount#		;Reduce number of UCBs in system
+	MOVL	EDX, ucb_kcb[ESI]
+	DECL	kcb_ucbcnt[EDX]		;And for this KCB
+
+;Clear any file structure information
+
+keep:	CLRL	EDX
+	MOVL	ucb_clussize[ESI], EDX	;Clear out some file structure data
+	MOVL	ucb_total[ESI], EDX
+	MOVL	ucb_avail[ESI], EDX
+	MOVB	ucb_fstype[ESI], DL
+	MOVL	ucb_fsname+0[ESI], #'NotM'
+	MOVL	ucb_fsname+4[ESI], #'ntd'
+	MOVL	ucb_sdisp[ESI], #dskdsp#
+	CMPL	ucb_baseucb[ESI], ESI	;Is this a partition?
+	JNE	20$			;Yes
+	CALL	xosdskFlush#		;No - clear out the disk cache for the
+					;  base unit
+20$:	ANDB	ucb_sts1[ESI], #{U1$MOTON|U1$HFTRK} ;Clear most status bits
+
+;Mark all DCBs for the unit as removed. We do not bother canceling any current
+;  IO since it should complete quickly. Once the DCBs are marked as remmoved
+;  no new IO will be started.
+
+	MOVL	EDX, xosdskCcb#+ccb_dcbhead ;Scan all disk DCBs
+22$:	TESTL	EDX, EDX
+	JE	26$
+	CMPL	dcb_dkucb[EDX], ESI	;Is this one for this unit?
+	JNE	24$			;No
+	ORB	dcb_sts1[EDX], #D1$REMOVED ;Yes
+	ORB	dcb_sts2[EDX], #D2$DCHG
+24$:	MOVL	EDX, dcb_next[EDX]	;Advance to next disk DCB
+	JMP	22$
+
+;Here with all DCBs marked as removed - tell the low level driver about this.
+;  This is probably only necessary if removing the unit, but we let the low
+;  level driver decide.
+
+26$:	PUSHL	ESI
+	PUSHL	dunm_rmv+4[ESP]
+	MOVL	EAX, ucb_disp[ESI]
+	CALLI	ks_removebgn[EAX]
+
+;Start a timer so we can finish this later
+
+28$:	CMPL	ucb_rmvtmr[ESI], #0	;Already have a clean-up timer running?
+	JE	30$			;No
+	PUSHL	ucb_rmvtmr[ESI]		;Yes - remove the current timer (This
+	CALL	sysSchTmrCancel##	;  will happen if quickly unmounting
+					;  without removing a disk multiple
+					;  times before this timer goes off.)
+30$:	PUSHL	#0			;Start a timer
+	PUSHL	#ST_SECOND/2		;0.5 second
+	PUSHL	ESI
+	PUSHL	unmnt_rmv+12t[ESP]
+	PUSHL	#unmount2
+	CALL	sysSchTmrCreate##
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Timer function which finishes removing a disk unit after a 0.5 second delay.
+;	void unmount2(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,		// Address of the UCB
+;	    long data2);	// Remove value
+;  When this function is called there should be no possibility that anyone
+;    will try to reference the UCB or KCB. Any DCBs left will be open but
+;    should be idle.
+
+unm2_pda  =!24t
+unm2_hndl =!20t
+unm2_data1=!16t
+unm2_data2=!12t
+
+unmount2:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, unm2_data1[ESP]
+
+;Find all DCBs associated with the UCB that have been "removed" and clear the
+;  link to the UCB.
+
+	CLRL	EAX			;Get a 0 for use below
+	MOVL	EDX, xosdskCcb#+ccb_dcbhead ;Scan all disk DCBs
+2$:	TESTL	EDX, EDX
+	JE	6$
+	CMPL	dcb_dkucb[EDX], ESI	;Is this one for this unit?
+	JNE	4$			;No
+	TESTB	dcb_sts1[EDX], #D1$REMOVED ;Yes - has it been removed?
+	JE	4$			;No
+	MOVL	dcb_dkucb[EDX], EAX	;Yes - clear the link
+	DECL	ucb_dcbcnt[ESI]
+4$:	MOVL	EDX, dcb_next[EDX]	;Advance to next disk DCB
+	JMP	2$
+
+;Following code is for debugging only! - Count the DCBs for this unit and
+;  verify the value of ucb_dcbcnt.
+
+6$:	MOVL	EDX, xosdskCcb#+ccb_dcbhead ;Scan all disk DCBs
+	CLRL	ECX
+8$:	TESTL	EDX, EDX
+	JE	12$
+	CMPL	dcb_dkucb[EDX], ESI	;Is this one for this unit?
+	JNE	10$			;No
+	INCL	ECX			;Yes - count it
+10$:	MOVL	EDX, dcb_next[EDX]	;Advance to next disk DCB
+	JMP	8$
+
+12$:	CMPL	ECX, ucb_dcbcnt[ESI]
+	JE	14$
+	CRASH	BDDC			;BaD DCB Count]
+
+;End of debug code
+
+;Tell the low level driver about this
+
+14$:	PUSHL	ESI
+	PUSHL	unm2_data2+4[ESP]
+	MOVL	EAX, ucb_disp[ESI]
+	CALLI	ks_removefin[EAX]
+
+;Give up the UCB if we should.
+
+	CMPB	unm2_data2[ESP], #0	;Should we keep the UCB
+	JE	30$			;Yes
+	CMPL	ucb_baseucb[ESI], ESI	;No - is this a base unit?
+	JNE	18$			;No
+	MOVL	EDI, ucb_hashtbl[ESI]	;Yes
+	PUSHL	EDI			;Push argument for sysMemGiveXmb
+
+;Following code if for debugging only! - If removing a base unit, make sure
+;  its hash table is empty
+
+	MOVL	ECX, ucb_hashmsk[ESI]
+	INCL	ECX
+	SHRL	ECX, #2
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EAX
+	RESCASB	[EDI]
+	JE	16$
+	CRASH	HTNE			;[Hash Table is Not Empty ]
+
+;End of debug code
+
+16$:	CALL	sysMemGiveXmb##		;Give up the hash table (argument was
+					;  pushed above)
+18$:	MOVZWL	EAX, ucb_cdrmb+rmb_usecnt[ESI]	;Make sure no UCB based
+	ORL	EAX, ucb_cdrmb+rmb_locktda[ESI]	;  resources are in use!
+	JE	20$
+	CRASH	URIU			;UCB based Resoures is In Use]
+
+20$:	MOVZWL	EAX, ucb_resrmb+rmb_usecnt[ESI]
+	ORL	EAX, ucb_resrmb+rmb_locktda[ESI]
+	JE	22$
+	CRASH	URIU			;UCB based Resoures is In Use]
+
+22$:	PUSHL	ESI			;
+	CALL	sysMemGiveXmb##		;Give up the UCB
+30$:	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;	void xosdskGiveUpUcb(
+;	    UCB *ucb);
+
+guucb_ucb=!12t
+
+xosdskGiveUpUcb::
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, guucb_ucb[ESP]
+	CMPL	ucb_next[ESI], #-1	;Is this UCB in the UCB list?
+	JE	8$			;No
+	MOVL	EBX, ucb_kcb[ESI]	;Yes - remove it from the list
+	LEAL	ECX, kcb_fucb[EBX]
+2$:	CMPL	[ECX], ESI
+	JE	6$
+	MOVL	ECX, [ECX]
+	TESTL	ECX, ECX
+	JE	4$
+	ADDL	ECX, #ucb_next
+	JMP	2$
+
+4$:	CRASH	NUCB
+
+6$:	MOVL	EAX, ucb_next[ESI]
+	MOVL	[ECX], EAX
+8$:	CMPL	ucb_baseucb[ESI], ESI	;Is this for a partition?
+	JNE	10$			;Yes - don't have a hash table to
+					;  give up
+	CMPL	ucb_hashtbl[ESI], #0	;No - give up the hash table
+	JE	10$
+	PUSHL	ucb_hashtbl[ESI]
+	CALL	sysMemGiveXmb##
+10$:	PUSHL	ESI
+	CALL	sysMemGiveXmb##		;Give up the UCB
+	DECL	ucbcount#		;Reduce number of UCBs in system
+	DECL	kcb_ucbcnt[EBX]		;And for this KCB
+	POPL	EBX
+	POPL	ESI
+	RET	4
+.PAGE
+	.SBTTL	xosdskHdkSetSec - Set current number of sectors
+
+;Subroutine to set current number sectors - called by QFNC_DEVCHAR routine
+;  for the CSECTS characteristic
+;	c{EAX} = New value
+;	c{EDI} = Offset of DCB
+;	CALL	xosdskHdkSetSec
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosdskHdkSetSec::
+	MOVL	ESI, dcb_dkucb[EDI]	;Get UCB offset
+	MOVL	ucb_csects[ESI], EAX	;Store number of sectors
+	JMP	2$			;Go recaluate maximum cylinder number
+
+	.SBTTL	xosdskHdkSetHead - Set current number of heads
+
+;Subroutine to set current number heads - called by QFNC_DEVCHAR routine
+;  for the CHEADS characteristic
+;	c{EAX} = New value
+;	c{EDI} = Offset of DCB
+;	CALL	xosdskHdkSetHead
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosdskHdkSetHead::
+	MOVL	ESI, dcb_dkucb[EDI]	;Get UCB offset
+	MOVL	ucb_cheads[ESI], EAX	;Store number of heads
+2$:	MOVL	EAX, ucb_ccylns[ESI]	;Recalculate maximum cylinder number
+	JMP	4$
+
+	.SBTTL	xosdskHdkSetCyln - Set current number of cylinders
+
+;Subroutine to set current number of cylinders - called by QFNC_DEVCHAR routine
+;  for the CCYLNS characteristic
+;	c{EAX} = New value
+;	c{EDI} = Offset of DCB
+;	CALL	xosdskHdkSetCyln
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosdskHdkSetCyln::
+	MOVL	ESI, dcb_dkucb[EDI]	;Get UCB offset
+setcyln2:
+	MOVL	ucb_ccylns[ESI], EAX	;Store number of cylinders
+4$:	MOVL	ECX, ucb_csects[ESI]	;Get cylinder size
+	IMULL	ECX, ucb_cheads[ESI]
+	TESTL	ECX, ECX		;Make sure not 0
+	JNE	6$
+	INCL	ECX
+6$:	MOVL	EAX, ucb_partnoff[ESI]
+	CLRL	EDX
+	DIVL	ECX
+	ADDL	EAX, ucb_ccylns[ESI]	;Calculate maximum cylinder number
+	DECL	EAX
+	MOVL	ucb_cylmax[ESI], EAX	;Store it
+	CLC
+	RET
+	
+	LKEEND

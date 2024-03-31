@@ -1,0 +1,18 @@
+	.TITLE	TEST486 - Test 80486 instructions
+
+	.PROC	80486
+	.SEG	code_s, CODE, 16BIT
+	.MSECT	code_m, code_s, READ, WRITE
+	.PSECT	code_p, code_m
+
+labelc=labelb
+labelb=labela
+labela=123
+labelz=label1
+	.LONG	labelz
+
+	JMP	label1.S
+	IDIVW	CX
+label1:	ADDW	AX, BX	
+labelz:	ADDW	AX, BX
+	.LONG	label1

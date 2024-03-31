@@ -1,0 +1,391 @@
+	.TITLE	vesaa
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+screenbufr=60000000h		;Offset of the display screen buffer
+regs=      62000000h		;Offset where registers are mapped
+
+	.PSECT	_TEXT_p
+
+;Function dispatch table
+
+vesadsp:.LONG	ret002			;gfx_waitidle   =  0 - Wait until idle
+	.LONG	ret002			;gfx_update     =  4 - Display update
+	.LONG	xwsgethicolor#		;gfx_getcolor   =  8 - Get color
+	.LONG	xwsexphicolor#		;gfx_expcolor   = 12 - Expand color
+	.LONG	xwscomhicolor#		;gfx_comcolor   = 16 - Compress color
+	.LONG	xwsmemrgnfill#		;gfx_rgnfill    = 20 - Fill region
+	.LONG	xwsmemrgncopy#		;gfx_rgncopysame= 24 - Copy region
+	.LONG	xwsmemrgncopy#		;gfx_rgncopyfiff= 28 - Copy region
+	.LONG	xwsmemrectfillsc#	;gfx_rectfillsc = 32 - Fill rectangle
+					;                      with solid color
+	.LONG	xwsmemrectfillmp#	;gfx_rectfillmp = 36 - Fill rectangle
+					;                      with mono pattern
+	.LONG	xwsmemchardraw#		;gfx_chardraw   = 40 - Draw Character
+	.LONG	vesasetcursor		;gfx_setcursor  = 44 - Set cursor
+	.LONG	vesashwcursor		;gfx_shwcursor  = 48 - Show cursor
+
+
+;Subroutine to initialize a minimal Vesa display controller.
+;	CALL	xwsInitVESAA
+;	c{EAX} = 0 - Normal
+;		 1 - Could not set graphics mode
+;		 2 - Could not map screen buffer
+;	C:clr = Normal
+
+	.ENTRY	xwsInitVesaA
+xwsInitVesaA::
+
+	PUSHL	xws_TrmHndl		;Set to hi-color graphic mode
+	PUSHL	#DM$USEDATA|DM$RTNDATA|DM_HCG16
+	PUSHL	#xwstrmdata#
+	CALL	svcTrmDspMode##
+	TESTL	EAX, EAX		;Error?
+	JS	4$			;Yes
+
+;Map the screen buffer
+
+	PUSHL	EDI
+	MOVL	EDI, #screenbufr
+	PUSHL	xws_TrmHndl#		;Map the display buffer (8MB)
+	PUSHL	EDI
+	PUSHL	#0x800000
+	PUSHL	#0
+	CALL	svcTrmMapScrn##
+	TESTL	EAX, EAX
+	JS	6$
+
+;Clear the screen
+
+	MOVL	ECX, xwstrmdata#+dm_horiz
+	IMULL	ECX, xwstrmdata#+dm_vert
+	SHRL	ECX, #1
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+
+.IF NE 0
+	MOVL	EDI, #screenbufr
+	MOVL	ECX, #1000t
+	MOVL	EAX, #0x00FF00FF
+1$:	STOSL	[EDI]
+	STOSL	[EDI]
+	STOSL	[EDI]
+	ADDL	EDI, #2556t
+	LOOP	ECX, 1$
+.ENDC
+
+	POPL	EDI
+
+;Determine the scale factor. If we have a standard (4x3 or 5x4) screen, we
+;  calculate this so the horizontal width is 384000. This gives a vertical
+;  height of 288000 or 307200 (if we have a 1280x1024 display which is 5x4
+;  instead of 4x3). If we have a wide-screen display (approximately 16x9 or
+;  16x10) We use a the scaled width of approximately 460800. The scale factors
+;  for various screen sizes (assuming square pixels) are as follows:
+;	 640x480  (384000x288000) = 600 [1.333 -  4x3]
+;	 800x600  (384000x288000) = 480 [1.333 -  4x4]
+;	1024x768  (384000x288000) = 375 [1.333 -  4x3]
+;	1280x960  (384000x288000) = 300 [1.333 -  4x3]
+;	1280x1024 (384000x307200) = 300 [1.25  -  5x4]
+;	1600x1200 (384000x288000) = 240 [1.333 -  4x3]
+;	1920x1440 (384000x288000) = 200 [1.333 -  4x3]
+;	1280x800  (460800x288000) = 360 [1.6   - 16x10]
+;	1440x900  (460800x288000) = 320 [1.6   - 16x10]
+;	1680x1050 (460320x287700) = 274 [1.6   - 16x10]
+;	1920x1200 (460800x288000) = 240 [1.6   - 16x10]
+;  Unfortunately, the most popular non-wide screen size today is 1280x1024
+;    which is unique.
+
+;While these scale factors result in rather large numbers for positions, it
+;  also allows a fair amount of flexability to adapt to "non-standard" screen
+;  sizes, which are becoming more common. With the exception of 1440x1050, all
+;  of the currently available common screen sizes allow a exact mapping. The
+;  1680x1050 screen is off by less than 2 pixels. Unfortunately, since aspect
+;  ratio is no longer standard at 4x3, a user program must be aware of this if
+;  it is to fill the screen. The current XWS version does not directly support
+;  a "streach mode" to distort the image to fill the screen, although most of
+;  the wide-screen monitors now available provide this function in the monitor.
+
+;Determine if we have a wide screen display. We call it wide-screen (and use
+;  the height instead of the width to determine the scale factor) if the aspect
+;  ration is 1.4 or greater.
+
+	IMULL	EAX, xwstrmdata#+dm_horiz, #10t
+	CLQ
+	IDIVL	xwstrmdata#+dm_vert
+	CLQ
+	CMPL	EAX, #14t
+	JGE	hvwide			;If wide-screen display
+
+;Here if not a wide-screen display - calculate the scale factor based on the
+;  width to make the scalled width as close to 384000 as we can.
+
+	MOVL	EAX, #384000t
+	IDIVL	xwstrmdata#+dm_horiz
+	JMP	2$
+
+;Here if have a wide-screen display - calculate the scale factor based on the
+;  height to make the scalled height as close to 288000 as we can.
+
+hvwide:	MOVL	EAX, #288000t
+	IDIVL	xwstrmdata#+dm_vert
+2$:	MOVL	xwsbasexsfd#, EAX
+	MOVL	xwsbaseysfd#, EAX
+	SHRL	EAX, #1
+	MOVL	xwsbasexsfr#, EAX
+	MOVL	xwsbaseysfr#, EAX
+
+	MOVL	EAX, xwstrmdata#+dm_horiz ;Store the raw screen dimensions
+	MOVL	xws_ScreenDRW+drw_width, EAX
+	MOVL	xws_ScreenDRW+drw_pixelspan, EAX
+	LEAL	EDX, -1[EAX]
+	MOVL	xws_ScreenRGN#+rgn_right, EDX
+	ADDL	EAX, EAX
+	MOVL	xws_ScreenDRW+drw_bytespan, EAX
+	MOVL	EAX, xwstrmdata#+dm_vert
+	MOVL	xws_ScreenDRW+drw_height, EAX
+	DECL	EAX
+	MOVL	xws_ScreenRGN#+rgn_bottom, EAX
+	MOVL	xws_ScreenDRW+drw_buffer, #screenbufr
+
+.IF NE 0
+	PUSHL	#1
+	PUSHL	#2
+	PUSHL	#3
+	PUSHL	#4
+	PUSHFL
+	CALLF	0x1B:0xA0000000
+.ENDC
+
+;SET UP THE ENGINE HERE!
+
+	CLRL	EAX
+	RET
+
+
+
+
+
+	MOVL	EAX, xwstrmdata#+dm_horiz ;Store the screen dimensions
+	MOVL	xws_ScreenDRW+drw_width, EAX
+	MOVL	xws_ScreenDRW+drw_pixelspan, EAX
+	LEAL	EDX, -1[EAX]
+	MOVL	xws_ScreenRGN#+rgn_right, EDX
+	ADDL	EAX, EAX
+	MOVL	xws_ScreenDRW+drw_bytespan, EAX
+	MOVL	EAX, xwstrmdata#+dm_vert
+	MOVL	xws_ScreenDRW+drw_height, EAX
+	DECL	EAX
+	MOVL	xws_ScreenRGN#+rgn_bottom, EAX
+	MOVL	xws_ScreenDRW+drw_buffer, #screenbufr
+	PUSHL	xws_TrmHndl#		;Map the display buffer (8MB)
+	PUSHL	#screenbufr
+	PUSHL	#0x800000
+	PUSHL	#0
+	CALL	svcTrmMapScrn##
+	TESTL	EAX, EAX
+	JS	6$
+
+;SET UP THE ENGINE HERE!
+
+	CLRL	EAX
+	RET
+
+;Here if could not set graphics mode
+
+4$:	MOVL	EAX, #1
+	RET
+
+;Here if could not map the display buffer
+
+6$:	POPL	EDI
+	MOVL	EAX, #2
+ret002:	RET
+.PAGE
+;Subroutine to set a cursor as the current cursor and display it at the current
+;  cursor position
+;	void vesasetcursor(
+;	    CUR *newcur);
+
+;This function uses the Pascal calling sequence
+
+$$$=!0
+FRM vdc_par, wp_containerSIZE
+vdc_SIZE=!$$$
+
+vdc_cur=!20t
+
+vesasetcursor:
+	CMPL	xwsmouseseen#, #0	;Have we seen any mouse activity?
+	JE	20$			;No - thus there is no need for a cursor
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	vdc_SIZE, 0
+	CMPL	xwscurwin#, #0		;Do we have a cursor now?
+	JNE	6$			;No - create the cursor window
+	MOVL	EBX, vdc_cur[EBP]
+	TESTL	EBX, EBX
+	JE	2$
+	MOVL	EAX, cur_xsize[EBX]
+	MOVL	vesacurxsize, EAX
+	MOVL	EAX, cur_ysize[EBX]
+	MOVL	vesacurysize, EAX
+	JMP	4$
+
+2$:	MOVL	EAX, #20t
+	MOVL	vesacurxsize, EAX
+	MOVL	vesacurysize, EAX
+4$:	LEAL	EDI, vdc_par[EBP]
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, #xws_WinParContainerPlain#
+	MOVL	ECX, #wp_containerSIZE/4
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVL	vdc_par+wp_cursor[EBP], #0
+	ORL	vdc_par+wp_bits2[EBP], #WB2$NOFOCUS
+	MOVW	vdc_par+wp_zorder[EBP], #255t
+	MOVL	vdc_par+wp_bgcoln[EBP], #0xFF0000
+	PUSHL	xws_ScreenWIN#
+	PUSHL	#0
+	PUSHL	#0
+	MOVL	EAX, vesacurxsize
+	ORL	EAX, #0x80000000
+	PUSHL	EAX
+	MOVL	EAX, vesacurysize
+	ORL	EAX, #0x80000000
+	PUSHL	EAX
+	LEAL	EAX, vdc_par[EBP]
+	PUSHL	EAX
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#edb#			;edb
+	PUSHL	#xwscurwin#
+	CALL	xwsWinCreateContainer#
+6$:	MOVL	EBX, vdc_cur[EBP]
+	CMPL	EBX, vesacurcur		;Same cursor?
+	JE	14$			;Yes
+	MOVL	vesacurcur, EBX		;No
+	MOVL	EAX, cur_xsize[EBX]
+	MOVL	vesacurxsize, EAX
+	MOVL	EAX, cur_ysize[EBX]
+	MOVL	vesacurysize, EAX
+	MOVL	EAX, cur_xhot[EBX]
+	MOVL	vesacurxhot, EAX
+	MOVL	EAX, cur_yhot[EBX]
+	MOVL	vesacuryhot, EAX
+	MOVL	EDI, xwscurwin
+	TESTL	EDI, EDI
+	JE	14$
+	CMPL	win_basbgbmn[EDI], #0
+	JE	8$
+	PUSHL	win_basbgbmn[EDI]
+	MOVL	win_basbgbmn[EDI], #0
+	CALL	xwsBitmapDestroy#
+8$:	MOVL	EBX, vesacurcur
+	PUSHL	cur_patbm[EBX]
+	PUSHL	vesacurxsize
+	PUSHL	vesacurysize
+	PUSHL	cur_color1[EBX]
+	PUSHL	cur_color2[EBX]
+	LEAL	EAX, win_basbgbmn[EDI]
+	PUSHL	EAX
+	CALL	xwsBitmapLoadMono#
+	CALL	vesashwcursor
+	MOVL	EBX, vesacurcur
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	vesacurxsize
+	PUSHL	vesacurysize
+	PUSHL	cur_maskbm[EBX]
+	CALL	xwsRgnCreateBitmap#
+	TESTL	EAX, EAX
+	JE	10$
+
+	CHECKRGN EAX
+
+	PUSHL	EAX
+
+	PUSHL	EDI
+	PUSHL	EAX
+	CALL	xwsWinSetTransparent#
+
+	CALL	xwsRgnDestroy#
+10$:	PUSHL	EDI			;Redraw all of this window
+	PUSHL	#0
+	CALL	xwsWinInvalidateRgn#
+	JMP	16$
+
+14$:	CALL	vesashwcursor
+16$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+20$:	RET	4
+
+;Function to set cursor position
+
+vesashwcursor:
+	CMPL	xwscurwin#, #0
+	JE	30$
+	PUSHL	xwscurwin#
+	MOVL	EAX, xwscursorx#
+	SUBL	EAX, vesacurxhot
+	PUSHL	EAX
+	MOVL	EAX, xwscursory#
+	SUBL	EAX, vesacuryhot
+	PUSHL	EAX
+	PUSHL	vesacurxsize
+	PUSHL	vesacurysize
+	CALL	xwswinmovens#
+30$:	RET
+.PAGE
+	.PSECT	_DATA_p
+
+;DRW for the entire screen (this cannot be an .ENTRY or the correct display
+;  routine will not be used!)
+
+xws_ScreenDRW::
+	.LONG	'DRW*'		;drw_id        = 0  - ID
+	.WORD	0		;drw_user      = 4
+	.BYTE	DRWTYPE_DISPLAY	;drw_type      = 6  - Type
+	.BYTE	0		;drw_disable   = 7  - Non-zero to disable
+	.LONG	0		;drw_buffer    = 8  - Offset of buffer
+	.LONG	0		;drw_bufsize   = 12 - Size of buffer (bytes)
+	.LONG	0		;drw_width     = 16  - Width (pixels)
+	.LONG	0		;drw_height    = 20 - Height (pixels)
+	.LONG	0		;drw_pixelspan = 24 - Line span (pixels)
+	.LONG	0		;drw_bytespan  = 28 - LIne span (bytes)
+	.LONG	2t		;drw_pixelsize = 32 - Pixel size (bytes)
+	.LONG	vesadsp		;drw_funcdsp   = 36 - Function dispatch table
+
+vesacurcur:
+	.LONG	0
+vesacurxsize:
+	.LONG	0
+vesacurysize:
+	.LONG	0
+vesacurxhot:
+	.LONG	0
+vesacuryhot:
+	.LONG	0
+vesacurpatbm:
+	.LONG	0
+
+	.END

@@ -1,0 +1,1369 @@
+	.TITLE	xws
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+;XWS executes in a THREADS environment.  The THREADS routines must be
+;  initialized before XWS is initialized by calling thdCtlInitialize.  This
+;  call should specify at least 10 threads which will be used by XWS.  XWS
+;  uses 2 threads at all times.  It creates an additional thread each time
+;  a BITMAP object is created from a file with the defer option.  10 threads
+;  should be enough for most applications, but more may be needed if a lot of
+;  defered BITMAPs will be created at the same time.  Additional threads can
+;  be specified and can by used outside of XWS.  The thread which calls the
+;  XWS initialization routines becomes the XWS draw thread.  This thread
+;  never returns from the xwsCtlMain call and never terminates.  It can be
+;  be the process's base thread but does not need to be.  Each thread created
+;  has a 124KB virtual stack. XWS does use any signal vectors other that those
+;  used by the thread routines.
+
+;The draw thread executes all calls to the various windows' draw function.
+;  The mouse thread executes all mouse and event calls.  The keyboard executes
+;  all keyboard event calls. The image threads read bitmap data and construct
+;  BITMAP objects and execute bitmap update event calls for defered BITMAP
+;  creation.  For non-defered BITMAP creation, the BITMAP object creation and
+;  bitmap update event calls are executed by the thread which calls the
+;  xwsBitmapLoad function.
+
+;Memory is allocated as follows for the threads created by XWS (since the
+;  draw thread is the thread used to call xwsCtlMain it is created by the
+;  user. It is recommeneded that it be located at 0x3FFE0000. It should be
+;  remembered that most memory used by XWS is allocated on the normal malloc
+;  heap. Placing the base thread at 0x3FFE0000 allows almost 1GB of address
+;  space for this heap.
+;  0x40000000 - Mouse thread (if mouse is used)
+;  0x40020000 - Keyboard thread
+;  0x40040000 - First image thread
+
+;Care should be taken not to execute long sequences in any of the event
+;  functions as this will block successive events. If a lengthly operation
+;  is required, it should be done in a seperate thread. If that operation is
+;  completely CPU bound, some provision must be made to periodically give up
+;  the CPU. (Since thread sceduling is NOT preemptive.)
+
+;The user's draw function can be written in two different ways:
+;  1.	All drawing is done within the function.  The xwsDrawBegin
+;	function is called upon entry to the draw function before any
+;	drawing is done.  After all drawing is complete, the xwsDrawEnd
+;	function is called before returning from the draw function.
+;  2.	All or some of the drawing is defered.  An external mechanism is used
+;	to request drawing at a later time after returning from the draw
+;	function.  In this case, the xwsDrawBegin function is not called
+;	until drawing is to actually start.  xwsDrawEnd is called when
+;	drawing is complete.  In this case, the draw function will not
+;	be called again until xwsDrawEnd is called, but it is possible that
+;	the draw function will be called from within the xwsDrawEnd
+;	function.  The external queueing mechanism must handle this situation.
+;	The actual drawing can be done by any thread.  This mode of drawing
+;	is intended to support external client programs with a completely
+;	pipe-lined protocol which does not require any round trip delays
+;	during the draw sequence.
+;  Note that a mix of these methods can be used with different windows at the
+;  same time, but each window should use only one method.
+
+;XWS attempts to provide a uniform interface for specifying font size and
+;  formatting. This is difficult (if not impossible) to do completely since
+;  each font format (and sometimes each font) seems to have its own way of
+;  applying the various "standard" measures of font size. XWS specifies all
+;  font dimensions in displayed pixels. Thus there is no uncertainty as to
+;  how values are mapped to pixels for display. It is up to the higher level
+;  code to determine how best to round text sizes to pixels. XWS attempts to
+;  provide the following parameters for each font. These are not always
+;  available, especially for bitmapped fonts.
+;	Font size: This is the value that is used to specify the size of a
+;                  font instance. It is the dimension of the "EM" square.
+;                  Usually only the height is specified. For scalable fonts
+;                  the width is assumed to be the same, retaining the aspect
+;                  ratio of the characters.  A width value can also be
+;                  specified if desired. For bitmapped fonts if no width is
+;                  specified the smallest width available for the specified
+;                  height is used. If a width is specified it is used as
+;                  a minimum value for the width. The font selection will
+;                  fail if a font is not found that matches the size
+;                  specification.
+;    Line spacing: This is the distance in pixels between the baselines on
+;                  succesive lines. A default value is generated from the
+;                  font size and the recommended leading for the font. It
+;                  can also be specified explicitly.
+;  Horiz. padding: This is the number of pixels inserted between adjacent
+;                  characters. It is normally 0 but can be specifiied as
+;                  any value.
+;  The following values cannot be changed directly but are provided to
+;  describe the font being used.
+;   Descender sz.: The amount (in pixels) that a character may extend
+;                  below the baseline. This value is always negative.
+;    Ascender sz.: The amount (in pixels) that a character may extend
+;                  above the baseline.
+;Internal leading: The amount of space above the ascender size that can
+;                  be used for diacritical marks.
+;   Maximum width: Width (in pixels) of the widest charactrer.
+;   Average width; Average character width (in pixels).
+
+	.PSECT	_TEXT_p
+
+	.EXTERN	xwsdoevent	;Force loading of the event function
+
+;The correct sequence for initializing xws is:
+
+;	xwsInitBegin(trmname, trmcmd, vectbase, horiz, vert);
+;					// Required
+;	xwsInitMouse();			// If a mouse is to be used
+;	xwsInitKeyboard();		// If a keyboard is to be used
+;	xwsInitScreen();		// If screen switching is supported
+;	xwsInitStart(parms, draw, event, edb);
+;					// Required
+;	...				// Everything needed to create the
+;					//   initial display is done here.
+;	xwsCtlMain();			// Required (does not return)
+
+;Function to initialize the XWS routines
+;	void xwsInitBegin(
+;	    char  *trmname,	// Name of terminal
+;	    long   maxthrds,	// Maximum number of threads available to XWS
+;				//   (this includes the 3 required threads)
+;	    uchar *thrdbase,	// First address used for thread memory (XWS
+;				//   will use up to 128K * maxthreads above
+;				//   this address. The caller must not allocate
+;				//   any memory in this area.)
+;	    long   vectbase,	// First signal vector for use by XWS
+;	    long   horiz,	// Desired horizontal resolution
+;	    long   vert);	// Desired vertical resolution (If not
+;				//   specified a 4x3 or 5x4 aspect ratio
+;				//   is assumed.)
+
+bgn_trmname =!24t
+bgn_maxthrds=!20t
+bgn_thrdbase=!16t
+bgn_vectbase=!12t
+bgn_horiz   =!8t
+bgn_vert    =!4t
+
+	.ENTRY	xwsInitBegin
+xwsInitBegin::
+	MOVL	_assert_hook#, #xwsAssert# ;Use xwsFail for _assert
+
+	CALL	xwscheck#
+
+	PUSHL	#0x0F			;Disable signals for now
+	CALL	svcSchSetLevel##
+	MOVL	EAX, bgn_vectbase[ESP]
+	MOVL	xwsvectbase, EAX
+	MOVL	EAX, bgn_maxthrds[ESP]
+	MOVL	xwsmaxthrds, EAX
+	MOVL	EAX, bgn_thrdbase[ESP]
+	MOVL	xwstdbbase, EAX
+	ADDL	EAX, #TDBOS_DRAW
+	MOVL	xwsdrawtdb, EAX
+	ADDL	EAX, #TDBOS_KEYBRD-TDBOS_DRAW
+	MOVL	xwskeybrdtdb, EAX
+	ADDL	EAX, #TDBOS_MOUSE-TDBOS_KEYBRD
+	MOVL	xwsmousetdb, EAX
+	ADDL	EAX, #TDBOS_FIMAGE-TDBOS_MOUSE
+	MOVL	xwsfimagetdb, EAX
+	MOVL	EAX, bgn_horiz[ESP]
+	MOVL	xwstrmdata+dm_horiz, EAX
+	MOVL	EAX, bgn_vert[ESP]
+	MOVL	xwstrmdata+dm_vert, EAX
+	MOVL	EDX, bgn_trmname[ESP]	;Open the terminal
+	PUSHL	#XO$IN|XO$OUT
+	PUSHL	EDX
+	PUSHL	#openparms
+	CALL	svcIoOpen#
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	xws_TrmHndl, EAX
+	PUSHL	xwsdrawtdb		;Create the draw thread
+	PUSHL	#0x1F000-tdb_SIZE
+	PUSHL	#0
+	PUSHL	#xwsdrawthread
+	PUSHL	#0
+	PUSHL	#0
+	CALL	thdCtlCreate#
+	TESTL	EAX, EAX
+	JS	6$
+	PUSHL	xwskeybrdtdb		;Create the keyboard thread
+	PUSHL	#0x1F000-tdb_SIZE
+	PUSHL	#0
+	PUSHL	#xwskeybrdthread#
+	PUSHL	#0
+	PUSHL	#0
+	CALL	thdCtlCreate#
+	TESTL	EAX, EAX
+	JS	8$
+	CALL	xwsfontinit#		;Initialize fonts
+
+	CALL	xwstimerinit#		;Initialize the timer routines
+
+;;;;	CALL	xwskbinit#		;Initialize the keyboard routines
+
+	RET	24t
+
+4$:	PUSHL	#msgopnt
+	JMP	10$
+
+6$:	PUSHL	#msgdthd
+	JMP	10$
+
+8$:	PUSHL	#msgkthd
+10$:	PUSHL	EAX
+	CALL	xwsFail#
+
+msgopnt:.ASCIZ	"Error opening the console device"
+msgdthd:.ASCIZ	"Error creating the draw thread"
+msgkthd:.ASCIZ	"Error creating the keyboard thread"
+.PAGE
+;Function to do second part of initialization.  Must be called after the mouse
+;  and screen routines have been initialized if they are used.
+;	void xwsInitStart(
+;	    PAR      *parms,	// Pointer to PAR structure for base window
+;	    XWSEVENT  event,	// Address of base window event function
+;	    long      evmask,	// Event mask
+;	    EDB      *edb);	// Addres of EDB structure for base window
+
+str_parms =!20t
+str_event =!16t
+str_evmask=!12t
+str_edb   =!8t
+
+	.ENTRY	xwsInitStart
+xwsInitStart::
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	PUSHL	#rgnbufr		;Allocate the temporary region buffer
+	PUSHL	#PG$READ|PG$WRITE|PG$VIRTUAL
+	PUSHL	#RGNBSZ
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	10$
+	PUSHL	#linebufr		;Allocate the temporary line buffer
+	PUSHL	#PG$READ|PG$WRITE|PG$VIRTUAL
+	PUSHL	#LINEBSZ
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	10$
+
+;Create the base window for the screen
+
+	PUSHL	#0			;Parent
+	PUSHL	#XWS_WINTYPE_CONTAINER	;Window type
+	PUSHL	#win_conSIZE		;Size of the WIN to create
+	PUSHL	#0			;X position
+	PUSHL	#0			;Y position
+	MOVL	EAX, xws_ScreenRGN+rgn_right ;Width
+	SUBL	EAX, xws_ScreenRGN+rgn_left
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EAX, xws_ScreenRGN+rgn_bottom ;Hieght
+	SUBL	EAX, xws_ScreenRGN+rgn_top
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EAX, str_parms[EBP]	;Window parameters
+	PUSHL	EAX
+	PUSHL	str_event[EBP]		;Event function
+	PUSHL	str_evmask[EBP]		;Event mask
+	PUSHL	str_edb[EBP]		;EDB
+	PUSHL	#xws_ScreenDRW#
+	PUSHL	#xws_ScreenWIN
+	CALL	xwscreatewindow#	;Allocate and initialize the WIN
+	TESTL	EAX, EAX
+	JS	8$			;If error
+	MOVL	EAX, xws_ScreenWIN
+	MOVL	EAX, win_bascursor[EAX]
+	ORL	EAX, EAX
+	JE	8$
+	PUSHL	EAX
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_setcursor[EAX]
+8$:	POPL	EBP
+	RET	16t
+
+10$:	PUSHL	#msgtmem
+	PUSHL	EAX
+	CALL	xwsFail#
+
+msgtmem:.ASCIZ	"Error allocating temporary buffers"
+
+.PAGE
+;Main loop function for the xws routines - This is the last function called
+;  by the external program during startup.  It never returns.  All subsequent
+;  processing is done by signal routines or by other threads.
+;	void xwsCtlMain(void);
+
+	.ENTRY	xwsCtlMain
+xwsCtlMain::
+
+.IF NE 0
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	CS
+	PUSHL	#xxxnext
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	JMPIL	xxxjmp
+xxxjmp:	.LONG	0xB8000000
+xxxnext:
+.ENDC
+
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_shwcursor[EAX]
+	PUSHL	#1			;Enable signals now
+	CALL	svcSchSetLevel##
+loop:	PUSHL	#0
+	PUSHL	#-1
+	PUSHL	#-1
+	CALL	thdCtlSuspend#
+	JMP	loop
+.PAGE
+;Function to update the display screen
+;	void xwsCtlUpdate(void);
+
+	.ENTRY	xwsCtlUpdate
+xwsCtlUpdate::
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	JMPIL	gfx_update[EAX]
+.PAGE
+;Subroutine to request that a window be drawn
+;	c{EDI} = Offset of WIN for window
+;	CALL	xwsreqdraw
+
+xwsreqdraw::
+	BTL	win_basbits[EDI], #WB2%NODRAW
+	JC	xwsretins
+	CMPL	win_basdrawnext[EDI], #0 ;Already in the draw list?
+	JGE	xwsretins		;Yes - nothing needed here
+	MOVL	EAX, xwsdrawtail	;No - put it in the list now
+	TESTL	EAX, EAX
+	JE	2$
+	MOVL	win_basdrawnext[EAX], EDI
+	JMP	4$
+
+;Here if draw list was empty
+
+2$:	MOVL	xwsdrawhead, EDI
+	PUSHL	xwsdrawtdb		;Wake up the draw thread
+	CALL	thdCtlWake#
+4$:	MOVL	xwsdrawtail, EDI
+	MOVL	win_basdrawnext[EDI], #0
+xwsretins::
+	RET
+.PAGE
+	.SBTTL	xwsdrawthread - Main thread function for the draw thread
+
+;Main thread function for the draw thread
+
+xwsdrawthread:
+4$:	CALL	xwsdomouse#
+	CALL	xwsdotimer#
+	CMPL	xwsdrawhead, #0
+	JE	20$
+10$:	MOVL	EDI, xwsdrawhead
+	TESTL	EDI, EDI
+	JE	20$
+	MOVL	EAX, win_basdrawnext[EDI]
+	MOVL	xwsdrawhead, EAX
+	TESTL	EAX, EAX
+	JNE	12$
+	MOVL	xwsdrawtail, EAX
+12$:	MOVL	win_basdrawnext[EDI], #-1
+	CMPB	xws_ScreenDRW#+drw_disable, #0
+	JNE	16$
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_waitidle[EAX]
+	PUSHL	EDI
+	CALL	xwsdodraw
+16$:	MOVL	win_basdrawnext[EDI], #-1
+	JMP	10$
+
+20$:	PUSHL	#0
+	PUSHL	#-1
+	PUSHL	#-1
+	CALL	thdCtlSuspend#
+	JMP	4$
+.PAGE
+;	void xwsdodraw(
+;	    WIN *win);
+
+ddrw_win=!8t
+
+xwsdodraw::
+	PUSHL	EDI
+	MOVL	EDI, ddrw_win[ESP]
+	CMPB	win_basdrawflg[EDI], #0
+	JNE	8$
+	MOVL	EAX, win_basdrawrgn[EDI]
+	TESTL	EAX, EAX
+	JE	8$
+	CMPB	rgn_type[EAX], #RGNTYPE_NULL
+	JE	10$
+	PUSHL	EDI
+	CALLI	win_basdraw[EDI]
+8$:	POPL	EDI
+	RET	4t
+
+;Here if the draw region is null, just forget about it!
+
+10$:	MOVL	win_basdrawrgn[EDI], #0
+	POPL	EDI
+	RET	4t
+.PAGE
+;Function to begin the draw sequence for a window
+;	int = xwsWinDrawBegin(
+;	   WIN *win);			// Pointer to WIN for window
+;  Value returned is TRUE if draw sequence started, FALSE otherwise
+
+;This function uses the Pascal calling sequence
+
+rdbgn_win=!16t
+
+$$$=!0
+FRM rdbgn_color, 4t
+FRM rdbgn_temp , 4t
+rdbgn_SIZE=!$$$
+
+	.ENTRY	xwsWinDrawBegin
+xwsWinDrawBegin::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	rdbgn_SIZE, 0
+	MOVL	EDI, rdbgn_win[EBP]	;Get address of his WIN
+	CMPL	win_bassavcliprgn[EDI], #0 ;Already in draw mode?
+	JNE	44$			;Yes - fail
+	MOVL	EAX, win_basdrawrgn[EDI] ;Get the draw RGN
+	TESTL	EAX, EAX		;Do we have one?
+	JE	44$			;No - fail
+	ORB	win_basstatus[EDI], #WSB$DRAWN ;Yes - indicate drawn
+	PUSHL	win_basxorg[EDI]
+	PUSHL	win_basyorg[EDI]
+	CLRL	EDX
+	MOVL	win_basxorg[EDI], EDX
+	MOVL	win_basyorg[EDI], EDX
+	MOVL	EDX, win_bascliprgn[EDI] ;Save his current clipping RGN
+	MOVL	win_bassavcliprgn[EDI], EDX
+	MOVL	win_bascliprgn[EDI], EAX ;Make the draw region the clipping
+					 ;  region (Note that this includes
+					 ;  the window boarders if they need
+					 ;  to be drawn.)
+
+;Following code is for debugging invalidation of regions. It fills the entire
+;  redraw region with an "different" color to make it visible. A breakpoint
+;  can be put at $$$erase to look at this. Note that including this
+;  significantly slows down screen updates and usually produces a noticable
+;  flash when updating anything!
+
+.IF NE 0
+	MOVL	EDX, win_bascliprgn[EDI] ;Get RGN for region to fill
+
+	CMPB	rgn_type[EDX], #RGNTYPE_NULL ;Null region?
+	JE	100$			;Yes - nothing needed here
+	MOVL	ECX, win_basdrw[EDI]
+	PUSHL	ECX
+	MOVL	ECX, drw_funcdsp[ECX]
+	PUSHL	EDX
+	PUSHL	win_basscnxpos[EDI]
+	PUSHL	win_basscnypos[EDI]
+	PUSHL	#0xF818
+	CALLI	gfx_rgnfill[ECX]	;Go to the appropriate routine
+100$:
+.ENDC
+
+$$$erase::
+
+;End of debug code
+
+	MOVL	win_basdrawrgn[EDI], #0
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+
+	CMPB	drw_disable[EAX], #0
+	JNE	32$			;Yes - skip the drawing stuff
+
+;Here if the display is enabled - draw the window borders
+
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_waitidle[EAX]
+	CLRL	ESI
+	BTL	win_basbits[EDI], #WB2%LINEO ;No - want a line outside the
+					     ;  border?
+	JNC	1$			;No
+	CALL	drawlines		;Yes
+	INCL	ESI
+1$:	CMPL	xwsfocuswin, EDI	;This window have focus?
+	JNE	2$			;No
+	BTL	win_basbits[EDI], #WB2%NOSHWFOC ;Yes - should we show it?
+	JC	2$			;No
+	CALL	drawlines
+	INCL	ESI
+	CALL	drawlines
+2$:	CMPL	win_basbdwido[EDI], #0	;Need an outer border?
+	JE	14$			;No
+	MOVL	EDX, win_basbdwido[EDI]	;Yes - get outer border width
+	CLRL	EAX			;Get outside space
+	BTL	win_basbits[EDI], #WB2%LINEO
+	ADCL	EAX, #0
+	CMPL	xwsfocuswin, EDI	;This window have focus?
+	JNE	4$			;No
+	BTL	win_basbits[EDI], #WB2%NOSHWFOC ;Yes - should we show it?
+	JC	4$			;No
+
+;Here if showing focus - adjust the outer border accordingly
+
+	SUBL	EDX, #2t		;Really need an outer border?
+	JLE	14$			;No
+	ADDL	EAX, #2t		;Yes - pull it in 2 extra pixels
+4$:	PUSHL	EDI
+	PUSHL	EAX
+	PUSHL	EDX
+	BTL	win_basbits[EDI], #WB2%RECESSO
+	JC	8$
+	PUSHL	#1
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JNE	6$
+	PUSHL	win_bashlcoln[EDI]
+	PUSHL	win_basshcoln[EDI]
+	JMP	12$
+
+6$:	PUSHL	win_bashlcola[EDI]
+	PUSHL	win_basshcola[EDI]
+	JMP	12$
+
+8$:	PUSHL	#0
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JNE	10$
+	PUSHL	win_basshcoln[EDI]
+	PUSHL	win_bashlcoln[EDI]
+	JMP	12$
+
+10$:	PUSHL	win_basshcola[EDI]
+	PUSHL	win_bashlcola[EDI]
+12$:	CALL	drawborder
+14$:	CMPL	win_basbdwidc[EDI], #0	;Need a center border?
+	JE	18$			;No
+	CLRL	ECX			;Yes
+	CMPL	win_basbdwido[EDI], #2t	;Outer border 2 or more pixels?
+	JGE	16$			;Yes - no special adjust needed
+	CMPL	xwsfocuswin, EDI	;No - does this window have focus?
+	JNE	16$			;No
+	BTL	win_basbits[EDI], #WB2%NOSHWFOC ;Yes - should we show it?
+	JC	16$			;Yes
+	MOVB	CL, #2			;Get adjustment amount
+	SUBL	ECX, win_basbdwido[EDI]
+16$:	MOVL	ESI, win_basbdwido[EDI]
+	BTL	win_basbits[EDI], #WB2%LINEO
+	ADCL	ESI, ECX
+	SUBL	ECX, win_basbdwidc[EDI]
+	NEGL	ECX
+	MOVL	rdbgn_temp[EBP], ECX
+	PUSHL	EDI
+	MOVL	EAX, ESI		;Draw top piece of center border
+	PUSHL	EAX
+	PUSHL	EAX
+	ADDL	EAX, EAX
+	MOVL	EDX, win_baswidth[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	rdbgn_temp[EBP]
+	PUSHL	win_basbdcol[EDI]
+	CALL	xwsfillrectns#
+	PUSHL	EDI
+	MOVL	EAX, ESI		;Draw left piece of center border
+	PUSHL	EAX
+	ADDL	EAX, rdbgn_temp[EBP]
+	PUSHL	EAX
+	ADDL	EAX, EAX
+	PUSHL	win_basbdwidc[EDI]
+	MOVL	EDX, win_basheight[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	win_basbdcol[EDI]
+	CALL	xwsfillrectns#
+	PUSHL	EDI
+	MOVL	EAX, ESI		;Draw right piece of center border
+	ADDL	EAX, rdbgn_temp[EBP]
+	MOVL	EDX, win_baswidth[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	EAX
+	ADDL	EAX, EAX
+	PUSHL	rdbgn_temp[EBP]
+	MOVL	EDX, win_basheight[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	win_basbdcol[EDI]
+	CALL	xwsfillrectns#
+	PUSHL	EDI
+	MOVL	EAX, ESI		;Draw bottom piece of center border
+	PUSHL	EAX
+	MOVL	EDX, win_basheight[EDI]
+	SUBL	EDX, rdbgn_temp[EBP]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	ADDL	EAX, EAX
+	MOVL	EDX, win_baswidth[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	rdbgn_temp[EBP]
+	PUSHL	win_basbdcol[EDI]
+	CALL	xwsfillrectns#
+18$:	CMPL	win_basbdwidi[EDI], #0	;Need an inner border?
+	JE	30$			;No
+	CLRL	ECX			;Yes
+	MOVL	EAX, win_basbdwido[EDI] ;Outer + center borders 2 or more
+	ADDL	EAX, win_basbdwidc[EDI]	;  pixels?
+	CMPL	EAX, #2t
+	JGE	20$			;Yes - no special adjust needed
+	CMPL	xwsfocuswin, EDI	;No - does this window have focus?
+	JNE	20$			;No
+	BTL	win_basbits[EDI], #WB2%NOSHWFOC ;Yes - should we show it?
+	JC	20$			;Yes
+	MOVB	CL, #2			;Get adjustment amount
+	SUBL	ECX, EAX
+	CMPL	win_basbdwidc[EDI], ECX
+	JLE	30$
+20$:	PUSHL	EDI			;Yes - draw it
+	MOVL	EAX, win_basbdwido[EDI]
+	BTL	win_basbits[EDI], #WB2%LINEO
+	ADCL	EAX, win_basbdwidc[EDI]
+	ADDL	EAX, ECX
+	PUSHL	EAX
+	MOVL	EAX, win_basbdwidi[EDI]
+	SUBL	EAX, ECX
+	PUSHL	EAX
+	BTL	win_basbits[EDI], #WB2%RECESSI
+	JC	24$
+	PUSHL	#1
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JNE	22$
+	PUSHL	win_bashlcoln[EDI]
+	PUSHL	win_basshcoln[EDI]
+	JMP	28$
+
+22$:	PUSHL	win_bashlcola[EDI]
+	PUSHL	win_basshcola[EDI]
+	JMP	28$
+
+24$:	PUSHL	#0
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JNE	26$
+	PUSHL	win_basshcoln[EDI]
+	PUSHL	win_bashlcoln[EDI]
+	JMP	28$
+
+26$:	PUSHL	win_basshcola[EDI]
+	PUSHL	win_bashlcola[EDI]
+28$:	CALL	drawborder
+30$:	BTL	win_basbits[EDI], #WB2%LINEI ;Want a line inside the border?
+	JNC	32$			;No
+	MOVL	ESI, win_basbdwido[EDI]	;Yes
+	ADDL	ESI, win_basbdwidc[EDI]
+	BTL	win_basbits[EDI], #WB2%LINEO
+	ADCL	ESI, win_basbdwidi[EDI]
+	PUSHL	EDI			;Draw the top line
+	PUSHL	ESI
+	PUSHL	ESI
+	MOVL	EAX, win_baswidth[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	ESI
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the right line
+	MOVL	EAX, win_baswidth[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	ESI
+	PUSHL	EAX
+	MOVL	EAX, win_basheight[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the left line
+	PUSHL	ESI
+	PUSHL	ESI
+	PUSHL	ESI
+	MOVL	EAX, win_basheight[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the bottom line
+	PUSHL	ESI
+	MOVL	EAX, win_basheight[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	MOVL	EDX, win_baswidth[EDI]
+	DECL	EDX
+	SUBL	EDX, ESI
+	PUSHL	EDX
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+
+$$$reduce::
+32$:	PUSHL	win_bascliprgn[EDI]	;Reduce the clipping region to
+	PUSHL	win_basclientrgn[EDI]	;  exclude the window border area
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+
+;;;;	PUSHL	EAX
+;;;;	PUSHL	win_basmaskrgn[EDI]
+;;;;	CALL	xwsRgnIntersect#
+;;;;	PUSHL	EAX
+
+	PUSHL	win_bascliprgn[EDI]
+	CALL	xwsRgnDestroy#
+	POPL	win_bascliprgn[EDI]
+
+;;;;	CALL	xwsRgnDestroy#
+
+	CMPL	win_basdrwmaskrgn[EDI], #0
+	JE	33$
+	INT3
+33$:
+
+					;Initialize win_basdrwmaskrgn to be
+					;  a copy of win_bascliprgn. This is
+	PUSHL	win_bascliprgn[EDI]	;  used by xwsWinChangeClipRgn when
+	CALL	xwsRgnDuplicate#	;  setting an absolute clipping region.
+
+;;;;	INT3
+
+	MOVL	win_basdrwmaskrgn[EDI], EAX
+
+	MOVL	EAX, win_basdrw[EDI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	40$			;Yes
+
+;Erase the window by drawing the background image or by filling the window
+;  with the background color
+
+	MOVL	EAX, win_basbgbmn[EDI]
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JE	34$
+	MOVL	EAX, win_basbgbma[EDI]
+34$:	TESTL	EAX, EAX
+	JE	36$
+	PUSHL	EDI
+	PUSHL	EAX
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#50000
+	PUSHL	#50000
+	PUSHL	#0
+	CALL	xwsDrawBitmap#
+	JMP	40$
+
+36$:	MOVL	EAX, win_basbgcoln[EDI]
+	TESTB	win_basstatus[EDI], #WSB$ALTCOL
+	JE	38$
+	MOVL	EAX, win_basbgcola[EDI]
+38$:	CMPL	EAX, #-1
+	JE	40$
+
+	MOVL	EDX, win_bascliprgn[EDI] ;Get RGN for region to fill
+
+	CHECKRGN EDX
+
+$$$fillbgd::
+
+	CMPB	rgn_type[EDX], #RGNTYPE_NULL ;Null region?
+	JE	40$			;Yes - nothing needed here
+	MOVL	ECX, win_basdrw[EDI]
+	PUSHL	ECX
+	MOVL	ECX, drw_funcdsp[ECX]
+	PUSHL	EDX
+	PUSHL	win_basscnxpos[EDI]
+	PUSHL	win_basscnypos[EDI]
+	PUSHL	EAX
+	CALLI	gfx_rgnfill[ECX]	;Go to the appropriate routine
+40$:
+$$$erased::
+
+	POPL	win_basyorg[EDI]
+	POPL	win_basxorg[EDI]
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_waitidle[EAX]
+	MOVL	EAX, #1
+42$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+xwsret4a::
+	RET	4t
+
+;Here if error - return FALSE
+
+44$:
+	INT3
+
+	CLRL	EAX
+	JMP	42$
+.PAGE
+;Subroutine to draw lines around a window
+;	c{EDI} = Offset of WIN
+;	c{ESI} = Position offset for lines
+;	CALL	drawlines
+
+drawlines:
+	PUSHL	EDI			;Draw the top line
+	PUSHL	ESI			;X1
+	PUSHL	ESI			;Y1
+	MOVL	EDX, win_baswidth[EDI]
+	SUBL	EDX, ESI
+	DECL	EDX
+	PUSHL	EDX			;X2
+	PUSHL	ESI			;Y2
+	PUSHL	#1			;Width of line
+	PUSHL	#0			;Color of line
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the right line
+	MOVL	EAX, win_baswidth[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX			;X1
+	PUSHL	ESI			;Y1
+	PUSHL	EAX			;X2
+	MOVL	EAX, win_basheight[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX			;Y2
+	PUSHL	#1			;Width of line
+	PUSHL	#0			;Color of line
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the left line
+	PUSHL	ESI			;X1
+	PUSHL	ESI			;Y1
+	PUSHL	ESI			;X2
+	MOVL	EAX, win_basheight[EDI] ;Y2
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+	PUSHL	EDI			;Draw the bottom line
+	PUSHL	ESI			;X1
+	MOVL	EAX, win_basheight[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	PUSHL	EAX			;Y1
+	MOVL	EDX, win_baswidth[EDI]
+	DECL	EDX
+	SUBL	EDX, ESI
+	PUSHL	EDX			;X1
+	PUSHL	EAX			;Y2
+	PUSHL	#1
+	PUSHL	#0
+	CALL	xwsdrawlinens#
+	RET
+.PAGE
+;Function to draw a single window border
+;	WIN *win;
+;	long space;
+;	long width;
+;	long adjust;
+;	long hilcol;
+;	long shdcol;
+;	drawborder(win, space, width, adjust, hildcol, shdcol)
+
+;This function uses the Pascal calling sequence
+
+db_win   =!36t
+db_space =!32t			;Space outside of border
+db_width =!28t			;Width of border
+db_adjust=!24t
+db_hilcol=!20t			;Highlight color
+db_shdcol=!16t			;Shadow color
+
+drawborder:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	MOVL	EDI, db_win[EBP]
+	PUSHL	EDI			;Draw the right border
+	MOVL	EAX, win_baswidth[EDI]
+	MOVL	EDX, db_space[EBP]
+	ADDL	EDX, db_width[EBP]
+	SUBL	EAX, EDX
+	PUSHL	EAX
+	PUSHL	db_space[EBP]
+	PUSHL	db_width[EBP]
+	MOVL	EAX, win_basheight[EDI]
+	ADDL	EDX, db_space[EBP]
+	SUBL	EAX, EDX
+	PUSHL	EAX
+	PUSHL	db_shdcol[EBP]
+	CALL	xwsfillrectns#
+	MOVL	ESI, db_space[EBP]
+	MOVL	EAX, db_width[EBP]
+	PUSHL	EAX
+4$:	PUSHL	EDI
+	PUSHL	db_space[EBP]
+	PUSHL	ESI
+	MOVL	EAX, win_baswidth[EDI]
+	DECL	EAX
+	SUBL	EAX, ESI
+	SUBL	EAX, db_adjust[EBP]
+	PUSHL	EAX
+	PUSHL	ESI
+	PUSHL	#1
+	PUSHL	db_hilcol[EBP]
+	CALL	xwsdrawlinens#
+	INCL	ESI
+	DECL	[ESP]
+	JNE	4$
+	ADDL	ESP, #4t
+	PUSHL	EDI			;Draw the left border
+	MOVL	EAX, db_space[EBP]
+	PUSHL	EAX
+	MOVL	EDX, db_width[EBP]
+	ADDL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	db_width[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, db_width[EBP]
+	MOVL	EDX, win_basheight[EDI]
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	db_hilcol[EBP]
+	CALL	xwsfillrectns#
+	MOVL	ESI, db_space[EBP]	;Draw the bottom border
+	XORB	db_adjust[EBP], #01h
+	PUSHL	db_width[EBP]
+8$:	PUSHL	EDI
+	MOVL	EAX, ESI
+	ADDL	EAX, db_adjust[EBP]
+	PUSHL	EAX
+	MOVL	EAX, win_basheight[EDI]
+	SUBL	EAX, ESI
+	DECL	EAX
+	PUSHL	EAX
+	MOVL	EDX, win_baswidth[EDI]
+	SUBL	EDX, db_space[EBP]
+	DECL	EDX
+	PUSHL	EDX
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	db_shdcol[EBP]
+	CALL	xwsdrawlinens#
+	INCL	ESI
+	DECL	[ESP]
+	JNE	8$
+	ADDL	ESP, #4t
+	POPL	EBP
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+.PAGE
+;Function to terminate the draw sequence for a window
+;	WIN *win;			;Pointer to WIN for window
+;	xwsWinDrawEnd(win);
+;  Nothing is returned
+
+;This function uses the Pascal calling sequence
+
+;The main thing done by this function is to switch back to using the user's
+;  clipping region.  The draw clipping region is given up. It also calls
+;  the draw routine again if necessary.
+
+	.ENTRY	xwsWinDrawEnd
+xwsWinDrawEnd::
+	PUSHL	EDI
+	MOVL	EDI, 8t[ESP]
+	PUSHL	win_bascliprgn[EDI]	;Give up the draw mode clipping RGNs
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basdrwmaskrgn[EDI]
+	CALL	xwsRgnDestroy#
+	MOVL	EAX, win_bassavcliprgn[EDI] ;Restore the saved clipping RGN
+	MOVL	win_bascliprgn[EDI], EAX
+	MOVL	win_basdrwmaskrgn[EDI], #0
+	MOVL	win_bassavcliprgn[EDI], #0
+	MOVL	EAX, win_basdrawrgn[EDI] ;Do we have a draw RGN now?
+	TESTL	EAX, EAX
+	JNE	22$			;Yes
+20$:	MOVB	win_basdrawflg[EDI], #0 ;No - indicate not drawing now
+	POPL	EDI
+	RET	4t
+
+;Here if have a draw RGN now
+
+22$:	CMPB	rgn_type[EAX], #RGNTYPE_NULL
+	JNE	24$
+	MOVL	win_basdrawrgn[EDI], #0
+	JMP	20$
+
+24$:	PUSHL	EDI
+	CALLI	win_basdraw[EDI]
+	POPL	EDI
+	RET	4t
+.PAGE
+;Default draw function for all windows
+;	void xwsdefaultdraw(
+;	    WIN *win);
+
+ddf_win=!8t
+
+	.ENTRY	xwsdefaultdraw
+xwsdefaultdraw::
+	PUSHL	EDI
+	MOVL	EDI, ddf_win[ESP]
+	PUSHL	EDI
+	CALL	xwsWinDrawBegin
+	PUSHL	EDI
+	CALL	xwsWinDispBitmap#
+	PUSHL	EDI
+	CALL	xwsWinDispText#
+	PUSHL	EDI
+	CALL	xwsWinDrawEnd
+	POPL	EDI
+	RET	4t
+
+;Subroutine to convert from external to internal hi-color (5-6-5) value
+;	c{EAX} = External color value
+;	CALL	xwsgethicolor
+;	c{EAX} = Internal color value
+
+;  All registers (except EAX) are preserved)
+
+;External color format:
+;	Bit  31    - Internal value flag, must be 0
+;	Bits 30-24 - Not used, ignored
+;	Bits 23-16 - Red value (8 bits)
+;	Bits 15-8  - Green value (8 bits)
+;	Bits  7-0  - Blue value (8 bits)
+;Internal color format:
+;	Bit  31    - Intermal value flag, must be 1
+;	Bits 30-16 - Not used, always 0
+;	Bits 15-11 - Red value (5 bits)
+;	Bits 10-5  - Green value (6 bits)
+;	Bits  4-0  - Blue value (5 bits)
+
+	.ENTRY	xwsgethicolor
+xwsgethicolor::
+	TESTL	EAX, EAX
+	JS	4$
+	PUSHL	EDX
+	MOVZBL	EDX, AL
+	ANDL	EAX, #0xF8FC00
+	SHRL	EDX, #3
+	SHRL	EAX, #5
+	ORL	EDX, EAX
+	SHRL	EAX, #3
+	ANDL	EAX, #0xF800
+	ANDL	EDX, #0x07FF
+	ORL	EAX, #0x80000000
+	ORL	EAX, EDX
+	POPL	EDX
+4$:	RET
+
+;Function to convert from internal hi-color (5-6-5) to an expanded color value
+;	void xwsexphicolor(
+;	    XWSEXPCOL *xcol,
+;	    uchar     *icol)
+
+ehc_xcol=!8t
+ehc_icol=!4t
+
+	.ENTRY	xwsexphicolor
+xwsexphicolor::
+	MOVL	ECX, ehc_icol[ESP]
+	MOVZWL	EDX, [ECX]
+	MOVL	ECX, ehc_xcol[ESP]
+	MOVL	EAX, EDX
+	SHRL	EAX, #8
+	ANDL	EAX, #0xF8
+	MOVL	xcv_red[ECX], EAX
+	MOVL	EAX, EDX
+	SHRL	EAX, #3
+	ANDL	EAX, #0xFC
+	MOVL	xcv_green[ECX], EAX
+	SHLL	EDX, #3
+	ANDL	EDX, #0xF8
+	MOVL	xcv_blue[ECX], EDX
+	RET	8
+
+;	Bits 15-11 - Red value (5 bits)
+;	Bits 10-5  - Green value (6 bits)
+;	Bits  4-0  - Blue value (5 bits)
+
+
+
+;Function to convert from an expanded color value to an internal hi-color
+;  (5-6-5) value.
+;	void xwscomhicolor(
+;	    XWSEXPCOL *xcol,
+;	    uchar     *icol)
+
+chc_xcol=!8
+chc_icol=!4
+
+	.ENTRY	xwscomhicolor
+xwscomhicolor::
+	MOVL	ECX, chc_xcol[ESP]
+	MOVL	EDX, xcv_red[ECX]
+	ANDL	EDX, #0xF8
+	SHLL	EDX, #8t
+	MOVL	EAX, xcv_green[ECX]
+	ANDL	EAX, #0xFC
+	SHLL	EAX, #3t
+	ORL	EDX, EAX
+	MOVL	EAX, xcv_blue[ECX]
+	ANDL	EAX, #0xF8
+	SHRL	EAX, #3t
+	ORL	EAX, EDX
+	MOVL	ECX, chc_icol[ESP]
+	MOVW	[ECX], AX
+	RET	8
+.PAGE
+;Subroutine to allocate a thread TDB
+;	CALL	xwsallocthread
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Offset of TDB allocated
+
+xwsallocthread::
+
+;;;	INT3
+
+	BSFL	EAX, tdbbitmap
+	JE	4$			;If no more available
+	BTZL	tdbbitmap, EAX		;Found one, mark it in use
+	SHLL	EAX, #17t
+	ADDL	EAX, xwsfimagetdb
+	RET
+
+;Here if no more threads are available
+
+4$:	MOVL	EAX, #ER_TMTHD
+	STC
+	RET
+
+;Subroutine to free up a thread TDB
+;	c{EDX} = Offset of TDB
+;	CALL	xwsfreethread
+
+xwsfreethread::
+	SUBL	EDX, xwsfimagetdb
+	SHRL	EDX, #17t
+	BTSL	tdbbitmap, EDX
+	RET
+.PAGE
+xwsMalloc::
+	PUSHL	4[ESP]
+	CALL	malloc#
+	TESTB	AL, #0x03
+	JE	12$
+	INT3
+
+12$:	ADDL	ESP, #4t
+	TESTL	EAX, EAX
+	JE	14$
+	MOVL	EDX, -4[EAX]
+	ADDL	EDX, #24t
+	ADDL	xws_TotalMem, EDX
+	INCL	xws_TotalBlk
+	INCL	xws_AllocCnt
+14$:	RET	4
+
+
+xwsCMalloc::
+	PUSHL	4[ESP]
+	CALL	cmalloc#
+	JMP	12$
+
+
+xwsFree::
+	MOVL	EAX, 4[ESP]
+	MOVL	[EAX], #'FREE'
+	PUSHL	EAX
+	MOVL	EAX, -4[EAX]		;Get size?
+	ADDL	EAX, #24t		;Add size of malloc header
+	SUBL	xws_TotalMem, EAX
+	DECL	xws_TotalBlk
+	INCL	xws_FreeCnt
+	CALL	free#
+	ADDL	ESP, #4t
+	RET	4
+.PAGE
+xds_val=!12t
+xds_rnd=!8t
+xds_div=!4t
+
+	.ENTRY	xwsdoscale
+xwsdoscale::
+	MOVL	EAX, xds_val[ESP]
+	ADDL	EAX, xds_rnd[ESP]
+	CLQ
+	IDIVL	xds_div[ESP]
+	RET	12t
+.PAGE
+	.PSECT	_DATA_p
+
+radius: .LONG	0
+count:  .LONG	0
+req:	.LONG	0
+flag:	.LONG	0
+
+colorinx:
+	.LONG	0
+
+colortbl:
+	.LONG	0xF800
+	.LONG	0x07E0
+	.LONG	0x001F
+	.LONG	0x0000
+
+xws_AllocCnt::
+	.LONG	0
+xws_FreeCnt::
+	.LONG	0
+xws_TotalMem::
+	.LONG	0
+xws_TotalBlk::
+	.LONG	0
+xws_SchedReq::
+	.LONG	0
+xwstdbbase::
+	.LONG	0
+xwsdrawhead::
+	.LONG	0
+xwsdrawtail::
+	.LONG	0
+lastevent:
+	.LONG	0
+xwsvectbase::
+	.LONG	0
+xwscurwin::			;Window which implements software graphics
+	.LONG	0		;  cursor
+xwsmousehndl::			;Mouse device  handle
+	.LONG	0
+xwsmouseseen::
+	.BYTE	0
+	.BLKB	3
+tdbbitmap:
+	.LONG	0xFFFFFFFF
+xws_TrmHndl::
+	.LONG	0
+xwsfocuswin::			;Window which has input focus
+	.LONG	0
+xwsmodalwin::			;Current modal window
+	.LONG	0
+xwscursorgrabwin::
+	.LONG	0
+
+.IF NE 0
+debugcnt::
+	.LONG	100t
+debugpnt::
+	.LONG	debuglist
+debuglist::
+	.BLKL	3000t
+debugend::
+
+drawcnt::
+	.LONG	0
+.ENDC
+
+;RGN for the entire screen
+
+xws_ScreenRGN::
+	.LONG	'RGN#'		;rgn_id     = 0  - ID
+	.WORD	0
+	.BYTE	RGNTYPE_SIMPLE	;rgn_type   = 4  - Region type
+	.BYTE	0
+	.LONG	rgn_SIZE	;rgn_size   = 8  - Total size of RGN (bytes)
+	.LONG	-1		;rgn_usecnt = 12 - Use count
+	.LONG	0		;rgn_ycount = 16 - Number of Y table entries
+	.LONG	0		;rgn_left   = 20 - Left side X position
+	.LONG	0		;rgn_right  = 24 - Right side X position
+	.LONG	0		;rgn_top    = 28 - Top Y position
+	.LONG	0		;rgn_bottom = 32 - Bottom Y position
+
+xws_ScreenWIN::
+	.LONG	0		;Offset of WIN for base screen window
+
+xwstrmdata::
+	.BYTE	0		;(1) Reserved
+	.BYTE	0		;(1) Active BIOS display page
+	.WORD	0		;(2) Reserved
+	.LONG	0		;(4) Number of character columns
+	.LONG	0		;(4) Number of character rows
+	.LONG	640t		;(4) Graphics horizontal resolution
+	.LONG	0		;(4) Graphics vertical resolution
+	.LONG	_main#		;(4) Display type (returned only)
+	.LONG	0		;(4) Cursor mode
+	.LONG	0
+	.LONG	0
+	.LONG	0
+
+xwsbasexsfr::
+	.LONG	150t
+xwsbasexsfd::
+	.LONG	300t
+xwsbaseysfr::
+	.LONG	150t
+xwsbaseysfd::
+	.LONG	300t
+
+xwsmaxthrds::
+	.LONG	0
+xwsdrawtdb::
+	.LONG	0
+xwskeybrdtdb::
+	.LONG	0
+xwsmousetdb::
+	.LONG	0
+xwsfimagetdb::
+	.LONG	0
+
+xwsdftfnt::			;Default font to use if requested is not
+	.LONG	0		;  available for some reason
+
+xwsclipboard::
+	.LONG	0
+
+xwstrmname::
+	.BLKB	20t
+
+openparms:
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_FILEOPTN
+	.LONG	XFO$PHYDEV
+	.BYTE	PAR$GET|REP_STR, 0
+	.WORD	IOPAR_FILESPEC
+	.LONG	xwstrmname
+	.WORD	20t, 20t
+	.BYTE	PAR$GET|REP_HEXV, 4
+	.WORD	IOPAR_UNITNUM
+xwstrmnum::
+	.WORD	0
+xwsscnnum::
+	.WORD	0
+	.BYTE	0
+
+xwsnoscale::
+	.BYTE	0
+
+	.END

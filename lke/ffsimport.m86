@@ -1,0 +1,2 @@
+	.IMPORT	sysLibStrLen
+	.IMPORT	sysLibMemCpy

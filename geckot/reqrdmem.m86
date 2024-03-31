@@ -1,0 +1,374 @@
+	.TITLE	$_reqrdmem
+
+;*--------------------------------------------------------------------------*
+;* reqrdmem.m86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	geckot.par
+
+	GTCODE
+
+;************************************************
+; Function: $_reqrdmem - Handle the RDMEM request
+; Returned: Nothing
+;************************************************
+
+;Request format:
+;  Offset Size Description
+;     0     2  Number of items to read - 0 means to return as many bytes (up to
+;                15) needed for a complete instruction. This is not an exact
+;                check and may return more bytes than actually needed.
+;     2     1  Bits 2-0: If reading data: 0=byte, 1=word, 2=long, 3=quad
+;			 If reading instructions: 0=16-bit, 1=32-bit, 2=64-bit
+;              Bits 7-3: Not used but are echoed back
+;     3     4  Memory address
+
+;Response format:
+;  Offset Size Description
+;     0     2  Number of items to read (echoed except set to 0xFFFF if memory
+;		 error or 0xFFFE if unknown instruction when returning an
+;		 instruction)
+;     2     1  Item size (echoed)
+;     3     4  Memory address (echoed)
+;     7     1  Reserved, always 0
+;     8     n  Memory bytes
+;  If fewer items are returned than were requested this indicates that
+;    accessing the first item not returned caused a memory fault. The memory
+;    type byte is not returned if a segmented address references an invalid
+;    segment.
+
+	.ENTRY	$_reqrdmem
+$_reqrdmem::
+	CMPL	$_reqlength#, #7
+	JB	$_badlength#
+	MOVB	$_dbbufr#+7, #0
+	MOVZBL	EAX, $_dbbufr#+2	;Get it item size
+	ANDL	EAX, #0x0F
+	CMPW	$_dbbufr#+0, #0		;Want an instruction?
+	JE	getinst			;Yes - return at least one instruction
+	PUSHL	EAX			;Size
+	PUSHL	$_dbbufr#+3		;Address to read
+	PUSHL	#$_dbbufr#+8		;Address of the data buffer
+	MOVZWL	EAX, $_dbbufr#+0	;Count (number of items to read)
+	PUSHL	EAX
+	CALL	$_rdmem#		;Read memory
+	ADDL	EAX, #8
+rdsend:	PUSHL	#DBRQ_RDMEM
+	PUSHL	EAX
+	CALL	$_sendresponse#
+	RET
+.PAGE
+;Here to read an instruction from memory - This code attempts to return the
+;  correct number of bytes. In a couple of rather complex cases it will err
+;  on the high side to save some code. This does no harm other than sending
+;  a small number of extra bytes. The client will decode the instruction
+;  completely and will discard any extra bytes.
+
+SIZE_16DATA=!0x01
+SIZE_16ADDR=!0x02
+
+;	c{EAX} = Size value
+
+getinst:
+	CLRL	EDX			;Assume 32 bit segment
+	CMPB	AL, #1			;Right?
+	JE	2$			;Yes
+	ORL	EDX, #SIZE_16ADDR|SIZE_16DATA ;No - 16 bit segment
+2$:	MOVL	prefix, EDX
+	MOVL	EAX, $_dbbufr#+3
+	MOVL	instaddr, EAX
+	MOVL	instpnt, #$_dbbufr#+8
+instlp:	MOVL	EAX, #1
+	CALL	readins
+	JC	badins
+	MOVL	EAX, instpnt
+	MOVZBL	EAX, -1[EAX]
+	MOVZBL	EAX, insttbl[EAX]
+	JMPIL	instdsp[EAX*4]
+
+twobyte:MOVL	EAX, #1
+	CALL	readins
+	JC	badins
+	MOVL	EAX, instpnt
+	MOVZBL	EAX, -1[EAX]
+	MOVZBL	EAX, i0Ftbl[EAX]
+	JMPIL	instdsp[EAX*4]
+
+	.MOD	4
+instdsp:.LONG	rddone		;   = 00 - No additional bytes
+	.LONG	plusn		;   = 01 - 1 additional byte
+	.LONG	plusn		;   = 02 - 2 additional bytes
+	.LONG	plusn		;   = 03 - 3 additional bytes
+	.LONG	plusn		;   = 04 - 4 additional bytes
+	.LONG	plusn		;   = 05 - 5 additional bytes
+	.LONG	instlp		;PX = 06 - Prefix
+	.LONG	aprefix		;PA = 07 - Address size prefix
+	.LONG	dprefix		;PD = 08 - Data size prefix
+	.LONG	twobyte		;P2 = 09 - Two byte instruction prefix
+	.LONG	genaddr		;G  = 0A - General address modes
+	.LONG	genadrb		;GB = 0B - General address modes + literal byte
+	.LONG	genadrl		;GL = 0C - General address modes + literal long
+	.LONG	memaddr		;AV = 0D - 16 or 32-bit address (controled by
+				;	     address size)
+	.LONG	memfadr		;AF = 0E - 16 or 32-bit far address (controled
+				;	     by address size)
+	.LONG	memdata		;DL = 0F - 16 or 32-bit data (controled by data
+				;	     size)
+	.LONG	badins		;X  = 10 - Unknown or unimplimented instruction
+	.LONG	badins		;F  = 11 - Floating point instruction
+	.LONG	group3		;G3 = 12 - Group 3 instructions
+
+aprefix:XORB	prefix, #SIZE_16ADDR
+	JMP	instlp
+
+dprefix:XORB	prefix, #SIZE_16DATA
+	JMP	instlp
+
+genadrl:MOVL	EDI, #4
+	TESTB	prefix, #SIZE_16DATA
+	JE	6$		;If have 32-bit data
+	SUBL	EDI, #2
+	JMP	6$
+
+genadrb:MOVL	EDI, #1
+	JMP	6$
+
+genaddr:CLRL	EDI
+6$:	MOVL	EAX, #1		;Read the ModR/M byte
+	CALL	readins
+	JC	badmem
+	MOVL	EAX, instpnt
+	MOVZBL	EAX, -1[EAX]
+8$:	TESTB	prefix, #SIZE_16ADDR
+	JE	12$		;If have a 32-bit address mode
+	SHRL	EAX, #6		;Get just the mod value
+	CMPB	AL, #3		;Register?
+	JE	30$		;Yes - no additional bytes needed
+	CMPB	AL, #1
+	JE	28$		;If have 8-bit offset
+	JG	10$		;If have 16-bit offset
+	CMPB	DL, #0x06	;Have a 16-bit address?
+	JNE	30$		;No - no additional bytes are needed
+10$:	INCL	EDI		;Yes
+	JMP	28$
+
+;Here if a 32-bit address mode
+
+12$:	MOVL	EDX, EAX
+	ANDL	EDX, #0x07
+	SHRL	EAX, #6		;Get the mod value
+	CMPB	AL, #3		;Register?
+	JE	30$		;Yes - no additional bytes needed
+	CMPB	DL, #0x04	;No - have an SIB byte?
+	JE	18$		;Yes
+	CMPB	AL, #1		;No
+	JE	28$		;If have 8-bit offset
+	JG	14$		;If have 32-bit offset
+	CMPB	DL, #0x05	;Have a 32-bit address?
+	JE	24$		;Yes
+	JMP	30$		;No - no additional bytes are needed
+
+14$:	ADDL	EDI, #3
+	JMP	28$
+
+;Here if we need an SIB byte
+
+18$:	PUSHL	EAX		;Save the mode value
+	MOVL	EAX, #1		;Read the SIB byte
+	CALL	readins
+	POPL	EDX		;Restore the mod value
+	JC	badmem
+	MOVL	EAX, instpnt
+	MOVZBL	EAX, -1[EAX]
+	CMPB	DL, #0		;Is the mod value 0?
+	JNE	20$		;No
+	ANDL	EAX, #0x07	;Yes - is the base value 5?
+	CMPB	AL, #0x05
+	JNE	30$		;No - no additional byte needed
+	JMP	24$		;Yes - this is the special case 32-bit offset
+
+;Here with an SIB byte and a mod value of 1 or 2
+
+20$:	DECL	EDX
+	JE	28$		;If 8-bit offset
+24$:	ADDL	EDI, #4		;We have a 32-bit offset
+	JMP	30$
+
+28$:	INCL	EDI		;We have an 8-bit offset
+
+;Here with the address mode decoded as much as needed
+
+30$:	MOVL	EAX, EDI
+	TESTL	EAX, EAX
+	JE	rddone
+plusn:	CALL	readins
+	JC	badmem
+rddone:	MOVL	EAX, instpnt
+	SUBL	EAX, #$_dbbufr#
+	JMP	rdsend
+
+;Here with a simple far memory address (word or long)
+
+memfadr:MOVL	EAX, #6		;Assume 32-bit address
+	JMP	36$
+
+;Here with a simple memory address (word or long)
+
+memaddr:MOVL	EAX, #4		;Assume 32-bit address
+36$:	TESTB	prefix, #SIZE_16ADDR
+	JMP	38$
+
+;Here with a simple literal data value (word or long)
+
+memdata:MOVL	EAX, #4
+	TESTB	prefix, #SIZE_16DATA
+38$:	JE	plusn		;If have 32-bit data
+	SUBL	EAX, #2
+	JMP	plusn
+
+;Here with a group 3 instruction - need to look at the MOD value to determine
+;  the type
+
+group3:	CLRL	EDI
+	MOVL	EAX, #1		;Read the ModR/M byte
+	CALL	readins
+	JC	badmem
+	MOVL	EAX, instpnt
+	MOVZBL	EAX, -1[EAX]
+	TESTB	AL, #0x38	;Is this a TEST instruction?
+	JNE	8$		;No - just a type G instruction
+	MOVL	EDX, instpnt
+	TESTB	-2[EDX], #0x01
+	JNE	40$
+	INCL	EDI
+	JMP	8$
+
+40$:	MOVL	EDI, #4
+	TESTB	prefix, #SIZE_16DATA
+	JE	8$		;If have 32-bit data
+	SUBL	EDI, #2
+	JMP	8$
+
+;Here if can't read an instruction byte
+
+badmem:	MOVW	$_dbbufr+0, #0xFFFF	
+	JMP	rddone
+
+;Here with unknown instruction
+
+badins:	MOVW	$_dbbufr+0, #0xFFFE
+	JMP	rddone
+.PAGE
+;Subroutine to read instruction bytes
+;	C{EAX} = Number of bytes to read
+;	CALL	readins
+;	C:clr = OK
+;	C:set = Error
+;  In all cases, instpnt is updated to point to the first byte not read and
+;    instaddr is updated to point to the next byte to read
+
+readins:PUSHL	EAX
+	PUSHL	#RDMSZ_BYTE		;Read the next byte
+	PUSHL	instaddr		;Address
+	ADDL	instaddr, EAX
+	PUSHL	instpnt			;Data buffer
+	PUSHL	EAX
+	CALL	$_rdmem#		;Read memory
+	POPL	EDX
+	ADDL	instpnt, EAX
+	CMPL	EAX, EDX
+	JE	10$
+	STC
+10$:	RET
+.PAGE
+;The following tables are used in determining how many bytes are included in
+;  an instruction. The values in these tables are as follows:
+
+		;Values less than 6 are the number of bytes to read
+PX=!0x06	;Prefix byte which does not change the length calculation
+PA=!0x07	;Address size prefix byte
+PD=!0x08	;Operand size prefix byte
+P2=!0x09	;2-byte instruction prefix
+G =!0x0A	;ModR/M-SIB addressing without a literal value
+GB=!0x0B	;ModR/M-SIB addressing with a byte literal value
+GL=!0x0C	;ModR/M-SIB addressing with a word or long literal value
+AV=!0x0D	;Opcode byte plus word or long memory address (controlled by
+		;  address size)
+AF=!0x0E	;Opcode byte plus word or long far memory address (controlled
+		;  by address size)
+DV=!0x0F	;Opcode byte plus word or long literal data (controlled by
+		;  data size)
+X =!0x10	;Invalid or unknow instruction (15 bytes are returned)
+F =!0x11	;Floating point escape (currently handled same as X)
+G3=!0x12	;Group 3 instructions (special case for TEST!)
+
+	.MOD	4
+;		 0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F
+insttbl:.BYTE	 G, G, G, G, 1, 4, 0, 0,  G, G, G, G, 1, 4, 0,P2  ;Row 0
+	.BYTE	 G, G, G, G, 1, 4, 0, 0,  G, G, G, G, 1, 4, 0, 0  ;Row 1
+	.BYTE	 G, G, G, G, 1, 4,PX, 0,  G, G, G, G, 1, 4,PX, 1  ;Row 2
+	.BYTE	 G, G, G, G, 1, 4,PX, 0,  G, G, G, G, 1, 4,PX, 1  ;Row 3
+	.BYTE	 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0  ;Row 4
+	.BYTE	 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0  ;Row 5
+	.BYTE	 0, 0, G, G,PX,PX,PD,PA,  4,GL, 1,GB, 0, 0, 0, 0  ;Row 6
+	.BYTE	 1, 1, 1, 1, 1, 1, 1, 1,  1, 1, 1, 1, 1, 1, 1, 1  ;Row 7
+	.BYTE	GB,GL,GB,GB, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 8
+	.BYTE	 0, 0, 0, 0, 0, 0, 0, 0,  0, 0,AF, 0, 0, 0, 0, 0  ;Row 9
+	.BYTE	AV,AV,AV,AV, 1, 1, 1, 1,  1, 4, 1, 1, 1, 1, 1, 1  ;Row A
+	.BYTE	 1, 1, 1, 1, 1, 1, 1, 1, DV,DV,DV,DV,DV,DV,DV,DV  ;Row B
+	.BYTE	GB,GB, 2, 0, G, G,GB,GL,  4, 0, 2, 0, 0, 5, 0, 0  ;Row C
+	.BYTE	 G, G, G, G, 1, 1, X, 0,  F, F, F, F, F, F, F, F  ;Row D
+	.BYTE	 1, 1, 1, 1, 1, 1, 1, 1, AV,AV,AF, 1, 0, 0, 0, 0  ;Row E
+	.BYTE	PX, X,PX,PX, 0, 0,G3,G3,  0, 0, 0, 0, 0, 0, G, G  ;Row F
+
+;		 0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F
+i0Ftbl:	.BYTE	 G, G, G, G, X, X, 0, X,  0, 0, X, 0, X, G, 0, 0  ;Row 0
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 1
+	.BYTE	 1, 1, 1, 1, 1, X, 1, X,  X, X, X, X, X, X, X, X  ;Row 2
+	.BYTE	 0, 0, 0, 0, 0, 0, X, X,  X, X, X, X, X, X, X, X  ;Row 3
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 4
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 5
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 6
+	.BYTE	 G, X, X, X, G, G, G, 0,  X, X, X, X, G, G, G, G  ;Row 7
+	.BYTE	AV,AV,AV,AV,AV,AV,AV,AV, AV,AV,AV,AV,AV,AV,AV,AV  ;Row 8
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row 9
+	.BYTE	 0, 0, 0, G,GB, G, X, X,  0, 0, 0, G,GB, G, X, G  ;Row A
+	.BYTE	 G, G, G, G, G, G, G, G,  X, X,GB, G, G, G, G, G  ;Row B
+	.BYTE	 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0  ;Row C
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row D
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row E
+	.BYTE	 G, G, G, G, G, G, G, G,  G, G, G, G, G, G, G, G  ;Row F
+
+instaddr:.LONG	0
+instpnt: .LONG	0
+prefix:  .LONG	0
+
+	END

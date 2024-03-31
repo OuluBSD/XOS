@@ -1,0 +1,459 @@
+	.TITLE	ellipse
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to draw an ellipse
+;	WIN *win;		// Pointer to WIN for window
+;	long x1;		// X position of upper left corner of bounding
+;				//   box
+;	long y1;		// Y position of upper left corner of bounding
+;				//   box
+;	long xdiameter;		// X diameter of elipse (width of bounding box)
+;	long ydiameter;		// Y diameter of elipse (height of bounding box)
+;	long color;		// Color for line
+;	xwsDrawEllipse(win, x1, y1, xdiameter, ydiameter, color);
+
+;This function uses the Pascal calling sequence
+
+;Note that for now, we always assume a simple clipping region!!!
+
+;Quardents are	    |
+;  numbered as	 2  |  1
+;  show here:	    |
+;		    |
+;		---- ----
+;		    |
+;		    |
+;		 4  |  3
+;		    |
+
+de_win      =!36t
+de_x1       =!32t
+de_y1       =!28t
+de_xdiameter=!24t
+de_ydiameter=!20t
+de_color    =!16t
+
+
+$$$=!0
+FRM de_thres    , 4t
+FRM de_xdsq     , 4t
+FRM de_ydsq     , 4t
+FRM de_xadjust  , 4t
+FRM de_yadjust  , 4t
+FRM de_bytespan , 4t
+FRM de_pixelspan, 4t
+FRM             , 3t
+FRM de_clipflag , 1t
+FRM de_pp1      , 4t		;Pixel pointer for quardent 1
+FRM de_pp2      , 4t		;Pixel pointer for quardent 2
+FRM de_pp3      , 4t		;Pixel pointer for quardent 3
+FRM de_pp4      , 4t		;Pixel pointer for quardent 4
+FRM de_px13     , 4t		;X coordinate for quardents 1 and 3
+FRM de_px24     , 4t		;X coordinate for quardents 2 and 4
+FRM de_py12     , 4t		;Y coordinate for quardents 1 and 2
+FRM de_py34     , 4t		;Y coordinate for quardents 3 and 4
+de_SIZE=!$$$
+
+2$:	LEAVE
+	POPL	ESI
+	POPL	ESI
+	RET	24t
+
+	.ENTRY	xwsDrawEllipse
+xwsDrawEllipse::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	de_SIZE, 0
+	MOVL	EDX, de_xdiameter[EBP]
+	TESTL	EDX, EDX
+	JLE	2$.S			;Make sure X diameter > 0
+	MOVL	ECX, de_ydiameter[EBP]
+	TESTL	ECX, ECX
+	JLE	2$.S			;Make sure Y diameter > 0
+	MOVL	ESI, de_win[EBP]
+	MOVL	EAX, win_basdrw[ESI]	;Is the display disabled?
+	CMPB	drw_disable[EAX], #0
+	JNE	2$.S			;Yes
+	MOVL	ESI, win_bascliprgn[ESI]
+
+;First determine if elipse is totally outside the clipping region
+
+	MOVL	EAX, de_x1[EBP]
+	CMPL	EAX, rgn_right[ESI]	;Completely right?
+	JG	2$.S			;Yes
+	ADDL	EDX, EAX
+	CMPL	EDX, rgn_left[ESI]	;Completely left?
+	JL	2$.S			;Yes
+	MOVL	EBX, de_y1[EBP]
+	CMPL	EBX, rgn_bottom[ESI]	;Completely below?
+	JG	2$.S			;Yes
+	ADDL	ECX, EBX
+	CMPL	ECX, rgn_top[ESI]	;Completely above?
+	JL	2$.S			;Yes
+
+;Now determine if we have a simple clipping region and the ellipse is
+;  completely within the clipping region
+
+	MOVB	de_clipflag[EBP], #0	;Assume within the region
+	CMPL	EAX, rgn_left[ESI]
+	JL	4$.S
+	CMPL	EDX, rgn_right[ESI]
+	JGE	4$.S
+	CMPL	EBX, rgn_top[ESI]
+	JL	4$.S
+	CMPL	ECX, rgn_bottom[ESI]
+	JL	6$.S
+4$:	INCB	de_clipflag[EBP]
+6$:	MOVL	EAX, de_xdiameter[EBP]
+	MOVL	EDX, de_ydiameter[EBP]
+	MOVL	ECX, EDX
+	SHRL	ECX, #1
+	IMULL	EAX, EAX
+	MOVL	de_xdsq[EBP], EAX
+	IMULL	EDX, EDX
+	MOVL	de_ydsq[EBP], EDX
+	MOVL	de_xadjust[EBP], #0
+	MOVL	ECX, EAX
+	SHRL	ECX, #2t
+	IMULL	EAX, de_ydiameter[EBP]
+	SUBL	ECX, EAX
+	MOVL	de_thres[EBP], ECX
+	ADDL	EAX, EAX
+	MOVL	de_yadjust[EBP], EAX
+	MOVL	EDX, de_xdiameter[EBP]
+	CLRL	EBX			;Get X distance to 1st point and 2nd
+	SHRL	EDX, #1t		;  points
+	RCLL	EBX, #2t
+	MOVL	EDI, de_win[EBP]
+	MOVL	ECX, win_basdrw[EDI]
+	MOVL	EAX, drw_bytespan[ECX]
+	MOVL	de_bytespan[EBP], EAX
+	MOVL	EAX, drw_pixelspan[ECX]
+	IMULL	EAX, de_y1[EBP]		;Calculate the 4 pointers we need for
+	ADDL	EAX, de_x1[EBP]		;  storing pixels in each of the
+	ADDL	EAX, EDX		;  quardents
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	de_pp2[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	de_pp1[EBP], EAX
+	MOVL	EAX, de_y1[EBP]
+	ADDL	EAX, de_ydiameter[EBP]
+	IMULL	EAX, de_pixelspan[EBP]
+	ADDL	EAX, de_x1[EBP]
+	ADDL	EAX, EDX
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	de_pp4[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	de_pp3[EBP], EAX
+	CMPB	de_clipflag[EBP], #0	;Need to clip this?
+	JNE	elpclip1		;Yes
+	MOVL	ECX, de_color[EBP]	;Get color value
+	MOVL	EDX, de_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+8$:	MOVL	EAX, de_pp1[EBP]	;Store pixel color value into each of
+	MOVW	[EAX], CX		;  the 4 quardents
+	MOVL	EAX, de_pp2[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_pp3[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_pp4[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_xadjust[EBP]
+	ADDL	EAX, de_ydsq[EBP]
+	ADDL	de_thres[EBP], EAX
+	JLE	10$.S
+	MOVL	EAX, de_xdsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	SUBL	de_yadjust[EBP], EAX
+	MOVL	EAX, de_yadjust[EBP]
+	SUBL	de_thres[EBP], EAX
+	ADDL	de_pp1[EBP], EDX	;Update each pointer
+	ADDL	de_pp2[EBP], EDX
+	SUBL	de_pp3[EBP], EDX
+	SUBL	de_pp4[EBP], EDX
+10$:	MOVL	EAX, de_ydsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	ADDL	de_xadjust[EBP], EAX
+	ADDL	de_pp1[EBP], #2t
+	SUBL	de_pp2[EBP], #2t
+	ADDL	de_pp3[EBP], #2t
+	SUBL	de_pp4[EBP], #2t
+	MOVL	EAX, de_xadjust[EBP]	;Are we finished?
+	CMPL	EAX, de_yadjust[EBP]
+	JLE	8$			;No - continue
+	JMP	elptwo			;Yes - go set up for second part
+.PAGE
+;Here when drawing for part of an ellipse if need to clip
+;	c{EBX} = 0 if X diameter is odd, 2 if it is even
+;	c{EDX} = X radius (rounded down)
+
+elpclip1:
+	SHRL	EBX, #1t
+	MOVL	EAX, de_x1[EBP]		;Store the X and Y cooridinates
+	ADDL	EAX, EDX		;  for the initial point in each
+	MOVL	de_px24[EBP], EAX	;  segment
+	ADDL	EAX, EBX
+	MOVL	de_px13[EBP], EAX
+	MOVL	EAX, de_y1[EBP]
+	MOVL	de_py12[EBP], EAX
+	ADDL	EAX, de_ydiameter[EBP]
+	MOVL	de_py34[EBP], EAX
+	MOVL	EDI, rgn_top[ESI]
+	MOVL	EBX, rgn_bottom[ESI]
+	MOVL	ECX, de_color[EBP]	;Get color value
+	MOVL	EDX, de_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+4$:	CMPL	de_py12[EBP], EDI	;Above top of clipping region?
+	JL	8$.S			;Yes - check next point
+	CMPL	de_py12[EBP], EBX	;Below bottom of clipping region?
+	JGE	12$.S			;Yes - all other points are below!
+	MOVL	EAX, de_px13[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	6$.S
+	MOVL	EAX, de_pp1[EBP]
+	MOVW	[EAX], CX
+6$:	MOVL	EAX, de_px24[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	8$.S
+	MOVL	EAX, de_pp2[EBP]
+	MOVW	[EAX], CX
+8$:	CMPL	de_py34[EBP], EDI
+	JL	12$.S
+	CMPL	de_py34[EBP], EBX
+	JGE	12$.S
+	MOVL	EAX, de_px13[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	10$.S
+	MOVL	EAX, de_pp3[EBP]
+	MOVW	[EAX], CX
+10$:	MOVL	EAX, de_px24[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	12$.S
+	MOVL	EAX, de_pp4[EBP]
+	MOVW	[EAX], CX
+12$:	MOVL	EAX, de_xadjust[EBP]
+	ADDL	EAX, de_ydsq[EBP]
+	ADDL	de_thres[EBP], EAX
+	JLE	14$.S
+	MOVL	EAX, de_xdsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	SUBL	de_yadjust[EBP], EAX
+	MOVL	EAX, de_yadjust[EBP]
+	SUBL	de_thres[EBP], EAX
+	ADDL	de_pp1[EBP], EDX	;Update each pointer
+	ADDL	de_pp2[EBP], EDX
+	INCL	de_py12[EBP]
+	SUBL	de_pp3[EBP], EDX
+	SUBL	de_pp4[EBP], EDX
+	DECL	de_py34[EBP]
+14$:	MOVL	EAX, de_ydsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	ADDL	de_xadjust[EBP], EAX
+	ADDL	de_pp1[EBP], #2t
+	ADDL	de_pp3[EBP], #2t
+	INCL	de_px13[EBP]
+	SUBL	de_pp2[EBP], #2t
+	SUBL	de_pp4[EBP], #2t
+	DECL	de_px24[EBP]
+	MOVL	EAX, de_xadjust[EBP]	;Are we finished?
+	CMPL	EAX, de_yadjust[EBP]
+	JLE	4$			;No - continue
+					;Yes - fall into elptwo on next page
+.PAGE
+;Here to set up for drawing the second part of an ellipse
+
+elptwo:	MOVL	EAX, de_xdiameter[EBP]
+	IMULL	EAX, de_ydsq[EBP]
+	MOVL	EDX, de_ydsq[EBP]
+	SHRL	EDX, #2t
+	SUBL	EDX, EAX
+	MOVL	de_thres[EBP], EDX
+	MOVL	de_yadjust[EBP], #0
+	ADDL	EAX, EAX
+	MOVL	de_xadjust[EBP], EAX
+	MOVL	EDX, de_ydiameter[EBP]
+	CLRL	EBX			;Get Y distance to 1st point and 2nd
+	SHRL	EDX, #1t		;  points
+	RCLL	EBX, #1t
+	MOVL	ECX, EBX
+	IMULL	EBX, de_bytespan[EBP]
+	MOVL	EAX, de_y1[EBP]	 	;Calculate the 4 pointers we need for
+	ADDL	EAX, EDX		;  storing pixels in each of the
+	IMULL	EAX, de_pixelspan[EBP]	;  quardents
+	ADDL	EAX, de_x1[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	de_pp2[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	de_pp4[EBP], EAX
+	MOVL	EAX, de_y1[EBP]
+	ADDL	EAX, EDX
+	IMULL	EAX, de_pixelspan[EBP]
+	ADDL	EAX, de_x1[EBP]
+	ADDL	EAX, de_xdiameter[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, win_basoffset[EDI]
+	MOVL	de_pp1[EBP], EAX
+	ADDL	EAX, EBX
+	MOVL	de_pp3[EBP], EAX
+	CMPB	de_clipflag[EBP], #0	;Need to clip this?
+	JNE	elpclip2		;Yes
+	MOVL	ECX, de_color[EBP]	;Get color value
+	MOVL	EDX, de_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+12$:	MOVL	EAX, de_pp1[EBP]	;Store pixel color value into each of
+	MOVW	[EAX], CX		;  the 4 quardents
+	MOVL	EAX, de_pp2[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_pp3[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_pp4[EBP]
+	MOVW	[EAX], CX
+	MOVL	EAX, de_yadjust[EBP]
+	ADDL	EAX, de_xdsq[EBP]
+	ADDL	de_thres[EBP], EAX
+	JLE	14$.S
+	MOVL	EAX, de_ydsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	SUBL	de_xadjust[EBP], EAX
+	MOVL	EAX, de_xadjust[EBP]
+	SUBL	de_thres[EBP], EAX
+	SUBL	de_pp1[EBP], #2t	;Update each pointer
+	SUBL	de_pp3[EBP], #2t
+	ADDL	de_pp2[EBP], #2t
+	ADDL	de_pp4[EBP], #2t
+14$:	MOVL	EAX, de_xdsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	ADDL	de_yadjust[EBP], EAX
+	SUBL	de_pp1[EBP], EDX
+	SUBL	de_pp2[EBP], EDX
+	ADDL	de_pp3[EBP], EDX
+	ADDL	de_pp4[EBP], EDX
+	MOVL	EAX, de_yadjust[EBP]	;Are we finished?
+	CMPL	EAX, de_xadjust[EBP]
+	JLE	12$			;No - continue
+
+	LEAVE				;Yes
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+.PAGE
+;Here when drawing second part of an ellipse if need to clip
+;	c{ECX} = 0 if Y diameter is odd, 1 if it is even
+;	c{EDX} = Y radius (rounded down)
+
+elpclip2:
+	MOVL	EAX, de_y1[EBP]		;Store the X and Y cooridinates
+	ADDL	EAX, EDX		;  for the initial point in each
+	MOVL	de_py12[EBP], EAX	;  segment
+	ADDL	EAX, ECX
+	MOVL	de_py34[EBP], EAX
+	MOVL	EAX, de_x1[EBP]
+	MOVL	de_px24[EBP], EAX
+	ADDL	EAX, de_xdiameter[EBP]
+	MOVL	de_px13[EBP], EAX
+	MOVL	EDI, rgn_top[ESI]
+	MOVL	EBX, rgn_bottom[ESI]
+	MOVL	ECX, de_color[EBP]	;Get color value
+	MOVL	EDX, de_bytespan[EBP]	;Get the display's span distance into
+					;  a register
+4$:	CMPL	de_py12[EBP], EDI	;Above top of clipping region?
+	JL	8$.S			;Yes - check next point
+	CMPL	de_py12[EBP], EBX	;Below bottom of clipping region?
+	JGE	12$.S			;Yes - all other points are below!
+	MOVL	EAX, de_px13[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	6$.S
+	MOVL	EAX, de_pp1[EBP]
+	MOVW	[EAX], CX
+6$:	MOVL	EAX, de_px24[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	8$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	8$.S
+	MOVL	EAX, de_pp2[EBP]
+	MOVW	[EAX], CX
+8$:	CMPL	de_py34[EBP], EDI
+	JL	12$.S
+	CMPL	de_py34[EBP], EBX
+	JGE	12$.S
+	MOVL	EAX, de_px13[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	10$.S
+	MOVL	EAX, de_pp3[EBP]
+	MOVW	[EAX], CX
+10$:	MOVL	EAX, de_px24[EBP]
+	CMPL	EAX, rgn_left[ESI]
+	JL	12$.S
+	CMPL	EAX, rgn_right[ESI]
+	JGE	12$.S
+	MOVL	EAX, de_pp4[EBP]
+	MOVW	[EAX], CX
+12$:	MOVL	EAX, de_yadjust[EBP]
+	ADDL	EAX, de_xdsq[EBP]
+	ADDL	de_thres[EBP], EAX
+	JLE	14$.S
+	MOVL	EAX, de_ydsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	SUBL	de_xadjust[EBP], EAX
+	MOVL	EAX, de_xadjust[EBP]
+	SUBL	de_thres[EBP], EAX
+	SUBL	de_pp1[EBP], #2t	;Update each pointer
+	SUBL	de_pp3[EBP], #2t
+	DECL	de_px13[EBP]
+	ADDL	de_pp2[EBP], #2t
+	ADDL	de_pp4[EBP], #2t
+	INCL	de_px24[EBP]
+14$:	MOVL	EAX, de_xdsq[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+	ADDL	de_yadjust[EBP], EAX
+	SUBL	de_pp1[EBP], EDX
+	SUBL	de_pp2[EBP], EDX
+	DECL	de_py12[EBP]
+	ADDL	de_pp3[EBP], EDX
+	ADDL	de_pp4[EBP], EDX
+	INCL	de_py34[EBP]
+	MOVL	EAX, de_yadjust[EBP]	;Are we finished?
+	CMPL	EAX, de_xadjust[EBP]
+	JLE	4$			;No - continue
+	LEAVE				;Yes
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+
+	.END

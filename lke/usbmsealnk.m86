@@ -1,0 +1,657 @@
+	.TITLE	usbmsealnk - USB (HID) type a mouse link driver
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This driver serves as a mouse device driver and as a USB client to link
+;  the MOUSE device class to a USB mouse device using the USB class driver.
+;  All access to the mouse device is through the USB client interface.
+
+;This driver only supports a USB mouse using the boot protocol.
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosxtrm.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxmse.par
+	.INCLUD	xosinc:\xmac\xosusb.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+
+MAJV   =!1
+MINV   =!0
+EDITNUM=!0
+
+	LKEHEAD	USBMSEALNK, MAJV, MINV, EDITNUM, LKETYPE_LINK
+
+;Define fork function codes
+
+FF_RDATA  =!0		;Received data
+FF_LINESTS=!4		;Line status report
+FF_MODMSTS=!8		;Modem status report
+
+;Define offsets for device dependent part of the DCB for USB mouse devices
+
+$$$=!dcb_msephydep
+BLK dcb_msuaclb   , 4		;Address of CLB
+BLK dcb_msuatchar , 4
+BLK dcb_msuagport , 4		;Global port number
+BLK dcb_msuapcb0  , 4
+BLK dcb_msuapcbiin, 4
+
+BLK dcb_msuaspec  , 2
+BLK dcb_msuaaddr  , 1
+BLK dcb_msuaep0mx , 1
+
+BLK dcb_msuaspeed , 1		;Device speed
+BLK dcb_msuaintrf , 1		;Interface number
+BLK dcb_msuaepiin , 1		;Interrupt input endpoint
+BLK dcb_msuaiinrr , 1		;Request interrupt rate
+
+BLK dcb_msuaiinar , 1		;Actual interrupt rate
+BLK               , 3
+
+BLK dcb_msuaiinmax, 2		;Maximum input packet size
+BLK dcb_msuaven   , 2		;Vendor ID
+BLK dcb_msuadev   , 2		;Device ID
+BLK dcb_msuarel   , 2		;Release
+BLK dcb_msuailist , bl_SIZE	;Buffer list for interrupt input
+BLK dcb_msuaibufr , 8		;Data buffer for interrupt input
+BLK dcb_msuamnfctr, 44t		;Manufacturer string
+BLK dcb_msuaprod  , 44t		;Product string
+BLK dcb_msuasernm , 44t		;Serial number string
+dcb_msuaSIZE=!$$$
+XMBINDEX dcb_msuaINDEX, dcb_msuaSIZE
+
+;Device characteristics for MSUA devices
+
+	DATA
+
+	.MOD	4
+msuadctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##   , knlDcGetClass##, knlDcSetClass##, 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##    , knlDcGet4Byte##, 0              , dcb_typename
+ CHARENT  USBGPORT, HEXV, ,  4, xosusbMsgGPort##  , knlDcGet4Byte##, 0              , dcb_msuagport
+ CHARENT  USBADDR , DECV, ,  4, xosusbMsgBusAddr##, knlDcGet1Byte##, 0              , dcb_msuaaddr
+ CHARENT  USBSPEC , STR , ,  8, xosusbMsgUsbSpec##, msuagetspec    , 0              , 0
+ CHARENT  USBSPEED, TEXT, ,  8, xosusbMsgSpeed##  , msuagetspeed   , 0              , 0
+ CHARENT  USBINTRF, DECV, ,  4, xosusbMsgIntrf##  , knlDcGet4Byte##, 0              , dcb_msuaintrf
+ CHARENT  USBEP0MX, DECV, ,  4, xosusbMsgEP0Max## , knlDcGet1Byte##, 0              , dcb_msuaep0mx
+ CHARENT  USBIINEP, DECV, ,  4, msgepin           , knlDcGet1Byte##, 0              , dcb_msuaepiin
+ CHARENT  USBIINMX, DECV, ,  4, msginpktmax       , knlDcGet2Byte##, 0              , dcb_msuaiinmax
+ CHARENT  USBIINRR, DECV, ,  4, msgiinreqrate     , knlDcGet1Byte##, 0              , dcb_msuaiinrr
+ CHARENT  USBIINAR, DECV, ,  4, msgiinactrate     , knlDcGet1Byte##, 0              , dcb_msuaiinar
+ CHARENT  USBVEN  , HEXV, ,  4, xosusbMsgVendor## , knlDcGet2Byte##, 0              , dcb_msuaven
+ CHARENT  USBDEV  , HEXV, ,  4, xosusbMsgDevice## , knlDcGet2Byte##, 0              , dcb_msuadev
+ CHARENT  USBREL  , STR , ,  8, xosusbMsgRelease##, msuagetrel     , 0              , 0
+ CHARENT  USBMNFTR, STR , , 44, knlDcMsgManufctr##, knlDcGetStr##  , 0              , dcb_msuamnfctr
+ CHARENT  USBPROD , STR , , 44, knlDcMsgProduct## , knlDcGetStr##  , 0              , dcb_msuaprod
+ CHARENT  USBSERNM, STR , , 44, knlDcMsgSerialNm##, knlDcGetStr##  , 0              , dcb_msuasernm
+ CHAREND
+
+	CODE
+
+msgepin:      CHARINFO  {Interrupt input endpoint}
+msginpktmax:  CHARINFO  {Maximum packet size for interrupt input}
+msgiinreqrate:CHARINFO  {Requested interrupt rate}
+msgiinactrate:CHARINFO  {Actual interrupt rate}
+.PAGE
+	INITSUB	usbmseainit
+
+usbmseainit:
+	PUSHL	#msuaname
+	PUSHL	#msuaaddunit
+	PUSHL	#xosmseCcb##
+	CALL	sysIoDriverRegister##
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	ECX, #codetop
+4$:	CLRL	EDX
+	BTL	EAX, #31t
+	RET
+
+8$:	CLRL	ECX
+	JMP	4$
+
+	CODE
+
+ret006:	RET
+.PAGE
+	.SBTTL	msuaaddunit - Subroutine to add USB mouse unit
+
+;Subroutine to add USB mouse unit
+;	long mseuaaddunit(
+;	    int   unit);
+;  Value returned is 0 if normal or a negative XOS error if error
+;  Must be called at main program level.
+
+;The ADDUNIT function must specify all of the details describing how the
+;  USB device is connected. This includes the controller name, port on the
+;  controller, USB bus address, bus speed, maximum packet sizes and endpoints
+;  to use. Normally this function is issued by the USBCTL symbiont which
+;  provices this information.
+
+	.MOD	4
+msuaaublk:			;Characteristics description block
+ CHARBGN  3, 0			;  for addunit
+ CHARENT  TYPE    , TEXT, ,  8, 0, 0, knlRtnZero##, 0
+ CHARENT  UNIT    , DECV, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  DISPLAY , STR , , 20, 0, 0, knlRtnZero##, 0
+ CHARENT  USBGPORT, DECV, ,  4, 0, 0, augport     , 0
+ CHARENT  USBADDR , DECV, ,  4, 0, 0, auaddr      , 0
+ CHARENT  USBSPEC , HEXV, ,  4, 0, 0, auvalue     , au_spec
+ CHARENT  USBSPEED, TEXT, ,  8, 0, 0, auspeed     , 0
+ CHARENT  USBINTRF, DECV, ,  4, 0, 0, auvalue     , au_intrf
+ CHARENT  USBEP0MX, DECV, ,  4, 0, 0, auep0max    , 0
+ CHARENT  USBIIN  , DECV, ,  4, 0, 0, auepiin     , 0
+ CHARENT  USBPKTMX, DECV, ,  4, 0, 0, aupktmax    , 0
+ CHARENT  USBRATE , DECV, ,  4, 0, 0, auepirate   , 0
+ CHARENT  USBVEN  , HEXV, ,  4, 0, 0, auvalue     , au_ven
+ CHARENT  USBDEV  , HEXV, ,  4, 0, 0, auvalue     , au_dev
+ CHARENT  USBREL  , HEXV, ,  4, 0, 0, auvalue     , au_rel
+ CHARENT  USBMNFTR, STR , , 42, 0, 0, autext      , au_mnftr
+ CHARENT  USBPROD , STR , , 42, 0, 0, autext      , au_prod
+ CHARENT  USBSERNM, STR , , 42, 0, 0, autext      , au_sernm
+ CHARENT  INLBS   , DECV, ,  4, 0, 0, auvalue     , au_inlbs
+ CHAREND
+
+au_unit=!16t
+
+$$$=!0
+FRM au_inlbs  , 4t		;Line buffer size
+FRM au_gport  , 4t		;Global port
+FRM au_spec   , 4t
+FRM au_addr   , 4t		;USB address
+FRM au_epiin  , 4t		;Input end-point number
+FRM au_epirate, 4t		;Input end-point rate
+FRM au_iinmax , 4t
+FRM au_clb    , 4t		;Offset of USB CLB
+FRM au_ep0max , 4t
+FRM au_speed  , 4t
+FRM au_intrf  , 4t		;Interface number
+FRM au_ven    , 4t
+FRM au_dev    , 4t
+FRM au_rel    , 4t
+FRM au_devname, 16t
+FRM au_mnftr  , 44t
+FRM au_prod   , 44t
+FRM au_sernm  , 44t
+au_SIZE=!$$$
+
+msuaaddunit:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	au_SIZE, 0
+	CLRL	EAX
+	MOVL	au_mnftr[EBP], EAX
+	MOVL	au_prod[EBP], EAX
+	MOVL	au_sernm[EBP], EAX
+	DECL	EAX
+	MOVL	au_gport[EBP], EAX
+	MOVL	au_addr[EBP], EAX
+	MOVL	au_spec[EBP], EAX
+	MOVL	au_speed[EBP], EAX
+	MOVL	au_epiin[EBP], EAX
+	MOVL	au_epirate[EBP], EAX
+	MOVL	au_ep0max[EBP], EAX
+	MOVL	au_iinmax[EBP], EAX
+	MOVL	au_intrf[EBP], EAX
+	MOVL	au_inlbs[EBP], #120t
+	PUSHL	#0			;Fail on bad names
+	PUSHL	#msuaaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JS	auerror			;If error
+	MOVL	EAX, au_gport[EBP]	;Did we get the required
+	ORL	EAX, au_addr[EBP]	;  characteristics?
+	ORL	EAX, au_speed[EBP]
+	ORL	EAX, au_epiin[EBP]
+	ORL	EAX, au_epirate[EBP]
+	ORL	EAX, au_iinmax[EBP]
+	ORL	EAX, au_ep0max[EBP]
+	ORL	EAX, au_intrf[EBP]
+	INCL	EAX
+	JE	18$			;No - fail
+
+;Here with all required characteristics
+
+	MOVL	au_devname+0[EBP], #'MOUS' ;Construct the device name (MOUSEPn)
+	MOVL	au_devname+4[EBP], #'EP'
+	CLRL	EAX
+	MOVL	au_devname+8[EBP], EAX
+	MOVL	au_devname+12t[EBP], EAX
+	LEAL	EBX, au_devname+6[EBP]
+	MOVL	EAX, au_unit[EBP]	;Put in the unit number
+	CALL	knlPutDecNmbr##
+	PUSHL	#0			;Create the DCB
+	MOVL	EAX, ESP
+	LEAL	EDX, au_devname[EBP]
+	PUSHL	EDX
+	PUSHL	#DS$DUPLEX|DS$PHYS|DS$REMOVE
+	PUSHL	#-dcb_msuaINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	auerror
+	PUSHL	EDI
+	PUSHL	#xosmseCcb##
+	CALL	sysIoLinkDcb##
+	TESTL	EAX, EAX
+	JS	auerror
+	MOVL	knlTda+tdaDcb##, EDI
+	MOVL	dcb_msecdcb[EDI], #msuacdcb ;Store address of clear DCB function
+	MOVL	dcb_devchar[EDI], #msuadctbl ;Store offset of devchar table
+	MOVL	dcb_sdisp[EDI], #xosmseSDisp##
+	MOVL	dcb_typename[EDI], #'MSUA'
+	MOVL	dcb_msedhdb[EDI], #knlConDhdb##
+	MOVL	EAX, au_unit[EBP]	;Store unit number in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVL	EAX, au_gport[EBP]
+	MOVL	dcb_msuagport[EDI], EAX
+	MOVL	EAX, au_ep0max[EBP]
+	MOVW	dcb_msuaep0mx[EDI], AX
+	MOVL	EAX, au_addr[EBP]
+	MOVB	dcb_msuaaddr[EDI], AL
+	MOVL	EAX, au_epiin[EBP]
+	MOVB	dcb_msuaepiin[EDI], AL
+	MOVL	EAX, au_epirate[EBP]
+	MOVB	dcb_msuaiinrr[EDI], AL
+	MOVL	EAX, au_iinmax[EBP]
+	MOVW	dcb_msuaiinmax[EDI], AX
+	MOVL	EAX, au_speed[EBP]
+	MOVB	dcb_msuaspeed[EDI], AL
+	MOVL	EAX, au_intrf[EBP]
+	MOVB	dcb_msuaintrf[EDI], AL
+	MOVL	EAX, au_spec[EBP]
+	MOVW	dcb_msuaspec[EDI], AX
+	MOVL	EAX, au_ven[EBP]
+	MOVW	dcb_msuaven[EDI], AX
+	MOVL	EAX, au_dev[EBP]
+	MOVW	dcb_msuadev[EDI], AX
+	MOVL	EAX, au_rel[EBP]
+	MOVW	dcb_msuarel[EDI], AX
+	LEAL	EBX, au_mnftr[EBP]	;Store our text strings in the TDB
+	MOVL	EDX, #dcb_msuamnfctr
+	CALL	copytext
+	LEAL	EBX, au_prod[EBP]
+	MOVL	EDX, #dcb_msuaprod
+	CALL	copytext
+	LEAL	EBX, au_sernm[EBP]
+	MOVL	EDX, #dcb_msuasernm
+	CALL	copytext
+
+;Here with a DCB - now link to the USB device
+
+	PUSHL	EDI			;CDB (really our DCB)
+	PUSHL	au_gport[EBP]		;Global port
+	PUSHL	au_addr[EBP]		;USB bus address
+	PUSHL	au_speed[EBP]		;USB device speed
+	PUSHL	#removed		;Address of "removed" function
+	LEAL	EAX, dcb_msuaclb[EDI]	;Address of place to store address
+	PUSHL	EAX			;  of the CLB
+	CALL	xosusbLinkToDev##	;Link to the USB device
+	TESTL	EAX, EAX
+	JS	26$
+
+;Now create the USB endpoints
+
+	PUSHL	dcb_msuaclb[EDI]	;Create the control endpoint
+	PUSHL	#0
+	PUSHL	au_ep0max[EBP]
+	LEAL	EAX, dcb_msuapcb0[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	PUSHL	dcb_msuaclb[EDI]	;Create the interrupt input endpoint
+	MOVZBL	EAX, au_epirate[EBP]
+	SHLL	EAX, #16t
+	ORL	EAX, au_epiin[EBP]
+	ORL	EAX, #PCB$XT_INT|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_iinmax[EBP]
+	LEAL	EAX, dcb_msuapcbiin[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+	MOVL	EBX, dcb_msuapcbiin[EDI] ;Copy the actual interrupt rate to
+	MOVZBL	EAX, pcb_actrate[EBX]	 ;  the DCB
+	MOVB	dcb_msuaiinar[EDI], AL
+	JMP	addunit1
+
+;Here if required characteristic is missing
+
+18$:	MOVL	EAX, #ER_CHARM
+	JMP	auerror
+
+;Here if error creating a pipe
+
+pipeerr:PUSHL	EAX
+	PUSHL	dcb_msuaclb[EDI]
+	CALL	xosusbUnlinkFromDevBgn##
+	POPL	EAX
+
+;Here error linking to USB device
+
+26$:	PUSHL	EAX
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	POPL	EAX
+	JMP	auerror
+.PAGE
+;Finish setting up USB mouse device
+
+addunit1:
+	MOVL	EAX, knlTda+tdaAddr##
+	MOVL	dcb_outtda[EDI], EAX
+	MOVB	knlTda+tdaFrame##, #dcb_outtda
+	MOVZWL	EAX, dcb_msuaiinmax[EDI]	  ;Construct the buffer list
+	MOVL	dcb_msuailist+bl_length[EDI], EAX ;  for interrupt input
+	LEAL	EAX, dcb_msuaibufr[EDI]
+	MOVL	dcb_msuailist+bl_vaddr[EDI], EAX
+	MOVL	dcb_msuailist+bl_paddr[EDI], #0
+	MOVL	dcb_msuailist+bl_pid[EDI], #USBPID_IN
+	TOFORK
+	PUSHL	EDI			;Start interrupt input
+	PUSHL	dcb_msuapcbiin[EDI]
+	LEAL	EAX, dcb_msuailist[EDI]	;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#msuahaveinput		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Timeout value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##
+	FROMFORK
+	TESTL	EAX, EAX
+	JS	10$
+	TOFORK				;Generate the smallest input change
+	PUSHL	EDI			;  we can to notify everyone that a
+	PUSHL	#0			;  mouse is not connected.
+	PUSHL	#1
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xosmseData##
+
+.IF NE 0
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#-1
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xosmseData##
+.ENDC
+
+	FROMFORK
+audone:	CLRL	EAX
+	MOVL	dcb_outtda[EDI], EAX
+	MOVB	knlTda+tdaFrame##, AL
+	MOVL	knlTda+tdaDcb##, EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if error - remove the device
+
+10$:	PUSHL	EAX
+	PUSHL	dcb_msuaclb[EDI]
+	CALL	removed
+	POPL	EAX
+auerror:MOVL	knlTda+tdaError##, EAX
+	JMP	audone
+.PAGE
+copytext:
+	ADDL	EDX, EDI
+4$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	EBX
+	LOOP	ECX, 4$
+6$:	MOVB	[EDX], #0
+	RET
+.PAGE
+;Subroutine called by addunitchar for the USBADDR characteristic
+
+auaddr:	CMPL	EAX, #127t		;Valid value?
+	JA	12$			;No
+	MOVL	au_addr[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+;Subroutine called by addunitchar for the USBEPIN characteristic
+
+auepiin:CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	MOVL	au_epiin[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+12$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Subroutine called by addunitchar for the USBGPORT characteristic
+
+augport:MOVL	au_gport[EBP], EAX
+16$:	RET
+
+;Subroutine called by addunitchar for the USBSPEED characteristic
+
+auspeed:CALL	xosusbCheckSpeed##
+	JC	16$
+	MOVL	au_speed[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBEP0MX characteristic
+
+auep0max:
+	MOVL	au_ep0max[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBPKTMX characteristic
+
+aupktmax:
+	MOVL	au_iinmax[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBRATE characteristic
+
+auepirate:
+	CMPL	EAX, #255t
+	JL	18$
+	MOVL	EAX, #255t
+18$:	TESTL	EAX, EAX
+	JNE	19$
+	INCL	EAX
+19$:	MOVL	au_epirate[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBMFCTR, USBMODE, and USBERNO
+;   characteristics
+
+autext:	ADDL	EDX, EBP
+20$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	22$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 20$
+22$:	CLRL	EAX
+	MOVB	[EDX], AL
+	RET
+
+auvalue:MOVL	0[EBP+EBX], EAX
+	CLC
+	RET
+.PAGE
+;Status change callback function - This is called in an IO thread of the
+;  process running USBCTL.
+;	void removed(
+;	    CLB *clb)		// Client link block
+
+rmvd_clb=!12t
+
+removed:PUSHL	EDI
+	PUSHL	knlTda+tdaDcb##
+	MOVL	EDX, rmvd_clb[ESP]
+	MOVL	EDI, clb_cdb[EDX]	;Get address of our DCB
+	MOVL	knlTda+tdaDcb##, EDI
+	PUSHL	EDI			;Unlink the DCB
+	CALL	sysIoUnlinkDcb##
+	PUSHL	rmvd_clb[ESP]		 ;Start disconnecting from the USB
+	CALL	xosusbUnlinkFromDevBgn## ;  controller
+	PUSHL	#0			;Start a timer
+	PUSHL	#ST_SECOND		;1 second
+	PUSHL	EDI
+	PUSHL	#0
+	PUSHL	#remove2
+	CALL	sysSchTmrCreate##
+	POPL	knlTda+tdaDcb##
+	POPL	EDI
+	RET	4
+
+;Timer function called 1 second after device is removed
+;	void remove2(
+;	    PDA *pda,
+;	    long handle,
+;	    long data1,
+;	    long data2);
+
+rmv2_pda  =!20t
+rmv2_hndl =!16t
+rmv2_data1=!12t
+rmve_data2=!8
+
+remove2:PUSHL	EDI
+	MOVL	EDI, rmv2_data1[ESP]
+	CMPL	dcb_opencnt[EDI], #0	;Is the device in use?
+	JNE	8$			;Yes
+	PUSHL	dcb_msuaclb[EDI]	 ;No - finishing unlinking from the
+	CALL	xosusbUnlinkFromDevFin## ;  USB interface
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB (this completely
+	JMP	10$			;  removes the device from the system)
+
+;Here if the device is in use
+
+8$:	ORB	dcb_sts1[EDI], #D1$RMVRDY ;Indicate ready to remove the DCB
+10$:	POPL	EDI			  ;  when it is free
+	RET	16t
+.PAGE
+;Function called for the sd_cdcb dispatch
+
+msuacdcb:
+	TESTB	dcb_sts1[EDI], #D1$RMVRDY ;Are we ready to give up this device?
+	JE	10$			;No
+	PUSHL	dcb_msuaclb[EDI]	;Yes - finish unlinking it
+	CALL	xosusbUnlinkFromDevFin##
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+10$:	RET
+.PAGE
+msuagetspec:
+	MOVL	EAX, dcb_msuaspec[EDI]
+	JMP	knlDcGetBCDVer##
+
+msuagetrel:
+	MOVZWL	EAX, dcb_msuarel[EDI]
+	JMP	knlDcGetBCDVer##
+
+msuagetspeed:
+	MOVZBL	EAX, dcb_msuaspeed[EDI]
+	JMP	xosusbRtnSpeed##
+.PAGE
+;Callback function for interrupt input - This is called at device fork level.
+;  when interrupt input is available.
+;     and restarts interrupt input.
+;	void msuahaveinput(
+;	    PCB *pcb,
+;	    TDB *dcb,
+;	    long code,
+;	    long amount);
+
+muahi_pcb   =!20t
+muahi_dcb   =!16t
+muahi_code  =!12t
+muahi_amount=!8
+
+msuahaveinput:
+	PUSHL	EDI
+	MOVL	EDI, muahi_dcb[ESP]
+	CMPL	muahi_code[ESP], #ER_CANCL ;Was the input cancelled?
+	JE	10$			;Yes - must be removing the device
+	PUSHL	EDI			;No - post a new input request
+	PUSHL	dcb_msuapcbiin[EDI]
+	LEAL	EAX, dcb_msuailist[EDI] ;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#msuahaveinput		;Address of callback function
+	PUSHL	#0			;Address for amount
+	PUSHL	#-1			;Time value (no timeout)
+	PUSHL	#-1
+	CALL	xosusbTransferInt##	;Ignore errors (This will likely hang
+					;  the device, but that's better than
+					;  a tight loop retrying. Maybe we can
+					;  do something better later although
+					;  this should not happen enough to be
+					;  a significant problem.)
+	CMPL	muahi_code[ESP], #0	;Error?
+	JS	10$			;Yes
+	MOVL	EDX, muahi_amount[ESP]	;No - is it too big?
+	CMPW	DX, dcb_msuaiinmax[EDI]
+	JA	10$			;No - ignore it
+	CMPL	EDX, #3			;Must have at least 3 bytes
+	JB	10$
+	PUSHL	EDI			;OK - have good input from the mouse
+	MOVZBL	EAX, dcb_msuaibufr+0[EDI] ;Button states
+	PUSHL	EAX
+	MOVXBL	EAX, dcb_msuaibufr+1[EDI] ;X increment
+	PUSHL	EAX
+	MOVXBL	EAX, dcb_msuaibufr+2[EDI] ;Y increment
+	PUSHL	EAX
+	CLRL	EAX
+	CMPL	EDX, #4			;Do we have a W increment value?
+	JB	8$			;No
+	MOVXBL	EAX, dcb_msuaibufr+3[EDI] ;Yes - get it
+8$:	PUSHL	EAX
+	CALL	xosmseData##		;Process the input data
+10$:	POPL	EDI
+	RET	16t
+.PAGE
+	DATA
+
+	.MOD	4
+msuaname: .LONG  'MSUA', 0
+msuafdcb: .LONG  0		;Offset of first USB mouse physical DCB
+msualdcb: .LONG  0		;Offset of last USB mouse physcial DCB
+
+	LKEEND

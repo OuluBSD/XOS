@@ -1,0 +1,448 @@
+	.TITLE	ptrcls - Printer class driver for XOS
+
+;*--------------------------------------------------------------------------*
+;* ptrcls.m86
+;*
+;* Written by: John R. Goltz
+;*
+;* Edit History:
+;* 02/26/90(brn) - Added comment box and TOUT 'time out' parameter for
+;*			addunit
+;* 29-Apr-91 JRG - Rewrote for XOS 1.6
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosdos.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxptr.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+;This is a very simple class which mainly provides a common point for
+;  connecting the different printer device level drivers.
+
+	LKEHEAD	PTRCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosptrCcb
+	.EXPORT	xosptrSDisp
+
+	CODE
+
+	.SBTTL	SVC dispatch table for printer class devices
+
+;SVC dispatch table for printer class devices
+
+xosptrSDisp::
+	.LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	knlRtnZero##	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	ptropen		;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDev##	;sd_findfile = 16 - Find file
+	.LONG	knlIFnDev##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename   = 24 - Rename file
+	.LONG	ptrinpblk	;sd_inblock  = 28 - Input block
+	.LONG	ptroutblk	;sd_outblock = 32 - Output block
+	.LONG	knlRtnMOne##	;sd_getiosts = 36 - Get input/output status
+	.LONG	knlIFnDev##	;sd_special  = 40 - Special device function
+	.LONG	0		;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	knlRtnZero##	;sd_vfychn   = 60 - Verify changed disk
+	.LONG	ptrioparms	;sd_opnsdpt  = 64 - Open paramter table
+	.LONG	xosdskDpParms##	;sd_opnddpt  = 68 - Device dependent paramaters
+PTRDSPSZ=!{$-xosptrSDisp}/4
+
+;Class function dispatch table for printer class devices
+
+	.LONG	CLSFMX
+ptrcls:	.LONG	ptraddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	ptrunitinfo	;CF_PUNITS  =  9 - Get information about
+				;		     physical units
+	.LONG	knlIFnDev##	;CF_AUNITS  = 10 - Get information about active
+				;		     units
+CLSFMX=!{$-ptrcls}/4
+
+;Class characteristics table for the PTR device class
+
+	DATA
+
+ptrcctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHAREND
+.PAGE
+;Device parameter table for printer IO operations
+
+	CODE
+
+	.MOD	4
+	.LONG	PARMMAX
+ptrioparms:
+	.LONG	ptriogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+PARMMAX=!{$-ptrioparms}/4
+
+	.LONG	PARMGENMAX
+ptriogenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN    = 0001h
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC    = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	ptrinpsts	;IOPAR_INPSTS      = 0008h
+	.LONG	ptroutsts	;IOPAR_OUTSTS	   = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT	   = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	0		;IOPAR_BUFRLMT	   = 0010h
+PARMGENMAX=!{$-ptriogenparms}/4
+
+	CODE
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	ptrinit
+
+ptrinit:PUSHL	#xosptrCcb		;Install the PTR class
+	CALL	sysIoNewClass##
+	TESTL	EAX, EAX
+	JS	10$			;This should not fail!
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+10$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	ptraddunit - Class function to add unit
+
+;Here for the CL_ADDUNIT function
+;	c{EBX} = Offset of CCB
+;	CALL	ptraddunit
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count (number of units added)
+
+$$$=!0
+FRM au_unit, 4t		;Unit number
+FRM au_type, 8t		;Interface device type
+au_SIZE=!$$$		;Type name
+
+;Description block for addunitchar
+
+	.MOD	4
+ptraublk:
+ CHARBGN  3, sysIoCharValues##
+ CHARENT  UNIT , DECV, , 1, 0, 0, ptrauunit, 0
+ CHARENT  TYPE , TEXT, , 8, 0, 0, ptrautype, 0
+ CHAREND
+
+ptraddunit:
+	ENTER	au_SIZE, 0		;Set up and initialize our stack frame
+	CLRL	EAX
+	DECL	EAX
+	MOVL	au_unit[EBP], EAX
+	MOVL	au_type[EBP], EAX
+	PUSHL	#1			;Ignore bad names here
+	PUSHL	#ptraublk
+	CALL	sysIoCharValues##	;Process the characteristics
+	TESTL	EAX, EAX
+	JS	14$			;If error
+
+;Here with all parameters processed
+
+	MOVB	AL, au_unit[EBP]	;Get unit number
+	MOVL	EDI, xosptrCcb+ccb_dcbhead ;Point to first printer DCB
+10$:	TESTL	EDI, EDI
+	JE	20$			;If no more DCBs
+	CMPB	dcb_punit[EDI], AL	;Same unit?
+	JE	12$			;Yes - fail
+	MOVL	EDI, dcb_next[EDI]	;Not this one - try next
+	JMP	10$			;Continue
+
+;Here if printer unit is already defined
+
+12$:	MOVL	EAX, #ER_DUADF
+14$:	MOVL	knlTda+tdaError##, EAX
+	JMP	22$
+
+;Here if unit is not defined now
+
+20$:	LEAL	EAX, au_type[EBP]
+	PUSHL	EAX			;Address of type name (on stack)
+	PUSHL	#xosptrCcb		;Address of first DLB for class
+	PUSHL	au_unit[EBP]		;Unit number
+	CALL	sysIoDriverAddUnit##
+	TESTL	EAX, EAX
+	JS	14$
+22$:	CLRL	EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	LEAVE
+	RET
+.PAGE
+;Subroutine called by adduchars when "UNIT" characteristic found
+
+ptrauunit:
+	CMPL	EAX, #99t
+	JAE	4$
+	MOVL	au_unit[EBP], EAX
+	CLC
+	RET
+
+;Subroutine called by adduchars when "TYPE" characteristic found
+
+ptrautype:
+	MOVL	au_type+0[EBP], EAX
+	MOVL	au_type+4[EBP], EDX
+	CLC
+	RET
+
+;Here if bad characteristic value
+
+4$:	MOVL	EAX, #ER_CHARV		;Get error code
+	STC				;Fail
+	RET
+.PAGE
+;Device check routine for printers
+;	long ptrdevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path,		// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;	    long  rtndcb);
+;  Value returned is 0 if no match, 1 if found a match, 2 if need to restart
+;    search (never returned here), or a negative XOS error code if error.
+
+devc_name  =!16t
+devc_path  =!12t
+devc_rtndcb=!8
+
+ptrdevchk:
+	PUSHL	EBX
+	MOVL	EBX, devc_name[ESP]
+	MOVL	EDX, xosptrCcb+ccb_dcbhead ;Yes - point to first printer DCB
+	TESTL	EDX, EDX
+	JE	8$
+4$:	MOVL	EAX, dcb_name+0[EDX]	;Does name match?
+	CMPL	[EBX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+4[EDX]
+	CMPL	4[EBX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+8[EDX]
+	CMPL	8[EBX], EAX
+	JNE	6$			;No
+	MOVL	EAX, dcb_name+12t[EDX]
+	CMPL	12t[EBX], EAX
+	JE	12$			;Yes - this is it!
+6$:	MOVL	EDX, dcb_next[EDX]	;Not this one - try next
+	TESTL	EDX, EDX
+	JNE	4$			;Continue if another
+8$:	CLRL	EAX			;No more - return 0
+10$:	POPL	EBX
+	RET	12t
+
+;Here if found it
+
+12$:	MOVL	EAX, #1
+	CMPL	devc_rtndcb[ESP], #0
+	JE	10$
+	MOVL	knlTda+tdaDcb##, EDX
+	JMP	10$
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry
+;	c{EDI} = Offset of DCB
+
+ptropen:CLRL	EAX
+	BTL	knlTda+tdaCmd##, #XO%ODFS
+	JNC	2$			;If no illegal options
+	MOVL	EAX, #ER_NTFIL
+2$:	RET
+.PAGE
+;Here for the clear DCB entry
+;	c{EDI} = Offset of DCB
+
+ptrcdcb::
+	CMPL	dcb_prev[EDI], #-1	;Is the DCB still linked?
+	JNE	4$			;Yes - nothing needed here
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;No - finish giving it up
+4$:	RET
+.PAGE
+	.SBTTL	CF_PUNITS - Get device unit information
+
+;Here for the get device information entry
+;	c{EDI}    = Offset of DCB
+
+ptrunitinfo:
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+	.SBTTL	sd_outblock - Write block
+
+;Here for the write block entry
+;	c{ECX} = Byte count
+;	c{EBX} = Buffer address
+;	c{EDI} = Offset of DCB
+;	CALL	ptroutblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Number bytes output
+
+ptroutblk:
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	10$			;No
+	PUSHL	#ptrioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	16$
+10$:	CLRL	EAX
+	CMPL	knlTda+tdaCount##, #0	;Really doing output?
+	JE	12$			;No
+	BTL	knlTda+tdaCmd##, #XO%OUT ;Yes - is output allowed?
+	JNC	14$			;No - fail
+	MOVL	EAX, dcb_ptrdsp[EDI]	;OK - call the low-level driver to
+	CALLI	ptrf_output[EAX]	;  do output
+	TESTL	EAX, EAX
+	JS	16$
+	MOVL	EAX, knlTda+tdaCount##
+	MOVL	knlTda+tdaAmount##, EAX
+12$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+14$:	MOVL	EAX, #ER_NOOUT
+16$:	MOVL	knlTda+tdaError##, EAX
+	JMP	12$
+
+.PAGE
+	.SBTTL	sd_inblock - Read block
+
+;Here for the read block entry
+;	c{ECX} = Byte count
+;	c{EBX} = Buffer address
+;	c{EDI} = Offset of DCB
+;	CALL	ptrinpblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Number bytes output
+
+ptrinpblk:
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	10$			;No
+	PUSHL	#ptrioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	16$
+10$:	CLRL	EAX
+	CMPL	knlTda+tdaCount##, #0	;Really doing input?
+	JE	12$			;No
+	BTL	knlTda+tdaCmd##, #XO%OUT ;Yes - is input allowed?
+	JNC	knlIllInp##		;No - fail
+	MOVL	EAX, dcb_ptrdsp[EDI]	;OK - call the low-level driver to
+	CALLI	ptrf_input[EAX]		;  do input
+	TESTL	EAX, EAX
+	JS	16$
+
+	MOVL	EAX, knlTda+tdaCount##
+	MOVL	knlTda+tdaAmount##, EAX
+12$:	ORB	knlTda+tdaStatus##, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+14$:	MOVL	EAX, #ER_NOIN
+16$:	MOVL	knlTda+tdaError##, EAX
+	JMP	12$
+.PAGE
+	.SBTTL	ptroutsts - Here for the IOPAR_OUTSTS parameter
+
+;Here for the IOPAR_OUTSTS parameter - Get output ready status
+
+	DPARMHDR  GET, HEXV
+ptroutsts:
+	CRASH	????
+
+	.SBTTL	ptrinpsts - Here for the IOPAR_INPSTS parameter
+
+;Here for the IOPAR_INPSTS parameter - Get input ready status
+
+	DPARMHDR  GET, HEXV
+ptrinpsts:
+	CRASH	????
+.PAGE
+	.SBTTL	Fork level routines
+
+;Function to handle input from printer
+
+;	long xosptrInput(
+;	    DCB  *dcb,
+;	    char *bufr,
+;	    int   length);
+
+xosptrInput:
+	CRASH	????
+
+.PAGE
+	.SBTTL	Printer class driver data
+
+	DATA
+
+fptrdev:.LONG	0
+xosptrCcb::			;PTR CCB
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'PTR', 0	;ccb_name    - Name of this class
+	.LONG	0xFFFFFF	;ccb_npfxmsk - Name prefix part mask
+	.LONG	'PTR'		;ccb_npfxval - Name prefix part value
+	.LONG	ptrdevchk	;ccb_devchk  - Address of device check routine
+	.LONG	ptrcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	ptrcctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+	LKEEND

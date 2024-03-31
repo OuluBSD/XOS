@@ -1,0 +1,3403 @@
+	.TITLE	ipscls - Internet Protocol Suite class driver for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXSNAP.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXARP.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXIPS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+;This class driver implements the Internet Protocol Suite.  It directly
+;  implements the IPSn: device and provides services used by the routines
+;  that implement the higher level protocols (UDP, TCP, RCP, etc.).  This
+;  class driver uses services provided by the NETCLS and SNAPCLS drivers and
+;  must be loaded after these drivers.
+;
+;Each of the transport level protocols (UDP, TCP, and RCP) have a TPDB
+;  (Transport Protocol Data Block) which provides the base data for
+;  implementing the transport protocol.  Each application level protocol
+;  supported in the kernel for each transport protocol has a DPDB (Device
+;  Protocol Data Block).  Note that the associated transport level devices
+;  (UDPn, TCPn, and RCPn) are really implemented as transport devices, so
+;  each of them has a DPDB.
+;
+;                        +-------+
+;                        +  IDB  +				   Interface
+;                        +-------+				   Level
+;                            |
+;                        +-------+
+;                        +  SDB  +				   Snap Level
+;                        +-------+
+;                            |
+;                 +---------------------+
+;                 +        IP PDB       +			   IP Level
+;                 +---------------------+
+;                  |                   |
+;        +----------+                +------------------+
+;        | UDP TPDB |                |     TCP TPDB     |	   Transport
+;        +----------+                +------------------+	   Level
+;          |     |                    |       |        |
+;          |   +----------+           |       |        |
+;          |   + RCP TPDB |           |       |        |
+;          |   +----------+           |       |        |
+;          |        |                 |       |        |
+; +----------+ +----------+ +----------+ +----------+ +----------+
+; + UDP DPDB | | AFP DPDB | | TCP DPDB | | TLN DPDB | | XFP DPDB | Device
+; +----------+ +----------+ +----------+ +----------+ +----------+ Level
+
+;Each protocol level starting with Snap implements a multiplexing scheme to
+;  support multiple independent data streams at that level. At the Snap level
+;  the service access point address identifies the stream. (DIX messages are
+;  handled as having a "funny" address.) At the IP level the protocol type
+;  serves to identify streams and at the transport level the port number
+;  identifies a stream. Currently the device level simply provides access
+;  to a stream defined by the transport level and does not do any additional
+;  multiplexing, although this certainly could be implimented if needed.
+
+;This version of XOS implements a one-to-one relationship between a stack's
+;  low level data stream and a physical network interface, that is, each
+;  higher level device (TCPn:, etc.) is associated with exactly one physical
+;  network interface (NETn:).
+
+MAJV   =!2t
+MINV   =!0t
+EDITNUM=!0t
+
+;1.0.3 - 16-Apr-90
+;	Fixed bug in setting up ARP packets - target hardware field was not
+;	being zeroed
+;1.0.4 - 29-Aug-90
+;	Upgraded to XOS v1.5
+;1.0.5 - 25-Jan-91
+;	Upgraded to XOS v1.6
+;1.0.6 - 29-Aub-91
+;	Many fixes to TCP protocol handling, converted XFP and TNP routines
+;	into separately loaded LKEs
+;1.0.7 - 7-Sep-91
+;	More fixes to TCP and UDP protocol handling, added initial code for
+;	Domain Name client (not tested yet), added loop-back code (not tested
+;	yet)
+;1.0.8 - 9-Oct-91
+;	Fixed problem in tcpputblk in IPSTCP which destroyed the buffer pool
+;	in some cases when storing less than 3 bytes
+;1.0.9 - 27-Oct-91 (Penang)
+;	Fixed problem with clearing wake requests in IPSTCP
+;1.0.10 - 29-Oct-91 (Penang)
+;	Added address cache purge capability (purges address automatically
+;	when TCP connect fails, can also purge with RTPURGE device
+;	characteristic for IPSn and UDPn)
+;1.0.11 - 4-Nov-91 (Penang)
+;	Fixed rexmit in IPSTCP to check for packet being output before
+;	rexmitting a packet
+;1.0.12 - 18-Nov-91
+;	Changed IPSTCP to always check that the DCB is in the list before
+;	removing a DCB from the IP hash list
+;1.0.13 - 25-Nov-91
+;	Finished send-self routines, significent work on the DNS support
+;1.0.14 - 13-Apr-92
+;	Numerious changes for new interface drivers, fixed some bugs in the
+;	ARP cache routines
+;1.0.15 - 18-Jun-92
+;	Fixed ipsetpkt to get IDB offset from the DCB (in some cases ESI was
+;	not set up here)
+;1.0.16 - 11-Jul-92
+;	Expanded the ARP address cache to be a full IP routing table, added
+;	host support for ICMP message, added new module (IPSROUTE) to contain
+;	all routing routines, changed all address cache references to routing
+;	table references, changed ACxxxx characteristics to RTxxxx
+;1.0.17 - 24-Oct-92
+;	Many fixes, fixed retransmission problems, changed seq. number
+;	generation to keep values in order on new connections
+;1.0.18 - 5-Jan-93
+;	Many fixes, latest was to fix bug at setrtremove, was incrementing
+;	count in wrong data block
+;1.1.1 - 7-Feb-95
+;	Fixed problem in IPSROUTE, would remove LPENDING routing table entry 
+;	with held packets, causing crash when packet were finally given up.
+;1.1.2 - 6-Aug-95
+;	Fixed problem with getting and setting count values for characteristics.
+;1.1.4 - 14-Jun-95
+;	Fixed problem with removing DRTnADDR characteristics when changing the
+;	IP address.
+;1.1.5 - 19-Aug-02
+;	Changed how npb_count value is used in received packets; Fixed problem
+;	in ipsoas with npb_link when calling xosnetGiveBufr;
+;1.1.6 - 23-Aug-02
+;	Fixed problem with fork level race in ipsoas.
+
+	LKEHEAD	IPSCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosipsAuIpsDev
+	.EXPORT	xosipsChkSumFin
+	.EXPORT	xosipsDevInfoLcl
+	.EXPORT	xosipsFindDev
+	.EXPORT	xosipsGetDpdbByte
+	.EXPORT	xosipsGetDpdbData
+	.EXPORT	xosipsGetIpsDev
+;;;;	.EXPORT	xosipsGetNetAddr
+	.EXPORT	xosipsGetPort
+	.EXPORT	xosipsGetTpdbByte
+	.EXPORT	xosipsGetTpdbData
+	.EXPORT	xosipsGetYesNo
+	.EXPORT	xosipsGiveDcb
+	.EXPORT	xosipsGivePort
+	.EXPORT	xosipsLinkDown
+	.EXPORT	xosipsMakeDev
+	.EXPORT	xosipsMsgBadHdr
+	.EXPORT	xosipsMsgChkSum
+	.EXPORT	xosipsMsgIBLXcd
+	.EXPORT	xosipsMsgIpsDev
+	.EXPORT	xosipsMsgIpProt
+	.EXPORT	xosipsMsgNoDst
+	.EXPORT	xosipsMsgPSLtDL
+	.EXPORT	xosipsMsgPSLtHL
+	.EXPORT	xosipsMsgPSLtMn
+	.EXPORT	xosipsMsgRetry1
+	.EXPORT	xosipsMsgRetry2
+	.EXPORT	xosipsMsgRtRemove
+	.EXPORT	xosipsNewTransProt
+	.EXPORT	xosipsParseAddress
+	.EXPORT	xosipsStoreAddress
+	.EXPORT	xosipsPdbHead
+	.EXPORT	xosipsSendSet2
+	.EXPORT	xosipsSendSetup
+	.EXPORT	xosipsSetDpdbByte
+	.EXPORT	xosipsSetDpdbData
+	.EXPORT	xosipsSetEcho
+	.EXPORT	xosipsSetIpProt
+	.EXPORT	xosipsSetPkt
+	.EXPORT	xosipsSetPkt2
+	.EXPORT	xosipsSetRtRemove
+	.EXPORT	xosipsSetTpdbByte
+	.EXPORT	xosipsSetTpdbData
+	.EXPORT	xosipsSetUpDcb
+	.EXPORT	xosipsSetYesNo
+
+	.SBTTL	Protocol function dispatch table for IP
+
+;Protocol function dispatch for IP
+
+	CODE
+
+ipsdisp:.LONG	0		;npf_linkup   = 00 - Link up
+	.LONG	0		;npf_linkdown = 04 - Link down
+	.LONG	ipabort		;npf_abort    = 08 - Abort output
+	.LONG	rtgetaddr#	;npf_getaddr  = 0C - getaddr subroutine for
+				;		       protocol
+	.LONG	ipsrcv		;npf_receive  = 10 - Receive routine
+	.LONG	ipsprocarp	;npf_procarp  = 14 - Routine to process ARP
+				;		       packet
+
+	.SBTTL	SVC dispatch table for IPS devices
+
+;SVC dispatch table for IPS devices
+
+ipssvcdsp:
+	.LONG	knlRtnZero##	;sd_mount     =  0 - Mount
+	.LONG	xosipsGiveDcb	;sd_cleardcb  =  4 - Clear DCB
+	.LONG	ipsopen		;sd_opena     =  8 - Open additional
+	.LONG	ipsopen		;sd_open1     = 12 - Open device/file
+	.LONG	ipsopen		;sd_devparm   = 16 - Device parameters
+	.LONG	knlIFnDev##	;sd_delete    = 20 - Delete file
+	.LONG	knlIFnDev##	;sd_rename    = 24 - Rename file
+	.LONG	ipsinpblk	;sd_inpblock  = 28 - Input block
+	.LONG	ipsoutblk	;sd_outblock  = 32 - Output block
+	.LONG	knlIFnDevTF##	;sd_outstring = 36 - Output string
+	.LONG	knlRtnMOne##	;sd_getiosts  = 40 - Get input/output status
+	.LONG	ipsspecial	;sd_special   = 44 - Special device function
+	.LONG	knlNullClose##	;sd_close     = 48 - Close file
+	.LONG	knlNullLabel##	;sd_label     = 52 - Get device label
+	.LONG	knlNullQioTF##	;sd_commit    = 56 - Commit data to disk
+	.LONG	knlInfoNone##	;sd_devinfo   = 60 - Get device info
+IPSSVCDSPSZ=!{$-ipssvcdsp}/4
+
+;Class function dispatch table for IPS class devices
+
+	.LONG	IPSCLSFMX
+ipscls::.LONG	ipsaddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	knlIFnDevTF##	;CF_PUNITS  =  9 - Get information about
+				;                    physical units
+	.LONG	knlIFnDevTF##	;CF_AUNITS  = 10 - Get information about active
+				;                    units
+IPSCLSFMX=!{$-ipscls}/4
+.PAGE
+;Device characteristics for IP class devices
+
+	DATA
+
+	.MOD	4
+ipsdctbl::
+ DCHARBGN  2, knlDCharValCom##
+ DCHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##  , knlDcGetClass##   , knlDcSetClass##   , 0
+;DCHARENT  NUMSNAP , DECV, ,  4, msgnumsnap       , xossnpGetPdbData##, 0                 , pdb_iprtnumpdb
+ DCHARENT  RTSIZE  , DECV, ,  4, msgrtsize        , xossnpGetPdbData##, setrtsize         , pdb_iprtmax
+ DCHARENT  RTUSE   , DECV, ,  4, msgrtuse         , xossnpGetPdbData##, 0                 , pdb_iprtinuse
+ DCHARENT  RTPURGE , DECV, ,  4, msgrtpurge       , xossnpGetPdbData##, setrtpurge        , pdb_iprtpurge
+ DCHARENT  RTREMOVE, DECV, ,  4, xosipsMsgRtRemove, xossnpGetPdbData##, xosipsSetRtRemove , pdb_iprtpurge
+ DCHARENT  CHKSUMH , TEXT, ,  8, xosipsMsgChkSumH , getchksumh        , setchksumh        , 0
+ DCHARENT  SNAPDEV , TEXT, , 16, msgsnapdev       , getsnapdev        , 0                 , 0
+ DCHARENT  ARPDEV  , TEXT, , 16, msgarpdev        , getarpdev         , setarpdev         , 0
+ DCHARENT  ETYPE   , HEXB, ,  2, msgetype         , getetype          , setetype          , 0
+ DCHARENT  IPADDR  , DECB, ,  4, msgipaddr        , xossnpGetPdbData##, setipaddr         , pdb_ipaddr
+ DCHARH    drtdc   , gethddrtdc, finddrtdc
+ DCHARH    dnsdc   , gethddnsdc, finddnsdc
+ DCHARENT  SUBMASK , HEXB, ,  4, msgsubmask       , xossnpGetPdbData##, setsubmask        , pdb_ipsubnetmask
+ DCHARENT  NETMASK , HEXB, ,  4, msgnetmask       , xossnpGetPdbData##, 0                 , pdb_ipnetmask
+ DCHARENT  DHCPADDR, TEXT, ,  4, msgdhcpaddr      , xosipsGetYesNo    , xosipsSetYesNo    , IPS1$DHCPADDR
+ DCHARENT  DHCPPARM, TEXT, ,  4, msgdhcpparm      , xosipsGetYesNo    , xosipsSetYesNo    , IPS1$DHCPPARM
+ DCHARENT  DOMAIN  , STR , , 64, msgdomain        , getdomain         , setdomain         , pdb_ipdname
+ DCHARENT  PKTIN   , DECV, ,  4, xosnetMsgPktIn## , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntpktin
+ DCHARENT  BYTEIN  , DECV, ,  4, knlDcMsgByteIn## , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntbytein
+ DCHARENT  PKTOUT  , DECV, ,  4, xosnetMsgPktOut##, xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntpktout
+ DCHARENT  BYTEOUT , DECV, ,  4, knlDcMsgByteOut##, xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntbyteout
+ DCHARENT  PKTFRAG , DECV, ,  4, msgpktfrag       , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntpktfrag
+ DCHARENT  NUMFRAG , DECV, ,  4, msgnumfrag       , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntnumfrag
+ DCHARENT  DISFRAG , DECV, ,  4, msgdisfrag       , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntdisfrag
+ DCHARENT  CHKSUM  , DECV, ,  4, msgipchksum      , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntchksum
+ DCHARENT  NODST   , DECV, ,  4, msgipnodst       , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntnodst
+ DCHARENT  BADADDR , DECV, ,  4, msgipbadaddr     , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntbadaddr
+ DCHARENT  BADHDR  , DECV, ,  4, xosipsMsgBadHdr  , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntbadhdr
+ DCHARENT  PSLTMN  , DECV, ,  4, xosipsMsgPSLtMn  , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntpsltmn
+ DCHARENT  PSLTDL  , DECV, ,  4, xosipsMsgPSLtDL  , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntpsltdl
+ DCHARENT  DLLTHL  , DECV, ,  4, xosipsMsgDLLtHL  , xossnpGetPdbData##, xossnpSetPdbData##, pdb_ipcntdllthl
+
+	CODE
+
+msgnumsnap:       DCHARINFO  {Number of SNAP devices}
+msgsnapdev:       DCHARINFO  {SNAP device}
+msgetype:         DCHARINFO  {Ethertype value}
+msgarpdev:        DCHARINFO  {ARP device}
+msgipaddr:        DCHARINFO  {IP address}
+msgdrtaddr:       DCHARINFO  {Default router IP address}
+msgdnsaddr:       DCHARINFO  {Domain Name Server IP address}
+xosipsMsgIpsDev:  DCHARINFO  {IPS device}
+xosipsMsgIpProt:  DCHARINFO  {IP protocol value}
+xosipsMsgChkSumH: DCHARINFO  {IP checksum handling}
+xosipsMsgRetry1:  DCHARINFO  {First retransmission threshold}
+xosipsMsgRetry2:  DCHARINFO  {Second retransmission threshold}
+xosipsMsgNameSrvr:DCHARINFO  {Domain Name Server on this system}
+msgrtsize:        DCHARINFO  {IP routing table size}
+msgrtuse:         DCHARINFO  {IP routing table usage}
+msgrtpurge:       DCHARINFO  {IP routing table purge request}
+xosipsMsgRtRemove:DCHARINFO  {IP routing table remove request}
+msgsubmask:       DCHARINFO  {IP subnet address mask}
+msgnetmask:       DCHARINFO  {IP network address mask}
+msgdhcpaddr:      DCHARINFO  {Use DHCP to get IP address}
+msgdhcpparm:      DCHARINFO  {Use DHCP to get IP parameters}
+msgdomain:        DCHARINFO  {Domain Name for system}
+msgpktfrag:       DCHARINFO  {Number of fragmented packets input}
+msgnumfrag:       DCHARINFO  {Number of fragments input}
+msgdisfrag:       DCHARINFO  {Number of discarded fragments}
+msgipchksum:      DCHARINFO  {Discarded - bad IP header checksum}
+xosipsMsgChkSum:  DCHARINFO  {Discarded - bad data checksum}
+msgipnodst:       DCHARINFO  {Discarded - no destination for IP}
+msgipbadaddr:     DCHARINFO  {Discarded - incorrect IP address}
+xosipsMsgNoDst:   DCHARINFO  {Discarded - no destination for port}
+xosipsMsgIBLXcd:  DCHARINFO  {Discarded - input buffer limit exceeded}
+xosipsMsgBadHdr:  DCHARINFO  {Discarded - bad header}
+xosipsMsgPSLtMn:  DCHARINFO  {Discarded - packet < minimum}
+xosipsMsgPSLtDL:  DCHARINFO  {Discarded - packet < data length}
+xosipsMsgPSLtHL:  DCHARINFO  {Discarded - packet < header length}
+xosipsMsgDLLtHL:  DCHARINFO  {Discarded - data < header length}
+.PAGE
+;Device parameter table for IPS: opens
+
+	.MOD	4
+	.LONG	OPARMMAX	;Size of table
+ipsopnparms:
+	.LONG	ipsopngenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	ipsopnnetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+OPARMMAX=!{$-ipsopnparms}/4
+
+	.LONG	OPARMGENMAX	;Size of table
+ipsopngenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopDummyN##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIopDummyS##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	0		;IOPAR_INPSTS      = 0008h
+	.LONG	0		;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT     = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	0		;IOPAR_BUFRLMT	   = 0010h
+OPARMGENMAX=!{$-ipsopngenparms}/4
+
+	.LONG	OPARMNETMAX
+ipsopnnetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+OPARMNETMAX=!{$-ipsopnnetparms}/4
+
+;Device parameter table for IPS: for IO operations
+
+	.LONG	PARMMAX		;Size of table
+ipsioparms:
+	.LONG	ipsiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File system IO
+				 ;			  parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	ipsionetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+PARMMAX=!{$-ipsioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+ipsiogenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIoxFilOptn##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIoxFilSpec##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopNullN##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	knlIopIoSts##	;IOPAR_INPSTS      = 0008h
+	.LONG	knlIopIoSts##	;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT     = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	0		;IOPAR_BUFRLMT	   = 0010h
+PARMGENMAX=!{$-ipsiogenparms}/4
+
+	.LONG	PARMNETMAX
+ipsionetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+PARMNETMAX=!{$-ipsionetparms}/4
+
+	.LONG	1
+ipsdpparms::
+	.LONG	ipsdp0parms
+
+	.LONG	DPPARMMAX
+ipsdp0parms:
+	.LONG	knlIoparClass##	;IOPAR_CLASS      = 8000h - Device class
+	.LONG	rtuse		;IOPAR_IPS_RTUSE  = 8001h - Number of routing
+				;			      table entries in
+				;			      use
+	.LONG	rtdata		;IOPAR_IPS_RTDATA = 8002h - Routing table data
+DPPARMMAX=!{$-ipsdpparms}/4
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	ipsinit
+
+;The command for installing IPSCLS is:
+;	LKELOAD IPSCLS
+
+ipsinit:MOVL	EDI, #ipschk		;Install the IPS class
+	MOVL	EBX, #ipscls		;Offset of class function dispatch table
+	MOVL	EAX, #'IPS'
+	CLRL	EDX
+	MOVL	ESI, #ipsccb
+	CALL	knlNewClass##		;Install the IPS device class
+	JC	4$.S			;If error
+	CALL	icmpinit#		;Initialize the ICMP routines
+	JC	6$.S			;If error
+	MOVL	EBX, #ipsoas		;Set up routing once-a-second routine
+	CALL	knlSetupOAS##
+	MOVL	ECX, #xcodetop#		;OK
+	CLRL	EDX
+	CLRL	EAX
+4$:	MOVL	EBX, #QSTS$DONE
+	RET
+
+;Here if error initializing the IC class (IP classe already installed)
+
+6$:	PUSHL	EAX			;Save error code
+	MOVL	ESI, #ipsccb		;Remove the IPS class
+	CALL	knlRmvClass##
+	POPL	EAX			;Restore error code
+	STC
+	JMP	4$.S
+
+	CODE
+.PAGE
+	.SBTTL	ipsaddunit - Subroutine to add IPS "unit"
+
+;Subroutine to add IP "unit" - this is a logical unit which implements a
+;  link level protocol for one to eight SNAP devices - multiple IPS units with
+;  different protocol values may be set up for each SNAP device if desired
+;	c{ES:EDI} = Address of data block
+;	CALL	ipsaddunit
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+
+$$$=!0
+FRM ipau_snapnum , 4t		;Number of SNAP devices specified
+FRM ipau_unit    , 4t		;Unit number
+FRM ipau_sdb     , 4t*8t	;SDB offsets
+FRM ipau_pdb     , 4t		;Offset of PDB
+FRM ipau_icmptpdb, 4t		;Offset of ICMP TPDB
+ipau_SIZE=!$$$
+
+	DATA
+
+	.MOD	4
+ipsaublk:				;Parameter description block for
+ DCHARBGN  3, knlDCharValCom##		;  adduparms
+ DCHARENT  UNIT   , DECV, ,  1, 0, 0, ipsauunit    , 0
+ DCHARENT  SNAPDEV, TEXT, , 16, 0, 0, ipsausnapdev , 0
+
+	CODE
+
+	IFFAULT	6$
+ipsaddunit:
+	LFSL	EDX, iorb_buffer2[ESI]
+	ENTER	ipau_SIZE, 0		;Allocate our stack frame
+	CLRL	EAX
+	LEAL	EDI, -ipau_SIZE[EBP]	;Clear our stack frame
+	MOVL	ECX, #ipau_SIZE/4
+	PUSHL	SS
+	POPL	ES
+	CLD
+	RSTOSL	[EDI]
+	DECL	ipau_unit[EBP]		;Indicate illegal unit number
+	MOVL	EBX, #ipsaublk
+	MOVB	AL, #0			;Fail on bad names
+	CALL	knlAddUnitChar##	;Process the characteristics
+	JC	4$			;If error
+	CMPL	ipau_snapnum[EBP], #0	;Was at least one SNAP device
+					;  specified?
+	JE	2$			;No
+	CMPL	ipau_unit[EBP], #0	;Yes - was a unit number specified?
+	JGE	20$			;Yes
+2$:	MOVL	EAX, #ER_CHARM		;No - fail
+4$:	MOVL	EBX, #QSTS$DONE
+	CLRL	ECX
+	LEAVE
+	TOFORK
+	RET
+		
+;Here if address error
+
+	FAULTHDR
+6$:	MOVL	EAX, #ER_ADRER
+	JMP	4$
+
+;Here if cannot allocate exec memory
+
+10$:	MOVL	EBX, knlSvDataPnt##	;Give up all the memory we got here!
+	CALL	knlGiveXMem##
+14$:	CALL	knlGiveXRes##
+	JMP	4$
+
+;Here if device unit is already defined
+
+16$:	MOVL	EAX, #ER_DUADF
+	JMP	4$
+
+;Here if have all required characteristics - we now allocate the following:
+;	PDB (IPS) for each SNAP device
+;	TPDB (ICMP) for each SNAP device
+
+20$:	MOVB	AL, ipau_unit[EBP]	;See if this unit is already defined
+	MOVB	CL, #0
+	MOVL	EDI, xosipsPdbHead
+	CALL	xosnetSrchBlk2##
+	JE	16$.S
+	CALL	knlGetXRes##		;Get exec memory resource
+
+;Now allocate a PDB (IPS) and a TPDB (ICMP)
+
+22$:	MOVL	ECX, #pdb_ipSIZE	;Allocate a PDB (Protocol Data Block)
+	CALL	knlGetXMem##
+	JC	10$.S			;If error
+	MOVL	EBX, EDI
+	MOVL	pdb_label[EBX], #'PDB*'
+	MOVL	ipau_pdb[EBP], EBX
+	MOVL	ESI, ipau_sdb[EBP]
+	MOVL	pdb_sdb[EBX], ESI	;Store offset of SDB in the PDB
+	MOVL	EAX, sdb_maxpktsz[ESI]	;Store maximum packet size
+	SUBL	EAX, #ip_options
+	MOVL	pdb_ipmaxpktsz[EBX], EAX
+	MOVL	EAX, sdb_snaphdrsz[ESI] ;Store header size
+	ADDL	EAX, #ip_options
+	MOVL	pdb_iphdrsz[EBX],EAX
+	MOVL	EAX, sdb_idb[ESI]	;Store offset of IDB in the PDB
+	MOVL	pdb_idb[EBX], EAX
+	MOVL	pdb_pdb[EBX], EBX
+	MOVL	pdb_ccb[EBX], #ipsccb
+	MOVL	pdb_dcbsizex[EBX], #dcb_ipsINDEX
+	MOVL	pdb_disp[EBX], #ipsdisp
+	MOVL	pdb_iprtmax[EBX], #20t	;Store default routing table maximum
+	MOVL	EAX, ipau_unit[EBP]	;Get unit number
+	MOVB	pdb_unit[EBX], AL
+	MOVL	pdb_name[EBX], #'IPS'	;Put name into the PDB
+	PUSHL	EBX
+	ADDL	EBX, #pdb_name+3	;Add unit number
+	CALL	knlPutDecNmbr##
+	POPL	EBX
+	MOVB	pdb_plen[EBX], #4	;Store length of our protocol address
+	MOVL	ECX, #tpdb_icmpSIZE	;Allocate space for an ICMP TPDB
+	CALL	knlGetXMem##
+	JC	10$			;If error
+	MOVL	ipau_icmptpdb[EBP], EDI
+	MOVL	tpdb_label[EDI], #'TPDB'
+	MOVL	tpdb_rcvdisp[EDI], #icmprcv#
+	MOVL	EAX, ipau_icmptpdb[EBP] ;Store offset of first TPDB
+	MOVL	tpdb_ftpdb[EDI], EAX
+	MOVL	EAX, ipau_pdb[EBP]
+	MOVL	tpdb_pdb[EDI], EAX	;Store offset of the PDB
+	MOVL	pdb_iptpdbhead[EAX], EDI
+	MOVL	tpdb_ipprot[EDI], #IPP_ICMP ;Store protocol number
+	MOVL	tpdb_ccb[EDI], #icmpccb
+	MOVL	tpdb_dcbsizex[EDI], #dcb_icmpINDEX
+	MOVL	tpdb_name+0[EDI], #'IC'
+	MOVL	EAX, pdb_name+2[EAX]
+	MOVL	tpdb_name+2[EDI], EAX
+	MOVB	AL, ipau_unit[EBP]
+	MOVB	tpdb_unit[EDI], AL
+
+;When get here, we have allocated all of the memory we need - finally, we link
+;  the data blocks we have built into the lists for the system (note that we
+;  do this backwards so that the lists will be in the right order!)
+
+	CALL	knlGiveXRes##
+	MOVL	ECX, ipau_snapnum[EBP]
+
+28$:	MOVL	EBX, ipau_pdb[EBP]	;Get offset of PDB
+	MOVL	EAX, xosipsPdbHead	;Link into the IPS PDB list
+	MOVL	xosipsPdbHead, EBX
+	MOVL	pdb_nextd[EBX], EAX
+
+	MOVL	EBX, ipau_icmptpdb[EBP] ;Get offset of ICMP TPDB
+	MOVL	EAX, xosipsIcmpTpdbHead# ;Link into the ICMP TPDB list
+	MOVL	xosipsIcmpTpdbHead, EBX
+	MOVL	tpdb_nextd[EBX], EAX
+
+	CLRL	EAX			;Finished
+	MOVL	EBX, #QSTS$DONE
+	MOVL	ECX, #1
+	LEAVE
+	TOFORK
+	RET
+.PAGE
+	.SBTTL	xosipsAuIpsDev - Subroutine to process IPSDEV addunit characteristic
+
+;Subroutine to process IPSDEV addunit characteristic for devices which use IP
+;  as their underlying protocol
+;	c{EAX} = Current IPS PDB offset
+;	CALL	xosipsAuIpsDev
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of IPS PDB
+
+xosipsAuIpsDev:
+	TESTL	EAX, EAX		;Alreay have an IPS PDB?
+	JNE	2$.S			;Yes - fail
+	MOVL	EBX, #knlDcValue##	;No
+	PUSHL	12t[EBX]
+	PUSHL	8[EBX]
+	PUSHL	4[EBX]
+	MOVL	EAX, [EBX]
+	PUSHL	EAX
+	ANDL	EAX, #0FFFFFFh
+	CMPL	EAX, #'IPS'
+	JNE	4$.S
+	LEAL	ECX, 3[ESP]
+	MOVL	EDI, xosipsPdbHead	;Get offset of first PDB
+	CALL	xosnetSrchBlock##	;Find the correct PDB
+	JNE	4$.S			;If can't find it
+	CMPB	SS:[ECX], #0		;Did he specify a specific network?
+	JNE	4$.S			;Yes - fail
+	ADDL	ESP, #16t
+	RET
+
+;Here if more than one IPS device specified
+
+2$:	MOVL	EAX, #ER_TMDDV
+	STC
+	RET
+
+;Here if cannot find requested IPS device
+
+4$:	ADDL	ESP, #16t
+	JMP	knlBadCharV##
+.PAGE
+	.SBTTL	xosipsNewTransProt - Subroutine to create new IPS transport level protocol
+
+;Subroutine to create new IPS transport level protocol
+;	c{{ESP}+36t} = Unit number
+;	c{{ESP}+32t} = Size for TPDB
+;	c{{ESP}+28t} = Base name (2 to 4 characters)
+;	c{{ESP}+24t} = Size index for DCB
+;	c{{ESP}+20t} = Size for hash table (0 if none)
+;	c{{ESP}+16t} = Offset in TPDB of hash table pointer
+;	c{{ESP}+12t} = Offset of receive routine
+;	c{{ESP}+8t}  = Offset of CCB
+;	c{{ESP}+4t}  = Offset of PDB for first interface
+;	c{{ESP}+0t}  = Offset of TPDB list head pointer for transport protocol
+;	CALL	xosipsNewTransProt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of first new TPDB, still have exec memory resource
+
+mt_unit   =!44t		;Unit number
+mt_tpdbsz =!40t		;Size of a TPDB
+mt_name   =!36t		;Base name
+mt_sizex  =!32t		;Size index for DCB
+mt_hashsz =!28t		;Size for hash table
+mt_hashpnt=!24t		;Offset in TPDB for hash table pointer
+mt_rcvdisp=!20t
+mt_ccb    =!16t		;Offset of CCB
+mt_pdb    =!12t		;Offset of PDB
+mt_tpdbhp =!8t		;Offset of TPDB list head pointer
+
+$$$=!0
+FRM mt_hashtbl, 4t	;Offset of hash table
+FRM mt_tpdb   , 4t*8t
+mt_SIZE=!$$$
+
+xosipsNewTransProt:
+	ENTER	mt_SIZE, 0
+	MOVL	ESI, mt_tpdbhp[EBP]
+	MOVL	EDI, [ESI]		;Look for TPDB for transport protocol
+	MOVB	AL, mt_unit[EBP]
+2$:	TESTL	EDI, EDI
+	JE	6$.S
+	CMPB	tpdb_unit[EDI], AL
+	JE	4$.S
+	MOVL	EDI, tpdb_nextd[EDI]
+	JMP	2$.S
+
+;Here if device is already defined
+
+4$:	MOVL	EAX, #ER_DUADF
+	LEAVE
+	STC
+	RET	40t
+
+;Here if desired tranport protocol is not now defined - first allocate space
+;  for the TPDB for the protocol
+
+6$:	CALL	knlGetXRes##		;Get the exec memory resource
+	MOVL	EDI, mt_pdb[EBP]
+	CLRL	EDI
+	MOVL	ECX, mt_hashsz[EBP]
+	JREGZ	ECX, 8$
+	CALL	knlGetXMem##
+	JC	12$.S
+8$:	MOVL	mt_hashtbl[EBP], EDI
+10$:	MOVL	ECX, mt_tpdbsz[EBP]	;Get size for the TPDB
+	CALL	knlGetXMem##		;Allocate memory
+12$:	JC	22$			;If error
+	MOVL	EAX, mt_rcvdisp[EBP]	;Store receive dispatch offset
+	MOVL	tpdb_rcvdisp[EDI], EAX
+	MOVL	tpdb_label[EDI], #'TPDB'
+	MOVL	EDX, mt_name[EBP]	;Get name
+	MOVL	EAX, mt_unit[EBP]	;Get unit number
+	MOVB	tpdb_unit[EDI], AL
+	MOVL	tpdb_name[EDI], EDX
+	LEAL	EBX, tpdb_name+2[EDI]
+	TESTL	EDX, #0FF0000h		;Have a 3 or 4 character name?
+	JE	16$.S			;No
+	INCL	EBX			;Yes
+	TESTL	EDX, #0FF000000h	;Have a 4 character name?
+	JE	16$.S			;No
+	INCL	EBX			;Yes
+16$:	CALL	knlPutDecNmbr##		;Insert number into name
+	MOVL	mt_tpdb[EBP], EDI
+	MOVL	EAX, mt_sizex[EBP]	;Store size index for DCBs
+	MOVL	tpdb_dcbsizex[EDI], EAX
+	MOVL	EAX, mt_ccb[EBP]	;Store offset of the CCB
+	MOVL	tpdb_ccb[EDI], EAX
+	MOVL	EAX, mt_tpdb+0[EBP]	;Store offset of first TPDB
+	MOVL	tpdb_ftpdb[EDI], EAX
+	MOVL	EAX, mt_hashtbl[EBP]	;Store offset of hash table
+	MOVL	EDX, mt_hashpnt[EBP]
+	MOVL	[EDI+EDX], EAX
+	MOVL	EAX, mt_pdb[EBP]
+	MOVL	tpdb_pdb[EDI], EAX	;Store it in the TPDB
+	DECL	tpdb_nexti[EDI]		;Indicate not in an IP protocol list
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+
+;Here with the TPDB allocated - now link it into the device list for the
+;  protocol
+
+	MOVL	ESI, mt_tpdbhp[EBP]
+	MOVL	EDI, mt_tpdb[EBP]
+	MOVL	EAX, [ESI]
+	MOVL	[ESI], EDI
+	MOVL	tpdb_nextd[EDI], EAX
+	CLC				;Return offset of first TPDB in EDI
+20$:	LEAVE
+	RET	40t
+
+;Here if error allocating memory for a TPDB
+
+22$:	MOVL	EBX, knlSvDataPnt##	;Give up all the memory we got here!
+	CALL	knlGiveXMem##
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+	JMP	20$.S
+.PAGE
+	.SBTTL	xosipsMakeDev - Subroutine to create new IPS application level device
+
+;Subroutine to create new IPS application level device
+;	c{{ESP}+24t} = Unit number
+;	c{{ESP}+20t} = Size for DPDB
+;	c{{ESP}+16t} = Base name (3 or 4 characters)
+;	c{{ESP}+12t} = Size index for DCB
+;	c{{ESP}+8t}  = Offset of CCB
+;	c{{ESP}+4t}  = Offset of TPDB for first interface
+;	c{{ESP}+0t}  = Offset of DPDB list head pointer for device
+;	CALL	xosipsMakeDev
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of first new DPDB, still have exec memory resource
+
+md_unit   =!32t		;Unit number
+md_dpdbsz =!28t		;Size of a TPDB
+md_name   =!24t		;Base name
+md_sizex  =!20t		;Size index for DCB
+md_ccb    =!16t		;Offset of CCB
+md_ftpdb  =!12t		;Offset of TPDB for first interface
+md_dpdbhp =!8t		;Offset of DPDB list head pointer
+
+$$$=!0
+FRM md_tpdb, 4t		;Offset of TPDB
+md_SIZE=!$$$
+
+xosipsMakeDev:
+	ENTER	md_SIZE, 0
+	MOVL	EDI, md_ftpdb[EBP]
+	CALL	finddunit		;Find TPDB for transport protocol device
+	JNE	8$.S			;Fail if not found
+	MOVL	md_tpdb[EBP], EDI	;Save offset of transport device TPDB
+
+;Here with DPDB for transport protocol device found - now search the list of
+;  specific DPDBs for the device we want to create and see if the device
+;  already exists
+
+	MOVZBL	EAX, md_unit[EBP]	;Restore unit number
+	MOVL	EDI, md_dpdbhp[EBP]	;Get offset of first DPDB
+	MOVL	EDI, [EDI]
+	CALL	finddunit		;Try to find the device
+	JNE	12$.S			;OK if not there
+	MOVL	EAX, #ER_DUADF		;Found it - already defined!
+	JMP	10$.S
+
+;Here if protocol device does not exist
+
+8$:	MOVL	EAX, #ER_NSDEV
+10$:	LEAVE
+	STC
+	RET	28t
+
+;Here if device to be created does not now exist - its OK to create the new
+;  device
+
+;;;; - to do this we must create one DPDB for each SNAP device used by
+;;;;  the device's network - first we allocate the memory, then we set up and
+;;;;  link the DPDBs
+
+12$:	CALL	knlGetXRes##		;Get exec memory resource
+	MOVZBL	ECX, md_dpdbsz[EBP]	;Get size for the DPDB
+	SHLL	ECX, #2
+	CALL	knlGetXMem##		;Allocate memory
+	JC	22$			;If error
+	MOVL	dpdb_label[EDI], #'DPDB'
+	MOVL	EAX, md_unit[EBP]
+	MOVB	dpdb_unit[EDI], AL
+	MOVL	EDX, md_name[EBP]
+	MOVL	dpdb_name[EDI], EDX
+	LEAL	EBX, dpdb_name+3[EDI]
+	TESTL	EDX, #0FF000000h	;Have a 4 character name?
+	JE	16$.S			;No
+	INCL	EBX			;Yes
+16$:	CALL	knlPutDecNmbr##		;Insert unit number into name
+	MOVL	EAX, md_sizex[EBP]	;Store size index for DCBs
+	MOVL	dpdb_dcbsizex[EDI], EAX
+	MOVL	EAX, md_ccb[EBP]	;Store offset of the CCB
+	MOVL	dpdb_ccb[EDI], EAX
+
+
+	MOVL	EAX, md_tpdb[EBP]	;Store offset of corresponding TPDB
+	MOVL	dpdb_tpdb[EDI], EAX
+	MOVL	EAX, tpdb_pdb[EAX]	;Store offset of corresponding PDB
+	MOVL	dpdb_pdb[EDI], EAX
+	DECL	dpdb_nexti[EDI]		;Indicate not in a protocol list
+
+;Here with memory allocated for the DPDB - now we must link it into the
+;  device list
+
+;;;;;??????????????????????
+
+	MOVL	EBX, md_dpdbhp[EBP]	;Link into DPDB list
+	MOVL	EAX, [EBX]
+	MOVL	[EBX], EDI
+	MOVL	dpdb_nextd[EDI], EAX
+	CLC				;Return offset of the DPDB
+20$:	LEAVE
+	RET	28t			;Finished
+
+;Here if error when allocating memory
+
+22$:	MOVL	EBX, knlSvDataPnt##	;Give up all the memory we got here!
+	CALL	knlGiveXMem##
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+	STC				;Indicate error
+	JMP	20$.S
+.PAGE
+;Subroutine to find network device in a TPDB or DPDB list
+;	c{EDI} = Offset of first TPDB or DPDB
+;	CALL	finddunit
+;	Z:set = Device found
+;	  c{EDI} = Offset of TPDB or DPDB
+;	Z:clr = Not found
+
+finddunit:
+	MOVB	AL, md_unit[EBP]
+4$:	TESTL	EDI, EDI
+	JE	6$.S
+	CMPB	dpdb_unit[EDI], AL
+	JE	8$.S
+	MOVL	EDI, dpdb_nextd[EDI]
+	JMP	4$.S
+
+6$:	TESTL	ESP, ESP
+8$:	RET
+.PAGE
+;Subroutine called by adduparms for the "UNIT" parameter
+
+ipsauunit:
+	CMPL	EAX, #9t		;Valid value?
+	JA	badcharv		;No - fail
+	MOVL	ipau_unit[EBP], EAX	;Yes - store it
+	CLC
+	RET
+
+;Subroutine called by adduparms for the "SNAPDEV" parameter
+
+ipsausnapdev:
+	MOVL	ESI, xossnpSdbHead##	;Get offset of first SDB
+2$:	TESTL	ESI, ESI		;Have another to check?
+	JE	8$.S			;If no more
+	CMPL	sdb_name+0[ESI], EAX	;This one?
+	JNE	4$.S			;No
+	CMPL	sdb_name+4[ESI], EDX	;Maybe
+	JE	6$.S			;Yes
+4$:	MOVL	ESI, sdb_nextd[ESI]	;No - advance to next
+	JMP	2$.S			;Continue
+
+;Here with SDB for the requested SNAP device
+
+6$:	MOVL	EAX, ipau_snapnum[EBP] ;Get current SNAP number
+	CMPL	EAX, #7			;Already have maximum number?
+	JAE	10$.S			;Yes - fail
+	INCL	ipau_snapnum[EBP]	;No - bump number
+	MOVL	ipau_sdb[EBP+EAX*4], ESI ;Store SDB offset
+	CLC
+	RET
+
+;Here if cannot find requested SNAP device
+
+8$:	MOVL	EAX, #ER_NSDEV
+	STC
+	RET
+
+;Here if have too many SNAP devices specified
+
+10$:	MOVL	EAX, #ER_TMDDV
+	STC
+	RET
+.PAGE
+	.SBTTL	xosipsSetIpProt - Subroutine to change IP protocol value
+
+;Subroutine to change IP protocol value for a transport level device (this
+;  is normally called when the IPPORT characteristic is changed)
+;	c(AL)  = New protocol value
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetIpProt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+xosipsSetIpProt:
+	MOVL	EBX, dcb_ipstpdb[EDI]	;Get offset of the TPDB
+	MOVL	EBX, tpdb_ftpdb[EBX]	;Make sure have first TPDB for device
+	MOVB	AH, tpdb_unit[EBX]	;Get unit number
+	CMPL	tpdb_nexti[EBX], #-1	;Really in use?
+	JE	20$			;No
+2$:	MOVB	tpdb_ipprot[EBX], #0	;Yes - clear the IP protocol value
+	MOVL	ESI, tpdb_pdb[EBX]	;Get offset of the PDB
+	LEAL	EDX, pdb_iptpdbhead[ESI] ;Get offset of head pointer
+4$:	CMPL	[EDX], EBX		;This one?
+	JE	12$			;Yes
+	MOVL	EDX, [EDX]		;No - advance to next
+	TESTL	EDX, EDX
+	JE	10$
+	ADDL	EDX, #tpdb_nexti
+	JMP	4$
+
+10$:	CRASH	BIPL			;[Bad IP protocol List]
+
+12$:	MOVL	ECX, tpdb_nexti[EBX]	;Remove this PDB from the list
+	MOVL	[EDX], ECX
+	MOVL	tpdb_nexti[EBX], #-1	;Indicate not in use
+	MOVL	EBX, tpdb_nextd[EBX]	;Advance to next TPDB
+	TESTL	EBX, EBX		;Have another?
+	JE	18$			;No
+	CMPB	tpdb_unit[EBX], AH	;Yes - for same unit?
+	JE	2$			;Yes - continue
+18$:	MOVL	EBX, dcb_ipstpdb[EDI]	;Restore first TPDB for unit
+	MOVL	EBX, tpdb_ftpdb[EBX]
+20$:	CMPB	AL, #0			;Clearing the protocol?
+	JE	34$			;Yes - finished now
+24$:	MOVB	tpdb_ipprot[EBX], AL	;Store new IP protocol value
+	MOVL	ESI, tpdb_pdb[EBX]	;Get offset of PDB
+	LEAL	EDX, pdb_iptpdbhead[ESI] ;Get offset of head pointer
+28$:	MOVL	ECX, [EDX]		;Get next TPDB
+	JREGZ	ECX, 32$		;If no more
+	CMPB	AL, tpdb_ipprot[ECX]	;Does it go here?
+	JBE	30$			;Yes
+	LEAL	EDX, tpdb_nexti[ECX]	;No - advance to next TPDB
+	JMP	28$			;Continue
+
+;Here with position for new entry
+
+30$:	JE	knlBadCharV##		;If duplicate
+32$:	MOVL	tpdb_nexti[EBX], ECX	;Insert into list
+	MOVL	[EDX], EBX
+	MOVL	EBX, tpdb_nextd[EBX]	;Advance to next TPDB
+	TESTL	EBX, EBX		;Have another?
+	JE	34$			;No - finished
+	CMPB	tpdb_unit[EBX], AH	;Yes - for same unit?
+	JE	24$			;Yes - continue
+34$:	CLRL	EAX			;No - finished
+	RET
+.PAGE
+	.SBTTL	charreset - QFNC_DEVCHAR reset function
+
+;Here on QFNC_DEVCHAR reset
+
+charreset::
+	MOVL	EBX, dcb_netpdb[EDI]	;Get offset of the PDB
+	CLRL	EAX
+	MOVL	pdb_iprtpurge[EBX], EAX	;Clear routing table purge status
+	JMP	knlDCharValCom#		;Go do common stuff
+.PAGE
+	.SBTTL	xosipsGetDpdbByte - Subroutine to get single byte item from an DPDB
+
+;Subroutine to get single byte item from a single DPDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGetDpdbByte
+;	C:clr always
+;	c{EAX} = Data value
+
+xosipsGetDpdbByte::
+	ADDL	EBX, dcb_ipsdpdb[EDI]	;Point to the data item
+	MOVZBL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+
+	.SBTTL	xosispSetDpdbByte - Subroutine to set single byte item in an DPDB
+
+;Subroutine to set single byte item in a single DPDB for QFNC_DEVCHAR
+;	c(AL)  = Value to store
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetDpdbByte
+;	C:clr always
+
+xosipsSetDpdbByte::
+	ADDL	EBX, dcb_ipsdpdb[EDI]	;Point to the data item
+	MOVB	[EBX], AL		;Store value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsGetTpdbByte - Subroutine to get byte item from a TPDB
+
+;Subroutine to get byte item from a TPDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGetTpdbByte
+;	C:clr always
+;	c{EAX} = Data value
+
+xosipsGetTpdbByte::
+	ADDL	EBX, dcb_ipstpdb[EDI]	;Point to the data item
+	MOVZBL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsGetTpdbData - Subroutine to get data item from a TPDB
+
+;Subroutine to get data item from a TPDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGetTpdbData
+;	C:clr always
+;	c{EAX} = Data value
+
+xosipsGetTpdbData::
+	ADDL	EBX, dcb_ipstpdb[EDI]	;No - point to the data item
+	MOVL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsGetDpdbData - Subroutine to get data item from a DPDB
+
+;Subroutine to get data item from a DPDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGetDpdbData
+;	C:clr always
+;	c{EAX} = Data value
+
+xosipsGetDpdbData::
+	ADDL	EBX, dcb_ipsdpdb[EDI]	;Point to the data item
+	MOVL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsSetTpdbByte - Subroutine to set byte item in a TPDB
+
+;Subroutine to set byte item in a TPDB for QFNC_DEVCHAR
+;	c(AL)  = Data value
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetTpdbByte
+;	C:clr always
+
+xosipsSetTpdbByte::
+	ADDL	EBX, dcb_ipstpdb[EDI]	;Point to the data item
+	MOVB	[EBX], AL		;Store value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsSetTpdbData - Subroutine to set data item in a TPDB
+
+;Subroutine to set data item in a TPDB for QFNC_DEVCHAR
+;	c{EAX} = Data value
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetTpdbData
+;	C:clr always
+
+xosipsSetTpdbData::
+	ADDL	EBX, dcb_ipstpdb[EDI]	;Point to the data item
+	MOVL	[EBX], EAX		;Store value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	xosipsSetDpdbData - Subroutine to set data item in a DPDB
+
+;Subroutine to set data item in an DPDB for QFNC_DEVCHAR
+;	c{EAX} = Data value
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetDpdbData
+;	C:clr always
+
+xosipsSetDpdbData::
+	ADDL	EBX, dcb_ipsdpdb[EDI]	;Point to the data item
+	MOVL	[EBX], EAX		;Store value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	getsnapdev - Here to get value of the SNAPDEV characteristic
+
+;Here to get the value of the SNAPDEV device characteristic - logical link
+;  control device name
+
+getsnapdev:
+	MOVL	EBX, dcb_netsdb[EDI]	;Get offset of the SDB
+	LEAL	EAX, sdb_name[EBX]	;Get offset of SNAP device name
+	RET
+
+	.SBTTL	getarpdev - Here to get value of the ARPDEV characteristic
+
+;Here to get the value of the ARPDEV device characteristic - ARP device
+
+getarpdev:
+	MOVL	EAX, dcb_netpdb[EDI]	;Get offset of the IP PDB
+	MOVL	EAX, pdb_iparppdb[EAX]	;Get offset of associated ARP PDB
+	CLRL	EDX
+	TESTL	EAX, EAX		;Is there one?
+	JE	4$.S			;No
+	LEAL	EAX, pdb_name[EAX]	;Get offset of ARP device name
+4$:	RET
+
+	.SBTTL	getetype - Here to get value of the ETYPE characteristic
+
+;Here to get the value of the ETYPE device characteristic - DIX or SNAP
+;  Ethertype value
+
+getetype:
+	MOVL	EBX, dcb_netpdb[EDI]	;Get offset of the item
+	MOVZWL	EAX, pdb_etypevalue[EBX] ;Get protocol value
+	RET
+.PAGE
+	.SBTTL	getchksumh - Here to get value of CHKSUMH characteristic
+
+;Here to get the value of the CHKSUMH device characteristic - IP checksum
+;  handling
+
+getchksumh:
+	MOVL	EBX, dcb_netpdb[EDI]	;Get offset of the PDB
+	MOVZBL	EAX, pdb_ipchksumh[EBX]	;Get checksum handling bits
+	MOVL	EBX, #cshtbl		;Get offset of our table
+	MOVL	ECX, #CSHTSZ		;Get size of our table
+	CALL	knlGetDcName##		;Find corresponding text string
+	JNC	4$.S			;If OK
+	MOVL	EAX, #'????'		;Should not fail - but return some
+	CLRL	EDX			;  question marks if it does!
+4$:	RET
+
+	.MOD	4
+cshtbl:	.LONG	'NONE', ''  , 0
+	.LONG	'INPU', 'T' , PCSH$CHK
+	.LONG	'OUTP', 'UT', PCSH$GEN
+	.LONG	'FULL', ''  , PCSH$CHK|PCSH$GEN
+	.LONG	'AUTO', ''  , PCSH$AUTO
+CSHTSZ=!{$-cshtbl}/12t
+
+	.SBTTL	xosipsGetYesNo - Here to get value of characteristic with value of YES or NO
+
+;Here to get value of characteristic with value of YES or NO
+
+xosipsGetYesNo:
+	MOVL	EDX, dcb_netpdb[EDI]	;Get offset of the PDB
+	MOVL	EAX, #'NO'		;Assume value is NO
+	TESTB	pdb_ipsts1[EDX], BL	;Right?
+	JE	6$.S			;Yes
+	MOVL	EAX, #'YES'		;No - its YES
+6$:	CLRL	EDX
+	RET
+
+	.SBTTL	setacsize - Here to set value of RTSIZE characteristic
+
+;Here to set the value of the RTSIZE device characteristic - IP routing table
+;  size
+
+setrtsize:
+	MOVL	EBX, dcb_netpdb[EDI]	;Get offset of the PDB
+	CMPL	EAX, #10t		;Is the new size too small?
+	JA	8$			;No
+	MOVB	AL, #10t		;Yes - make it the minimum
+8$:	MOVL	pdb_iprtmax[EBX], EAX	;Store new value
+	CLC				;Thats all
+	RET
+.PAGE
+	.SBTTL	xosipsSetRtRemove - Here to set value of RTREMOVE characteristic
+
+;Here to set the value of the RTREMOVE device characteristic - IP routing table
+;  remove request.  This is really a request to remove an entry from the IP
+;  routing table.  This is almost like the RTPURGE request except that any
+;  router entries associated with the removed entry are verified by
+;  pinging.  Note that this operation does NOT delay until the ping of the
+;  router is complete and any router entries removed as a result of this
+;  operation are NOT included in the returned value.  If a value of 0 is
+;  specified (meaning to remove all entries), this is changed to a purge
+;  operation.  (There's no reason to verify routers in this case since we will
+;  be removing their entries anyway.)
+
+xosipsSetRtRemove::
+	MOVB	DL, #0			;Assume really a remove request
+	TESTL	EAX, EAX		;Want to remove everything?
+	JNE	2$.S			;No
+					;Yes - really a purge request - fall
+					;  into the purge routine
+
+	.SBTTL	setrtpurge - Here to set value of RTPURGE characteristic
+
+;Here to set the value of the RTPURGE device characteristic - IP routing table
+;  purge request.  This is really a request to purge an entry from the IP
+;  routing table.  If the entry is for a foreign node, the associated router
+;  entry is NOT affected in any way.  If the entry is for a router, all foreign
+;  entries which use the router entry are also removed.  If the entry is found,
+;  the value returned is the total number of entries removed.  Note that the
+;  value is obtained by getting the value of the RTPURGE characteristic in the
+;  same characteristic in which the entry(s) was removed with an RTPURGE set
+;  request.
+
+setrtpurge:
+	MOVB	DL, #1			;Indicate want purge operation
+2$:	PUSHL	EDI
+	MOVL	ESI, dcb_netsdb[EDI]	;Get offset of the SDB
+	MOVL	EDI, dcb_netpdb[EDI]	;Get offset of the PDB
+	TOFORK
+	CALL	rtremove#		;Remove entry from the routing table
+	JC	4$			;If error
+	ADDL	pdb_iprtpurge[EDI], EAX	;OK - add this in
+	FROMFORK
+	POPL	EDI
+	CLC				;Just to be very safe!
+	RET
+
+;Here if error
+
+4$:	FROMFORK
+	POPL	EDI
+	MOVL	EAX, #ER_CHARV		;Get error code
+	RET
+.PAGE
+	.SBTTL	xosipsGetIpsDev - Here to get value of IPSDEV characteristic
+
+;Here to the the value of the IPSDEV characteristic for a transprot protocol
+;  level device
+
+xosipsGetIpsDev:
+	MOVL	EAX, dcb_netpdb[EDI]	;Get offset of PDB
+	ADDL	EAX, #pdb_name+0	;Get offset of name
+	RET
+.PAGE
+	.SBTTL	getsdomain - Here to get value of DOMAIN characteristic
+
+;Here to get the value of the DOMAIN device characteristic - Domain Name
+
+getdomain:
+	ADDL	EDX, dcb_netpdb[EDI]	;Get offset of string
+	JMP	knlGetSysStr##
+.PAGE
+	.SBTTL	setarpdev - Here to set value of ARPDEV characteristic
+
+;Here to set the value of the ARPDEV device characteristic - ARP device name
+
+setarpdev:
+	MOVL	ESI, dcb_netsdb[EDI]
+	MOVL	EAX, knlDcValue##+0
+	TESTL	EAX, EAX		;Null name?
+	JE	10$			;Yes - this means no ARP device
+	ANDL	EAX, #0FFFFFFh
+	CMPL	EAX, #'ARP'		;No - is it an ARP name?
+	JNE	8$			;No - fail
+	MOVL	EAX, knlDcValue##+8
+	ORL	EAX, knlDcValue##+12t
+	JNE	8$
+	MOVL	EAX, knlDcValue##+0
+	MOVL	EDX, knlDcValue##+4
+	MOVL	ECX, sdb_pdbhead[ESI]	;Yes - point to first PDB
+4$:	CMPL	pdb_name+0[ECX], EAX	;This one?
+	JNE	6$
+	CMPL	pdb_name+4[ECX], EDX	;This one?
+	JE	12$			;Yes
+6$:	MOVL	ECX, pdb_nexti[ECX]	;No - advance to next PDB
+	TESTL	ECX, ECX
+	JNE	4$			;Continue if another to check
+8$:	MOVL	EAX, #ER_CHARV		;No more - fail
+	STC
+	RET
+
+;Here if want no ARP device
+
+10$:	CLRL	ECX
+12$:	MOVL	EBX, dcb_netpdb[EDI]
+	MOVL	pdb_iparppdb[EBX], ECX	;Store offset of ARP PDB to use
+ret002:	RET
+.PAGE
+	.SBTTL	setetype - Here to set value of ETYPE characteristic
+
+;Here to set the value of the ETYPE device characteristic - IP Ethertype value
+
+setetype:
+	MOVL	EBX, dcb_netpdb[EDI]	;Get offset of the PDB
+	MOVL	ESI, dcb_netsdb[EDI]	;Get offset of the SDB
+	CMPW	pdb_etypevalue[EBX], #0 ;Do we already have a protcol?
+	JE	6$.S			;No - go on
+	PUSHL	EAX			;Yes - get rid of it
+	PUSHL	EDX
+	CALL	xossnpClrEType##
+	MOVL	EBX, dcb_netpdb[EDI]	;Restore offset of the PDB
+	CLRL	EAX			;Clear the protocol value
+	MOVL	pdb_etypevalue[EBX], EAX
+	POPL	EDX
+	POPL	EAX
+6$:	TESTL	EAX, EAX		;0 means none
+	JE	ret002.S
+	JMP	xossnpSetEType##	;Go change protocol
+.PAGE
+	.SBTTL	setsubmask - Here to set value of SUBMASK characteristic
+
+;Here to set the value of the SUBMASK device characteristic - sub-net
+;  address mask
+
+setsubmask:
+	MOVL	ESI, dcb_netpdb[EDI]
+	ORL	EAX, pdb_ipnetmask[ESI]
+	MOVL	[ESI+EBX], EAX
+	JMP	2$.S			;Go clear all default router addresses
+
+	.SBTTL	setipaddr - Here to set value of IPADDR characteristic
+
+;Here to set the value of the IPADDR device characteristic - IP address
+
+setipaddr:
+	CALL	chkaddr			;Check for valid address and get the
+					;  network address mask
+	JC	6$.S			;If error
+	MOVL	ESI, dcb_netpdb[EDI]	;Get PDB offset
+	MOVL	pdb_ipaddr[ESI], EAX	;Store new IP address
+	NOTL	ECX			;Get address mask value
+	MOVL	pdb_ipnetmask[ESI], ECX ;Store updated address masks
+	ORL	pdb_ipsubnetmask[ESI], ECX
+2$:	MOVL	EDX, pdb_ipdrthead[ESI]
+	TESTL	EDX, EDX
+	JE	6$.S
+	CLRL	EAX
+	MOVL	pdb_ipdrthead[ESI], EAX
+	MOVL	ESI, EDX
+4$:	PUSHL	dct_lnknext[ESI]
+	CALL	knlGiveQel##
+	POPL	ESI
+	TESTL	ESI, ESI
+	JNE	4$.S
+6$:	RET
+.PAGE
+	.SBTTL	getdftaddr - Here to get value of DRTnADDR or DNSnADDR characteristics
+
+;Here to get the value of the DRTnADDR or DNSnADDR device characteristics -
+;  these get the default router and DNS IP addresses
+
+getdftaddr:
+	MOVL	EAX, dct_data[ESI]	;Get the value
+	CLRL	EDX
+4$:	RET
+
+	.SBTTL	setdrtaddr - Here to set value of DRTnADDR characteristics
+
+;Here to set the value of the DRTnADDR device characteristics - these set the
+;  default router IP addresses - the address must be a local sub-net address
+
+setdrtaddr:
+	CALL	chkaddr			;Check for valid address
+	JC	4$.S			;If error	
+	MOVL	EBX, dcb_netpdb[EDI]
+	MOVL	EDX, EAX		;Local address?
+	XORL	EDX, pdb_ipaddr[EBX]
+	TESTL	EDX, pdb_ipsubnetmask[EBX]
+	JE	6$.S
+	JMP	knlBadCharV##
+
+	.SBTTL	setdnsaddr - Here to set value of DNSnADDR characteristics
+
+;Here to set the value of the DNSnADDR device characteristics - these set the
+;  domain name server IP addresses
+
+setdnsaddr:
+	CALL	chkaddr			;Check for valid address
+	JC	4$.S			;If error	
+6$:	MOVL	dct_data[ESI], EAX	;Yes - store the address
+	RET
+.PAGE
+	.SBTTL	chkaddr - Subroutine to check for valid IP address
+
+;Subroutine to check for valid IP address
+;	c{EAX} = IP address
+;	CALL	chkaddr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = Unchanged
+;	  c{ECX} = Complement of network address mask
+
+chkaddr:MOVZBL	ECX, AL			;Get address type
+	SHRL	ECX, #4t
+	TESTL	EAX, EAX		;An all 0 value is OK!
+	JE	8$.S
+	MOVZBL	ECX, nettype[ECX]
+	MOVL	EDX, EAX
+	ANDL	EDX, netchk[ECX]	;Is the network address part 0?
+6$:	JE	badcharv.S		;Yes - fail
+	CMPL	EDX, netchk[ECX]	;No - is it all 1s?
+	JE	6$.S			;Yes - fail
+	MOVL	ECX, netmask[ECX]	;No - get network mask
+	MOVL	EDX, EAX		;Is the host number part 0?
+	ANDL	EDX, ECX
+	JE	6$.S			;Yes - fail
+	CMPL	EDX, ECX		;No - is it all 1s?
+	JE	6$.S			;Yes - fail
+	CLC
+	RET
+
+;Here if value is 0 (generally, this means that the address is not to be used)
+
+8$:	NOTL	ECX			;Address mask = 0
+	RET
+
+badcharv:
+	MOVL	EAX, #ER_CHARV
+	STC
+	RET
+
+	DATA
+
+;Table with gives offset into mask tables - index by high 4 bits of the IP
+;  address
+
+nettype:.BYTE	0t		;0000 - Class A address
+	.BYTE	0t		;0001
+	.BYTE	0t		;0010
+	.BYTE	0t		;0011
+	.BYTE	0t		;0100
+	.BYTE	0t		;0101
+	.BYTE	0t		;0110
+	.BYTE	0t		;0111
+	.BYTE	4t		;1000 - Class B address
+	.BYTE	4t		;1001
+	.BYTE	4t		;1010
+	.BYTE	4t		;1011
+	.BYTE	8t		;1100 - Class C address
+	.BYTE	8t		;1101
+	.BYTE	12t		;1110 - Class E address
+	.BYTE	16t		;1111 - Class D address
+
+;Table which gives complement of network mask 
+
+	.MOD	4
+netmask:.LONG	~000000FFh	;Class A address
+	.LONG	~0000FFFFh	;Class B address
+	.LONG	~00FFFFFFh	;Class C address
+	.LONG	~0		;Class D address
+	.LONG	~0		;Class E address
+
+;Table which gives mask used for checking for valid network address
+
+netchk:	.LONG	0000007Fh	;Class A address
+	.LONG	0000FF3Fh	;Class B address
+	.LONG	00FFFF1Fh	;Class C address
+	.LONG	0		;Class D address
+	.LONG	0		;Class E address
+
+	CODE
+.PAGE
+	.SBTTL	setchksumh - Here to set value of CHKSUMH characteristic
+
+;Here to set the value of the CHKSUMH device characteristic - IP checksum
+;  handling
+
+setchksumh:
+	MOVL	EBX, #cshtbl		;Get offset of our table
+	MOVL	ECX, #CSHTSZ		;Get table size
+	CALL	knlGetDcVal2##		;Search the table
+	JC	4$.S			;If not found
+	MOVL	EBX, dcb_netpdb[EDI]	;OK - get offset of the PDB
+	MOVB	pdb_ipchksumh[EBX], AL	;Store new value
+4$:	RET				;No - finished
+
+	.SBTTL	xosipsSetYesNo - Here to set value of characteristic with value of YES or NO
+
+;Here to set value of characteristic with value of YES or NO
+
+xosipsSetYesNo:
+	MOVL	EDX, dcb_netpdb[EDI]	;Get offset of the PDB
+	CMPL	EAX, #'NO'		;Is it NO?
+	JE	8$.S			;Yes
+	CMPL	EAX, #'N'
+	JE	8$.S
+	CMPL	EAX, #'YES'		;No - is it YES?
+	JE	6$.S
+	CMPL	EAX, #'Y'
+	JNE	badcharv.S		;No
+6$:	ORB	pdb_ipsts1[EDX], BL	;Yes - set the bit
+	RET
+
+8$:	NOTB	BL			;No - clear the bit
+	ANDB	pdb_ipsts1[EDX], BL
+	RET
+.PAGE
+	.SBTTL	setsdomain - Here to set value of DOMAIN characteristic
+
+;Here to set the value of the DOMAIN device characteristic - Domain Name
+
+setdomain:
+	ADDL	EDX, dcb_netpdb[EDI]	;Get offset of string
+	CMPL	ECX, #64t		;Is the string too long?
+	JA	10$.S			;Yes
+	PUSHL	EBX			;No - convert to string to counted
+	PUSHL	ECX			;  label format
+	MOVL	EDX, dcb_netpdb[EDI]
+	ADDL	EDX, #pdb_ipdnlabel
+4$:	MOVL	ESI, EDX
+	INCL	EDX
+6$:	DECL	ECX
+	JS	14$
+	MOVB	AL, ES:[EBX]
+	CMPB	AL, #0
+	JE	12$
+	INCL	EBX
+	CMPB	AL, #'.'
+	JE	14$
+	MOVB	[EDX], AL
+	INCL	EDX
+	JMP	6$
+
+;Here if have invalid name - since we have already stored part of this bad
+;  name we just set both version of the name to null.
+
+8$:	POPL	EBX
+	POPL	ECX
+	MOVL	EDX, dcb_netpdb[EDI]
+	ADDL	EDX, #pdb_ipdname
+	MOVB	[EDX], #0
+	MOVB	pdb_ipdnlabel-pdb_ipdname[EDX], #0
+10$:	JMP	badcharv
+
+;Here at end of name
+
+12$:	MOVL	ECX, #-1
+14$:	LEAL	EAX, -1[EDX]
+	SUBL	EAX, ESI
+	JLE	8$
+	CMPL	EAX, #63t
+	JA	8$
+	MOVB	[ESI], AL
+	TESTL	ECX, ECX
+	JNS	4$
+	MOVB	[EDX], #0
+	POPL	ECX
+	POPL	EBX
+	MOVL	EDX, dcb_netpdb[EDI]
+	ADDL	EDX, #pdb_ipdname
+	TESTL	ECX, ECX		;Is the count unspecified?
+	JNE	16$.S			;No
+	MOVB	CL, #64t		;Yes - allow a maximum of 64 bytes
+16$:	JMP	knlSetSysStr##
+.PAGE
+	.SBTTL	gethddrtdc - Get head routine for DRTnADDR device characteristics
+
+;Get head routine for DRTnADDR device characteristics
+
+gethddrtdc:
+	MOVL	ESI, dcb_netpdb[EDI]	;Get offset of PDB
+	MOVL	ESI, pdb_ipdrthead[ESI] ;Get offset of first block
+	TESTL	ESI, ESI		;Set Z if none
+	RET
+
+	.SBTTL	gethddnsdc - Get head routine for DNSnADDR device characteristics
+
+;Get head routine for DNSnADDR device characteristics
+
+gethddnsdc:
+	MOVL	ESI, dcb_netpdb[EDI]	;Get offset of PDB
+	MOVL	ESI, pdb_ipdnshead[ESI]	;Get offset of first block
+	TESTL	ESI, ESI		;Set Z if none
+	RET
+
+	.SBTTL	finddrtdc - Find element routine for DRTnADDR device characteristics
+
+;Find element routine for DRTnADDR device characteristics.  If the
+;  characteristic name is of the form DRTnADDR and is not found, an entry
+;  is created with a 0 value.
+;	c{EBX,EDX} = Characteristic name
+;	c{EDI}     = Offset of DCB
+;	CALL	finddrtdc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:clr = No match
+;	  Z:set = Match found
+;	    c{ESI} = Offset of block
+
+finddrtdc:
+	PUSHL	EBX
+	ANDL	EBX, #0FFFFFFh
+	CMPL	EBX, #'DRT'
+	POPL	EBX
+	JNE	8$.S
+	CMPL	EDX, #'ADDR'
+	JNE	8$.S
+	MOVL	EAX, #pdb_ipdrthead
+	JMP	4$.S
+
+	.SBTTL	finddnsdc - Find element routine for DNSnADDR device characteristics
+
+;Find element routine for DNSnADDR device characteristics.  If the
+;  characteristic name is of the form DNSnADDR and is not found, an entry
+;  is created with a 0 value.
+;	c{EBX,EDX} = Characteristic name
+;	c{EDI}     = Offset of DCB
+;	CALL	finddnsdc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:clr = No match
+;	  Z:set = Match found
+;	    c{ESI} = Offset of block
+
+finddnsdc:
+	PUSHL	EBX
+	ANDL	EBX, #0FFFFFFh
+	CMPL	EBX, #'DNS'
+	POPL	EBX
+	JNE	8$.S
+	CMPL	EDX, #'ADDR'
+	JNE	8$.S
+	MOVL	EAX, #pdb_ipdnshead
+4$:	PUSHL	EBX
+	PUSHL	EDX
+	MOVL	temp+0, EBX
+	MOVL	temp+4, EDX
+	SHRL	EBX, #24t
+	CMPB	BL, #'1'
+	JB	6$.S
+	CMPB	BL, #'9'
+	JBE	10$.S
+6$:	POPL	EDX
+	POPL	EBX
+8$:	TESTL	ESP, ESP
+	RET
+
+;Here with port number
+
+10$:	ANDL	EBX, #0Fh
+	ADDL	EAX, dcb_netpdb[EDI]
+	MOVL	EDX, EAX
+12$:	MOVL	ESI, [EDX]
+	TESTL	ESI, ESI
+	JE	14$.S
+	CMPL	dct_ipnum[ESI], EBX	;This one?
+	JE	16$.S			;Yes - found it
+	JA	14$.S			;If past where it goes
+	LEAL	EDX, dct_lnknext[ESI]	;Advance to next block
+	JMP	12$.S
+
+;Here if need to insert a new block
+
+14$:	CALL	knlGetQel##		;Get a queue element
+	JC	16$.S			;If error
+	MOVL	dct_ipnum[ESI], EBX	;Store number
+	MOVL	EAX, temp+0		;Store name
+	MOVL	dct_name+0[ESI], EAX
+	MOVL	EAX, temp+4
+	MOVL	dct_name+4[ESI], EAX
+	MOVB	[ESI], #REP_DECB
+	MOVB	dct_flags[ESI], #DCTF$LNKELMT
+	MOVW	dct_length[ESI], #4t
+	MOVL	dct_getsub[ESI], #getdftaddr
+	MOVL	EAX, #setdrtaddr
+	MOVL	ECX, #msgdrtaddr
+	CMPB	temp+1, #'R'
+	JE	15$.S
+	ADDL	EAX, #setdnsaddr-setdrtaddr
+	ADDL	ECX, #msgdnsaddr-msgdrtaddr
+15$:	MOVL	dct_setsub[ESI], EAX
+	MOVL	dct_lnkdone[ESI], #donecdc
+	MOVL	dct_infopnt[ESI], ECX
+	CLRL	EAX
+	MOVL	dct_data[ESI], EAX	;Clear the value
+	MOVL	EAX, [EDX]		;Link the block into our list
+	MOVL	[EDX], ESI
+	MOVL	dct_lnknext[ESI], EAX
+	MOVL	dct_ipprev[ESI], EDX
+	TESTL	EAX, EAX		;Have a next block?
+	JE	16$.S			;No
+	LEAL	EDX, dct_lnknext[ESI]
+	MOVL	dct_ipprev[EAX], EDX
+	CLRL	EAX			;Set Z
+16$:	POPL	EDX
+	POPL	EBX
+18$:	RET
+
+;Subroutine called when done using an element block.  If the element has a
+;  null value, the block is discarded, otherwise nothing is done here.
+;	c{ESI} = Offset of block
+;	CALL	donecdc
+;  FS and EDX are preserved
+
+donecdc:CMPL	dct_data[ESI], #0	;Have a zero value?
+	JNE	18$.S			;No - nothing needed here
+	MOVL	EBX, dct_ipprev[ESI]	;Yes - unlink this block
+	MOVL	EAX, dct_lnknext[ESI]
+	MOVL	[EBX], EAX
+	TESTL	EAX, EAX
+	JE	20$.S
+	MOVL	dct_ipprev[EAX], EBX
+20$:	JMP	knlGiveQel##		;Give up the memory block
+.PAGE
+	.SBTTL	ipabort - Subroutine to abort all IP output
+
+;Subroutine to abort all IP output
+;	c{EDI} = Offset of PDB
+;	c{ESI} = Offset of SDB
+;	CALL	ipabort
+
+ipabort:CALL	icmpabortping#
+	RET
+.PAGE
+;Subroutine to store local port number for devinfo (stack frame must be set
+;  up before calling)
+;	c{ES:EDI} = Address of user buffer
+;	CALL	xosipsDevInfoLcl
+
+$$$=!0				;Must match definitions in calling modules!
+FRM info_left  , 4t
+FRM info_amount, 4t
+info_SIZE=!$$$
+
+xosipsDevInfoLcl:
+	MOVL	EBX, #lcllbl		;Followed by "L="
+	CALL	knlInfoStr##
+	MOVZWL	EAX, dcb_ipslclport[ESI] ;Get local port number
+	CALL	knlInfoDec##		;Store the port number
+	CMPL	dcb_ipsrmtaddr[ESI], #0 ;Have a remote address?
+	JE	4$.S			;No
+	MOVL	EBX, #rmtlbl		;Yes
+	CLRL	ECX
+	CALL	knlInfoStr##
+	MOVL	EAX, dcb_ipsrmtaddr[ESI]
+	MOVZWL	EDX, dcb_ipsrmtport[ESI]
+	XCHGB	DL, DH
+	CALL	xosipsInfoAddr
+4$:	DECL	info_left[EBP]		;Have room for a null?
+	JS	6$.S			;No
+	IFFAULT	knlRtnAdrErLv##		;Yes - store one
+	MOVB	ES:[EDI], #0
+6$:	MOVL	EAX, info_amount[EBP]
+	LEAVE
+	RET
+
+	DATA
+	.MOD	4
+lcllbl:	.ASCIZ	"L="
+rmtlbl:	.ASCIZ	" R="
+
+	CODE
+.PAGE
+;Subroutine to store network address into the information buffer
+;	c{EAX}    = IP address
+;	c{EDX}    = Port number
+;	c{ES:EDI} = Buffer pointer
+;	CALL	xosipsInfoAddr
+
+xosipsInfoAddr::
+	MOVL	ECX, #4t
+	PUSHL	EDX
+	PUSHL	EAX
+14$:	MOVZBL	EAX, [ESP]
+	RORL	[ESP], #8t
+	CALL	knlInfoDec##
+	MOVB	AL, #'.'
+	CALL	knlInfoChr##
+	LOOP	ECX, 14$
+	POPL	EAX
+	POPL	EAX			;Fall into knlInfoDec
+	JMP	knlInfoDec##
+.PAGE
+	.SBTTL	ipschk - Device check routine for IPS class devices
+
+;Device check routine for IPS class devices
+;	c{SS:EBX} = Address of device name (16 characters)
+;	CALL	ipschk
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:clr = Not an IPS class device
+;	  Z:set = IPS class device
+;	    c{EDI} = Offset of DCB
+;  EBX and ESI are preserved
+
+ipschk:	MOVL	EAX, SS:[EBX]
+	ANDL	EAX, #0FFFFFFh
+	CMPL	EAX, #'IPS'		;Is this IPS*?
+	JNE	4$.S			;No
+	MOVL	EDI, xosipsPdbHead	;Yes - get offset first IPS PDB
+	LEAL	ECX, 3[EBX]		;Get offset of 1st unit number character
+	MOVL	EDX, #DS$DUPLEX		;Get description bits
+	CALL	xosipsFindDev		;Find matching network device
+	JC	2$.S			;If error
+	JNE	2$.S			;Or if not a match
+	MOVL	dcb_sdisp[EDI], #ipssvcdsp ;Store offset of SVC dispatch table
+	MOVL	dcb_devchar[EDI], #ipsdctbl ;Use our device characteristics
+	CLRL	EAX			;Set Z
+2$:	RET				;And return
+
+4$:	CLC
+	RET
+.PAGE
+	.SBTTL	xosipsGetPort - Subroutine to assign transport level port
+
+;Subroutine to assign a specified transport level port number - this routine
+;  will fail if the specified port is in use and duplicates are not enabled
+;	c{ECX} = Desired port number, bit 31 set if should increment number
+;		   if not acceptable, bit 30 set if duplicate number OK (bit 30
+;		   is tested first)
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGetPort
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c[CX] = Port number stored in dcb_ipslclport
+
+xosipsGetPort::
+	CMPL	dcb_ipshashnext[EDI], #-1 ;In a hash list now?
+	JNE	10$			;Yes - big problem!
+	CMPW	dcb_ipslclport[EDI], CX ;Really changing it?
+	JE	18$			;No - nothing needed here!
+	MOVZWL	EAX, dcb_ipslclport[EDI] ;No
+	PUSHL	EAX			;Save current port (if any)
+	TESTL	EAX, EAX		;Have a current port?
+	JE	2$			;No
+	PUSHL	ECX			;Yes
+	CALL	xosipsGivePort		;Give up current port
+	POPL	ECX
+2$:	CMPL	dcb_ipsportnext[EDI], #-1
+	JNE	8$
+	MOVL	EBX, dcb_ipstpdb[EDI]	;Point to port list head pointer
+	ADDL	EBX, #tpdb_fport
+4$:	MOVL	EDX, [EBX]		;Get next DCB in port list
+	TESTL	EDX, EDX
+	JE	20$
+	CMPW	dcb_ipslclport[EDX], CX ;Check port number
+	JE	12$			;Same
+	JA	20$			;OK - go insert it here
+6$:	LEAL	EBX, dcb_ipsportnext[EDX] ;Not yet - advance to next DCB
+	JMP	4$
+
+8$:	CRASH	BDPL			;[BaD Port List]
+
+10$:	CRASH	INHL			;[IN Hash List]
+
+;Here with duplicate port number
+
+12$:	BTL	ECX, #30t		;Is a duplicate number OK?
+	JC	20$			;Yes - go insert our DCB into the list
+	TESTL	ECX, ECX		;No - should we increment it?
+	JNS	14$			;No - fail!
+	INCW	CX			;Yes - bump the port number
+	JNE	6$			;Continue if can
+14$:	POPL	ECX			;Restore previous port number
+	JREGZ	ECX, 16$		;If none
+	CALL	xosipsGetPort		;Use previous port (this should not
+					;  fail!)
+16$:	MOVL	EAX, #ER_NPRIU		;Get error code
+	STC
+18$:	RET
+
+;Here with place to insert this DCB in the port list
+
+20$:	POPL	EAX			;Discard old port number
+	MOVW	dcb_ipslclport[EDI], CX ;Store port number
+	MOVL	[EBX], EDI		;Insert this DCB into the port list
+	MOVL	dcb_ipsportnext[EDI], EDX
+	CLC
+	RET
+.PAGE
+	.SBTTL	xosipsGivePort - Subroutine to give up a transport level port number
+
+;Subroutine to give a transport level port number
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsGivePort
+
+xosipsGivePort::
+	CMPL	dcb_ipshashnext[EDI], #-1 ;In a hash list now?
+	JNE	4$			;Yes - big problem!
+	MOVL	EBX, dcb_ipstpdb[EDI]	;No - point to port list head pointer
+	ADDL	EBX, #tpdb_fport
+2$:	MOVL	EDX, [EBX]		;Get next DCB in port list
+	TESTL	EDX, EDX
+	JE	6$			;No!
+	CMPL	EDX, EDI		;This one?
+	JE	10$			;Yes
+	LEAL	EBX, dcb_ipsportnext[EDX] ;No - advance to next
+	JMP	2$			;Continue
+
+4$:	CRASH	INHL			[IN Hash List]
+
+6$:	CRASH	NIPL			;[Not In Port List]
+
+;Here with our dcb found in the list
+
+10$:	MOVL	EAX, dcb_ipsportnext[EDI] ;Remove DCB from the list
+	MOVL	[EBX], EAX
+	MOVW	dcb_ipslclport[EDI], #0 ;Clear the port number
+	MOVL	dcb_ipsportnext[EDI], #-1
+	RET				;Finished
+.PAGE
+	.SBTTL	xosipsFindDev - Subroutine to find IPS network device
+
+;Subroutine to find IPS network device
+;	c{SS:EBX} = Address of device name
+;	c{SS:ECX} = Address of start of unit number in device name
+;	c{EDX}    = Description bits
+;	c{EDI}    = Offset of first data block (PDB, TPDB, or DPDB) for
+;		       device type
+;	CALL	xosipsFindDev
+;	C:set = Error (match found)
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:set = Match found
+;	    c{EDI} = Offset of DCB
+;	  Z:clr = Not found
+;  EBX and ESI are preserved
+
+8$:	POPL	EDX
+	RET
+
+xosipsFindDev:
+	PUSHL	EDX
+	CALL	xosnetSrchBlock##	;Search for the DPDB
+	JNE	8$.S			;If not found
+	POPL	EDX
+	PUSHL	EBX			;Save offset of device name
+	PUSHL	ESI
+	PUSHL	EDI			;Save offset of the DPDB
+	PUSHL	SS:12t[EBX]		;Device name
+	PUSHL	SS:8[EBX]
+	PUSHL	SS:4[EBX]
+	PUSHL	SS:[EBX]
+	MOVZBL	EAX, pdb_unit[EDI]	;Primary unit number
+	PUSHL	EAX
+	PUSHL	#0			;Secondary unit number
+	PUSHL	dpdb_dcbsizex[EDI]	;Size index
+	PUSHL	dpdb_ccb[EDI]		;Offset of CCB
+	MOVL	ESI, dpdb_pdb[EDI]
+	PUSHL	pdb_idb[ESI]		;Offset of IDB
+	PUSHL	EDX			;Description bits
+	CALL	xosnetMakeDcb##		;Get a network DCB
+	POPL	EBX
+	JC	22$.S			;If error
+	CALL	xosipsSetUpDcb
+22$:	POPL	ESI
+	POPL	EBX			;Restore offset of device name
+	RET				;And return
+.PAGE
+	.SBTTL	xosipsSetUpDcb - Subroutine to finish creating an IPS family DCB
+
+;Subroutine to finish creating an IPS family DCB
+;	c{EBX} = Offset of DPDB, TPDB, or PDB
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetUpDcb
+;	C:clr, Z:set always
+
+xosipsSetUpDcb:
+	PUSHL	EBX
+	CMPL	dpdb_label[EBX], #'DPDB' ;Is this a DPDB?
+	JNE	2$.S			;No
+	MOVL	dcb_ipsdpdb[EDI], EBX	;Yes - store offset of DPDB in the DCB
+	MOVL	EBX, dpdb_tpdb[EBX]	;Get offset of the TPDB
+2$:	CMPL	tpdb_label[EBX], #'TPDB' ;Is this a TPDB?
+	JNE	4$.S			;No
+	MOVL	dcb_ipstpdb[EDI], EBX	;Yes - store offset of TPDB in the DCB
+4$:	POPL	EBX
+	CMPL	dpdb_fdcb[EBX], #0	;Is this first DCB for the DPDB, TPDB,
+					;  or PDB?
+	JE	6$.S			;Yes
+	MOVL	EAX, dcb_next[EDI]	;Maybe
+	CMPL	dpdb_fdcb[EBX], EAX
+	JNE	8$.S			;No
+6$:	MOVL	dpdb_fdcb[EBX], EDI	;Yes
+8$:	MOVL	EBX, tpdb_pdb[EBX]	;Store offset of the PDB
+	MOVL	dcb_netpdb[EDI], EBX
+	MOVL	EAX, pdb_sdb[EBX]	;Store offset of the SDB
+	MOVL	dcb_netsdb[EDI], EAX
+	DECL	dcb_ipshashnext[EDI]	;Indicate not in a hash list
+	DECL	dcb_ipsportnext[EDI]
+
+.IF NE 0
+	LEAL	EBX, dcb_name+4[EDI]	;Find network letter in name
+10$:	CMPB	[EBX], #'0'
+	JB	12$.S
+	CMPB	[EBX], #'9'
+	JA	14$.S
+	INCL	EBX
+	JMP	10$.S
+
+;Here if no network letter specified - insert it
+
+12$:	MOVL	EAX, dcb_netpdb[EDI]
+	MOVB	AL, pdb_netnum[EAX]
+	ADDB	AL, #'A'-1
+	MOVB	[EBX], AL
+14$:	INCL	EBX
+	MOVZWL	EAX, dcb_sunit[EDI]	;Put sub-unit number into the name
+	TESTL	EAX, EAX		;  unless 0
+	JE	16$.S
+	CALL	knlPutDecNmbr##
+.ENDC
+
+	CLRL	EAX			;Set Z
+16$:	RET
+.PAGE
+xosipsGiveDcb::
+	MOVL	EBX, dcb_ipsdpdb[EDI]	;Have a DPDB?
+	TESTL	EBX, EBX
+	JNE	4$.S			;Yes
+	MOVL	EBX, dcb_ipstpdb[EDI]	;No - have a TPDB?
+	TESTL	EBX, EBX
+	JNE	4$.S			;Yes
+	MOVL	EBX, dcb_netpdb[EDI]	;No - have a PDB?
+	TESTL	EBX, EBX
+	JE	8$.S			;No
+4$:	CMPL	dpdb_fdcb[EBX], EDI	;Yes - is this the first DCB?
+	JNE	8$.S			;No
+	MOVL	EDX, dcb_next[EDI]	;Yes - get offset of next DCB
+	TESTL	EDX, EDX
+	JE	6$.S			;If none
+	MOVB	AL, dcb_punit[EDI]	;Different unit?
+	CMPB	dcb_punit[EDX], AL
+	JE	6$.S			;No
+	CLRL	EDX			;Yes
+6$:	MOVL	dpdb_fdcb[EBX], EDX	;Update offset of first DCB
+8$:	JMP	xosnetGiveDcb##
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry
+
+ipsopen:CMPL	SS:xffParm##, #0
+	JE	4$.S
+	MOVL	EBX, #ipsopnparms	;Process device parameters
+	MOVL	ECX, #knlComDPParms##
+	LFSL	EDX, SS:xffParm##
+	JMP	knlProcDevParm##
+
+4$:	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	sd_inpblock - Input block
+
+;Here for the input block entry
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	ipsinpblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Amount transfered
+
+ipsinpblk:
+	PUSHL	ESI
+	CALL	sysIoQabLock##		;Lock the QAB
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	PUSHL	ESI
+	CALL	sysIoReadLock##		;Lock the buffer pages
+	JS	2$			;If error
+	MOVB	iorb_queue[ESI], #dcb_inpframe
+	MOVL	iorb_routine[ESI], #ipsinpblk1
+	JMP	knlXfQueue##		;Switch to extended fork context
+
+2$:	TOFORK
+	RET
+
+;Here in extended fork context
+
+ipsinpblk1:
+	CMPL	SS:xffParm##+0, #0
+	JE	4$.S
+	LFSL	EDX, SS:xffParm##
+	MOVL	EBX, #ipsioparms	;Process parameters
+	MOVL	ECX, #ipsdpparms
+	CALL	knlProcDevParm##
+	JC	6$.S			;If error
+4$:	CMPL	SS:xffCount##, #0	;Really trying to do input?
+	JNE	knlIllInp##		;Yes - fail! (Not implemented yet!)
+	CLRL	EAX
+6$:	CLRL	ECX
+	MOVL	EBX, #QSTS$DONE
+	RET
+.PAGE
+	.SBTTL	sd_outblock - Output block
+
+;Here for the output block entry
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	ipsoutblk
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Amount transfered
+
+ipsoutblk:
+	PUSHL	ESI
+	CALL	sysIoQabLock##		;Lock the QAB
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	PUSHL	ESI
+	CALL	sysIoWriteLock##	;Lock the buffer pages
+	TESTL	EAX, EAX
+	JS	2$			;If error
+	MOVB	iorb_queue[ESI], #dcb_outframe
+	MOVL	iorb_routine[ESI], #ipsoutblk1
+	JMP	knlXfQueue##		;Switch to extended fork context
+
+2$:	TOFORK
+	RET
+
+;Here in extended fork context
+
+ipsoutblk1:
+	CMPL	SS:xffParm##+0, #0
+	JE	4$.S
+	LFSL	EDX, SS:xffParm##
+	MOVL	EBX, #ipsioparms	;Process parameters
+	MOVL	ECX, #ipsdpparms
+	CALL	knlProcDevParm##
+	JC	6$.S			;If error
+4$:	CMPL	SS:xffCount##, #0	;Really trying to do input?
+	JNE	knlIllInp##		;Yes - fail! (Not implemented yet!)
+	CLRL	EAX
+6$:	CLRL	ECX
+	MOVL	EBX, #QSTS$DONE
+	RET
+.PAGE
+	.SBTTL	ipsspecial - Special device function for IPS
+
+;Here for the QFNC_SPECIAL queued IO function for IPS devices - Do special
+;  device functions
+;  QAB fields used:
+;	qab_option:	Low 8 bits contain sub-function, high 24 bits may be
+;			  used to modify sub-function
+;	qab_count:	Length of buffer or may be used to pass single 32 bit
+;			  argument value
+;	qab_buffer1:	Pointer to argument buffer
+;  Contents returned in qab_amount depends on function
+
+ipsspecial:
+	MOVZBL	EDX, iorb_option[ESI]	;Get function
+	CMPL	EDX, #IPSSFMAX		;Legal function?
+	JAE	6$			;Yes
+	JMPIL	ipssfdsp[EDX*4]		;Dispatch on the function
+
+;Here if illegal function
+
+6$:	TOFORK
+	CLRL	ECX
+	MOVL	EBX, #QSTS$DONE
+	MOVL	EAX, #ER_IFDEV
+	RET
+
+;Dispatch table for special device functions for IPS
+
+	DATA
+
+ipssfdsp:
+	.LONG	6$		;		 =  0. - Illegal
+	.LONG	dnsfindipa#	;IPSSF_FINDIPA   =  1. - Map domain name to IP
+				;			   addresses
+	.LONG	dnsfindcname#	;IPSSF_FINDCNAME =  2. - Map domain name to
+				;			   mail canonical name
+	.LONG	dnsfindmail#	;IPSSF_FINDMAIL  =  3. - Map domain name to
+				;			   mail names
+	.LONG	dnsfindptr#	;IPSSF_FINDPTR	 =  4. - Map domain name to
+				;			   pointer name
+	.LONG	6$		;		 =  5. - Illegal
+	.LONG	6$		;		 =  6. - Illegal
+	.LONG	dnsdump#	;IPSSF_DUMP	 =  7. - Dump DNS cache
+	.LONG	dnsinitcache#	;IPSSF_INITCACHE =  8. - Initialize DNS cache
+	.LONG	dnscleardb#	;IPSSF_CLRCACHE  =  9. - Clear DNS cache
+	.LONG	dnsaddipa#	;IPSSF_ADDIPA    = 10. - Add IP address entry
+				;			   to cache
+	.LONG	dnsaddcname#	;IPSSF_ADDCNAME  = 11. - Add canonical name
+				;			   entry to cache
+	.LONG	dnsaddmail#	;IPSSF_ADDMAIL   = 12. - Add mail name entry
+				;			   to cache
+	.LONG	dnsaddptr#	;IPSSF_ADDPTR    = 13. - Add pointer entry to
+				;			   cache
+	.LONG	dnswakeipa#	;IPSSF_WAKEIPA   = 14. - Wake up waiters for
+				;			   IP address
+	.LONG	dnserror#	;IPSSF_ERROR     = 15. - Set error for domain
+				;			   name
+	.LONG	dnsremove#	;IPSSF_REMOVE    = 16. - Remove entry from cache
+IPSSFMAX=!{$-ipssfdsp}/4
+
+	CODE
+.PAGE
+	.SBTTL	rtuse - Here for the IOPAR_IPS_RTUSE IO parameter
+
+;Here to get the value of the IOPAR_IPS_RTUSE IO parameter - this returns the
+;  current number of routing table entries (this is the same as the RTUSE
+;  device characteristic)
+
+	DPARMHDR  GET, DECV
+rtuse:	MOVL	EDX, dcb_netpdb[EDI]	;Get offset of PDB
+	MOVL	EAX, pdb_iprtinuse[EDX]	;Get number of routing table entries
+	JMP	knlStrParm4##
+.PAGE
+	.SBTTL	rtdata - Here for the IOPAR_IPS_RTDATA IO parameter
+
+;Here to get the value of the IOPAR_IPS_RTDATA IO parameter - this returns the
+;  contents of the routing table as structured binary data
+
+$$$=!0
+FRM grtd_avail, 4t
+FRM grtd_num  , 4t
+FRM grtd_size , 8t		;Offset of word to receive size
+grtd_SIZE=!$$$
+
+	DPARMHDR  GET, DATAS
+rtdata:	ENTER	grtd_SIZE, 0
+	MOVL	grtd_avail[EBP], ECX	;Store space available
+	MOVL	grtd_size+0[EBP], EDX	;Store offset of word to receive size
+	MOVL	grtd_size+4[EBP], FS
+	CLRL	EAX
+	MOVL	grtd_num[EBP], EAX	;Clear amount stored
+	MOVL	EDX, dcb_netpdb[EDI]	;Get offset of PDB
+	MOVL	EDI, EBX		;Get buffer offset in right register
+	MOVL	ECX, pdb_iprthead[EDX]	;Get offset of first routing table entry
+	TESTL	ECX, ECX
+	JE	20$			;If none at all
+4$:	MOVZBL	EAX, rt_type[ECX]	;Get routing table entry type
+	CMPB	AL, #RTT_PING		;Is it really a routing table entry?
+	JAE	16$.S			;No
+	SUBL	grtd_avail[EBP], #20t	;Yes - do we have room for it?
+	JLE	22$			;No - fail!
+	MOVB	AH, #0			;Yes - get SNAP device index (obsolete)
+	STOSL	[EDI]			;Store type
+	MOVL	EAX, rt_ipaddr[ECX]	;Store IP address
+	STOSL	[EDI]
+	MOVL	EAX, rt_t2lcnt[ECX]	;Store time-to-live value
+	STOSL	[EDI]
+	MOVB	AL, rt_type[ECX]	;Get entry type
+	CMPB	AL, #RTT_LOCAL
+	JE	6$.S
+	CMPB	AL, #RTT_ROUTER
+	JNE	8$.S
+6$:	MOVL	EAX, rt_hwaddr+0[ECX]
+	STOSL	[EDI]
+	MOVL	EAX, rt_hwaddr+4[ECX]
+	JMP	14$.S
+
+8$:	CMPB	AL, #RTT_FOREIGN
+	JE	10$.S
+	CMPB	AL, #RTT_FPENDING
+	JE	10$.S
+	CMPB	AL, #RTT_DPENDING
+	JNE	12$.S
+10$:	MOVL	EAX, rt_router[ECX]	;Is there an assoicated router?
+	TESTL	EAX, EAX
+	JE	12$.S			;No
+	MOVL	EAX, rt_ipaddr[EAX]	;Yes - get its IP address
+	STOSL	[EDI]
+	CLRL	EAX
+	JMP	14$.S
+
+12$:	CLRL	EAX
+	STOSL	[EDI]
+14$:	STOSL	[EDI]
+	ADDL	grtd_num[EBP], #20t	;Count it
+16$:	MOVL	ECX, rt_next[ECX]	;Advance to next entry
+	TESTL	ECX, ECX
+	JNE	4$			;Continue if more to do
+	MOVL	ECX, grtd_num[EBP]	;Finished - get size
+20$:	LESL	EDX, grtd_size[EBP]	;Get address for size
+	MOVW	ES:[EDX], CX		;Store size
+	LEAVE
+	RET
+
+22$:	MOVL	EAX, #ER_DATTR
+	LEAVE
+	STC
+	RET
+.PAGE
+	.SBTTL	xosipsParseAddress - Subroutine to parse IP address
+
+;Subroutine to parse IP address string. The subroutine handles IP addresses
+;  and domain names with an optional port specification. Must be called in
+;  extended fork context.
+;	c{ES:EBX} = Address of address string
+;	CALL	xosipsParseAddress
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDX} = IP address
+;	  c{ECX} = Remote port number
+
+;The address string has the following formats: ({} indicates optional items)
+;	nn{.nn{.nn{.nn}}}{|port}
+;	[nn{.nn{.nn{.nn}}}]{|port}
+;	dddd{.dddd{.dddd{...}}}{|port}
+;  Where nn is a decimal between 0 and 255, dddd is a domain name element, and
+;    port is a port number between 1 and 65535.
+;  Note that the first format is obsolete and should not be used in new
+;    software!
+
+;Differeniating between DNS names and non-delimited IP addresses is difficult
+;  since DNS names can begin with a digit and in theory can contain only
+;  digits. Fortunately, in practice, all top level domains are alpha, so
+;  we should always see some alpha characters in a domain name.  We
+;  differentiate between hex IP address and domain names by assuming anything
+;  which contains both a period and a dash is a domain name.
+
+$$$=!0
+FRM pa_string , 4t
+FRM pa_delimit, 1t		;TRUE if delimited IP address
+FRM pa_stopper, 1t		;Valid stopper character
+FRM pa_period , 1t
+FRM           , 1t
+FRM pa_radix  , 4t
+pa_SIZE=!$$$
+
+xosipsParseAddress:
+	ENTER	pa_SIZE, 0
+	MOVB	pa_stopper[EBP], AL
+	MOVL	pa_string[EBP], EBX
+
+;First, determine what we have
+
+	MOVL	pa_radix[EBP], #10t ;Assume radix is 10
+	MOVB	pa_period[EBP], #0 ;No period seen yet
+	MOVB	AL, ES:[EBX]
+	CMPB	AL, #'['	;Delimited IP address?
+	JE	14$		;Yes
+2$:	CMPB	AL, pa_stopper[EBP] ;Stopper character?
+	JE	18$		;Yes - assume have non-delimited IP address
+	CMPB	AL, #'|'
+	JE	18$
+	CMPB	AL, #0		;End of string?
+	JE	26$		;Yes - error
+	CMPB	AL, #'.'	;No - period?
+	JNE	4$		;No
+	MOVB	pa_period[EBP], #1 ;Yes
+	CMPB	pa_radix[EBP], #16t ;Already have a dash?
+	JNE	10$		;No
+	JMP	12$		;Yes - must be a domain name
+
+4$:	CMPB	AL, #'-'	;No - dash?
+	JNE	6$
+	MOVB	pa_radix[EBP], #16t ;Yes
+6$:	CMPB	AL, #'0'	;Digit?
+	JB	12$		;No
+	CMPB	AL, #'9'	;Maybe
+	JBE	10$		;Yes
+	CMPB	pa_period[EBP], #0 ;Aleary seen a period?
+	JNE	12$		;Yes - must be a domain name
+	CMPB	AL, #'a'	;No - is it a hex digit?
+	JB	8$
+	SUBB	AL, #20h
+8$:	CMPB	AL, #'A'
+	JB	12$
+	CMPB	AL, #'F'
+	JA	12$
+10$:	INCL	EBX		;Here if can be IP address or domain name
+	MOVB	AL, ES:[EBX]	;Continue scanning
+	JMP	2$
+
+;Here with character that can only be in a domain name
+
+12$:	MOVL	EAX, #ER_NNSNA
+	STC
+	LEAVE
+	RET
+
+;Here if have a delimited IP address - scan until we find a character that
+;  determines the radix
+
+14$:	MOVB	pa_delimit[EBP], #1
+	INCL	pa_string[EBP]
+16$:	INCL	EBX
+	MOVB	AL, ES:[EBX]
+	CMPB	AL, #0
+	JE	20$
+	CMPB	AL, #'.'
+	JE	20$
+	CMPB	AL, #']'
+	JE	20$
+	CMPB	AL, #'-'
+	JNE	16$
+	MOVB	pa_radix[EBP], #16t
+	JMP	20$
+
+;Here at end of string without finding any domain name characters - assume
+;  its a non-delimited IP address
+
+18$:	MOVB	pa_delimit[EBP], #0
+20$:	MOVL	EBX, pa_string[EBP]
+	CLRL	EDX
+	CLRL	ECX
+	MOVB	CL, #4			;IP address may contain up to 4
+22$:	CALL	getval			;  fields
+	RORL	EDX, #8
+	CMPB	AL, #'.'		;No - is it the separator?
+	JE	24$
+	CMPB	AL, #'-'
+	JNE	30$
+24$:	DECB	CL
+	JNE	22$			;Yes - continue
+26$:	MOVL	EAX, #ER_NILAD
+	STC
+	LEAVE
+	RET
+
+;Here at end of IP address
+
+30$:	CMPB	pa_delimit[EBP], #0	;Delimited IP address?
+	JE	32$			;No
+	CMPB	AL, #']'		;Yes
+	JNE	24$
+	MOVB	AL, ES:[EBX]		;OK - get next character
+	INCL	EBX
+32$:	CLRL	ECX
+	CMPB	AL, #'|'		;Port number next?
+	JNE	40$			;No
+34$:	MOVB	AL, ES:[EBX]		;Get character
+	INCL	EBX			;Bump pointer
+	CMPB	AL, #'0'		;Is it a digit?
+	JB	40$			;No
+	CMPB	AL, #'9'
+	JA	40$
+	ANDL	EAX, #0Fh		;Yes - get value
+	IMULL	ECX, #10t		;And add into value
+	ADDL	ECX, EAX
+	JMP	34$
+
+;Here at end of port number
+
+40$:	CMPB	AL, pa_stopper[EBP]	;End of string?
+	JNE	24$			;No - error
+	TESTL	ECX, #0FFFF0000h	;Yes - valid port number value?
+	JNE	26$			;No
+	LEAVE
+	RET				;Finished
+
+;Subroutine to get value of next IP address field
+;	c{EBX} = Offset of address string
+;	CALL	getval
+;	c(AL)  = Stopper character
+;	c(BL)  = Value
+;	c{EBX} = Offset of next character in address string
+
+getval:	MOVB	AL, #0
+50$:	MOVB	DL, ES:[EBX]		;Get character
+	INCL	EBX			;Bump pointer
+	CMPB	DL, #'0'		;Is it a digit?
+	JB	56$			;No
+	CMPB	DL, #'9'
+	JBE	54$
+	CMPL	pa_radix[EBP], #16t
+	JNE	56$
+	CMPB	DL, #'a'
+	JB	52$
+	SUBB	DL, #20h
+52$:	CMPB	DL, #'A'
+	JB	56$
+	CMPB	DL, #'F'
+	JA	56$
+	ADDB	DL, #9
+54$:	ANDB	DL, #0Fh		;Yes - get value
+	MULB	pa_radix[EBP]		;And add into value for field
+	ADDB	AL, DL
+	JMP	50$
+
+;Here if next character is not a digit
+
+56$:	XCHGB	AL, DL			;Get things in right registers
+	RET				;Return
+.PAGE
+	.SBTTL	xosipsStoreAddress - Subroutine to store IP address
+
+;Subroutine to store IP address string. The string stored can always be used
+;  as input to xosipsParseAddress. It has the format:
+;	[nn.nn.nn.nn]|port
+;  Where nn is a decimal between 0 and 255, and port is a port number between
+;    1 and 65535.
+;	c{ES:EBX} = Address of buffer
+;	c{ECX}    = Length of buffer
+;	c{EAX}    = IP address
+;	c{EDX}    = Port number
+;	CALL	xosipsParseAddress
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	c{ECX} = Length of string stored
+
+$$$=!0
+FRM sa_left, 4t
+FRM sa_size, 4t
+FRM sa_addr, 4t
+FRM sa_port, 4t
+sa_SIZE=!$$$
+
+xosipsStoreAddress:
+	DECL	ECX
+	JS	6$.S
+	ENTER	sa_SIZE, 0
+	MOVL	sa_left[EBP], ECX
+	MOVL	sa_size[EBP], ECX
+	MOVL	sa_addr[EBP], EAX
+	MOVL	sa_port[EBP], EDX
+	MOVB	AL, #'['
+	CALL	storechr
+	MOVZBL	EAX, sa_addr+0[EBP]
+	CALL	storedec
+	MOVB	AL, #'.'
+	CALL	storechr
+	MOVZBL	EAX, sa_addr+1[EBP]
+	CALL	storedec
+	MOVB	AL, #'.'
+	CALL	storechr
+	MOVZBL	EAX, sa_addr+2[EBP]
+	CALL	storedec
+	MOVB	AL, #'.'
+	CALL	storechr
+	MOVZBL	EAX, sa_addr+3[EBP]
+	CALL	storedec
+	MOVB	AL, #']'
+	CALL	storechr
+	MOVB	AL, #'|'
+	CALL	storechr
+	MOVL	EAX, sa_port[EBP]
+	CALL	storechr
+4$:	MOVL	ES:[EBX], #0
+	MOVL	EAX, sa_size[EBP]
+	SUBL	EAX, ECX
+	LEAVE
+6$:	RET
+
+
+storedec:
+	CLRL	EDX
+	DIVL	lit10
+	PUSHL	EDX
+	ORL	EAX, EAX
+	JE	8$.S
+	CALL	storedec
+8$:	POPL	EAX
+	ANDB	AL, #0Fh
+	ADDB	AL, #'0'
+storechr:
+	JREGZ	ECX, 4$
+	DECL	ECX
+	MOVB	ES:[EBX], AL
+	RET	
+.PAGE
+	.SBTTL	ipsrcv - Subroutine to process received IP packet
+
+2$:	POPL	ECX
+	POPL	ESI
+4$:	INCL	pdb_ipcntpsltmn[EDI]
+	JMP	7$.S
+
+6$:	POPL	ECX
+7$:	INCL	pdb_ipcntbadhdr[EDI]
+8$:	CALL	xosnetGiveBufr##
+	RET
+
+10$:	POPL	ECX
+	INCL	pdb_ipcntchksum[EDI]
+	JMP	8$.S
+
+;Subroutine to process received IP packet
+;	c{EBX} = Offset of packet buffer
+;	c{EDI} = Offset of PDB
+;	c{ESI} = Offset of SDB
+;	CALL	ipsrcv
+
+ipsrcv:	CMPW	npb_magic[EBX], #NPB_MAGIC ;Is this really a network buffer?
+	JE	12$.S			;Yes
+	CRASH	NANB			[Not A Network Buffer]
+
+12$:	MOVZBL	ECX, npb_npofs[EBX]
+	NEGL	ECX
+	ADDL	ECX, npb_count[EBX]	;Get length of IP part of packet
+	CMPL	ECX, #20t		;Is packet big enough for an IP header?
+	JL	4$.S			;No - ignore it!
+	MOVZBL	EAX, npb_npofs[EBX]	;Yes - get offset of start of IP header
+	LEAL	EDX, [EBX+EAX]
+	PUSHL	ECX
+	MOVB	AL, ip_vershlen[EDX]	;Get IP version number
+	MOVB	CL, AL
+	ANDB	AL, #0F0h
+	CMPB	AL, #40h		;Is it right?
+	JNE	6$.S			;No - ignore the packet
+	ANDL	ECX, #0Fh		;Get number of longs in the header
+	IMULL	EAX, ECX, #4t		;Get number of bytes in the header
+	CMPL	[ESP], EAX		;Is the packet this long?
+	JS	2$.S			;No - ignore it!
+	ADDB	AL, npb_npofs[EBX]	;Yes - store offset of start of
+	MOVB	npb_tpofs[EBX], AL	;  transport part of packet
+	TESTB	pdb_ipchksumh[EDI], #PCSH$CHK ;Should we check the checksum
+					      ;  value?
+	JE	20$.S			;No - go on
+	PUSHL	ESI			;Yes
+	LEAL	ESI, 16t[EDX]		;Yes
+	CLD
+	LODSL	[ESI]			;Calculate checksum for first 5 longs
+	ADDL	EAX, -20t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -16t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -12t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -8[ESI]
+	ADCL	EAX, #0
+	SUBL	ECX, #5			;Any more to do?
+	JLE	16$.S			;No
+14$:	ADDL	EAX, [ESI]		;Yes
+	ADCL	EAX, #0
+	ADDL	ESI, #4
+	LOOP	ECX, 14$
+16$:	MOVL	ECX, EAX		;Merge halves
+	SHRL	ECX, #16t
+	ADDW	AX, CX
+	ADCW	AX, #0
+	POPL	ESI
+	INCW	AX			;Is it right?
+	JNE	10$			;No
+20$:	POPL	ECX
+	MOVZWL	EAX, ip_tlength[EDX]	;Yes - Get total IP length
+	XCHGB	AL, AH
+	CMPL	EAX, ECX		;Is this packet big enough for this?
+	JA	22$.S			;No - ignore this packet
+	MOVL	ECX, EAX		;Yes - use this count now
+	MOVZBL	EAX, npb_npofs[EBX]	;Add back in the length before the IP
+	ADDL	ECX, EAX		;  header
+	MOVL	npb_count[EBX], ECX
+	TESTW	ip_fragment[EDX], #0FF3Fh ;Is this a fragmented packet?
+	JE	rcvrdy			;No - go process the packet
+	JMP	havfrag.S		;Yes - go handle that
+
+;Here if packet size is less than the data length
+
+22$:	INCL	pdb_ipcntpsltdl[EDI]
+	CALL	xosnetGiveBufr##
+	RET
+.PAGE
+;Here if we have part of a fragmented packet.  We first check our current
+;  fragment list to see if we are already receiving this packet.  If so, we
+;  check to see if this is a duplicate and, if not, link it to the list for
+;  the packet.  If we are not receiving this packet, we start receiving it.
+
+;Format and management of the fragmented packet list:
+;  A list of fragmented packets is keep with head pointer pdb_ipfraghead and
+;  link pointer npb_next.  For each fragmented packet, a sub-list of fragments
+;  is keep with head pointer npb_link in the first fragment and link pointer
+;  npb_link in each additional fragment.  Note that all fragments are actually
+;  complete packets.  The list is ordered by fragment offset.  A timer is
+;  maintained using npb_fragtmr in the first fragment as the counter.  The
+;  timer is started when the first fragment for a packet is received.  If all
+;  fragments have not been received before it times out, the fragments that
+;  have been received are discarded.  The fragment offset, total IP packet
+;  length, IP source address, and the packet ID value are copied to fixed
+;  locations in the packet header for each fragment to make searching the
+;  fragment list quicker.  When all fragments for a packet have been received,
+;  the original packet is reconstructed and processed.
+
+;	c{ECX} = Total size of packet (including ALL headers) according to the
+;		   IP total length
+;	c{EDX} = Offset of start of IP header
+
+havfrag:INCL	pdb_ipcntnumfrag[EDI]	;Count the fragment
+	MOVZWL	EAX, ip_fragment[EDX]	;Get fragment flags and offset
+	XCHGB	AL, AH			;Fix up the byte order
+	SHLL	EAX, #3t		;Times 8 gives byte offset and moves
+					;  the flag bits to the high 16 bits
+	MOVL	npb_fragofs[EBX], EAX	;Store this
+	ADDW	CX, AX			;Store data length through the end of
+	MOVL	npb_count[EBX], ECX	;  this fragment
+	MOVZWL	EAX, ip_ident[EDX]	;Store packet ID value in header
+	MOVL	npb_fragid[EBX], EAX
+	MOVL	ECX, ip_srcipaddr[EDX]	;Store source IP address
+	MOVL	npb_fragipa[EBX], ECX
+	PUSHL	ESI
+	LEAL	ESI, pdb_ipfraghead[EDI] ;Now search the fragment list to see
+4$:	MOVL	EDX, [ESI]		 ;  if we are now receiving this packet
+	TESTL	EDX, EDX
+	JE	8$.S
+	CMPL	EAX, npb_fragid[EDX]
+	JNE	6$.S
+	CMPL	ECX, npb_fragipa[EDX]
+	JE	10$.S			;Found it
+6$:	LEAL	ESI, npb_next[EDX]	;Not this one - get next
+	JMP	4$.S			;Continue if more to check
+
+;Here if we are not now receiving this packet - add it to the fragment list
+
+8$:	MOVL	npb_fragtmr[EBX], #TIMEOUT_FRAG
+	CLRL	EAX
+	MOVL	npb_fragnxt[EBX], EAX
+	MOVL	npb_next[EBX], EAX
+	MOVL	[ESI], EBX
+	POPL	ESI			;That all for now (since this is the
+	RET				;  first fragment, the packet can't be
+					;  complete now!)
+
+;Here if we are currently receiving this packet - First search through the
+;  fragments we have and find the place for this one.  Note that duplicate
+;  and/or overlapping fragments are possible since it is valid to retransmit
+;  a packet without changing its ID and different copies of the same packet
+;  may be fragmented differently.
+;	c[EDX] = Offset of first fragment for packet
+;	c[ESI] = Offset of pointer to first fragment
+
+10$:	PUSHL	ESI			;Save offset of pointer to first
+					;  fragment for packet
+	MOVZWL	EAX, npb_fragofs[EBX]
+	CMPW	AX, npb_fragofs[EDX]	;Will this be the new first fragment?
+	JA	12$.S			;No
+	MOVL	EAX, npb_fragtmr[EDX]	;Yes - copy the current timer value
+	MOVL	npb_fragtmr[EBX], EAX
+	MOVL	npb_fragnxt[EBX], EDX
+	MOVL	EAX, [ESI]
+	MOVL	npb_next[EBX], EAX
+	MOVL	[ESI], EBX
+	JMP	22$.S			;Now see if we have a complete packet
+
+;Here if this fragment will not become the new first fragment for the packet.
+;  Find where it goes in the list.
+
+12$:	MOVL	ECX, npb_count[EBX]
+	LEAL	ESI, npb_fragnxt[EDX]
+14$:	MOVL	EDX, [ESI]
+	TESTL	EDX, EDX
+	JE	20$.S
+	CMPW	AX, npb_fragofs[EDX]	;Does it go before this fragment?
+	JBE	16$.S			;Yes
+	CMPL	ECX, npb_count[EDX]	;No - is it completely included in this
+					;  fragment?
+	JBE	18$.S			;Yes - just quietly discard it!
+	LEAL	ESI, npb_fragnxt[EDX]
+	JMP	14$.S
+
+;Here this fragment has an offset less than or equal to the fragment we are
+;  checking.  Either it goes before this fragment, it replaces this fragment,
+;  or it should be discarded.
+
+16$:	JB	20$.S			;If it definately goes before
+	CMPL	EAX, npb_count[EDX]	;Same offset - is this one larger?
+	JBE	18$.S			;No - discard this fragment
+	MOVL	EAX, npb_fragnxt[EDX]	;Yes - use this one instead
+	MOVL	npb_fragnxt[EBX], EAX
+	MOVL	[ESI], EBX
+	MOVL	EBX, EDX		;Discard the one we had in the list
+
+;Here to discard this fragment because it is completely contained within a
+;  fragment we already have
+
+18$:	POPL	EAX
+	POPL	ESI
+	CALL	xosnetGiveBufr##
+	RET
+
+;Here to insert this fragment into the list before the fragment we are checking
+
+20$:	MOVL	npb_fragnxt[EBX], EDX
+	MOVL	[ESI], EBX
+
+;Since we have added a fragment to the list, we must check and see if we have
+;  a complete packet now.
+
+22$:	POPL	ESI			;Get offset of pointer to first fragment
+	MOVL	EBX, [ESI]
+	CMPW	npb_fragofs[EBX], #0	;Is this really the first fragment?
+	JNE	26$.S			;No - packet is not complete
+	MOVL	ECX, npb_count[EBX]	;Get total length of first fragment
+24$:	MOVL	EDX, npb_fragnxt[EBX]	;Get offset of next fragment
+	TESTL	EDX, EDX
+	JE	28$.S			;If no more
+	MOVZBL	EAX, npb_tpofs[EBX]
+	NEGL	EAX
+	ADDL	EAX, npb_count[EBX]	;Are these fragments contiguous?
+	CMPW	AX, npb_fragofs[EDX]
+	JB	26$.S			;No - packet is not complete
+	MOVL	EBX, EDX		;Yes - advance to next packet
+	MOVZBL	EAX, npb_tpofs[EBX]	;Get length of everything after the IP
+	NEGL	EAX			;  header
+	ADDL	EAX, npb_count[EBX]
+	ADDL	ECX, ECX
+	JMP	24$.S
+
+;Here if packet is not complete - just return quietly
+
+26$:	POPL	ESI
+	RET
+
+;Here at end of fragment list if all of the fragments are contiguous.  See if
+;  the last fragment is the top fragment
+
+28$:	TESTB	npb_fragofs+2[EBX], #01h ;Is this the last fragment?
+	JNE	26$.S			;No - packet is not complete yet
+					;Yes - fall into fragcomp on next page
+.PAGE
+;Here with a complete fragmented packet - Now we have to put it back together.
+;	c{ECX} = Length of complete packet
+;	c{EBX} = Offset of last fragment
+
+fragcomp:
+	INCL	pdb_ipcntpktfrag[EDI]	;Count the fragmented packet
+	MOVL	EDX, [ESI]		;Get offset of first fragment
+	MOVL	EAX, npb_next[EDX]	;Remove it from the fragmented packet
+	MOVL	[ESI], EAX		;  list
+	MOVL	ECX, npb_count[EBX]	;Get total size of packet
+	PUSHL	ECX
+	CALL	xosnetGetBufr##		;Get a network buffer for the
+	POPL	ECX			;  complete packet
+	JC	4$.S			;If error
+	MOVL	npb_count[EBX], ECX
+	MOVL	EAX, npb_lpofs[EDX]
+	MOVL	npb_lpofs[EBX], EAX
+	MOVL	ECX, npb_count[EDX]	;Get total length of the first fragment
+	CLD
+	PUSHL	EDI
+	MOVL	ESI, EDX
+	MOVL	EDI, EBX
+2$:	PUSHL	DS
+	POPL	ES
+	RMOVSB	[EDI], [ESI]
+	PUSHL	npb_fragnxt[EDX]
+	XCHGL	EBX, EDX
+	CLRL	EAX
+	MOVL	npb_fragnxt[EBX], EAX
+	CALL	xosnetGiveBufr##
+	MOVL	EBX, EDX
+	POPL	EDX
+	TESTL	EDX, EDX
+	JE	10$.S
+	MOVZBL	ECX, npb_tpofs[EDX]
+	LEAL	ESI, [EDX+ECX]
+	NEGL	ECX
+	ADDL	ECX, npb_count[EDX]
+	MOVZWL	EDI, npb_fragofs[EDX]
+	SUBL	ECX, EDI
+	MOVZBL	EAX, npb_tpofs[EBX]
+	ADDL	EDI, EAX
+	ADDL	EDI, EBX
+	JMP	2$.S
+
+;Here if error allocating a buffer for the reconstructed packet - This probably
+;  means the system is in big trouble, but we try to handle it as best as we
+;  can by simply discarding all of the collected fragments.
+
+4$:	POPL	ESI
+	MOVL	EBX, EDX
+6$:	PUSHL	npb_fragnxt[EBX]	;Give up the buffers
+	CALL	xosnetGiveBufr##
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	6$.S
+	RET
+
+;Here with the reconstructed packet
+
+10$:	MOVL	ECX, EDI
+	POPL	EDI
+	POPL	ESI
+	SUBL	ECX, EBX		;Get length of the packet
+	MOVZBL	EAX, npb_tpofs[EBX]	;Get length of IP part
+	SUBL	ECX, EAX
+	MOVB	AL, npb_npofs[EBX]	;Get offset of start of IP header
+	LEAL	EDX, [EBX+EAX]
+					;Fall into rcvrdy on next page
+.PAGE
+rcvrdy:	MOVL	EAX, ip_dstipaddr[EDX]	;Get destination IP address
+	CMPL	EAX, #0FFFFFFFFh	;Broadcast message?
+	JE	12$.S			;Yes - OK
+	TESTL	EAX, EAX		;No - all 0?
+	JE	12$.S			;Yes - thats OK too
+	CMPB	pdb_ipaddr+3[EDI], #0	;No - last byte or our IP address = 0?
+	JNE	2$.S			;No
+	PUSHL	EAX
+	ANDL	EAX, #0FFFFFFh		;Yes - ignore the last 8 bits
+	CMPL	EAX, pdb_ipaddr[EDI]	;For us?
+	POPL	EAX
+	JMP	4$.S
+
+2$:	CMPL	EAX, pdb_ipaddr[EDI]	;For us?
+4$:	JE	12$.S			;Yes
+	PUSHL	ECX			;Probably not
+	PUSHL	EDX
+	MOVL	ECX, EAX		;For our net?
+	XORL	ECX, pdb_ipaddr[EDI]
+	ANDL	ECX, pdb_ipnetmask[EDI]
+	JNE	6$.S			;No
+	MOVL	ECX, pdb_ipnetmask[EDI] ;Yes - net broadcast?
+	NOTL	ECX
+	MOVL	EDX, EAX
+	ANDL	EDX, ECX
+	CMPL	EDX, ECX
+	JE	10$.S			;Yes - accept the packet
+	MOVL	ECX, EAX		;No - for our subnet?
+	XORL	ECX, pdb_ipaddr[EDI]
+	ANDL	ECX, pdb_ipsubnetmask[EDI]
+	JNE	6$.S			;No
+	MOVL	ECX, pdb_ipsubnetmask[EDI] ;Yes - sub-net broadcast?
+	NOTL	ECX
+	MOVL	EDX, EAX
+	ANDL	EDX, ECX
+	CMPL	EDX, ECX
+	JE	10$.S			;Yes - accept the packet
+6$:	POPL	EDX			;No - this packet is not for us!
+	POPL	ECX
+	INCL	pdb_ipcntbadaddr[EDI]
+	JMP	ignore
+
+;Here with a packet which is for us
+
+10$:	POPL	EDX
+	POPL	ECX
+12$:	MOVL	npb_count[EBX], ECX
+	INCL	pdb_ipcntpktin[EDI]	;Count the packet
+	ADDL	pdb_ipcntbytein[EDI], ECX
+	PUSHL	EBX
+	PUSHL	EDX
+	MOVL	EAX, ip_srcipaddr[EDX]	;Get source IP address
+	CALL	rtgood#			;Indicate have good route
+	POPL	EDX
+	POPL	EBX
+	MOVB	AL, ip_ipprot[EDX]	;Get protocol value
+	MOVL	ESI, pdb_iptpdbhead[EDI] ;Get first TPDB
+14$:	CMPB	AL, tpdb_ipprot[ESI]	;This protocol?
+	JE	16$.S			;Yes
+	MOVL	ESI, pdb_nexti[ESI]	;No - advance to next
+	TESTL	ESI, ESI		;Have another?
+	JNE	14$.S			;Yes - continue
+	MOVL	EAX, #0203h		;No - get ICMP type and code
+	CALL	xosipsSendDstUnr#
+	INCL	pdb_ipcntnodst[EDI]	;No - count this as "no destination"
+ignore:	CALL	xosnetGiveBufr##
+	RET
+
+;Here with match on the IP protocol type - dispatch to the receive routine
+;  for the transport level protocol
+;	c{EAX} = Offset of IDB
+;	c{EBX} = Offset of packet buffer
+;	c{ECX} = Length of transport level data in packet
+;	c{EDX} = Offset of start of transport level data in packet
+;	c{EDI} = Offset of PDB
+;	c{ESI} = Offset of TPDB
+
+16$:	MOVL	ECX, npb_count[EBX]
+	MOVZBL	EDX, npb_tpofs[EBX]	;Get offset of start of IP data
+	ADDL	EDX, EBX
+	MOVL	EAX, pdb_idb[EDI]	;Get offset of the IDB
+	JMPIL	tpdb_rcvdisp[ESI]	;Dispatch to routine for protocol
+
+;Here if the link is down
+;	c{EAX} = Offset of IDB
+;	c{EBX} = Offset of received packet
+
+xosipsLinkDown:
+	INCL	idb_cntdown[EAX]	;No - count this
+	JMP	ignore.S		;And discard the packet
+.PAGE
+	.SBTTL	iarpprcv - Subroutine to process received IARP packet
+
+;Subroutine to process received IARP packet - note that this version only
+;  supports responses - inquiry packets are ignored!
+;	c{EBX} = Offset of packet buffer
+;	c{ECX} = IARP length
+;	c{EDX} = Offset of start of IARP header
+;	c{EDI} = Offset of PDB
+;	c{ESI} = Offset of IDB
+;	CALL	iarprcv
+
+iarprcv:CMPL	ECX, #6			;Is it the right length for a response?
+	JL	10$.S			;No - ignore it
+	MOVZBL	ECX, npb_npofs[EBX]	;Yes - point to the IP header
+	MOVL	EAX, ip_srcipaddr[EBX+ECX] ;Get sender IP address
+	MOVL	ECX, [EDX]		;Get remote hardware address
+	MOVZWL	EDX, 4[EDX]
+	PUSHL	EBX
+	MOVB	BL, #RTT_LOCAL		;Routing table entry type
+	MOVB	BH, #1			;Force update
+	CALL	rtupdate#
+	POPL	EBX
+	JC	8$.S			;Forget it if error here
+	MOVL	rt_t2lcnt[ECX], #RTT2L_LOCAL ;Store time-to-live value
+	MOVL	rt_timeout[ECX], #rttimeout# ;Store offset of timeout routine
+8$:	JMP	ignore			;Finished here
+
+;Here if the length is wrong - just count this and ignore the packet
+
+10$:	INCL	pdb_ipcntpsltmn[EDI]
+	JMP	8$.S
+.PAGE
+	.SBTTL	ipsprocarp - Subroutine to process ARP packets
+
+;Subroutine to process ARP packets - called with an parp_ stack frame set up
+;	CALL	ipsprocarp
+;	parp_oper is set to 0 to suppress sending a response
+
+ipsprocarp:
+	MOVL	EAX, parp_tpa[EBP]	;Get target IP address
+	CMPL	pdb_ipaddr[EDI], EAX	;Is it for us?
+	JNE	8$.S			;No
+6$:	MOVB	BH, #1			;Yes - force routing table update
+	JMP	10$.S
+
+;Here if message is not for us - make it look like a reply so we don't respond
+;  to it
+
+8$:	MOVB	parp_oper[EBP], #02
+	MOVB	BH, #0			;Do not force the update
+10$:	MOVB	BL, #RTT_LOCAL		;Get routing table entry type
+	MOVL	EAX, parp_spa[EBP]	;Get IP address
+	MOVL	ECX, parp_sha+0[EBP]	;Get hardware address
+	MOVL	EDX, parp_sha+4[EBP]
+	CALL	rtupdate#		;Update the routing table
+	JC	14$.S			;If error
+	JREGZ	ECX, 12$		;If no routing table entry
+	MOVL	rt_t2lcnt[ECX], #RTT2L_LOCAL ;Store time-to-live value
+	MOVL	rt_timeout[ECX], #rttimeout# ;Store offset of timeout routine
+12$:	RET
+
+14$:	MOVB	parp_oper[EBP], #0	;Indicate no response
+	CLC
+	RET
+.PAGE
+	.SBTTL	xosipsSetPkt - Subroutine to set up IP datagram packet header
+
+;Subroutine to set up IP datagram packet header - must be called at in extended
+;  fork context
+;	c{EDX} = IP protocol in bits 7-15
+;	c{EBX} = Offset of packet buffer
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSetPkt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	  c{EBX} = Offset of packet buffer (unchanged)
+;	C:clr = Normal
+;	  c{EBX} = Offset of packet buffer (unchanged)
+;	  c{EDX} = Offset of first byte beyond IP header
+
+xosipsSetPkt:
+	MOVL	EAX, dcb_ipsrmtaddr[EDI] ;Get IP address
+	PUSHL	EDI
+	MOVL	EDI, dcb_netpdb[EDI]	;Get offset of PDB
+	CALL	xosipsSetPkt2
+	POPL	EDI
+	RET
+
+;Subroutine to set up IP packet - does not require DCB or XFF so can be called
+;  from device fork level;  
+;	c{EAX} = IP address
+;	c{EDX} = IP protocol in bits 7-15
+;	c{EDI} = Offset of PDB
+;	CALL	xosipsSetPkt2
+;	C:set = Error
+;	  c{EAX} = Error code
+;	  c{EBX} = Offset of packet buffer (unchanged)
+;	C:clr = Normal
+;	  c{EBX} = Offset of packet buffer (unchanged)
+;	  c{EDX} = Offset of first byte beyond IP header
+
+xosipsSetPkt2:
+	CMPL	pdb_label[EDI], #'PDB*'
+	JNE	10$.S
+	PUSHL	EAX			;Save IP address
+	PUSHL	EDX			;Save IP protocol
+	MOVL	EAX, pdb_etypevalue[EDI] ;Get hardware protocol value
+	MOVL	ESI, pdb_sdb[EDI]
+	CALL	xossnpSetPkt##		;Set up SNAP level header
+	JC	8$.S
+	MOVL	ip_vershlen[EDX], #45h ;Store version, header length, and
+	CLRL	EAX			 ;  type of service
+	MOVL	ip_ident[EDX], EAX	;Store ident and fragment data (both 0)
+	POPL	EAX
+	MOVB	AL, #32t		;Get time to live value to use
+	MOVL	ip_time[EDX], EAX	;Store time to live, IP protocol, and
+					;  header checksum value (0)
+	MOVL	EAX, pdb_ipaddr[EDI]	;Store source IP address
+	MOVL	ip_srcipaddr[EDX], EAX
+	POPL	EAX			;Store destination IP address
+	MOVL	ip_dstipaddr[EDX], EAX
+ipsetpkt4:
+	ADDL	npb_count[EBX], #ip_options ;Increase packet byte count
+	ADDL	EDX, #ip_options	;Point to first byte beyond the header
+	MOVB	AL, npb_npofs[EBX]	;Store offset of next level header
+	ADDB	AL, #ip_options
+	MOVB	npb_tpofs[EBX], AL
+	RET				;Return
+
+;Here if error
+
+8$:	POPL	EDX			;Fix up the stack
+	POPL	EDX
+ret008:	RET
+
+10$:	CRASH	NPDB			;[Not a PDB]
+.PAGE
+	.SBTTL	xosipsSetEcho - Subroutine to set up IP echo packet header
+
+;Subroutine to set up IP echo packet header - must be called in extended fork
+;  context or at device fork level
+;	c{EBX} = Offset of packet buffer
+;	c{EDX} = Offset of start of IP header in packet
+;	c{EDI} = Offset of PDB
+;	CALL	xosipsSetEcho
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Offset of packet buffer (unchanged)
+;	  c{EDX} = Offset of first byte beyond IP header
+;  Note that this subroutine resets npb_count to include only the hardware
+;    and IP headers.  If data beyond the IP header is to be echoed, npb_count
+;    must be increased after ipsetecho returns
+
+xosipsSetEcho:
+	CMPL	pdb_label[EDI], #'PDB*'
+	JNE	4$.S
+	MOVL	EAX, pdb_etypevalue[EDI] ;Get hardware protocol value
+	MOVL	ESI, pdb_sdb[EDI]
+	CALL	xossnpSetPkt##		;Set up SNAP level header
+	JC	ret008.S
+	MOVW	ip_vershlen[EDX], #45h	;Store version, header length, and
+	CLRL	EAX			;  type of service
+	MOVL	ip_ident[EDX], EAX	;Store ident and fragment data (both 0)
+	MOVW	ip_hdrchksum[EDX], AX	;Clear header checksum value
+	MOVB	ip_time[EDX], #32t	;Store time to live
+	MOVL	EAX, ip_srcipaddr[EDX]	;Store source IP address as the
+	MOVL	ip_dstipaddr[EDX], EAX	;  destination address
+	MOVL	EAX, pdb_ipaddr[EDI]	;Store or IP address as the source
+	MOVL	ip_srcipaddr[EDX], EAX	;  address
+	JMP	ipsetpkt4.S
+
+4$:	CRASH	NPDB			;[Not a PDB]
+.PAGE
+	.SBTTL	xosipsSendSetup - Subroutine to finish setting up IP header for output
+
+;Subroutine to finish setting up the IP packet header before outputting a
+;  packet
+;	c{EBX} = Offset of packet buffer
+;	c{EDI} = Offset of DCB
+;	CALL	xosipsSendSetup
+
+xosipsSendSetup:
+	PUSHL	EDI
+	MOVL	EDI, dcb_netpdb[EDI]	;Get offset of protocol data block
+	CALL	xosipsSendSet2
+	POPL	EDI
+	RET
+
+xosipsSendSet2:
+	MOVL	EAX, npb_count[EBX]	;Get total length of packet
+	MOVZBL	ECX, npb_npofs[EBX]	;Get offset of start of IP part
+	SUBL	EAX, ECX		;Calculate length of IP part
+	INCL	pdb_ipcntpktout[EDI]	;Bump our counts
+	ADDL	pdb_ipcntbyteout[EDI], EAX
+	PUSHL	EBX
+	ADDL	EBX, ECX
+	XCHGB	AL, AH			;Swap bytes
+	MOVW	npb_data+ip_tlength[EBX], AX ;Store in IP header
+	MOVW	npb_data+ip_hdrchksum[EBX], #0 ;Clear the check-sum field
+	TESTB	pdb_ipchksumh[EDI], #PCSH$GEN ;Should we calculate the checksum
+					      ;  value?
+	JE	10$.S			;No - finished here
+	PUSHL	ESI			;Yes
+	LEAL	ESI, npb_data+16t[EBX]
+	CLD
+	LODSL	[ESI]			;Calculate checksum for first 5 longs
+	ADDL	EAX, -20t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -16t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -12t[ESI]
+	ADCL	EAX, #0
+	ADDL	EAX, -8[ESI]
+	ADCL	EAX, #0
+	MOVB	CL, npb_data+ip_vershlen[EBX]
+	ANDL	ECX, #0Fh		;Get number of longs in header
+	SUBL	ECX, #5			;Any more to do?
+	JLE	6$.S			;No
+4$:	ADDL	EAX, [ESI]		;Yes
+	ADCL	EAX, #0
+	ADDL	ESI, #4
+	LOOP	ECX, 4$
+6$:	POPL	ESI
+	MOVL	EDX, EAX		;Merge halves
+	SHRL	EDX, #16t
+	ADDW	AX, DX
+	ADCW	AX, #0
+	NOTL	EAX
+	MOVW	npb_data+ip_hdrchksum[EBX], AX
+10$:	POPL	EBX			;Restore offset of the packet buffer
+	RET
+.PAGE
+;Subroutine to add in final n bytes of a packet to the transprot level checksum
+;  value.  This routine implements the standard Internet 16 bit 1's complement
+;  checksum xosorithm.
+;	c{EAX} = Accumulated 32 bit checksum value
+;	c{ECX} = Number of bytes remaining
+;	c{ESI} = Offset of next byte in packet
+;	CALL	xosipsChkSumFin
+;	c[AX] = Final 16 bit checksum value
+;  All register except EAX and ESI are preserved
+
+xosipsChkSumFin::
+	PUSHL	ECX			;Save initial count
+	SHRL	ECX, #2			;Change to number of longs (round down)
+	JE	4$.S			;If no whole longs
+2$:	ADDL	EAX, [ESI]		;Add in next 4 bytes
+	ADCL	EAX, #0
+	ADDL	ESI, #4			;Bump pointer
+	LOOP	ECX, 2$			;Continue if more
+4$:	MOVL	ECX, [ESP]		;Restore count
+	ANDL	ECX, #03h		;Get low 2 bits only
+	JMPIL	cksfdsp[ECX*4]		;Dispatch on number of bytes left
+
+	DATA
+
+	.MOD	4
+cksfdsp:.LONG	cksfb0		;0 bytes left
+	.LONG	cksfb1		;1 byte left
+	.LONG	cksfb2		;2 bytes left
+	.LONG	cksfb3		;3 bytes left
+
+	CODE
+
+;Here if have 1 byte left
+
+cksfb1:	MOVZBL	ECX, [ESI]		;Get one byte
+	JMP	6$.S
+
+;Here if have 2 bytes left
+
+	.MOD	4
+cksfb2:	MOVZWL	ECX, [ESI]		;Get two bytes
+	JMP	6$.S
+
+;Here if have 3 bytes left
+
+	.MOD	4
+cksfb3:	MOVZWL	ECX, 1[ESI]		;Get second and third bytes
+	SHLL	ECX, #8
+	MOVB	CL, [ESI]		;Get first byte
+6$:	ADDL	EAX, ECX		;Add into checksum value
+	ADCL	EAX, #0
+cksfb0:	MOVL	ECX, EAX		;Add the two halves together
+	SHRL	ECX, #16t
+	ADDW	AX, CX			;(must be ADDW to get C right!)
+	ADCL	EAX, #0
+	POPL	ECX
+	RET
+.PAGE
+.IF NE 0
+xosipsGetNetAddr:
+	CMPB	SS:[EDX], #'A'		;Is the first character alpha?
+	JAE	xosipsDnsGetIpA#	;Yes - translate domain name
+
+;Here is not a domain name
+
+	CLRL	EBX
+	MOVL	ECX, #4			;Remote IP address may contain up to 4
+6$:	CALL	getval			;  fields
+	RORL	EBX, #8
+	CMPB	AL, #':'		;End of remote IP address?
+	JE	10$			;Yes
+	CMPB	AL, #'.'		;No - is it the separator?
+	JNE	8$			;No - fail
+	LOOP	ECX, 6$			;Yes - continue
+8$:	MOVL	EAX, #ER_NILAD
+	STC
+	RET
+
+;Here at end of IP address
+
+10$:	CMPB	SS:[EDX], #':'
+	JNE	8$
+	MOVL	ECX, EDX
+	RET
+
+;Subroutine to get value of next network address field
+;	c{EDX} = Offset of address string
+;	CALL	getval
+;	c(AL)  = Stopper character
+;	c(BL)  = Value
+;	c{EDX} = Offset of next character in address string
+
+getval:	MOVB	AL, #0
+12$:	MOVB	BL, SS:[EDX]		;Get character
+	INCL	EDX			;Bump pointer
+	CMPB	BL, #'0'		;Is it a digit?
+	JB	14$			;No
+	CMPB	BL, #'9'
+	JA	14$
+	ANDB	BL, #0Fh		;Yes - get value
+	MULB	lit10			;And add into value for field
+	ADDB	AL, BL
+	JMP	12$
+
+;Here if next character is not a digit
+
+14$:	XCHGB	AL, BL			;Get things in right registers
+	RET				;Return
+.ENDC
+.PAGE
+	.SBTTL	ipsoas - IPS once-a-second routine
+
+;This routine times out collection of fragmented packets.
+
+ipsoas:	MOVL	EDI, xosipsPdbHead
+	TESTL	EDI, EDI
+	JE	16$.S
+4$:	TOFORK
+	LEAL	ESI, pdb_ipfraghead[EDI]
+	MOVL	EBX, [ESI]		;Get first packet
+	TESTL	EBX, EBX
+	JE	14$.S			;If none
+6$:	DECL	npb_fragtmr[EBX]	;Reduce the timer count
+	JNS	10$.S			;Go on if still some time left
+	MOVL	EAX, npb_next[EBX]	;Timed out - remove from the fragmented
+	MOVL	[ESI], EAX		;  packet list
+8$:	INCL	pdb_ipcntdisfrag[EDI]	;Count the discarded fragment
+	PUSHL	npb_fragnxt[EBX]	;Save offset of next fragment buffer
+	MOVL	npb_fragnxt[EBX], #0	;Must clear this here so xosnetGiveBufr
+					;  does not get confussed!
+	CALL	xosnetGiveBufr##	;Give up the fragment buffer
+	POPL	EBX
+	TESTL	EBX, EBX		;Have another fragment buffer?
+	JNE	8$.S			;Yes - continue
+	JMP	12$.S			;No
+
+;Here if this partial packet has not timed out yet
+
+10$:	LEAL	ESI, npb_next[EBX]	;Advance to next packet in list
+12$:	MOVL	EBX, [ESI]
+	TESTL	EBX, EBX
+	JNE	6$.S			;Continue if more partial packets
+14$:	FROMFORK			;No more for this PDB
+	MOVL	EDI, pdb_nextd[EDI]	;Advance to next PDB
+	TESTL	EDI, EDI
+	JNE	4$.S			;Continue if more PDBs
+16$:	JMP	routeoas#		;Finished here - go do routing stuff
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+lit10::       .LONG 10t
+ipsccb:       .LONG 'CCB*'	;IPS CCB
+	      .BLKB ccb_SIZE-4
+icmpccb::     .LONG 'CCB*'	;ICMP CCB
+	      .BLKB ccb_SIZE-4
+xosipsPdbHead:.LONG 0
+temp:	      .BLKB 12t		;Buffer for default address characteristics
+				;  names
+
+	LKEEND

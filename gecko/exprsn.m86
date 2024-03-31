@@ -1,0 +1,905 @@
+	.TITLE	exprsn  - Expression evaluator for GECKO
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	XOSINC:/xmac/xos.par
+	.INCLUD	XOSINC:/xmac/xostrm.par
+	.INCLUD	XOSINC:/xmac/xosrun.par
+	.INCLUD	gecko.par
+
+	CODE
+
+;Subroutine to get count value - default radix for count is always 10 - returns
+;  error if item entered is not a simple value
+;	CALL	getcount
+;	C:set = Error
+;	C:clr = Normal
+;	  c{EAX} = Value
+;	  c(CL)  = 0 if null count, non-0 otherwise
+
+getcount::
+	PUSHL	iradix#			;Save current input radix
+	MOVL	iradix#, #10t		;Make it 10
+	CALL	getfld			;Get input
+	POPL	iradix#			;Restore the input radix
+	JC	ret202			;If error
+	MOVL	EAX, value#		;OK - get the value
+	MOVB	CL, notnul#
+	CMPB	CL, #0			;Null value?
+	JE	ret202			;Yes - this is OK
+	CMPB	valtyp, #VL_LONG	;Simple value?
+	JE	ret202			;Yes - finished
+	MOVL	EBX, #icvmsg#		;No - fail
+	CALL	outstrca#
+	STC
+ret202:	RET
+.PAGE
+;Subroutine to return contents of field
+;	CALL	getfld
+;	C:set     = Error
+;	c(AL)     = Terminating character
+;	c(value)  = Value
+;	c(valreg) = Index of register providing offset part if it came from
+;		      a register, 0xFF otherwise
+
+;	c(valsrg) = Index of register providing segment part if it came from
+;		      a register, 0FFh otherwise
+
+;	c(valtyp) = Type of field
+;	c(valsiz) = Size of field in bytes
+
+getfld::CLRL	EAX
+	MOVL	value#, EAX		;Clear value
+	MOVB	notfst#, AL		;Reset first field indication
+	MOVB	segovr#, AL		;Reset segment override register
+	MOVB	notnul#, AL		;Reset null field indicator
+	MOVB	lnsflg#, AL
+	DECL	EAX
+	MOVB	valreg#, AL		;Clear register numbers
+;;;;	MOVB	valsrg#, AL
+	CALL	getatm
+	JC	8$			;Finished if error
+	CMPB	valtyp#, #VL_INS	;Is atom a register or instruction?
+	JAE	4$			;Yes - can't be part of expression
+getflp:	MOVB	AL, stoper#		;No - see if stopped by operator
+	CMPB	AL, #0
+	JE	6$
+	MOVL	EDI, #oprtbl		;Search the operator table
+	MOVL	ECX, #OPRSIZ
+	RNSCASB	[EDI]
+	JE	10$			;If found operator
+4$:	CMPB	AL, #'.'		;Stopped by a period?
+	JNE	6$			;No
+	CALL	getchr#			;Yes - get next character
+	CALL	makupr#
+	CMPB	AL, #'S'		;Is he specifying a byte value?
+	JNE	sayxerr			;No - error!
+	CMPB	valtyp, #VL_LONG	;Yes - simple value?
+	JA	sayxerr			;No - error
+	MOVB	valtyp#, #VL_BYTE	;Yes - make it a byte value
+	MOVB	valsiz#, #1
+	CALL	getchr#			;Get actual stopper character
+	MOVB	stoper#, AL
+6$:	CLC				;Finished
+8$:	RET
+
+;Here with operator following value
+
+10$:	MOVB	valreg#, #0xFF		;Not register
+	MOVB	valsrg#, #0xFF
+	CMPB	valtyp#, #VL_LONG	;Is value a word, byte, or address?
+	JA	givsye			;No - error
+	MOVL	EAX, value#		;Yes - save left value
+	MOVL	lftval#, EAX
+	MOVB	AL, valtyp#
+	MOVB	lfttyp#, AL
+	PUSHL	EDI			;Save pointer to operator table
+	CALL	getatm			;Get next atom
+	POPL	EBX
+	JC	16$			;If error
+	CMPB	valtyp#, #VL_LONG	;Simple value?
+	JBE	20$			;Yes - go on
+givsye:	MOVL	EBX, #syemsg#		;No - complain
+	CALL	outstr#
+	STC
+16$:	RET
+
+;Here with stopper
+
+20$:	SUBL	EBX, #oprtbl+1		;Dispatch on the operator
+	JMPIL	oprdsp[EBX*4]
+.PAGE
+;Define operators
+
+	.MACRO	& OPR
+	CC	'+', plusop
+	CC	'-', minsop
+	CC	'*', multop
+	CC	'/', divdop
+	CC	'&', landop
+	CC	'|', liorop
+	CC	'`', lxorop
+	CC	'<', shltop
+	CC	'>', shrtop
+	.ENDM
+
+;Generate character table
+
+	.MACRO	CC  chr, addr
+	.BYTE	chr
+	.ENDM
+
+oprtbl:	OPR
+OPRSIZ=!$-oprtbl
+
+;Generate dispatch table
+
+	.MACRO	CC  chr, addr
+	.LONG	addr
+	.ENDM
+
+	.MOD	4
+oprdsp:	OPR
+.PAGE
+;Here for "+"
+
+plusop:	MOVL	EAX, value		;Add
+	ADDL	EAX, lftval
+	JMP	12$			;Continue
+
+;Here for "-"
+
+minsop:	MOVL	EAX, lftval
+	SUBL	EAX, value		;Subtract
+12$:	MOVL	value, EAX		;Store result
+	JMP	getflp
+
+;Here for "*"
+
+multop:	MOVL	EAX, lftval
+	MULL	value
+	JMP	12$			;Continue
+
+;Here for "/"
+
+divdop:	MOVL	EAX, lftval
+	CMPL	value, #0		;Can we divide?
+	JE	sayxerr			;No
+	CLRL	EDX			;Yes
+	DIVL	value			;Divide
+	JMP	12$
+
+;Here for "&"
+
+landop:	MOVL	EAX, lftval
+	ANDL	EAX, value		;AND in second value
+	JMP	12$
+
+;Here for "|"
+
+liorop:	MOVL	EAX, lftval
+	ORL	EAX, value		;OR in second value
+	JMP	12$			;Continue
+
+;Here for "^"
+
+lxorop:	MOVL	EAX, lftval
+	XORL	EAX, value		;XOR in second value
+	JMP	12$			;Continue
+
+;Here for "<"
+
+shltop:	MOVL	EAX, lftval
+	MOVB	CL, value		;Get second value
+	SHLL	EAX, CL
+	JMP	12$			;Continue
+
+;Here for ">"
+
+shrtop:	MOVL	EAX, lftval
+	MOVB	CL, value		;Get second value
+	SHRL	EAX, CL
+	JMP	12$			;Continue
+
+ret209:	RET
+.PAGE
+	.SBTTL	getfrv - Here to get bit values for the FR register
+
+;Here when the FR register is open to get indivual bit values
+
+getfrv:	CALL	getchr			;Get character
+	CMPB	AL, #0
+	JE	ret209
+	CMPB	AL, #' '		;Ignore spaces
+	JE	getfrv
+	CALL	makupr#			;Make upper case
+	CMPB	AL, #'A'		;Letter?
+	JB	2$			;No
+	CMPB	AL, #'Z'		;Maybe
+	JBE	4$			;Yes
+2$:	MOVB	heldchr#, AL		;Put back the character
+	JMP	getfld			;And go see if numeric value
+
+;Here if have letter
+
+4$:	MOVL	EBX, uregEFR#		;Get current FR value
+	MOVL	value#, EBX		;As current new value
+6$:	PUSHL	EAX			;Save the letter
+	CALL	getchr#			;Get next character
+	CALL	makupr#			;Make upper case
+	POPL	EBX
+	MOVB	BH, AL	
+	CLRL	EAX
+	MOVL	EDI, #flgtbl#		;Point to flag bit table
+	MOVL	ECX, #FLGTSZ#
+8$:	PUSHL	EDI
+	MOVB	DL, #-4			;Check 4 entries
+10$:	CMPW	[EDI], BX
+	JE	12$
+	ADDL	EDI, #2
+	INCB	DL
+	JS	10$			;Continue looking
+	POPL	EDI			;Not this one
+	ADDL	EDI, #fst_ENSZ.B	;Continue if more in table
+	LOOP	ECX, 8$
+	JMP	uerror			;Not in table - say "? U"
+
+;Here with match
+
+12$:	POPL	EDI
+	ADDB	DL, #4			;Get value for field
+	MOVB	DH, #0
+	MOVB	CL, fst_pos.B[EDI]	;Get amount to shift
+	SHLL	EDX, CL			;Get value in right place
+	MOVL	EAX, fst_mask.B[EDI]	;Get mask
+	NOTW	AX
+	ANDL	value, EAX		;Remove bits we want to change
+	CALL	getchr			;Get next character
+	CMPB	AL, #' '		;Space?
+	JNE	20$			;No - must be done here
+16$:	CALL	getchr			;Yes - get first non-blank character
+	CMPB	AL, #' '
+	JE	16$
+	CALL	makupr			;Is it a letter?
+	CMPB	AL, #'A'
+	JB	18$			;No - error
+	CMPB	AL, #'Z'		;Maybe
+	JBE	6$			;Yes
+18$:	JMP	givsye			;No
+
+;Here when finished
+
+20$:	MOVB	stoper, AL
+	MOVB	valtyp, #VL_LONG
+	CLC
+	RET
+.PAGE
+sayxerr:MOVL	EBX, #xermsg#
+	CALL	outstr#
+	STC
+	RET
+.PAGE
+	.SBTTL	getatm - Subroutine to fetch single atom
+
+;Subroutine to fetch next atom - atom returned is either a numeric value or a
+;  character string which can be either a symbol or an op-code
+;	c(AL)     = First character
+;	CALL	getatm
+;	C:set     = Error
+;	C:set     = Error
+;	c(AL)     = Terminating character
+;	c(value ) = Value of offset part of value
+;	c(valreg) = Index of register providing offset part if it came from
+;		      a register, 0FFh otherwise
+;	c(valsrg) = Index of register providing segment part if it came from
+;		      a register, 0FFh otherwise
+;	c(valtyp) = Type of field
+;	c(valsiz) = Size of field in bytes
+
+getatm:	CALL	getchr
+	CMPB	AL, #'-'		;Minus?
+	JNE	4$			;No
+	CALL	getatm			;Yes - get following value
+	JC	ret210			;If error
+	CMPB	valtyp, #VL_LONG	;Is it a simple value?
+	JA	sayxerr			;No - error
+	NEGL	value			;Yes - make it minus
+	CLC				;Make sure C is clear
+ret210:	RET				;Finished
+
+;Here if first character not "-"
+
+4$:	CMPB	AL, #'~'		;Complement?
+	JNE	8$			;No
+	CALL	getatm			;Yes - get following value
+	JC	ret210			;If error
+	CMPB	valtyp, #VL_LONG
+	JA	sayxerr
+	NOTL	value			;Complement value
+	CLC
+	RET				;Finished
+
+;Here if first character not "~"
+
+8$:	CMPB	AL, #0x27		;Single quote?
+	JNE	10$			;No
+	CALL	getchr			;Yes - get next character
+	MOVZBL	EDX, AL
+	JMP	12$			;Continue
+
+;Here if not single quote
+
+10$:	CMPB	AL, #0x22		;Double quote?
+	JNE	getnum			;No
+	CALL	getchr			;Yes - get next character
+	MOVZBL	EAX, AL
+	PUSHL	EAX			;Save it
+	CALL	getchr			;Get another character
+	POPL	EDX			;Restore first character
+	MOVB	DH, AL
+12$:	MOVB	notfst#, #1
+	MOVB	valtyp#, #VL_LONG	;Value is a long
+	MOVB	valsiz#, #4		;Size = 4 bytes
+	MOVB	notnul#, #1
+	MOVL	value#, EDX		;Store value
+	CALL	getchr#			;Get real stopper
+	MOVB	stoper#, AL
+	CLC
+	RET
+.PAGE
+;Here if not double quote - try to collect number
+
+getnum:	CMPB	AL, #'0'		;Is it a digit?
+	JC	getsym			;No - go collect symbol
+	CMPB	AL, #'9'+1
+	JNC	getsym
+	MOVB	notfst#, #1
+	MOVB	valtyp#, #VL_LONG	;Assume value is a long
+	MOVB	valsiz#, #4		;Assume size = 4 bytes
+	MOVB	notnul#, #1
+	MOVL	EBX, #digbuf#		;Point to digit buffer
+	MOVL	digpnt#, EBX
+	MOVB	digcnt#, #0		;Reset digit count
+6$:	ANDB	AL, #0x0F		;Get value
+	MOVL	EBX, digpnt#		;Store in digit buffer
+	MOVB	[EBX], AL
+	INCL	EBX
+	MOVL	digpnt#, EBX
+	INCB	digcnt#			;Count the digit
+	CALL	getchr			;Get next character
+	CALL	makupr#
+	CMPB	digcnt#, #MXDGLN	;Too many digits?
+	JA	16$			;Yes - stop here!
+	CMPB	AL, #'0'		;No - is this a digit?
+	JC	8$			;No
+	CMPB	AL, #'9'+1
+	JC	6$			;Yes - continue
+	CMPB	AL, #'A'		;Maybe - see if possible hex digit
+	JC	8$			;No
+	CMPB	AL, #'F'+1
+	JNC	8$			;No
+	ADDB	AL, #9			;Yes - adjust value
+	JMP	6$			;Continue
+
+;Here if not digit
+
+8$:	CMPB	AL, #'Q'		;Octal number?
+	JNE	10$			;No
+	MOVL	EAX, #8			;Yes - get radix
+	JMP	14$
+
+;Here if number not followed by the letter Q
+
+10$:	CMPB	AL, #'T'		;Decimal number?
+	JNE	12$			;No
+	MOVL	EAX, #10t		;Yes - get radix
+	JMP	14$
+
+;Here if number not followed by a period
+
+12$:	CMPB	AL, #'H'		;Hex number?
+	JNE	16$			;No
+	MOVL	EAX, #16t		;Yes - get radix
+14$:	MOVL	cradix#, EAX		;Store radix to use
+	CALL	getchr#			;Get stopper character
+	MOVB	stoper#, AL		;And store it
+	JMP	18$			;Continue
+
+;Here if radix not specified
+
+16$:	MOVB	stoper#, AL		;Remember stopper character
+	MOVL	EAX, iradix#		;Use default input radix
+	MOVL	cradix#, EAX
+18$:	CLRL	EAX			;Initialize value
+	CLRL	EDX
+	MOVL	ESI, #digbuf#
+20$:	DECB	digcnt#			;More values?
+	JS	22$			;No - end of number
+	MULL	cradix#			;Current value times current input
+	MOVZBL	ECX, [ESI]		;  radix
+	INCL	ESI
+	ADDL	EAX, ECX		;Plus next digit value
+	CMPL	ECX, cradix#		;Is this a legal value?
+	JC	20$			;Yes - continue
+	JMP	24$			;No - error
+
+;Here at end of number
+
+22$:	MOVL	value#, EAX		;Store value
+	MOVB	AL, stoper#		;Get stopper character
+	CLC				;Clear C
+	RET				;And return
+
+;Here if syntax error in atom
+
+24$:	STC				;Set C to indicate error
+	RET
+.PAGE
+;Here if atom may be a symbol
+
+getsym:	CALL	chksym			;Is this the start of a symbol?
+	JC	4$			;Yes
+	MOVB	stoper#, AL		;No - store stopper character
+	MOVL	value#, #0		;And store 0 for value
+	RET
+
+;Here with valid character to start symbol
+
+4$:	MOVB	valtyp#, #VL_LONG	;Assume value is a long
+	MOVB	valsiz#, #4		;Assume size = 4 bytes
+	MOVB	notnul#, #1
+	MOVB	symloc#, #0		;Assume global symbol
+	MOVL	EDI, #symbuf#		;Clear symbol buffer
+	MOVL	ECX, #SYMLEN/4
+	PUSHL	EAX
+	CLRL	EAX
+	RSTOSL	[EDI]
+	POPL	EAX
+	MOVL	EDI, #symbuf		;Point to start of symbol buffer
+	CALL	colsym			;Collect the symbol
+	MOVB	symsiz, BH		;Store length of symbol
+	CMPB	AL, #'#'		;Local symbol?
+	JE	10$			;Yes
+	CALL	chklns			;No - is it a line number symbol?
+	JC	14$			;Yes
+	MOVB	stoper, AL		;Store stopper character
+	JMP	gets20			;Continue
+
+;Here if have local symbol name
+
+10$:	CALL	getchr			;Get next character
+	CALL	chksym			;Start of module name?
+	JNC	14$			;No
+	MOVL	EDI, #modbuf#		;Yes - collect module name
+	CALL	colsym
+	MOVB	stoper, AL		;Store stopper
+	MOVL	ESI, #modbuf#		;Search for module name
+	CALL	fndmod
+	JE	16$			;Found it
+12$:	JMP	uerror			;Not there
+
+;Here if no module name follows
+
+14$:	MOVB	stoper#, AL		;Store stopper character
+	MOVL	EDI, opnmod#
+	TESTL	EDI, EDI		;Do we have a current module?
+	JE	12$			;No - give U error
+16$:	DECB	symloc#			;Indicate have local symbol
+	MOVZBL	EAX, [EDI]
+	ADDL	EAX, #sym32_name
+	ADDL	EDI, EAX
+	CALL	getlns			;Are we looking for a line number
+					;  symbol?
+	JC	gets80			;Yes
+	MOVL	EDX, #0x7FFFFFFF	;No
+	JMP	gets62
+.PAGE
+;See if this can be a register - if so, search the register table
+
+gets20:	CMPB	symloc#, #0		;Local symbol
+	JNE	gets60			;Yes - go on
+	CMPB	symsiz#, #7		;No - is the symbol too long for this?
+	JA	gets60			;Yes - don't bother with this search
+	CMPB	symsiz#, #1		;Might this be the current address?
+	JNE	2$			;No
+	CMPB	symbuf#, #'$'		;Maybe
+	JNE	2$			;No - go on
+	MOVL	EBX, opnaddr#		;Yes - get value
+	MOVB	valtyp#, #VL_LONG	;This is a 32-bit value
+gets36:	MOVB	AL, stoper#		;Get stoper
+	MOVL	value#, EBX		;Store value
+	CLC
+	RET
+
+;Here if not current address symbol
+
+2$:	MOVZBL	ECX, symsiz#		;Convert symbol to upper case
+	MOVL	ESI, #symbuf#
+	MOVL	EDI, #symbfx#
+	MOVL	EAX, #0x20202020
+	MOVL	[EDI], EAX
+	MOVL	4[EDI], EAX
+4$:	LODSB	[ESI]
+	CALL	makupr#
+	STOSB	[EDI]
+	LOOP	ECX, 4$
+.PAGE
+;See if it is a register name
+
+gets40:	CMPB	symsiz#, #4		;Might this be a register?
+	JA	gets60			;No - skip this stuff!
+	MOVL	ESI, #regtbl		;Yes - setup for search
+	MOVL	ECX, #REGNUM
+	MOVL	EAX, symbfx
+4$:	CMPL	[ESI], EAX
+	JE	6$			;If match
+	ADDL	ESI, #4			;No match - bump pointer
+	LOOP	ECX, 4$			;And continue if more to check
+	JMP	gets60			;No more - not a register
+
+;Here with match on register name
+
+6$:	SUBL	ESI, #regtbl		;Calculate register index
+	MOVL	EBX, ESI
+	SHRL	EBX, #2
+	MOVB	valreg, BL		;Save index in case need to change
+					;  register contents later
+	MOVB	AL, regsiz[EBX]		;Get size of register
+	MOVB	valsiz, AL
+	MOVB	valtyp, #VL_REG		;Assume should not get contents
+	CMPB	notfst, #0		;Should we get contents of register?
+	JNE	gets36			;No
+	MOVZBL	EBX, rgltbl#[EBX]	;Yes
+	CMPB	valsiz, #1		;Byte register?
+	JNE	12$			;No
+	MOVB	valtyp, #VL_BYTE	;Yes - value is a byte
+	MOVZBL	EBX, uregbase#[EBX]	;Get contents of register
+	JMP	gets36
+
+;Here if not byte register
+
+12$:	MOVB	valtyp, #VL_LONG	;Assume value is a long
+14$:	CMPB	valsiz, #4		;Really a long?
+	JE	16$			;Yes
+	INCB	valtyp			;No - change to word
+	MOVZWL	EBX, uregbase#[EBX]	;Get contents of register
+	JMP	gets36			;Continue
+
+;Here if long register
+
+16$:	MOVL	EBX, uregbase#[EBX]	;Get contents of register
+	JMP	gets36
+.PAGE
+;Define the register tables
+
+	.MACRO	REGS
+	XX	{AL  }, 1	;RG_AL   = 0
+	XX	{AH  }, 1	;RG_AH   = 1
+	XX	{BL  }, 1	;RG_BL   = 2
+	XX	{BH  }, 1	;RG_BH   = 3
+	XX	{CL  }, 1	;RG_CL   = 4
+	XX	{CH  }, 1	;RG_CH   = 5
+	XX	{DL  }, 1	;RG_DL   = 6
+	XX	{DH  }, 1	;RG_DH   = 7
+	XX	{AX  }, 2	;RG_AX   = 8
+	XX	{BX  }, 2	;RG_BX   = 9
+	XX	{CX  }, 2	;RG_CX   = 10
+	XX	{DX  }, 2	;RG_DX   = 11
+	XX	{SI  }, 2	;RG_SI   = 12
+	XX	{DI  }, 2	;RG_DI   = 13
+	XX	{BP  }, 2	;RG_BP   = 14
+	XX	{SP  }, 2	;RG_SP   = 15
+	XX	{EAX }, 4	;RG_EAX  = 16
+	XX	{EBX }, 4	;RG_EBX  = 17
+	XX	{ECX }, 4	;RG_ECX  = 18
+	XX	{EDX }, 4	;RG_EDX  = 19
+	XX	{ESI }, 4	;RG_ESI  = 20
+	XX	{EDI }, 4	;RG_EDI  = 21
+	XX	{EBP }, 4	;RG_EBP  = 22
+	XX	{ESP }, 4	;RG_ESP  = 23
+	XX	{CS  }, 4	;RG_CS   = 24
+	XX	{DS  }, 4	;RG_DS   = 25
+	XX	{SS  }, 4	;RG_SS   = 26
+	XX	{ES  }, 4	;RG_ES   = 27
+	XX	{FS  }, 4	;RG_FS   = 28
+	XX	{GS  }, 4	;RG_GS   = 29
+	XX	{IP  }, 4	;RG_IP   = 30
+	XX	{EIP }, 4	;RG_EIP  = 31
+	XX	{FR  }, 2	;RG_FR   = 32
+	XX	{EFR }, 4	;RG_EFR  = 33
+;	XX	{LDTR}, 2	;RG_LDTR = 34
+;	XX	{MSW }, 2	;RG_MSW  = 35
+;	XX	{TR  }, 2	;RG_TR   = 36
+;	XX	{GDTR}, 6	;RG_GDTR = 37
+;	XX	{IDTR}, 6	;RG_IDTR = 38
+	.ENDM
+
+;Generate the register name table
+
+	.MACRO	XX  name, size
+	.ASCII	"name"
+	.ENDM
+
+regtbl::REGS
+REGNUM==!{$-regtbl}/4
+
+;Genernate the register size table
+
+	.MACRO	XX  name, size
+	.BYTE	size
+	.ENDM
+
+regsiz:	REGS
+.PAGE
+;Here if not register name - now search the symbol table
+
+gets60:	MOVL	EDI, geckosymtbl#
+	MOVL	EDX, geckosymcnt#	;Get number of symbols
+	TESTL	EDX, EDX		;Any symbols at all?
+	JE	uerror			;No
+gets62:	TESTB	sym32_flag[EDI], #SF$MOD
+	JE	10$			;No
+	CMPB	symloc#, #0		;Yes - searching for local symbol?
+	JNE	uerror			;Yes - fail
+	JMP	18$			;No - continue
+
+;Here if not module name
+
+10$:	MOVB	CL, symsiz#		;Get symbol length
+	CMPB	CL, [EDI]
+	JNE	18$			;No - can't have match!
+	MOVB	AL, symloc#
+	TESTB	sym32_flag[EDI], #SF$GLB
+	JNE	12$			;Yes
+	NOTB	AL			;No
+12$:	ORB	AL, AL			;Same kind?
+	JNE	18$			;No - ignore it!
+	PUSHL	EDI			;Yes
+	ADDL	EDI, #sym32_name	;Point to start of symbol name
+	MOVL	ESI, #symbuf#		;Point to start of this symbol
+	RECMPSB	[EDI], [ESI]		;Compare symbol to table
+	POPL	EDI
+	JNE	18$			;If no match
+13$:
+	MOVL	EBX, sym32_ofs[EDI]
+	MOVB	valtyp#, #VL_LONG	;Its a long
+	JMP	gets36
+
+;Here if symbol does not match
+
+18$:	MOVZBL	ECX, [EDI]
+	ADDL	ECX, #sym32_name	;Plus length of other stuff in table
+	ADDL	EDI, ECX		;Bump pointer
+	DECL	EDX			;Reduce count	
+	JNE	gets62			;Continue searching if more
+
+;Here if symbol is not found in symbol table
+
+uerror::MOVL	EBX, #underr#		;Complain (undefined)
+	CALL	outstr#
+	STC				;Indicate error
+	RET				;And return
+
+;Here if searching for line number symbol - we do this search differently
+;  since user may not know which lines have symbols! - if there is a symbol
+;  for a lower numbered line, it will be used, if there is not, but there is
+;  a symbol for a higher numbered line, it will be used.  This routine
+;  assumes that the line number symbols will be in the symbol table in
+;  increasing order!
+
+gets80:	MOVL	EBP, EAX
+	CMPL	geckosymcnt#, #0	;Have any symbols at all?
+	JE	uerror			;No
+	MOVB	CH, #0			;Setup for compare
+	MOVW	tmpdif, #0
+22$:	TESTB	sym32_flag[EDI], #SF$MOD ;Module name?
+	JNE	32$			;Yes - end of stuff to search here
+	TESTB	sym32_flag[EDI], #SF$GLB ;No - global symbol?
+	JNE	30$			;Yes
+	CALL	getlnx			;No - is this a line number symbol?
+	JNC	30$			;No
+	CMPL	EAX, EBP		;Yes - is it the one we want?
+	JE	34$			;Yes
+	JB	26$			;No - less than the one we want?
+	CMPL	tmpdif#, #0		;No - is this the first one?
+	JE	34$			;Yes - use it
+	MOVL	EDI, tmppnt#		;No - use last one we found
+	JMP	34$
+
+26$:	MOVL	tmpdif#, EAX
+	MOVL	tmppnt#, EDI
+
+;Here if symbol does not match
+
+30$:	MOVZBL	ECX, [EDI]
+	ADDL	ECX, #sym32_name.B	;Plus length of other stuff in table
+	ADDL	EDI, ECX		;Bump pointer
+	JMP	22$			;Continue
+
+;Here if exact match not found
+
+32$:	CMPL	tmpdif#, #0		;Did we find any at all?
+	JE	uerror			;No
+	MOVL	EDI, tmppnt#		;Yes - return last one we found
+34$:	MOVB	lnsflg#, #1		;Indicate have a line number symbol
+	JMP	13$
+.PAGE
+;Subroutine to determine if a character can be the first character in a symbol
+;	c(AL) = Character
+;	CALL	chksym
+;	C:set = Valid as start of symbol
+
+chksym:	CMPB	AL, #'A'
+	JC	chks02
+	CMPB	AL, #'Z'+1
+	JC	ret212			;Letters are OK
+chks02:	CMPB	AL, #'a'		;So are lower case letters
+	JC	chks04
+	CMPB	AL, #'z'+1
+	JC	ret212
+chks04:	CMPB	AL, #'.'
+	JE	chks06
+	CMPB	AL, #25h
+	JE	chks06
+	CMPB	AL, #'$'
+	JE	chks06
+	CMPB	AL, #'%'
+	JE	chks06
+	CMPB	AL, #'@'
+	JE	chks06
+	CMPB	AL, #'_'
+	JE	chks06
+	CMPB	AL, #'?'
+	JE	chks06
+	CLC
+ret212:	RET
+
+chks06:	STC				;Indicate valid
+	RET
+.PAGE
+;Subroutine to collect characters for symbol
+;	c(AL)  = First character for symbol
+;	c[EDI] = Offset for symbol buffer
+;	CALL	colsym
+;	c(AL) = Stopper character
+;	c(BH) = Length of symbol
+
+colsym:	MOVB	BH, #0
+2$:	CMPB	BH, #SYMLEN		;Is symbol too large?
+	JNC	4$.S			;Yes - discard this character
+	MOVB	[EDI], AL		;No - store character in buffer
+	INCL	EDI			;Bump pointer
+	INCB	BH			;And bump count
+4$:	CALL	getchr			;Get next character
+	CMPB	AL, #'0'		;Check for digit first
+	JB	6$.S			;Not digit
+	CMPB	AL, #'9'
+	JBE	2$.S			;Digit - use it
+6$:	CALL	chksym			;Check remaining characters
+	JC	2$.S			;Use character in symbol
+	RET
+.PAGE
+;Subroutine to search for module name in symbol table
+;	c[ESI] = Offset of name to search for
+;	c(BH)  = Length of name
+;	CALL	fndmod
+;	Z:set = Found
+;	  c[EDI] = Offset of symbol table entry for module name
+;	Z:clr = Not found
+
+fndmod::MOVL	EDI, geckosymtbl 	;Point to symbol table
+	MOVL	EDX, geckosymcnt  	;Get length of table
+fndmd2:	TESTL	EDX, EDX
+	JNE	fndmd6			;If more
+	CALL	uerror			;No - more give U error
+	INCL	EDX			;Clear Z
+fndmd4:	RET				;And return
+
+;Here with another symbol table entry to check
+
+fndmd6:	TESTB	sym32_flag[EDI], #SF$MOD ;Is this a module name?
+	JE	fndmd8			;No
+	MOVB	CL, [EDI]		;Yes - get length of symbol name
+	CMPB	CL, BH			;Same length as what we want?
+	JNE	fndmd8			;No - can't match
+	MOVB	CH, #0			;Yes
+	PUSHL	EDI
+	PUSHL	ESI
+	ADDL	EDI, #sym32_name
+	RECMPSB	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	JE	fndmd4			;Found it - return with Z set
+fndmd8:	MOVZBL	EAX, [EDI]
+	ADDL	EAX, #sym32_name
+	ADDL	EDI, EAX
+	DECL	EDX			;Reduce count
+	JMP	fndmd2			;Continue
+.PAGE
+;Subroutine to see if symbol in symbuf is a line number symbol
+;	CALL	chklns
+;	C:set = Line number symbol
+;	C:clr = Not line number symbol
+
+chklns:	MOVZBL	ECX, symsiz
+	MOVL	ESI, #symbuf
+	CMPB	CL, #1			;Might it be a line number symbol?
+	JBE	retcc6			;No
+	CMPB	[ESI], #'$'		;Maybe
+	JNE	retcc6			;No
+	INCL	ESI			;Maybe - see if rest is just digits
+	DECB	CL
+4$:	CMPB	[ESI], #'0'
+	JB	retcc6			;Not line number
+	CMPB	[ESI], #'9'
+	JA	retcc6
+	INCL	ESI
+	LOOP	ECX, 4$
+	STC
+	RET
+
+retcc6:	CLC
+	RET
+.PAGE
+;Subroutine to get vlaue of line number symbol in symbuf
+;	CALL	getlns
+;	C:set = Line number symbol
+;	  c{EAX} = Value of line number
+;	C:clr = Not line number symbol
+
+getlns:	MOVZBL	ECX, symsiz
+	MOVL	ESI, #symbuf
+	PUSHL	ES
+	PUSHL	DS
+	POPL	ES
+	CALL	getln2
+	POPL	ES
+	RET
+
+;Subroutine to get value of line number symbol from symbol table
+;	c{EDI} = Offset of entry
+;	CALL	getlnx
+;	C:set = Line number symbol
+;	  c{EAX} = Value of line number
+;	C:clr = Not line number symbol
+
+getlnx:	MOVZBL	ECX, [EDI]		;Get length of symbol
+	LEAL	ESI, sym32_name.B[EDI]
+getln2:	CMPB	CL, #1			;Might it be a line number symbol?
+	JBE	retcc6			;No
+	CMPB	[ESI], #'$'		;Maybe
+	JNE	retcc6			;No
+	INCL	ESI			;Maybe
+	DECB	CL
+	CLRL	EAX
+4$:	MOVZBL	EBX, [ESI]
+	CMPB	BL, #'0'
+	JB	retcc6			;Not line number
+	CMPB	BL, #'9'
+	JA	retcc6
+	IMULL	EAX, #10t
+	ANDB	BL, #0Fh
+	ADDL	EAX, EBX
+	INCL	ESI
+	LOOP	ECX, 4$
+	STC
+	RET
+.PAGE

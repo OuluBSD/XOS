@@ -1,0 +1,16 @@
+
+gc_adpllctrl =!0x06014
+gc_a0dplldiv =!0x06040
+gc_a1dplldiv =!0x06044
+
+gc_ahtotal   =!0x60000
+gc_ahblank   =!0x60004
+gc_ahsync    =!0x60008
+gc_avtotal   =!0x6000C
+gc_avblank   =!0x60010
+gc_avsync    =!0x60014
+
+gc_apipesrc  =!0x6001C
+
+gc_adsplinoff=!0x70184
+gc_adspstride=!0x70188

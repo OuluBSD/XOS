@@ -1,0 +1,90 @@
+	.TITLE	$i8nul - 64-bit multiply functions for OWCX
+	.SBTTL	STDC run-time library for XOS
+
+;*****************************************************************************
+;*
+;*                            Open Watcom Project
+;*
+;*    Portions Copyright (c) 1983-2002 Sybase, Inc. All Rights Reserved.
+;*
+;*  ========================================================================
+;*
+;*    This file contains Original Code and/or Modifications of Original
+;*    Code as defined in and that are subject to the Sybase Open Watcom
+;*    Public License version 1.0 (the 'License'). You may not use this file
+;*    except in compliance with the License. BY USING THIS FILE YOU AGREE TO
+;*    ALL TERMS AND CONDITIONS OF THE LICENSE. A copy of the License is
+;*    provided with the Original Code and Modifications, and is also
+;*    available at www.sybase.com/developer/opensource.
+;*
+;*    The Original Code and all software distributed under the License are
+;*    distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+;*    EXPRESS OR IMPLIED, AND SYBASE AND ALL CONTRIBUTORS HEREBY DISCLAIM
+;*    ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF
+;*    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR
+;*    NON-INFRINGEMENT. Please see the License for the specific language
+;*    governing rights and limitations under the License.
+;*
+;*****************************************************************************
+
+;++++
+; Modifications to this software are in the public domain.  It may be freely
+; copied and used for whatever purpose you see fit, including commerical
+; uses, remembering that the original part of this software is still covered
+; by the Open Watcom license. uses.  Anyone modifying this software may claim
+; ownership of the modifications, but not the complete derived code.  It would
+; be appreciated if the authors were told what this software is being used
+;  for, but this is not a requirement.
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+	.INCLUD	XOSINC:\xmac\ctype.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+
+;Function to multiply two 64-bit values
+;	c{EDX,EAX} = First value
+;	c{ECX,EBX} = Second value
+;	CALL	__I8M
+;	c{EDX,EAX} = Product
+;  ECX and EBX are destroyed
+
+	.ENTRY	__I8M, __U8M
+__I8M:
+__U8M:	TESTL	EDX, EDX		;First check for easy case
+        JNE     10$
+        TESTL	ECX, ECX
+        JNE     10$
+	MULL	EBX
+	RET
+
+;Here if high words are not both 0
+
+10$:	PUSHL	EAX			;Save M1.low
+	PUSHL	EDX			;Save M1.high
+	MULL	ECX             	;Get M1.low * M2.high -> EAX
+	MOVL    ECX, EAX		;Save M1.low * M2.high in ECX
+	POPL	EAX			;Get M1.high in EAX
+	MULL	EBX			;Get M1.high * M2.low -> EAX
+	ADDL	ECX, EAX		;Add above to previous total
+	POPL	EAX			;Get M1.l in EAX
+	MULL	EBX			;Get M1.l * M2.l -> EDX:EAX
+	ADDL	EDX, ECX		;Add previous hiword contribs to hiword
+        RET
+
+	.END

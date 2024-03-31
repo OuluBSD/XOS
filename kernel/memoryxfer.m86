@@ -1,0 +1,562 @@
+	.TITLE	memoryxfer - Memory allocation routine for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+	CODE
+
+;Function to transfer msects to another process
+;	long xfermsect(
+;	    PDA  *pda,		// Actual address of destination PDA
+;	    long *memlist,	// Address of address list
+;	    long  memsize);	// Length of the address list (bytes)
+;  Value returned is 0 if normal or a negative XOS error code if error. On
+;    an error return it is up to the caller to determine if the msect is
+;    still allocated.
+
+;Each entry in the address list consists of 2 longs. The first contains the
+;  address of the msect to be moved and the second contains the address for
+;  the msect in the destination process. The memsize argument will be 8 times
+;  the number of entires in the address list.
+
+;This function works by constructing a list of the pages in the msects,
+;  clearing all of the map entries for those pages, and then passing the
+;  page list to an exec signal executing in the context of the base thread
+;  for the destination process.  This routine reconstructs the msects in its
+;  own address space using the page list. This is somewhat convoluted, but it
+;  does solve two major problems:
+;	Trying to allocate memory resources for another process (XOS has no
+;	  good provisions for this)
+;	Copying entries between two unrelated page maps (either we make an
+;	  intermediate copy in globally mapped memory or we do a LOT of map
+;	  switching (twice per page!))
+;  If something goes wrong after the memory has been passed to the destination
+;  process, all of the memory being transfered is discarded.  This is unlikely,
+;  the only possible causes being lack of memory to allocate additional page
+;  tables, or a memory address conflict if there is memory currently allocated
+;  in the destination process. Errors detected before the memory is transfered
+;  have no effect on the memory in question.
+
+;The list transfered to the destination process is stored in an XMB. It
+;  consists of the address of an MDB followed by the physical addresses of
+;  each page in the MDB. There is no count in the list, the number of
+;  addresses in the list is determined from the size of the msect (mdb_size).
+;  This is repeated for each msect.
+
+;Define offsets in the memory page list buffer
+
+$$$=!0
+BLK mpl_label, 4		;Label (XFMS)
+BLK mpl_mscnt, 4		;Number of msects to transfer
+BLK mpl_xpcnt, 4		;Number of extra memory pages needed for
+				;  page tables
+BLK mpl_fpntr, 0		;First pointer
+
+;The pointers consist of the address of an MDB followed by the physical
+;  address of each page in the msect. This is immediately followed by
+;  the address of the next MDB.
+
+$$$=!0
+FRM xfm_mdb  , 4		;Address of the MDB
+FRM xfm_pntr , 4		;Address of pointer to the MDB
+FRM xfm_xmb  , 4		;Address of the page list XMB
+FRM xfm_pgcnt, 4		;Page count
+FRM xfm_xpcnt, 4		;Extra (page table) count
+FRM xfm_count, 4		;Msect counter
+FRM xfm_mslst, 8*8		;Copy of caller's memory list
+FRM xfm_mspnt, 4
+xfm_SIZE=!$$$
+
+xfm_pda    =!28t
+xfm_memlist=!24t
+xfm_memsize=!20t
+
+xfermsects::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	xfm_SIZE, 0
+	SHRL	xfm_memsize[EBP], #3	;Get number of msects in the list
+	JE	xfmdone
+	MOVL	EAX, xfm_memsize[EBP]
+	CMPL	EAX, #8
+	JA	xfmverr
+	MOVL	xfm_count[EBP], EAX
+	CLRL	EAX
+	MOVL	xfm_xpcnt[EBP], EAX
+	MOVL	xfm_xmb[EBP], EAX
+	MOVL	xfm_pgcnt[EBP], EAX
+	MOVL	ESI, xfm_memlist[EBP] 
+	LEAL	EAX, xfm_mslst[EBP]
+	MOVL	xfm_mspnt[EBP], EAX
+
+;Initial loop which verifies that the specified msects can be transfered and
+;  copies the addresses to our local buffer
+
+	IFFAULT	xfmader
+xfmlp1:	
+	MOVL	EDX, xfm_mspnt[EBP]
+	MOVL	EAX, 4[ESI]
+	MOVL	4[EDX], EAX
+	MOVL	EAX, [ESI]
+	MOVL	[EDX], EAX
+	ADDL	xfm_mspnt[EBP], #8
+	PUSHL	EAX			;Find MDB for the msect
+	PUSHL	#0
+	LEAL	EAX, xfm_mdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemFindMsect#
+	TESTL	EAX, EAX
+	JS	xfmerr
+	JE	xfmnoms
+	MOVL	EDI, xfm_mdb[EBP]
+	CMPB	mdb_devtype[EDI], #0	;Simple msect?
+	JNE	xfmbadms		;No - fail
+
+;Following loop verifies that all of the pages in the msect can be given up
+
+	MOVL	ECX, mdb_size[EDI]
+	MOVL	EDX, mdb_base[EDI]
+	SHRL	EDX, #10t
+	ADDL	EDX, #knlPgTable#
+4$:	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE#		;Get corresponding memory table entry
+	POPL	EDX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JE	xfmbadms		;Fail if physical page
+	CMPL	EDI, 4[EAX]
+	JNE	xfmbadms
+	CMPB	3[EAX], #0		;Is this page locked?
+	JNE	xfmlocked		;Yes - fail!
+	MOVZBL	EAX, 2[EAX]		;Is it a normal private user page?
+	ANDL	EAX, #0xF0
+	CMPB	AL, #MT_PUSER<4
+	JNE	xfmbadpg
+	ADDL	EDX, #4			;No - bump pointer
+	LOOP	ECX, 4$			;Continue if more to check
+
+;Here if this msect can be transfered
+
+	MOVL	EAX, mdb_size[EDI]
+	ADDL	xfm_pgcnt[EBP], EAX
+	ADDL	ESI, #8
+	DECL	xfm_count[EBP]
+	JNE	xfmlp1
+
+;Here with all msects checked
+
+xfmmkpl:MOVL	EAX, xfm_memsize[EBP]
+	ADDL	EAX, xfm_pgcnt[EBP]
+	SHLL	EAX, #2
+	ADDL	EAX, #mpl_fpntr
+	PUSHL	EAX
+	LEAL	EAX, xfm_xmb[EBP]
+	PUSHL	EAX
+	CALL	sysMemGetXmb#
+	TESTL	EAX, EAX
+	JS	xfmerr
+	MOVL	ESI, xfm_xmb[EBP]
+	MOVL	mpl_label[ESI], #'XFMS'
+	ADDL	ESI, #mpl_fpntr
+	LEAL	EAX, xfm_mslst[EBP]
+	MOVL	xfm_mspnt[EBP], EAX
+
+;Start of the loop for transferring msects
+
+xfmlp2:	MOVL	EDX, xfm_mspnt[EBP]
+	IFFAULT	xfmader
+	MOVL	EDX, [EDX]		;Get the base address
+	PUSHL	EDX			;Find MDB for the msect
+	LEAL	EAX, xfm_pntr[EBP]
+	PUSHL	EAX
+	LEAL	EAX, xfm_mdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemFindMsect#
+	TESTL	EAX, EAX
+	JS	xfmerr
+	JE	20$			;This will happen if the same address
+					;  is specified more than once in the
+	MOVL	EDI, xfm_mdb[EBP]	;  list!
+	MOVL	[ESI], EDI		;Store address of the MDB
+	ADDL	ESI, #4
+	INCL	xfm_count[EBP]
+	MOVL	EAX, mdb_next[EDI]	;Unlink the MDB
+	MOVL	EBX, xfm_pntr[EBP]
+	MOVL	[EBX], EAX
+	MOVL	EAX, xfm_xmb[EBP]	;Put the address of the page list XMB
+	MOVL	mdb_next[EDI], EAX	;  in mdb_next (The receiving routine
+					;  checks for this.)
+	MOVL	ECX, mdb_size[EDI]	;Get number of pages in the msect
+	MOVL	EAX, knlPda+pdaSpy#
+	SUBL	pspy_wspages[EAX], ECX
+	SUBL	pspy_umpages[EAX], ECX
+	MOVL	EAX, ECX		;Determine the number of page table
+	ADDL	EAX, #0x0FFFFF		;  pages needed to map this msect
+	SHRL	EAX, #20t
+	TESTL	mdb_base[EDI], #0x0FFFFF ;Do we need an extra page?
+	JE	14$			;No
+	MOVL	EDX, ECX		;Maybe
+	ANDL	EDX, #0x0FFFFF
+	DECL	EDX
+	JE	14$			;No
+	INCL	EAX			;Yes
+14$:	ADDL	xfm_xpcnt[EBP], EAX
+	MOVL	EDX, mdb_base[EDI]	;Get linear address for the msect
+	SHRL	EDX, #10t		;Change to page table offset
+	ADDL	EDX, #knlPgTable#
+16$:	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE#		;Get corresponding memory table entry
+	POPL	EDX
+	POPL	ECX
+	XORL	[EAX], #{MT_XFER^MT_PUSER}<20t ;Change to "in transit" page
+	MOVL	EAX, [EDX]		;Get page table entry
+	MOVL	[ESI], EAX		;Store it in the page list
+	MOVL	[EDX], #0		;Clear out the page table entry
+	ADDL	ESI, #4
+	ADDL	EDX, #4			;Bump page table pointer
+	TESTL	EDX, #0x03FF		;Did we just leave a page table page?
+	JNE	18$			;No
+	PUSHL	ECX
+	PUSHL	EDX
+	MOVL	EAX, EDX
+	SUBL	EAX, #knlPgTable#	;Yes - see if we should give up the page
+	PUSHL	EAX			;  table page
+	CALL	givepgtbl#
+	POPL	EDX
+	POPL	ECX
+18$:	LOOP	ECX, 14$		;Loop if more pages in this msect
+	TESTL	EDX, #0x03FF		;Did we just check this page?
+	JE	20$			;Yes - don't check it again
+	MOVL	EAX, EDX
+	SUBL	EAX, #knlPgTable#	;No - see if we should give up the page
+	PUSHL	EAX			;  table page
+	CALL	givepgtbl#
+20$:	MOVL	EAX, xfm_mspnt[EBP]	;Put the target address in the MDB
+	MOVL	EAX, 4[EAX]
+	MOVL	mdb_base[EDI], EAX
+	ADDL	xfm_mspnt[EBP], #8
+	DECL	xfm_memsize[EBP]	;Continue if more msects to transfer
+	JG	xfmlp2
+.PAGE
+;When get here we have the MDB and page list complete and are ready to send
+;  it to the destination process
+
+xfmmldn:MOVL	EDI, xfm_xmb[EBP]	;Get address of the page list
+	MOVL	EAX, xfm_count[EBP]
+	MOVL	mpl_mscnt[EDI], EAX
+	MOVL	EAX, xfm_xpcnt[EBP]	;Get number of page directory pages
+	MOVL	mpl_xpcnt[EDI], EAX	;  needed
+	MOVL	knlTda+tdaResponse#, #0	;Indicate no response now
+	TOFORK
+	PUSHL	EDI			;Request an exec signal
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#2
+	PUSHL	#xfermsrcv
+	PUSHL	xfm_pda[EBP]
+	CALL	sysSchReqXSig#
+	ADDL	ESP, #20t
+8$:	PUSHL	knlTda+tdaAddr#
+	PUSHL	#THDS_MEMX
+	CALL	sysSchRequeue#		;Requeue to the suspend queue
+	PUSHFL
+	CALLF	knlSchedule#		;Call the scheduler (this is an
+					;  uninterruptable wait!)
+	MOVL	EAX, knlTda+tdaResponse# ;Do we have a response?
+	TESTL	EAX, EAX
+	JE	10$			;No - go wait some more
+	BTL	EAX, #31t		;Yes - set C if error
+xfmdone:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	20t			;Finished
+
+10$:	TOFORK
+	JMP	8$
+
+xfmnoms:MOVL	EAX, #ER_NOMEM
+	JMP	xfmerr
+
+;Here if have a locked page
+
+xfmlocked:
+	MOVL	EAX, #ER_MPILK
+	JMP	xfmerr
+
+xfmbadpg:
+	MOVL	EAX, #ER_NSPMP
+	JMP	xfmerr
+
+;Here if have a non-private msect (shared or device mapped
+
+xfmbadms:
+	MOVL	EAX, #ER_MSNPR
+	JMP	xfmerr
+
+xfmverr:MOVL	EAX, #ER_VALUE
+	JMP	xfmerr
+
+	FAULTHDR
+xfmader:MOVL	EAX, #ER_ADRER
+
+;Here with an error before we have changed any memory allocation. (We should
+;  not have errors after we start changing things since we check for everything
+;  that can go wrong first!) All we have to do is give up the XMB if we have
+;  allocated it.
+
+xfmerr:	CMPL	xfm_xmb[EBP], #0
+	JE	xfmdone
+	PUSHL	EAX
+	PUSHL	xfm_xmb[EBP]
+	CALL	sysMemGiveXmb#
+	POPL	EAX
+	JMP	xfmdone
+.PAGE
+;Exec software interrupt routine executed to receive msects
+;	void xfermsrcv(
+;	    SLB *slb);
+
+$$$=!0
+FRM xmr_srcpda  , 4t
+FRM xmr_begin   , 4t
+FRM xmr_pagelist, 4t
+FRM xmr_num     , 4t
+FRM xmr_count   , 4t
+FRM xmr_pntr    , 4t
+FRM xmr_mdb     , 4t
+xmr_SIZE=!$$$
+
+xmr_slb=!20t
+
+xfermsrcv:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	xmr_SIZE, 0		;Set up our stack frame
+	MOVL	ESI, xmr_slb[EBP]
+	MOVL	ESI, slb_data+4[ESI]
+	CMPL	[ESI], #'XFMS'		;Valid page list?
+	JNE	xmrcrsh
+	MOVL	xmr_pagelist[EBP], ESI	;Ok - save its address
+	MOVL	EAX, mpl_mscnt[ESI]	;Number of msects
+	MOVL	xmr_num[EBP], EAX
+	MOVL	xmr_count[EBP], EAX
+	MOVL	EAX, mpl_xpcnt[ESI]	;Get number of extra page we will need
+	ADDL	EAX, #4			;Plus 4
+	CMPL	EAX, knlMemAvail#	;Is there enough memory available?
+	JA	xmrnema			;No - fail!
+
+;Make a first pass through the list and determine if there are any conflicts
+;  with any existing segments. We know there are no conflicts between any of
+;  the msects being transferred since they were all previously in a single
+;  address space. This pass is only needed if there are any msects currently
+;  allocated but we do it anyway to check the validity of the list.
+
+	ADDL	ESI, #mpl_fpntr		;Point to first entry
+xmrlp1:	MOVL	EDI, [ESI]		;Get address of an MDB
+	CMPL	mdb_label[EDI], #'MDB*'	;Really an MDB?
+	JNE	xmrcrsh			;No!!
+	MOVL	EBX, xmr_pagelist[EBP]	;Is it one of ours?
+	CMPL	EBX, mdb_next[EDI]
+	JNE	xmrcrsh			;No!
+	MOVL	EAX, mdb_base[EDI]	;OK - get base address of the MDB
+	PUSHL	EAX			;See if it already exists or find
+	LEAL	EAX, xmr_pntr[EBP]	;  where it goes if does not exits
+	PUSHL	EAX
+	LEAL	EAX, xmr_mdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemFindMsect#
+	TESTL	EAX, EAX
+	JS	xmrerr
+	JNE	xmrmacft		;If exists
+	MOVL	ECX, xmr_mdb[EBP]
+	TESTL	ECX, ECX		;Have an msect after this one?
+	JE	6$			;No
+	MOVL	EAX, mdb_size[EDI]	;Yes - check for conflict
+	SHLL	EAX, #12t
+	ADDL	EAX, mdb_base[EDI]
+	CMPL	EAX, mdb_base[ECX]
+	JA	xmrmacft		;If conflict
+6$:	MOVL	EBX, xmr_pntr[EBP]
+	CMPL	EBX, #knlPda+pdaFirstMdb# ;Have an msect before this one?
+	JE	8$			;No
+	MOVL	EAX, mdb_size-mdb_next[EBX] ;Yes - check for conflict
+	SHLL	EAX, #12t
+	ADDL	EAX, mdb_base-mdb_next[EBX]
+	CMPL	EAX, mdb_base[EDI]
+	JA	xmrmacft		;If conflict
+8$:	MOVL	EAX, mdb_size[EDI]	;OK - advance to next MDB in the list
+	INCL	EAX
+	SHLL	EAX, #2
+	ADDL	ESI, EAX
+	DECL	xmr_count[EBP]
+	JNE	xmrlp1			;Continue if more to check
+
+;Here with everything checked - No errors should be detected after this point!
+
+	MOVL	ESI, xmr_pagelist[EBP]
+	ADDL	ESI, #mpl_fpntr
+xmrlp2:	MOVL	EDI, [ESI]		;Get address of next MDB
+	ADDL	ESI, #4t
+	PUSHL	mdb_base[EDI]		;Get base address of the MDB
+	LEAL	EAX, xmr_pntr[EBP]
+	PUSHL	EAX
+	LEAL	EAX, xmr_mdb[EBP]
+	PUSHL	EAX
+	CALL	sysMemFindMsect#
+	TESTL	EAX, EAX
+	JS	xmrcrsh
+	JNE	xmrcrsh			;If exists (We already checked!)
+	MOVL	EBX, xmr_pntr[EBP]
+	MOVL	ECX, xmr_mdb[EBP]
+	MOVL	[EBX], EDI
+	MOVL	mdb_next[EDI], ECX
+	MOVL	ECX, mdb_size[EDI]	;Get size of the msect
+	MOVL	EDX, knlPda+pdaSpy#
+	ADDL	pspy_wspages[EDX], ECX	;Add into memory counts for process
+	ADDL	pspy_umpages[EDX], ECX
+	MOVL	EDX, mdb_base[EDI]	;Get base address of the msect
+	SHRL	EDX, #10t		;Change to page table entry address
+	ADDL	EDX, #knlPgTable#
+	MOVL	xmr_begin[EBP], ESI	;Remember where we started in case of
+					;  error
+20$:	MOVL	EAX, [ESI]		;Copy the page table entry
+	IFFAULT	xmrpf
+xmrcp:	MOVL	[EDX], EAX
+	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	sysMemGetMTE#		;Get corresponding memory table entry
+	POPL	EDX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JE	xmrcrsh			;Fail if physical page
+	MOVZBL	EBX, 2[EAX]		;Is this an "in transit" page?
+	ANDL	EBX, #0xF0
+	CMPL	EBX, #MT_XFER<4
+	JNE	xmrcrsh			;No!
+	CMPL	EDI, 4[EAX]		;Yes - is it for our MDB?
+	JNE	xmrcrsh			;No!
+	XORL	[EAX], #{MT_PUSER^MT_XFER}<20t ;Yes - change to to a private
+					       ;  user page
+	ADDL	EDX, #4			;Bump pointers
+	ADDL	ESI, #4
+	LOOP	ECX, 20$		;Continue if more pages for the msect
+	DECL	xmr_num[EBP]		;More msects?
+	JNE	xmrlp2			;Yes - continu
+	MOVL	EAX, #1			;No - finished
+xmrdone:PUSHL	EAX			;Save the return value
+	PUSHL	xmr_pagelist[EBP]	;Give up the page list buffer
+	CALL	sysMemGiveXmb#
+	MOVL	EBX, xmr_slb[EBP]	;Get address of the source TDA
+	MOVL	EBX, slb_data+0[EBX]
+	POPL	tdaResponse#[EBX]	;Give him the return value
+	TOFORK
+	PUSHL	EBX			;Wake him up
+	CALL	sysSchRunRequeue#
+	FROMFORK
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Here if have some fatal error. This includes and incorrect MDB/page list and
+;  all errors detected after we have started actually creating msects. We
+;  atempt to check for all possible errors before actually creating any msects
+;  so this should never happen!
+xmrcrsh:CRASH	XMERR			;[Xfer Memory ERRor]
+
+;Here on some kind of error - All recoverable errors are detected before any
+;  memory is actually set up for t his process so cleanup here is relatively
+;  easy. Each MDB is simply given up and each memory pages is put on the
+;  memory free list.
+
+xmrnema:MOVL	EAX, #ER_NEMA
+	JMP	xmrerr
+
+xmrmacft: 
+	MOVL	EAX, #ER_MACFT
+
+xmrerr:	PUSHL	EAX
+	MOVL	ESI, xmr_pagelist[EBP]
+	ADDL	ESI, #4t
+xmrelp:	CMPL	mdb_label[EDI], #'MDB*'	;Really an MDB?
+	JNE	xmrcrsh			;No!!
+	MOVL	EBX, xmr_pagelist[EBP]	;Is it one of ours?
+	CMPL	EBX, mdb_next[EDI]
+	JNE	xmrcrsh			;No!
+	MOVL	EAX, mdb_size[EDI]	;OK - get number of pages
+	MOVL	xmr_count[EBP], EAX
+	PUSHL	EDI			;Give up the MDB
+	CALL	sysMemGiveXmb#
+
+;The following is a simplified version of the code in sysMemGivePages which we
+;  can't call since these pages are not mapped to virtual space anywhere.
+
+4$:	PUSHL	[ESI]			;Fake out sysMemGetMTE by giving it our
+					;  list entry instead of the page table
+					;  entry (since there is no page table
+					;  entry for this page)
+	CALL	sysMemGetMTE#		;Get the address of the memory table
+	TESTL	EAX, EAX		;  entry
+	JE	xmrcrsh			;There must be one!
+	MOVZBL	EDX, 3[EAX]		;Is the page type correct?
+	ANDL	EDX, #0xF0
+	CMPB	AL, #MT_XFER<4
+	JNE	xmrcrsh			;No
+	PUSHL	[ESI]			;Yes - give up the page
+	CALL	sysMemGiveMP#
+	ADDL	ESI, #4
+	DECL	xmr_count[EBP]
+	JNE	4$
+	DECL	xmr_num[EBP]		;More msects?
+	JNE	xmrelp			;Yes
+	POPL	EAX			;No - restore the error code
+	JMP	xmrdone			;Finish up
+.PAGE
+;Here if have memory trap while copying page table entries - this must have
+;  happended because we do not have a page table allocated
+
+	FAULTHDR
+xmrpf:	PUSHL	EAX
+	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	EDX
+	CALL	sysMemGetPgTbl#		;Allocate a page table
+	POPL	EDX
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	xmrcrsh			;Memory not available - This should not
+					;  happen since we have already verified
+					;  that enough memory is available!
+	POPL	EAX
+	JMP	xmrcp			;Continue if OK	
+.PAGE

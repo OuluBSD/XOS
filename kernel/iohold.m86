@@ -1,0 +1,152 @@
+	.TITLE	iohold - Routines associated with holding devices
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;Subroutine to place a device in the held device list
+;	c{EDI} = Offset of DCB
+;	c{ECX} = Time out value (seconds)
+;	CALL	knlHoldDev
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+sysIoHoldDev::
+	CRASH	????
+
+	CMPL	dcb_hdlb[EDI], #0	;Is the device already held?
+	JNE	4$			;Yes!
+	CALL	knlGetQel#		;No - get a QEL
+	JC	2$
+	MOVL	hdlb_label[ESI], #'HDLB'
+	MOVL	hdlb_count[ESI], ECX
+	MOVL	hdlb_dcb[ESI], EDI
+	MOVL	EAX, knlHdlbList#
+	MOVL	hdlb_nexts[ESI], EAX
+	MOVL	knlHdlbList#, ESI
+	MOVL	EDX, knlPda+pdaSesPda#	;Get actual address of the session PDA
+	MOVL	hdlb_pda[ESI], EDX
+	MOVL	EAX, pdaHdlbList#[EDX]
+	MOVL	hdlb_nextp[ESI], EAX
+	MOVL	pdaHdlbList#[EDX], ESI
+	MOVL	dcb_hdlb[EDI], ESI
+2$:	RET
+
+4$:	CRASH	DVAL			;[DeVice is Already Held]
+
+;Subroutine to remove a device from the held device list
+;	c{ESI} = Offset of HDLB to give up
+;	CALL	knlUnholdDev
+;	c{EDI} = Offset of DCB
+
+sysIoUnholdDev::
+	MOVL	EDX, #knlHdlbList	;Find previous block in system list
+6$:	MOVL	EAX, [EDX]
+	CMPL	EAX, ESI
+
+	CRASH	????
+
+;;;;;;	JE	knlUnholdDevSys
+	TESTL	EAX, EAX
+	JE	20$
+	LEAL	EDX, hdlb_nexts[EAX]
+	JMP	6$
+
+	.SBTTL	knlUnholdDevSys
+
+;Subroutine to remove a device from the held device list with system pointer
+;	c{ESI} = Offset of HDLB to give up
+;	c{EDX} = Offset of system pointer to HLDB
+;	CALL	knlUnholdDevSys
+;	c{EDI} = Offset of DCB
+;	long sysIoUnholdDevSys(
+;	    HDLB  *hdlb,
+;	    HDLB **hpnt);
+
+unhds_hdlb=!12t
+unhds_hpnt=!8
+
+;;;;;;;;;;;;;;;;; THIS IS NOT RIGHT!!!!!!
+
+sysIoUnholdDevSys::
+	PUSHL	EDI
+	MOVL	ECX, unhds_hdlb[ESP]
+	MOVL	EDX, hdlb_pda[ESI]	;Get actual of the PDA
+	ADDL	EDX, #pdaHdlbList#	;Find previous block in process list
+10$:	MOVL	EAX, [EDX]
+	CMPL	EAX, ECX
+	JE	14$
+	TESTL	EAX, EAX
+	JE	20$
+	LEAL	EBX, hdlb_nextp[EAX]
+	JMP	10$
+
+;Function to remove a device from the held device list with process pointer
+;	c{ESI} = Offset of HDLB to give up
+;	c{EBX} = Address of process pointer to HDLB
+;	CALL	knlUnholdDevProc
+;	c{EDI} = Offset of DCB
+;	long sysIoUnholdDevProc(
+;	    HDLB  *hdlb,
+;	    HDLB **ppnt);
+
+unhdp_hdlb=!12t
+unhdp_ppnt=!8
+
+sysIoUnholdDevProc::
+	PUSHL	EDI
+	MOVL	ECX, unhdp_hdlb[ESP]
+	MOVL	EDX, #knlHdlbList	;Find previous block in system list
+12$:	MOVL	EAX, [EDX]
+	CMPL	EAX, ECX
+	JE	14$
+	TESTL	EAX, EAX
+	JE	20$
+	LEAL	EDX, hdlb_nexts[EAX]
+	JMP	12$
+
+;Here with both block pointers
+
+14$:	MOVL	EAX, hdlb_nextp[ECX]	;Unlink from process list
+	MOVL	[EBX], EAX
+	MOVL	EAX, hdlb_nexts[ECX]	;Unlink from system list
+	MOVL	[EDX], EAX
+	MOVL	EDI, hdlb_dcb[ECX]	;Clear link from DCB
+	CMPL	dcb_hdlb[EDI], ECX
+	JNE	20$
+	MOVL	dcb_hdlb[EDI], #0
+	PUSHL	ECX
+	CALL	sysMemGiveXmb#
+	MOVL	EAX, EDI
+	POPL	EDI
+	RET	8
+
+20$:	CRASH	BHDL			;[Bad Held Device List]
+
+	END

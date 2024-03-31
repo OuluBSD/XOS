@@ -1,0 +1,380 @@
+	.SBTTL	Parameter file GECKO.PAR
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.NLMEX
+	.NLBEX
+	.PARM
+
+;Revision history
+; 1.3.4 - 2-Oct-91
+;	Fixed several bugs in inputting and displaying registers and addresses,
+;	changed output quit character to Q from ^C.
+; 1.3.5 - ???
+;	Added auto-start-up feature in PROTIO.M86.
+; 1.3.6 - 13-Dec-91
+;	Added ability to detect and respond to CTL-ALT-DEL in PROTIO.M86.
+; 1.3.7 - 8-Jun-92
+;	Fixed minor bug in getting address and repeat count.
+; 1.3.8 - 16-Jul-92
+;	Added XDTR, a real mode version which will run under DOS (requires
+;	386 however).
+; 1.3.9 - 24-Oct-92
+;	Added support for new style reboot stuff in XDTXP.
+; 1.3.10 - 20-Dec-92
+;	Finished the OUTx commands.
+; 1.3.11 - 8-Feb-93
+;	Fixed problems with saving SS and ESP on user or V86 mode break-points
+;	in exec or user mode XDT.
+; 1.3.12 - 13-Mar-93
+;	Fixed minor bug in watchpoint routine, bad message was displayed on
+;	watchpoint.
+; 1.3.13 - 29-Mar-93
+;	Added most of the rest of the floating point instructions.
+; 1.3.14 - 2-Apr-93
+;	Fixed problem with accessing locations for XDT with watchpoints set.
+; 1.3.15 - 10-May-93
+;	Changed to not use selector 0004 in exec mode to map the LDT (XOS kernel
+;	no longer supports this use for this selector).
+; 1.3.16 - 2-Oct-93
+;	Changed EFR display.
+; 1.3.17 - 11-Feb-94
+;	Added watchpoint data logic.
+; 1.3.18 - 20-Feb-94
+;	Fixed problem with getting segment type in PROTIO, fixed problem with
+;	changing user level selectors in PROTIO.
+; 1.3.19 - 4-Mar-94
+;	Fixed error in opcode output table for LARW/LARL.
+; 1.3.20 - 22-May-94
+;	Minor exec mode changes to match XOS 1.8.93+.
+; 1.3.21 - 9-Aug-94
+;	Fixed some problems with floating point op-codes FINIT, FCLEX, FDISI,
+;	and FNENI
+; 1.3.22 - 3-Oct-94
+;	Fixed bug in EXPRSN for user mode, was using DI instead of EDI to
+;	reference symbol table.
+; 1.3.23 - 3-Dec-94
+;	Fixed problem with determining display adapter type in PROTIO.
+; 1.3.24 - 3-Jan-95
+;	Added support for user mode watchpoints.
+; 1.3.25 - 19-Jan-95
+;	Added code to display detail error message when get console input
+;	error in USERIO.
+; 1.3.26 - 22-Jan-95
+;	Fixed bug in PROTIO relating to setting exec mode watchpoings
+;	introduced when adding user mode watchpoints.
+; 1.4.0 - 29-Jan-98
+;	Added support for XOS graphic display mode 2 to user mode GECKO
+; 1.4.1 - 3-Nov-98
+;	Made several enhancements to terminal support in GECKOX; fixed problem
+;	with storing incorrect word and long values in GECKOX.
+; 1.4.2 - ???
+;	Separated into separate sources for GECKO, GECKOX, and GECKOR. GECKOF
+;       (which was never completed) is gone. GECKOC (which has been replaced
+;       by GECKOH which has a completely different code base) is gone. 
+; 2.0.0 - 10-Jan-11
+;	Several bugs fixed; Major rewrite of graphic mode display support
+;	giving a big speedup for graphic mode scrolling; Full support added
+;	for 640x480 and 800x600 modes (1600x1200 should also work but has not
+;	been tested). 
+
+;Define version number
+
+MAJVER =!2		;Major version number
+MINVER =!0		;Minor version number
+EDITNUM=!0		;Edit number
+
+;Define general parameters
+
+SYMLEN  =!32t		;Maximum symbol length
+BPTNUM  =!16t		;Number of breakpoints
+MXDGLN  =!16t		;Maximum number of digits in numeric input value
+MAXLINES=!16t
+
+;Define ASCII characters
+
+ERR=!0x01		;Change color for error message
+TXT=!0x02		;Change color for normal text
+INV=!0x03		;Inverse text
+CLR=!0x04		;Clear line
+BS =!0x08
+HT =!0x09
+LF =!0x0A
+CR =!0x0D
+ESC=!0x1B
+DEL=!0x7F
+
+VRTLIN=!0xB3		;Character to use as vertical line in dump output
+BRDATR=!0x06		;Attribute byte for border
+INVBRD=!BRDATR*0x10
+TXTATR=!0x02		;Attribute byte for normal text
+INVATR=!0x20		;Attribute byte for inverse text
+ERRATR=!0x0C		;Attribute byte for error message text
+
+;Define special input characters
+
+XC_HELP=!0x81		;Help
+XC_SS  =!0x82		;Switch screens
+XC_EEIP=!0x84		;Examine instruction at CS:EIP
+XC_EP  =!0x85		;Examine previous
+XC_ES  =!0x86		;Examine same
+XC_EN  =!0x87		;Examine next
+XC_X   =!0x88		;Execute instruction
+XC_T   =!0x89		;Trace instruction
+XC_G   =!0x8A		;Begin execution
+XC_REGS=!0x8C		;Update register display
+XC_OEIP=!0x94		;Open instruction at CS:EIP
+XC_OP  =!0x95		;Open previous
+XC_OS  =!0x96		;Open same
+XC_ON  =!0x97		;Open next
+
+;Define output modes
+
+OM$NUM=!02h		;Numeric
+OM$ALF=!01h		;Alpha (ASCII)
+
+;Define FLAG bit values
+
+FLAG$N  =!0x4000	;Nested task flag
+FLAG$O  =!0x0800	;Overflow flag
+FLAG$D  =!0x0400	;Direction flag
+FLAG$I  =!0x0200	;Interrupt flag
+FLAG$T  =!0x0100	;Trap flag
+FLAG$S  =!0x0080	;Sign flag
+FLAG$Z  =!0x0040	;Zero flag
+FLAG$A  =!0x0010	;Half-carry (auxillary carry) flag bit
+FLAG$P  =!0x0004	;Parity flag
+FLAG$C  =!0x0001	;Carry flag bit
+FLAG$ALL=!0x4FD5	;All flag bits
+
+;Define offsets in the flag symbol table
+
+fst_sym0=!0		;Symbol for value = 0
+fst_sym1=!2		;Symbol for value = 1
+fst_sym2=!4		;Symbol for value = 2
+fst_sym3=!6		;Symbol for value = 3
+fst_sym4=!8		;Symbol for value = 4
+fst_sym5=!10t		;Symbol for value = 5
+fst_sym6=!12t		;Symbol for value = 6
+fst_sym7=!14t		;Symbol for value = 7
+fst_pos =!16t		;Amount to shift field to get value
+fst_mask=!18t		;Mask for field
+fst_ENSZ=!22t		;Size of table entry
+
+;Define breakpoint flag bits
+
+BP$BRK=!1		;Breakpoint
+BP$TRC=!2		;Tracing across a subroutine
+BP$EXE=!4		;Executing across a subroutine
+BP$PRC=!8		;Proceed from this point
+
+;Define values for registers "values"
+
+RG_AL  =!0		;Register AL (8 bit)
+RG_AH  =!1		;Register AH (8 bit)
+RG_BL  =!2		;Register BL (8 bit)
+RG_BH  =!3		;Register BH (8 bit)
+RG_CL  =!4		;Register CL (8 bit)
+RG_CH  =!5		;Register CH (8 bit)
+RG_DL  =!6		;Register DL (8 bit)
+RG_DH  =!7		;Register DH (8 bit)
+RG_AX  =!8		;Register AX (16 bit)
+RG_BX  =!9		;Register BX (16 bit)
+RG_CX  =!10t		;Register CX (16 bit)
+RG_DX  =!11t		;Register DX (16 bit)
+RG_SI  =!12t		;Register SI (16 bit)
+RG_DI  =!13t		;Register DI (16 bit)
+RG_BP  =!14t		;Register BP (16 bit)
+RG_SP  =!15t		;Register SP (16 bit)
+RG_EAX =!16t		;Register EAX (32 bit)
+RG_EBX =!17t		;Register EBX (32 bit)
+RG_ECX =!18t		;Register ECX (32 bit)
+RG_EDX =!19t		;Register EDX (32 bit)
+RG_ESI =!20t		;Register ESI (32 bit)
+RG_EDI =!21t		;Register EDI (32 bit)
+RG_EBP =!22t		;Register EBP (32 bit)
+RG_ESP =!23t		;Register ESP (32 bit)
+RG_CS  =!24t		;Register CS (16 bit)
+RG_DS  =!25t		;Register DS (16 bit)
+RG_SS  =!26t		;Register SS (16 bit)
+RG_ES  =!27t		;Register ES (16 bit)
+RG_FS  =!28t		;Register FS (16 bit)
+RG_GS  =!29t		;Register GS (16 bit)
+RG_IP  =!30t		;Register IP (16 bit)
+RG_EIP =!31t		;Register EIP (32 bit)
+RG_FR  =!32t		;Register FR (16 bit, flag register)
+RG_EFR =!33t		;Register EFR (32 bit, flag register)
+RG_LDTR=!34t		;Register LDTR (16 bit, system level)
+RG_MSW =!35t		;Register MSW (16 bit, system level)
+RG_TR  =!36t		;Register TR (16 bit, system level)
+RG_GDTR=!37t		;Register GDTR (48 bit, system level)
+RG_IDTR=!38t		;Register IDTR (48 bit, system level)
+
+;Define values for the valtyp and opntyp bytes
+
+VL_BYTE =!0		;Byte
+VL_WORD =!1		;Word
+VL_LONG =!2		;Long
+VL_INS  =!3		;Instruction
+VL_REG  =!4		;Register
+
+;Define values for the oprtyp byte
+
+OP_ADDR=!0		;Memory address
+OP_REG =!1		;Register
+OP_IRG =!2		;Indexed by register(s)
+OP_IRO =!3		;Indexed by register(s) with offset
+OP_IMED=!4		;Immediate value
+
+;Define offsets for the 16 bit symbol table
+
+sym16_size=!0		;Length of symbol name in bytes
+sym16_flag=!1		;Flag bits
+sym16_ofs =!2		;Offset value
+;;;sym16_seg =!4		;Segment part value
+sym16_name=!6		;Start of symbol name string
+
+;Define offsets for the 32 bit symbol table
+
+sym32_size=!0		;Length of symbol name in bytes
+sym32_flag=!1		;Flag bits
+sym32_ofs =!2		;Offset value
+;;;sym32_seg =!6		;Segment part value
+sym32_name=!8		;Start of symbol name string
+
+;Define bits for the flag byte in the symbol table
+
+SF$SEL=!0x80		;Symbol is a segment selector value
+SF$IMP=!0x40		;Symbol is imported
+SF$ADR=!0x20		;Symbol is an address
+SF$SUP=!0x10		;Symbol is suppressed
+SF$GLB=!0x08		;Symbol is global
+SF$MSC=!0x04		;Symbol is a msect selector/offset value
+SF$MOD=!0x02		;Symbol is a module name
+SF$REL=!0x01		;Symbol is relocatable
+SF$V86=!0x01		;Symbol is a V86 address
+
+;Define offsets in the opcode input table
+
+opi_name=!0		;Opcode string
+opi_val1=!8		;First value byte
+opi_val2=!9		;Second value byte
+opi_val3=!10t		;Third value byte
+opi_val4=!11t		;Fourth value byte
+opi_size=!12t		;Size
+opi_flag=!13t		;Flag byte
+opi_disp=!14t		;Dispatch address
+opi_ENSZ=!16t		;Size of table entry
+
+;Define bits for the OPI_FLAG byte
+
+OF$MS=!0x80		;Two operand instruction can have memory field as
+			;  source
+OF$RS=!0x40		;Source memory field can be register
+OF$MD=!0x20		;Two operand instruction can have memory field as
+			;  destination
+OF$BI=!0x04		;Immediate value is always single byte
+OF$DB=!0x02		;Instruction uses direction bit
+OF$SB=!0x01		;Instruction uses size bit
+
+;Define offsets in the opcode output table
+
+opo_byt0  =!0		;Contents for first byte
+opo_msk0  =!1		;Mask for first byte
+opo_byt1  =!2		;Contents for second byte
+opo_msk1  =!3		;Mask for second byte
+opo_byt2  =!4		;Contents for third byte
+opo_msk2  =!5		;Mask for third byte
+opo_name16=!8		;Address of opcode string for 16 bit operand size
+opo_name32=!12t		;Address of opcode string for 32 bit operand size
+opo_disp  =!16t		;Dispatch address
+opo_ENSZ  =!20t		;Size of table entry
+
+;Define bits for the regbits table
+
+RB$IX1 =!0x8000		;Set if register is valid as "first" index register
+			;  (set for BX and BP)
+RB$IX2 =!0x4000		;Set if register is valid as "second" index register
+			;  (set for SI and DI)
+RB$2OP =!0x2000		;Set if register is valid for operand for general two
+			;  operand instruction
+RB$SEG =!0x1000		;Set if register is a segment register
+RB$8B  =!0x0800		;Set if 8 bit register
+RB$48B =!0x0400		;Set if 48 bit register
+RB$AX  =!0x0200		;Set if register is AL or AX
+RB$1XRM=!0x0060		;Low 2 bits for r/m field to specify index register
+			;  when using single index register
+RB$2XRM=!0x0018		;Low 2 bits for r/m field to specify index register
+			;  when using two index registers
+RB$11RM=!0x0007		;Value for r/m field to specify register when
+			;  mod = 11, also gives value for reg field
+
+;Define offset of each entry in the breakpoint table (bpttbl)
+
+bt_sts =!0		;(1) Breakpoint status
+bt_ins =!1		;(1) Breakpoint instruction value
+			;(2) Not used
+bt_cnt =!4		;(4) Breakpoint repeat count
+bt_addr=!8		;(4) Breakpoint address offset
+			;(4) Reserved
+bt_ENSZ=!16t		;(4) Entry size
+
+;Define offset of each entry in the watchpoint table (wpttbl)
+
+wt_sts =!0		;(1) Watchpoint status
+wt_type=!1		;(1) Watchpoint type
+wt_size=!2		;(1) Watchpoint size
+			;(1) Not used
+wt_cnt =!4		;(4) Watchpoint repeat count
+wt_data=!8		;(4) Watchpoint data value
+wt_addr=!12t		;(4) Watchpoint address offset
+			;(4) Reserved
+wt_ENSZ=!20t		;Entry size
+
+;Define flags bits for wt_sts
+
+WP$ACT =!0x80		;Watchpoint is active
+WP$DATA=!0x40		;Data value specified
+
+;Define offsets in the dmpreg table
+
+rt_size =!14t
+rt_ofset=!15t
+rt_ENSIZ=!16t
+
+
+	.MOD	4
+
+	.SEG	code_s, 32BIT, SELECT=GS_UCODE, CODE, READ
+	.SEG	data_s, 32BIT, SELECT=GS_UDATA, DATA, READ, WRITE
+
+	.MSECT	code_m, code_s, ADDR=0xB8000000
+	.MSECT	data_m, data_s, ADDR=0xB8100000
+
+	.PSECT	code_p,  code_m
+	.PSECT	data_p,  data_m, MOD=4
+
+	.MACRO	CODE
+	.PSECT	code_p
+	.ENDM
+
+	.MACRO	DATA
+	.PSECT	data_p
+	.ENDM

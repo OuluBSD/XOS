@@ -1,0 +1,29 @@
+File ATOI.M86:
+	MOVL	EBX, #10t.B  		;Convert to base 10
+File AXTOI.M86:
+	MOVL	EBX, 8.B[ESP]		;Get offset of string
+4$:	MOVB	CL, [EBX]		;Get character
+	INCL	EBX
+6$:	MOVB	CL, [EBX]		;Get character
+	INCL	EBX
+File STRTOL.M86:
+;	EBX =  Random
+	MOVL	EBX, p3.B[ESP]		;Get the base to convert to
+        TESTL   EBX, EBX                ;Is it supposed to be negative?
+        TESTL   EBX, EBX                ;Is it?
+File STRTOUL.M86:
+;	EBX =  Random
+	MOVL	EBX, p3.B[ESP]		;Get the base to convert to
+;	EBX =  Base to convert to (0 or 2-36)
+;	EBX =  -1 if number was negative, else 0
+	CMPL	EBX, #1.B		;Base 1?
+	CMPL	EBX, #MAXBASE		;More than base 36?
+30$:	TESTL	EBX, EBX		;Was base zero?
+	MOVL	EBX, #10t.B		;Assume decimal
+	MOVL	EBX, #16t.B		;Assume hexadecimal
+	MOVL	EBX, #8t.B		;No, 0 means octal then
+60$:	CMPL	EBX, #16t.B		;Is radix 16?
+	CMPL	ECX, EBX		;Is it too big for base?
+	MULL	EBX			;Make room for another character
+	MOVL	EBX, sign.B[ESP]  	;Get the sign
+	TESTL	EBX, EBX		;Is it negative?

@@ -1,0 +1,773 @@
+	.TITLE	mouse
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\defines.par
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+mlist:	.BYTE	PAR$GET|REP_STR, 0
+	.LONG	'MLIS'
+	.LONG	'T'
+mlbufr:	.LONG	0
+mlsize:	.WORD	64t
+mllen:	.WORD	0
+	.BYTE	0
+
+$$$=!0
+FRM im_bufr, 64t
+im_SIZE=!$$$
+
+
+
+	.ENTRY	xwsInitMouse
+xwsInitMouse::
+	ENTER	im_SIZE
+	PUSHL	#XO$IN			;Open the mouse device
+	PUSHL	#mname
+	PUSHL	#0
+	CALL	svcIoOpen##
+	TESTL	EAX, EAX
+	JNS	2$
+	CMPL	EAX, #ER_NSDEV
+	JNE	12$
+	LEAVE
+	RET
+
+2$:	MOVL	xwsmousehndl#, EAX
+	LEAL	EDX, im_bufr[EBP]	;See if we have a mouse connected
+	MOVL	mlbufr, EDX		;  now
+	PUSHL	EAX
+	PUSHL	#mlist
+	CALL	svcIoDevChar##
+	TESTL	EAX, EAX
+	JS	12$
+	CMPW	mllen, #0
+	SETNE	xwsmouseseen#
+	MOVL	EAX, xwsvectbase#	;Set the mouse signal vector
+	ADDL	EAX, #XWSVECT_MOUSE
+	MOVL	mousevect, EAX
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#mousesignal
+	CALL	svcSchSetVector##
+	TESTL	EAX, EAX
+	JS	10$
+	PUSHL	xwsmousehndl#
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#mouseparms
+	CALL	svcIoInBlockP##
+	TESTL	EAX, EAX
+	JS	14$
+	LEAVE
+	RET
+
+10$:	PUSHL	EAX
+	PUSHL	#msgvect
+	CALL	xwsFail#
+
+12$:	PUSHL	EAX
+	PUSHL	#msgopn
+	CALL	xwsFail#
+
+14$:	PUSHL	EAX
+	PUSHL	#msgparm
+	CALL	xwsFail#
+
+msgvect:.ASCIZ	"Error setting the mouse signal vector"
+msgopn:	.ASCIZ	"Error opening the mouse device"
+msgparm:.ASCIZ	"Error getting the mouse device parameters"
+.PAGE
+msig_time   =!84t
+msig_wincr  =!80t
+msig_yincr  =!76t
+msig_xincr  =!72t
+msig_bstates=!68t
+
+mousesignal:
+	PUSHAL
+	MOVL	EBP, ESP
+	MOVB	xwsmouseseen#, #1	;Indicate have seen mouse activity
+	MOVL	ECX, msig_bstates[EBP]	;Get button states
+	MOVL	sigkbsts, ECX
+	ANDL	ECX, #0xFFFF
+;;;;;	ANDL	ECX, #0x07		;Just the ones we care about
+	MOVL	sigbuttons, ECX
+	MOVL	EAX, msig_xincr[EBP]
+	ADDL	xincr, EAX
+	MOVL	EAX, msig_yincr[EBP]
+	ADDL	yincr, EAX
+	MOVL	EAX, msig_wincr[EBP]
+	ADDL	wincr, EAX
+	MOVL	EAX, msig_time+0[EBP]
+	MOVL	mousetime+0, EAX
+	MOVL	EAX, msig_time+4[EBP]
+	MOVL	mousetime+4, EAX
+	PUSHL	xwsdrawtdb#		;Wake up the mouse thread
+	CALL	thdCtlWake#
+	MOVL	ESP, EBP
+	POPAL
+	INT	knl_DISMISS##
+.PAGE
+;Function to process mouse input
+;	void xwsdomouse();
+
+;This function is called from the draw thread before processing the draw list
+
+$$$=!0
+FRM mf_edblk, edblk_mouse_SIZE
+mf_SIZE=!$$$
+
+xwsdomouse::
+	MOVL	EAX, curbuttons		;See if we need to do anything now
+	XORL	EAX, sigbuttons
+	ORL	EAX, xincr
+	ORL	EAX, yincr
+	ORL	EAX, wincr
+	JNE	2$			;Yes
+	RET				;No (Most of the time!)
+
+;Here if have something to do
+
+2$:	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	mf_SIZE, 0
+mloop:	MOVL	EAX, sigbuttons		;Get new button states
+	MOVL	EDX, EAX
+	XORL	EAX, curbuttons		;Get changes
+	MOVL	chgbuttons, EAX
+	MOVL	curbuttons, EDX
+	MOVL	ECX, xincr		;Get X movement
+	SUBL	xincr, ECX
+	MOVL	EDX, yincr		;Get Y movement
+	SUBL	yincr, EDX
+	MOVL	EAX, ECX		;Have any movement?
+	ORL	EAX, EDX
+	ORL	EAX, wincr
+	JE	nomove			;No
+	ADDL	xwscursorx#, ECX	;Yes
+	CMPL	xwscursorx#, #0
+	JGE	6$
+	MOVL	xwscursorx#, #0
+6$:	MOVL	EAX, xws_ScreenDRW#+drw_width
+	CMPL	xwscursorx#, EAX
+	JLE	8$
+	MOVL	xwscursorx#, EAX
+8$:	ADDL	xwscursory#, EDX
+	CMPL	xwscursory#, #0
+	JGE	10$
+	MOVL	xwscursory#, #0
+10$:	MOVL	EAX, xws_ScreenDRW+drw_height
+	CMPL	xwscursory#, EAX
+	JLE	12$
+	MOVL	xwscursory#, EAX
+12$:	MOVL	EAX, wincr
+	SUBL	wincr, EAX
+	ADDL	xwswheelinc#, EAX
+findwin:PUSHL	#0
+	PUSHL	ESP
+	CALL	xwsfindcursorwindow#	;Find the window for the cursor
+	POPL	EDI
+	CALL	xwscheckmodal#		;Blocked by a modal window?
+	JE	havewin			;No
+	PUSHL	xws_CurPoint#		;Yes - set to default cursor
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_setcursor[EAX]	;Update the cursor
+mnext:	MOVL	EAX, curbuttons
+	XORL	EAX, sigbuttons
+	ORL	EAX, xincr
+	ORL	EAX, yincr
+	ORL	EAX, wincr
+	JNE	mloop
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+;Here if not blocked by a modal window
+
+havewin:MOVL	curstate, EAX
+	MOVZBL	ECX, win_basmoving[EDI] ;Now moving or resizing the window?
+	TESTL	ECX, ECX
+	JE	movnone
+	TESTB	curbuttons, #0x07	;Is a button still pressed?
+	JNE	8$			;Yes
+	MOVB	win_basmoving[EDI], #0	;No - not moving or resizing now
+	JMP	mnext
+
+8$:	MOVL	EBX, win_basparent[EDI]
+	TESTL	EBX, EBX
+	JE	16$
+	MOVL	EAX, win_basscnxpos[EBX]
+	aDDL	EAX, win_basxorg[EBX]
+	CMPL	xwscursorx#, EAX
+	JGE	10$
+	MOVL	xwscursorx#, EAX
+	JMP	12$
+
+10$:	ADDL	EAX, win_basclntwidth[EBX]
+	DECL	EAX
+	CMPL	xwscursorx#, EAX
+	JLE	12$
+	MOVL	xwscursorx#, EAX
+12$:	MOVL	EAX, win_basscnypos[EBX]
+	ADDL	EAX, win_basyorg[EBX]
+	CMPL	xwscursory#, EAX
+	JGE	14$
+	MOVL	xwscursory#, EAX
+	JMP	16$
+
+14$:	ADDL	EAX, win_basclntheight[EBX]
+	DECL	EAX
+	CMPL	xwscursory#, EAX
+	JLE	16$
+	MOVL	xwscursory#, EAX
+16$:	JMPIL	movdsp-4[ECX*4]
+
+	.MOD	4
+movdsp:	.LONG	moving		;CS_MOVE   = 1
+	.LONG	resizetop	;CS_SIZET  = 2
+	.LONG	resizeleft	;CS_SIZEL  = 3
+	.LONG	resizebottom	;CS_SIZEB  = 4
+	.LONG	resizeright	;CS_SIZER  = 5
+	.LONG	resizetl	;CS_SIZETL = 6
+	.LONG	resizetr	;CS_SIZETR = 7
+	.LONG	resizebl	;CS_SIZEBL = 8
+	.LONG	resizebr	;CS_SIZEBR = 9
+
+	.PSECT	_TEXT_p
+.PAGE
+;Here if now moving the window
+
+moving:	MOVL	EAX, xwscursorx#	;Get the new target position
+	SUBL	EAX, win_basmvxofs[EDI]
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basmvyofs[EDI]
+	CMPL	EAX, win_basscnxpos[EDI] ;Different from current position?
+	JNE	2$			;Yes
+	CMPL	EDX, win_basscnypos[EDI] ;Maybe
+	JE	6$			;No - nothing to do here
+2$:	MOVL	ECX, win_basparent[EDI] ;Here if need to move the window now
+	PUSHL	EDI
+	SUBL	EAX, win_basscnxpos[ECX]
+	PUSHL	EAX
+	SUBL	EDX, win_basscnypos[ECX]
+	PUSHL	EDX
+	PUSHL	win_baswidth[EDI]
+	PUSHL	win_basheight[EDI]
+4$:	CALL	xwswinmovens#
+6$:	MOVZBL	EAX, win_basmoving[EDI]
+	JMP	movnone
+
+;Here if resizeing the window using the top border
+
+resizetop:
+	MOVL	EAX, xwscursory#	;Get the new target top position
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI] ;Different from current position?
+	JE	6$			;No - nothing to do here
+	MOVL	EDX, EAX
+	ADDL	EAX, win_basypos[EDI]
+	NEGL	EDX
+	ADDL	EDX, win_basheight[EDI]
+	MOVZWL	ECX, win_bastbheight[EDI]
+	ADDL	ECX, win_basyorg[EDI]
+	ADDL	ECX, #2t
+	SUBL	ECX, EDX
+	JLE	8$
+	SUBL	EAX, ECX
+	ADDL	EDX, ECX
+8$:	PUSHL	EDI
+	PUSHL	win_basxpos[EDI]
+	PUSHL	EAX
+	PUSHL	win_baswidth[EDI]
+	PUSHL	EDX
+	JMP	4$
+
+;Here if resizeing the window using the left border
+
+resizeleft:
+	MOVL	EAX, xwscursorx#	;Get the new target left position
+	SUBL	EAX, win_basmvxofs[EDI]
+	SUBL	EAX, win_basscnxpos[EDI] ;Different from current position?
+	JE	6$			;No - nothing to do here
+	MOVL	EDX, EAX
+	ADDL	EAX, win_basxpos[EDI]
+	NEGL	EDX
+	ADDL	EDX, win_baswidth[EDI]
+	MOVZWL	ECX, win_baslbwidth[EDI]
+	ADDL	ECX, win_basxorg[EDI]
+	ADDL	ECX, #2t
+	SUBL	ECX, EDX
+	JLE	10$
+	SUBL	EAX, ECX
+	ADDL	EDX, ECX
+10$:	PUSHL	EDI
+	PUSHL	EAX
+	PUSHL	win_basypos[EDI]
+	PUSHL	EDX
+	PUSHL	win_basheight[EDI]
+	JMP	4$
+
+;Here if resizeing the window using the bottom border
+
+resizebottom:
+	MOVL	EAX, xwscursory#	;Get the new target height
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI]
+	CMPL	EAX, win_basheight[EDI] ;Different from current height?
+	JE	6$			;No - nothing to do here
+12$:	MOVL	ECX, win_basparent[EDI] ;Yes - need to resize the window
+	PUSHL	EDI
+	PUSHL	win_basxpos[EDI]
+	PUSHL	win_basypos[EDI]
+	PUSHL	win_baswidth[EDI]
+	PUSHL	EAX
+	JMP	4$
+
+;Here if resizeing the window using the right border
+
+resizeright:
+	MOVL	EAX, xwscursorx#	;Get the new target width
+	SUBL	EAX, win_basmvxofs[EDI]
+	SUBL	EAX, win_basscnxpos[EDI]
+	CMPL	EAX, win_baswidth[EDI]	;Different from current width?
+	JE	6$			;No - nothing to do here
+	MOVL	ECX, win_basparent[EDI] ;Yes - need to resize the window
+	PUSHL	EDI
+	PUSHL	win_basxpos[EDI]
+	PUSHL	win_basypos[EDI]
+	PUSHL	EAX
+	PUSHL	win_basheight[EDI]
+	JMP	4$
+
+;Here if resizeing the window using the top-left corner
+
+resizetl:
+	MOVL	EAX, xwscursory#	;Get the new target top position
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI] ;Different from current position?
+	JE	resizeleft		;No - just resize left edge
+	MOVL	EDX, EAX
+	ADDL	EAX, win_basypos[EDI]
+	NEGL	EDX
+	ADDL	EDX, win_basheight[EDI]
+	MOVZWL	ECX, win_bastbheight[EDI]
+	ADDL	ECX, win_basyorg[EDI]
+	ADDL	ECX, #2
+	SUBL	ECX, EDX
+	JLE	14$
+	SUBL	EAX, ECX
+	ADDL	EDX, ECX
+14$:	MOVL	EBX, xwscursorx#	;Get the new target left position
+	SUBL	EBX, win_basmvxofs[EDI]
+	SUBL	EBX, win_basscnxpos[EDI] ;Different from current position?
+	JE	8$			;No - just resize top edge
+	MOVL	ESI, EBX
+	ADDL	EBX, win_basxpos[EDI]
+	NEGL	ESI
+	ADDL	ESI, win_baswidth[EDI]
+	MOVZWL	ECX, win_baslbwidth[EDI]
+	ADDL	ECX, win_basxorg[EDI]
+	ADDL	ECX, #2
+	SUBL	ECX, ESI
+	JLE	16$
+	SUBL	EBX, ECX
+	ADDL	ESI, ECX
+16$:	PUSHL	EDI
+	PUSHL	EBX
+	PUSHL	EAX
+	PUSHL	ESI
+	PUSHL	EDX
+	JMP	4$
+
+;Here if resizeing the window using the top-right corner
+
+resizetr:
+	MOVL	EAX, xwscursory#	;Get the new target top position
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI] ;Different from current position?
+	JE	resizeright		;No - just resize right edge
+	MOVL	EDX, EAX
+	ADDL	EAX, win_basypos[EDI]
+	NEGL	EDX
+	ADDL	EDX, win_basheight[EDI]
+	MOVZWL	ECX, win_bastbheight[EDI]
+	ADDL	ECX, win_basyorg[EDI]
+	ADDL	ECX, #2t
+	SUBL	ECX, EDX
+	JLE	18$
+	SUBL	EAX, ECX
+	ADDL	EDX, ECX
+18$:	MOVL	EBX, xwscursorx#	;Get the new target width
+	SUBL	EBX, win_basmvxofs[EDI]
+	SUBL	EBX, win_basscnxpos[EDI]
+	CMPL	EBX, win_baswidth[EDI]	;Different from current width?
+	JE	8$			;No - just resize top edge
+	PUSHL	EDI
+	PUSHL	win_basxpos[EDI]
+	PUSHL	EAX
+	PUSHL	EBX
+	PUSHL	EDX
+	JMP	4$
+
+;Here if resizeing the window using the bottom-left corner
+
+resizebl:
+	MOVL	EAX, xwscursory#	;Get the new target height
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI]
+	CMPL	EAX, win_basheight[EDI] ;Different from current height?
+	JE	resizeleft		;No - just change the width
+	MOVL	EBX, xwscursorx#	;Get the new target left position
+	SUBL	EBX, win_basmvxofs[EDI]
+	SUBL	EBX, win_basscnxpos[EDI] ;Different from current position?
+	JE	12$			;No - just change the height
+	MOVL	EDX, EBX
+	ADDL	EBX, win_basxpos[EDI]
+	NEGL	EDX
+	ADDL	EDX, win_baswidth[EDI]
+	MOVZWL	ECX, win_baslbwidth[EDI]
+	ADDL	ECX, win_basxorg[EDI]
+	ADDL	ECX, #2t
+	SUBL	ECX, EDX
+	JLE	20$
+	SUBL	EBX, ECX
+	ADDL	EDX, ECX
+20$:	PUSHL	EDI
+	PUSHL	EBX
+	PUSHL	win_basypos[EDI]
+	PUSHL	EDX
+	PUSHL	EAX
+	JMP	4$
+
+;Here if resizeing the window using the bottom-right corner
+
+resizebr:
+	MOVL	EAX, xwscursory#	;Get the new target height
+	SUBL	EAX, win_basmvyofs[EDI]
+	SUBL	EAX, win_basscnypos[EDI]
+	CMPL	EAX, win_basheight[EDI] ;Different from current height?
+	JE	resizeright		;No - just change the width
+	MOVL	EDX, xwscursorx#	;Get the new target width
+	SUBL	EDX, win_basmvxofs[EDI]
+	SUBL	EDX, win_basscnxpos[EDI]
+	CMPL	EDX, win_baswidth[EDI]	;Different from current width?
+	JE	12$			;No - just change the height
+	MOVL	ECX, win_basparent[EDI] ;Yes - change both height and width
+	PUSHL	EDI
+	PUSHL	win_basxpos[EDI]
+	PUSHL	win_basypos[EDI]
+	PUSHL	EDX
+	PUSHL	EAX
+	JMP	4$
+.PAGE
+;Here if not now moving or resizing the window and the window has not grabbed
+;  the cursor.  See if the cursor is over a border area.  Since we have not
+;  grabbed the cursor, we know it must actually be within the window.
+
+movnone:TESTL	EAX, EAX
+	JE	notborder
+
+;Here if not now moving or resizing the window and the cursor is now over
+;  the window border
+
+inborder:
+	TESTB	curbuttons, #0x01	;Left button pressed?
+	JE	notleft			;No
+	PUSHL	EAX			;Yes
+	CALL	xwssetfocusmodal#
+	POPL	EAX
+	JNE	mnext
+	JMPIL	bgndsp[EAX*4]
+
+bgndsp:	.LONG	0		;CS_NONE   = 0
+	.LONG	bgnmove		;CS_MOVE   = 1
+	.LONG	bgnresizetop	;CS_SIZET  = 2
+	.LONG	bgnresizeleft	;CS_SIZEL  = 3
+	.LONG	bgnresizebottom	;CS_SIZEB  = 4
+	.LONG	bgnresizeright	;CS_SIZER  = 5
+	.LONG	bgnresizetl	;CS_SIZETL = 6
+	.LONG	bgnresizetr	;CS_SIZETR = 7
+	.LONG	bgnresizebl	;CS_SIZEBL = 8
+	.LONG	bgnresizebr	;CS_SIZEBR = 9
+
+	.PSECT	_TEXT_p
+
+;Here with left button pressed over top border
+
+bgnresizetop:
+	MOVL	EDX, xwscursory#
+	JMP	4$
+
+;Here with left button pressed over left border
+
+bgnresizeleft:
+	MOVL	EDX, xwscursorx#
+	JMP	6$
+
+;Here with left button pressed over bottom border
+
+bgnresizebottom:
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basheight[EDI]
+4$:	SUBL	EDX, win_basscnypos[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVL	EBX, xws_CurSizeNS#
+	JMP	12$
+
+;Here with left button pressed over right border
+
+bgnresizeright:
+	MOVL	EDX, xwscursorx#
+	SUBL	EDX, win_baswidth[EDI]
+6$:	SUBL	EDX, win_basscnxpos[EDI]
+	MOVL	win_basmvxofs[EDI], EDX
+	MOVL	EBX, xws_CurSizeEW#
+	JMP	12$
+
+;Here with left button pressed over top-left corner
+
+bgnresizetl:
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basscnypos[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVL	EDX, xwscursorx#
+	JMP	10$
+
+;Here with left button pressed over top-right corner
+
+bgnresizetr:
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basscnypos[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVL	EDX, xwscursorx#
+	SUBL	EDX, win_baswidth[EDI]
+	JMP	8$
+
+;Here with left button pressed over bottom-left corner
+
+bgnresizebl:
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basscnypos[EDI]
+	SUBL	EDX, win_basheight[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVL	EDX, xwscursorx#
+8$:	SUBL	EDX, win_basscnxpos[EDI]
+	MOVL	win_basmvxofs[EDI], EDX
+	MOVL	EBX, xws_CurSizeNESW#
+	JMP	12$
+
+;Here with left button pressed over top-right corner
+
+bgnresizebr:
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basscnypos[EDI]
+	SUBL	EDX, win_basheight[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVL	EDX, xwscursorx#
+	SUBL	EDX, win_baswidth[EDI]
+10$:	SUBL	EDX, win_basscnxpos[EDI]
+	MOVL	win_basmvxofs[EDI], EDX
+	MOVL	EBX, xws_CurSizeNWSE#
+	JMP	12$
+
+notleft:TESTB	curbuttons, #0x02	;Right button pressed?
+	JE	16$			;No
+	CALL	xwssetfocusmodal#	;Yes
+	JNE	mnext
+bgnmove:MOVL	EDX, xwscursorx#
+	SUBL	EDX, win_basscnxpos[EDI]
+	MOVL	win_basmvxofs[EDI], EDX
+	MOVL	EDX, xwscursory#
+	SUBL	EDX, win_basscnypos[EDI]
+	MOVL	win_basmvyofs[EDI], EDX
+	MOVB	AL, #CS_MOVE
+	MOVL	EBX, xws_CurMove#
+12$:	MOVB	win_basmoving[EDI], AL
+	MOVL	xwscursorgrabwin#, EDI	;Grab the cursor
+14$:	PUSHL	EBX
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_setcursor[EAX]
+	JMP	mnext
+
+;Here if neither left or right buttons pressed
+
+16$:	TESTB	curbuttons, #0x03	;Both right and left button released?
+	JNE	20$			;No
+
+;;;;;	INT3
+
+;;;;;	CLRL	EAX			;Yes
+	MOVL	xwscursorgrabwin#, #0
+	MOVB	win_basmoving[EDI], #0
+;;;;;	JMP	findwin
+
+20$:	MOVL	EBX, xwscurtbl#-4[EAX*4]
+	MOVL	EBX, [EBX]
+	JMP	14$
+.PAGE
+notborder:
+	MOVL	EBX, win_bascursor[EDI]
+	TESTL	EBX, EBX
+	JNE	2$
+	MOVL	EBX, xws_CurPoint#
+2$:	PUSHL	EBX
+	MOVL	EAX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_setcursor[EAX]
+4$:	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEMV
+	MOVB	mf_edblk+edblk_subtype[EBP], #0
+	MOVL	mf_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mf_edblk[EBP]
+	PUSHL	EAX
+	CALL	genevent
+	CLRL	EAX
+	JMP	dobuts
+
+;Here if no mouse movement
+
+nomove:	PUSHL	#0
+	PUSHL	ESP
+	CALL	xwsfindcursorwindow#	;Find the window for the cursor
+	POPL	EDI
+	TESTL	EAX, EAX
+	JNE	inborder
+	MOVZBL	EAX, win_basmoving[EDI]
+dobuts:	MOVL	curstate, EAX
+	TESTB	chgbuttons, #0x01	;Left button changed?
+	JE	10$			;No
+	TESTB	curbuttons, #0x01	;Yes - left button pressed?
+	JE	6$			;No
+	CALL	xwssetfocusmodal#	;Yes
+	JNE	mnext
+	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_LDN
+	JMP	8$
+
+;Here if left button released
+
+6$:	MOVL	xwscursorgrabwin#, #0
+	MOVB	win_basmoving[EDI], #0
+	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT     ;Generate
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_LUP ;  mouse event
+8$:	MOVL	mf_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mf_edblk[EBP]
+	PUSHL	EAX
+	CALL	genevent
+10$:	TESTB	chgbuttons, #0x04	;Center button changed?
+	JE	16$			;No
+	TESTB	curbuttons, #0x04	;Yes - center button pressed?
+	JE	12$
+	CALL	xwssetfocusmodal#	;Yes
+	JNE	mnext
+	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_CDN
+	JMP	14$
+
+12$:	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT     ;Center button
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_CUP ;  released
+14$:	MOVL	mf_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mf_edblk[EBP]
+	PUSHL	EAX
+	CALL	genevent
+16$:	TESTB	chgbuttons, #0x02	;Right button changed?
+	JE	mnext			;No
+	TESTB	curbuttons, #0x02	;Yes - right button pressed?
+	JE	18$			;No
+	CALL	xwssetfocusmodal#	;Yes
+	JNE	mnext
+	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_RDN
+	JMP	20$
+
+18$:	MOVB	mf_edblk+edblk_type[EBP], #XWS_EVENT_MOUSEBT     ;Right button
+	MOVB	mf_edblk+edblk_subtype[EBP], #XWS_EVENT_MBTN_RUP ;  released
+20$:	MOVL	mf_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mf_edblk[EBP]
+	PUSHL	EAX
+	CALL	genevent
+	JMP	mnext
+.PAGE
+;Function to generate mouse event
+;	CALL	genevent
+;	void genevent(
+;	    EDBLK *edblk);
+
+ge_edblk=!4t
+
+genevent:
+	MOVL	EBX, ge_edblk[ESP]
+	MOVL	edblk_label[EBX], #'EDB#'
+	MOVW	edblk_length[EBX], #edblk_mouse_SIZE
+	MOVL	EAX, sigkbsts
+	SHRL	EAX, #16t
+	MOVL	edblk_mouse_kbsts[EBX], EAX
+	MOVZBL	EAX, curbuttons
+	MOVL	edblk_mouse_buttons[EBX], EAX
+	MOVL	ECX, edblk_orgwin[EBX]
+	MOVL	EAX, xwscursorx#
+	SUBL	EAX, win_basscnxpos[ECX]
+	SUBL	EAX, win_basxorg[ECX]
+	MOVL	edblk_mouse_xposp[EBX], EAX
+	IMULL	EAX, win_basxsfd[ECX]
+	MOVL	edblk_mouse_xpos[EBX], EAX
+	MOVL	EAX, xwscursory#
+	SUBL	EAX, win_basscnypos[ECX]
+	SUBL	EAX, win_basyorg[ECX]
+	MOVL	edblk_mouse_yposp[EBX], EAX
+	IMULL	EAX, win_basysfd[ECX]
+	MOVL	edblk_mouse_ypos[EBX], EAX
+	MOVL	EAX, xwswheelinc#
+	SUBL	xwswheelinc#, EAX
+	MOVL	edblk_mouse_winc[EBX], EAX
+	MOVL	edblk_mouse_dt+0[EBX], #mousetime
+	MOVL	edblk_mouse_dt+4[EBX], #mousetime+4
+	PUSHL	EBX
+	CALL	xwsdoevent#
+	RET	4t
+.PAGE
+	.PSECT	_DATA_p
+
+buttons:.LONG	0
+
+xincr:	.LONG	0
+yincr:	.LONG	0
+wincr:	.LONG	0
+sigbuttons:
+	.LONG	0
+sigkbsts:
+	.LONG	0
+mousetime:
+	.LONG	0, 0
+
+curstate:
+	.LONG	0
+chgbuttons:
+	.LONG	0
+curbuttons:
+	.LONG	0
+
+mouseparms:
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_SIGVECT1
+mousevect:
+	.LONG	0
+	.BYTE	0
+
+mname:	.ASCIZ	"MOUSE:"
+
+	.END

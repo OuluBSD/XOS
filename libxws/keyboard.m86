@@ -1,0 +1,149 @@
+	.TITLE	keyboard - XWS keyboard routines
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+KBBUFSZ=!64t
+
+	.PSECT	_TEXT_p
+
+;Thread function for the keyboard thread
+;	void xwskeybrdthread(void);
+
+$$$=!0
+FRM kbt_edblk, edblk_kb_SIZE
+kbt_SIZE=!$$$
+
+	.ENTRY	xwskeybrdthread
+xwskeybrdthread::
+	ENTER	kbt_SIZE, 0
+	PUSHL	xws_TrmHndl#		;Set terminal parameters
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	#trmsetparm
+	CALL	thdIoInBlockP#
+	TESTL	EAX, EAX
+	JS	30$
+kbloop:	PUSHL	xws_TrmHndl#		;Get keyboard input
+	PUSHL	#kbbuffer
+	PUSHL	#64t
+	CALL	thdIoInBlock#
+	TESTL	EAX, EAX
+	JS	30$
+	MOVL	kbamount, EAX
+	MOVL	ESI, #kbbuffer
+2$:	SUBL	kbamount, #4t		;More to do?
+	JS	kbloop			;No
+	MOVZWL	EAX, 2[ESI]		;Save the keyboard status bits
+	MOVL	xws_KeyStatus, EAX
+	TESTB	AL, #XWS$EVENT_KBS_RHTCTL|XWS$EVENT_KBS_LFTCTL
+					;Is this a "control" key?
+	JE	10$			;No
+	CMPW	[ESI], #ISC_BREAK*0x100	;Break?
+	JE	20$			;Yes
+;;;;	CMPB	[ESI], #0x03		;Yes - ctl-C?
+;;;;	JE	20$			;Yes
+	CMPB	[ESI], #0x10		;No - ctl-P?
+	JE	22$			;Yes
+	CMPB	1[ESI], #ISC_F12	;F12?
+	JNE	10$			;No
+	TESTB	AL, #XWS$EVENT_KBS_RHTSHF ;Yes - is right shift also pressed?
+	JE	10$			;No
+	CALL	xwsDebugToggle#		;Yes
+	JMP	kbloop
+
+;Here if not special
+
+10$:	MOVL	EDI, xwsfocuswin#	;No - get window which has input focus
+	TESTL	EDI, EDI
+	JNE	12$			;Give it to the base window if no one
+	MOVL	EDI, xws_ScreenWIN#	;  has focus
+12$:	MOVB	kbt_edblk+edblk_type[EBP], #XWS_EVENT_KEYRELS
+					;Assume key release event?
+	TESTB	1[ESI], #0x80		;Right?
+	JNE	14$			;Yes
+	MOVB	kbt_edblk+edblk_type[EBP], #XWS_EVENT_KEYMAKE
+	CMPB	1[ESI], #ISC_SYSSHF	;No - system-shift key?
+	JE	sysshf			;Yes
+	CMPB	1[ESI], #ISC_SSCOMP
+	JE	sscomp
+14$:	MOVL	kbt_edblk+edblk_label[EBP], #'EDB#'
+	MOVW	kbt_edblk+edblk_length[EBP], #edblk_kb_SIZE
+	MOVB	kbt_edblk+edblk_subtype[EBP], #0
+	MOVL	kbt_edblk+edblk_orgwin[EBP], EDI
+	MOVZBL	EAX, [ESI]		;ASCII character code
+	MOVL	kbt_edblk+edblk_kb_char[EBP], EAX
+	MOVZBL	EAX, 1[ESI]		;Keyboard scan code
+	MOVL	kbt_edblk+edblk_kb_scan[EBP], EAX
+	MOVZWL	EAX, 2[ESI]		;Keyboard state bits
+	MOVL	kbt_edblk+edblk_kb_kbsts[EBP], EAX
+	LEAL	EAX, kbt_edblk[EBP]
+	PUSHL	EAX
+	CALL	xwsdoevent#
+	ADDL	ESI, #4t		;Bump buffer pointer
+	JMP	2$			;Continue
+
+;Here for ctl-C
+
+20$:	PUSHL	#0
+	CALL	exit#
+
+;Here for ctl-P
+
+22$:	INT3
+	JMP	kbloop
+
+;Here if error reading the keyboard
+
+30$:	PUSHL	EAX
+	PUSHL	#kbemsg
+	CALL	xwsFail#
+
+kbemsg:	.ASCIZ	"Error reading the keyboard"
+
+;Here for the system-shift key
+
+sysshf:	CALL	xwsdisplaysessionmenu#
+	JMP	2$
+
+;Here for a screen switch complete character
+
+sscomp:	MOVL	EDX, xws_ScreenWIN
+	MOVL	ECX, win_basdrw[EDX]
+	MOVB	drw_disable[ECX], #0
+	PUSHL	EDX
+	CALL	xwsWinInvalidateAll#
+	JMP	2$
+.PAGE
+	.SBTTL	Data
+
+	.PSECT	_DATA_p
+
+xws_KeyStatus::			;Current keyboard status bits
+	.LONG	0
+kbamount:
+	.LONG	0
+
+trmsetparm:				;Parameter list for setting terminal
+	.BYTE	PAR$SET|REP_HEXV, 4	;  parameters
+	.WORD	IOPAR_TRMCINPMODE
+	.LONG	0FFFFFFFFh
+	.BYTE	PAR$SET|REP_HEXV, 4
+	.WORD	IOPAR_TRMSINPMODE
+	.LONG	TIM$SCNCODE|TIM$NOCO|TIM$NOCC|TIM$ALTPAD|TIM$IMAGE
+	.BYTE	0
+
+kbbuffer:.BLKB	KBBUFSZ
+
+
+	.END

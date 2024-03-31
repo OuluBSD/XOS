@@ -1,0 +1,3091 @@
+	.TITLE	region
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;A region can be either simple or complex.  A simple region is always
+;  rectangular and is identical to its bounding box.  It is specified by
+;  an RGN with a 0 length Y index table.  A complex region can be any shape
+;  or combination of disjoint shapes.  Its RGN has a non zero length Y index
+;  table.  Each Y index table entry points to a segment table, which consists
+;  of a 4-byte count followed immediately by the indicated number of RSBs.
+;  Each RSB consists of 8 bytes; a 4-byte left side X position and a 4-byte
+;  right side X position. The pixel at each indicated position is included in
+;  the region. (a 1 pixel wide segment would have equal left and right side
+;  X position values). Segment tables are allocated in memory immediately
+;  following the RGN.  The Y index table pointers are relative to the start
+;  of the RGN.
+
+;Function to free up a region
+;	void xwsRgnDestroy(
+;	    RGN *rgn);
+
+;This function uses the Pascal calling sequence
+
+rdes_rgn=!4
+
+	.ENTRY	xwsRgnDestroy
+xwsRgnDestroy::
+	MOVL	EDX, rdes_rgn[ESP]	;Get offset of RGN for region to free
+	CMPL	rgn_label[EDX], #'RGN#'
+	JE	2$
+	PUSHL	#msgnotrgn
+	PUSHL	#0
+	CALL	xwsFail#
+
+2$:	CHECKRGN EDX
+
+	CMPL	rgn_usecnt[EDX], #0	;Static region?
+	JS	10$			;Yes - nothing needed here
+	JNE	4$			;Idle region?
+	PUSHL	#msgidlergn		;Yes - fail!
+	PUSHL	#0
+	CALL	xwsFail#
+
+4$:	CMPL	EDX, #xwsnullrgn
+	JNE	6$
+	PUSHL	#msgnullrgn
+	PUSHL	#0
+	CALL	xwsFail#
+
+6$:	DECL	rgn_usecnt[EDX]		;No - reduce use count - still in use?
+	JNE	10$			;Yes
+	PUSHL	EDX			;No - deallocate it
+	CALL	xwsFree#
+10$:	RET	4
+
+msgnotrgn:
+	.ASCIZ	"Invalid region in xwsRgnDestroy"
+msgidlergn:
+	.ASCIZ	"Attempting to destroy idle region"
+msgnullrgn:
+	.ASCIZ	"Null region is not static in xwsRgnDestroy"
+.PAGE
+;Function to duplicate an RGN
+;	RGN *rgn;
+;	RGN *xwsRgnDuplicate(
+;	    RGN *rgn);
+
+;This function uses the Pascal calling sequence
+
+rdup_rgn=!4
+
+	.ENTRY	xwsRgnDuplicate
+xwsRgnDuplicate::
+	MOVL	EAX, rdup_rgn[ESP]
+	CMPL	rgn_usecnt[EAX], #0	;Is this a static region?
+	JS	4$			;Yes
+	INCL	rgn_usecnt[EAX]		;No - increment the use count
+4$:	RET	4
+.PAGE
+;Function to duplicate an RGN with an offset
+;	RGN *xwsRgnDupOffset(
+;	    RGN *rgn,
+;	    long xoffset,
+;	    long yoffset);
+
+;This function uses the Pascal calling sequence
+
+rdo_rgn    =!24t
+rdo_xoffset=!20t
+rdo_yoffset=!16t
+
+	.ENTRY	xwsRgnDupOffset
+xwsRgnDupOffset::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, rdo_rgn[ESP]
+
+	CMPL	rgn_label[EDI], #'RGN#'
+	JE	2$
+	PUSHL	#msgbrdo
+	PUSHL	#0
+	CALL	xwsFail#
+
+2$:	PUSHL	EDI			;Duplicate the region
+	CALL	rgnduprgn
+	TESTL	EAX, EAX
+	JE	14$
+	CMPB	rgn_type[EAX], #RGNTYPE_NULL ;Null region?
+	JE	14$			;Yes - finished
+	MOVL	EDX, rdo_xoffset[ESP]	;No - get offset amounts
+	MOVL	EBX, rdo_yoffset[ESP]
+	ADDL	rgn_left[EAX], EDX	;Adjust the header values
+	ADDL	rgn_right[EAX], EDX
+	ADDL	rgn_top[EAX], EBX
+	ADDL	rgn_bottom[EAX], EBX
+	CMPB	rgn_type[EAX], #RGNTYPE_SIMPLE ;Simple region?
+	JE	14$			;Yes - finished
+
+;Here if the region is complex
+
+	MOVL	ECX, rgn_ycount[EAX]	;Get number of lines in region
+	LEAL	ESI, rgn_ytable[EAX]	;Point to start of the y-table
+8$:	MOVL	EDI, [ESI]		;Get segment table pointer
+	ADDL	ESI, #4t
+	TESTL	EDI, EDI		;Null line?
+	JE	12$			;Yes
+	ADDL	EDI, EAX		;No
+	MOVL	EBX, [EDI]		;Get number of segments in line
+	ADDL	EDI, #4t
+10$:	ADDL	[EDI], EDX
+	ADDL	4[EDI], EDX
+	ADDL	EDI, #8t
+	DECL	EBX
+	JNE	10$
+12$:	DECL	ECX
+	JNE	8$
+14$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+msgbrdo:.ASCIZ	"Invalid region in xwsRgnDupOffset"
+.PAGE
+;Function to duplicate a region by copying the RGN.  Unless the region is null,
+;  the resulting region will always have a use count of 1 and can be freely
+;  modified.  If the region is null, it is returned uncopied.  The caller must
+;  handle this case correctly.
+;	RGN *rgn;
+;	RGN *newrgn = rgnduprgn(rgn);
+
+rdr_rgn=!12t
+
+rgnduprgn:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, rdr_rgn[ESP]
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL
+	JE	6$
+	PUSHL	rgn_size[ESI]
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	EDI, EAX
+	PUSHL	EAX
+	MOVL	ECX, rgn_size[ESI]
+	SHRL	ECX, #2t
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]
+	POPL	EAX
+	MOVL	rgn_usecnt[EAX], #1
+4$:	POPL	ESI
+	POPL	EDI
+	RET	4t
+
+6$:	MOVL	EAX, ESI
+	JMP	4$
+.PAGE
+;Function to create a simple rectangluar region with scaling.
+;	RGN *xwsRgnCreateRect(
+;	    WIN *win,
+;	    long xpos,
+;	    long ypos,
+;	    long xsize,
+;	    long ysize);
+
+;This function uses the Pascal calling sequence
+
+cr_win  =!32t
+cr_xpos =!28t
+cr_ypos =!24t
+cr_xsize=!20t
+cr_ysize=!16t
+
+	.ENTRY	xwsRgnCreateRect
+xwsRgnCreateRect::
+	PUSHL	EDI
+	PUSHL	EBX
+	ENTER	0
+	MOVL	EDI, cr_win[EBP]
+	MOVL	EAX, cr_xpos[EBP]
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	MOVL	EBX, EAX
+	ADDL	EAX, win_basxorg[EDI]
+	PUSHL	EAX
+	MOVL	EAX, cr_ypos[EBP]
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	MOVL	ECX, EAX
+	ADDL	EAX, win_basyorg[EDI]
+	PUSHL	EAX
+	MOVL	EAX, cr_xsize[EBP]
+	ADDL	EAX, cr_xpos[EBP]
+	ADDL	EAX, win_basxsfr[EDI]
+	CLQ
+	IDIVL	win_basxsfd[EDI]
+	SUBL	EAX, EBX
+	PUSHL	EAX
+	MOVL	EAX, cr_ysize[EBP]
+	ADDL	EAX, cr_ypos[EBP]
+	ADDL	EAX, win_basysfr[EDI]
+	CLQ
+	IDIVL	win_basysfd[EDI]
+	SUBL	EAX, ECX
+	PUSHL	EAX
+	CALL	xwsrgncreaterectns
+	LEAVE
+	POPL	EBX
+	POPL	EDI
+	RET	20t
+
+
+;Function to create a simple rectangluar region without scaling.
+;	RGN *xwsrgncreaterectns(
+;	    long xpos,
+;	    long ypos,
+;	    long xsize,
+;	    long ysize);
+
+;This function uses the Pascal calling sequence
+
+crns_xpos =!16t
+crns_ypos =!12t
+crns_xsize=!8
+crns_ysize=!4
+
+	.ENTRY	xwsrgncreaterectns
+xwsrgncreaterectns::
+	CMPL	crns_ysize[ESP], #0	;Null region?
+	JLE	8$			;Yes
+	CMPL	crns_xsize[ESP], #0	;Maybe
+	JLE	8$			;Yes
+	PUSHL	#rgn_ytable		;No - allocate memory for an RGN
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	8$
+	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_SIMPLE
+	CLQ
+	MOVL	rgn_usecnt[EAX], #1
+	MOVL	rgn_ycount[EAX], EDX
+	MOVL	rgn_size[EAX], #rgn_ytable
+	MOVL	EDX, crns_ypos[ESP]
+	MOVL	rgn_top[EAX], EDX
+	ADDL	EDX, crns_ysize[ESP]
+	DECL	EDX
+	MOVL	rgn_bottom[EAX], EDX
+	MOVL	EDX, crns_xpos[ESP]
+	MOVL	rgn_left[EAX], EDX
+	ADDL	EDX, crns_xsize[ESP]
+	DECL	EDX
+	MOVL	rgn_right[EAX], EDX
+4$:	RET	16t
+
+;Here if have a null region
+
+8$:	MOVL	EAX, #xwsnullrgn
+	RET	16t
+.PAGE
+;Function to create a region from a simple mono bitmap
+;	RGN *xwsRgnCreateBitmap(long xpos, long ypos, long xsize, long ysize,
+;		uchar *bitmap);
+
+;This function uses the Pascal calling sequence
+
+crbm_xpos  =!32t
+crbm_ypos  =!28t
+crbm_xsize =!24t
+crbm_ysize =!20t
+crbm_bitmap=!16t
+
+$$$=!0
+FRM crbm_ycnt   , 4t
+FRM crbm_ypnt   , 4t
+FRM crbm_sbgn   , 4t
+FRM crbm_spnt   , 4t
+FRM crbm_scnt   , 4t
+FRM crbm_left   , 4t
+FRM crbm_rgn    , 4t
+FRM crbm_lineinc, 4t
+FRM crbm_linecnt, 4t
+crbm_SIZE=!$$$
+
+	.ENTRY	xwsRgnCreateBitmap
+xwsRgnCreateBitmap::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	crbm_SIZE, 0
+	MOVL	ESI, #rgnbufr
+	MOVL	EDX, crbm_ysize[EBP]
+	LEAL	EAX, [ESI+EDX*4]
+	MOVL	crbm_sbgn[EBP], EAX
+	CLRL	EAX
+	MOVL	crbm_spnt[EBP], EAX
+	MOVL	crbm_ycnt[EBP], EAX
+	MOVL	EAX, crbm_xsize[EBP]	;Calculate the line increment
+	ADDL	EAX, #7t
+	SHRL	EAX, #3t
+	MOVL	crbm_lineinc[EBP], EAX
+	MOVL	EAX, crbm_ysize[EBP]
+	MOVL	crbm_linecnt[EBP], EAX
+	MOVL	EDI, crbm_bitmap[EBP]
+4$:	MOVL	[ESI], #-1
+	CLRL	ECX
+6$:	MOVL	EAX, ECX
+	XORB	AL, #07h
+	BTL	[EDI], EAX
+	JNC	10$
+	INCL	ECX
+	CMPL	ECX, crbm_xsize[EBP]
+	JL	6$
+	JMP	24$
+
+;Here with a bit clear
+
+10$:	MOVL	crbm_left[EBP], ECX
+12$:	INCL	ECX
+	MOVL	EAX, ECX
+	XORB	AL, #07h
+	BTL	[EDI], EAX
+	JC	16$
+	CMPL	ECX, crbm_xsize[EBP]
+	JL	12$
+
+;Here with a bit set or at the end of the row after a bit was clear
+
+16$:	CMPL	[ESI], #0		;Have we started this row yet?
+	JGE	18$			;Yes
+	MOVL	EDX, crbm_spnt[EBP]	;No - start it now
+	MOVL	[ESI], EDX
+	ADDL	EDX, crbm_sbgn[EBP]
+	MOVL	crbm_scnt[EBP], EDX
+	MOVL	[EDX], #1
+	ADDL	EDX, #4t
+	ADDL	crbm_spnt[EBP], #4t
+	JMP	20$
+
+18$:	MOVL	EDX, [ESI]
+	ADDL	EDX, crbm_sbgn[EBP]
+	INCL	[EDX]
+	MOVL	EDX, crbm_spnt[EBP]
+	ADDL	EDX, crbm_sbgn[EBP]
+20$:	MOVL	EAX, crbm_left[EBP]
+	MOVL	[EDX], EAX
+	LEAL	EAX, -1[ECX]
+	MOVL	4[EDX], EAX
+	ADDL	crbm_spnt[EBP], #8t
+
+	CMPL	ECX, crbm_xsize[EBP]
+	JL	6$
+
+;Here at the end of a row
+
+24$:	CMPL	[ESI], #0		;Did we find anything on this line?
+	JL	26$			;No
+	ADDL	ESI, #4t		;Yes
+26$:	ADDL	EDI, crbm_lineinc[EBP]
+	DECL	crbm_linecnt[EBP]
+	JNE	4$
+
+;Here with finished building the tables - now allocate and construct the
+;  final region
+
+	MOVL	EAX, ESI
+	SUBL	EAX, #rgnbufr
+	ADDL	EAX, crbm_spnt[EBP]
+	ADDL	EAX, #rgn_ytable
+	PUSHL	EAX
+	PUSHL	EAX
+	CALL	xwsMalloc#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	done
+	MOVL	crbm_rgn[EBP], EAX
+	MOVL	EDI, EAX		;Set up the RGN header stuff
+	MOVL	rgn_label[EDI], #'RGN#'
+	MOVW	rgn_user[EDI], #0
+	MOVB	rgn_type[EDI], #RGNTYPE_COMPLEX
+	MOVB	rgn_xxx[EDI], #0
+	MOVL	rgn_usecnt[EDI], #1
+	MOVL	rgn_size[EDI], EDX
+	MOVL	EAX, crbm_xpos[EBP]
+	MOVL	rgn_left[EDI], EAX
+	ADDL	EAX, crbm_xsize[EBP]
+	DECL	EAX
+	MOVL	rgn_right[EDI], EAX
+	MOVL	EAX, crbm_ypos[EBP]
+	MOVL	rgn_top[EDI], EAX
+	ADDL	EAX, crbm_ysize[EBP]
+	DECL	EAX
+	MOVL	rgn_bottom[EDI], EAX
+	MOVL	ECX, ESI		;Store the y-table
+	SUBL	ECX, #rgnbufr
+	LEAL	EDX, rgn_ytable[ECX]
+	SHRL	ECX, #2
+	MOVL	rgn_ycount[EDI], ECX
+	MOVL	ESI, #rgnbufr
+	ADDL	EDI, #rgn_ytable
+	PUSHL	DS
+	POPL	ES
+	CLD
+30$:	LODSL	[ESI]
+	ADDL	EAX, EDX
+	STOSL	[EDI]
+	LOOP	ECX, 30$
+	MOVL	ESI, crbm_sbgn[EBP]
+	MOVL	ECX, crbm_spnt[EBP]
+	SHRL	ECX, #2
+	RMOVSL	[EDI], [ESI]
+	MOVL	EAX, crbm_rgn[EBP]
+done:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	20t
+.PAGE
+;Function to convert a simple region to a complex region
+;	rgnconvrect(rgn);
+
+;This function uses the Pascal calling sequence
+
+cr_rgn=!16t
+
+rgnconvrect:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, cr_rgn[ESP]
+	MOVL	EAX, rgn_bottom[ESI]
+	SUBL	EAX, rgn_top[ESI]
+	INCL	EAX			;Get space needed for the segments
+	IMULL	EAX, #16t		;  and the Y index table
+	ADDL	EAX, #rgn_ytable	;Plus space for the rest of the RGN
+	PUSHL	EAX
+	PUSHL	EAX			;Allocate the memory
+	CALL	xwsMalloc#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	10$			;If no memory is available
+	MOVL	EDI, EAX
+	MOVL	rgn_label[EDI], #'RGN#'
+	MOVB	rgn_type[EDI], #RGNTYPE_COMPLEX
+	MOVL	rgn_usecnt[EDI], #1
+	MOVL	rgn_size[EDI], EDX
+	MOVL	EAX, rgn_left[ESI]
+	MOVL	rgn_left[EDI], EAX
+	MOVL	EAX, rgn_right[ESI]
+	MOVL	rgn_right[EDI], EAX
+	MOVL	EAX, rgn_top[ESI]
+	MOVL	rgn_top[EDI], EAX
+	MOVL	ECX, rgn_bottom[ESI]
+	MOVL	rgn_bottom[EDI], ECX
+	SUBL	ECX, EAX
+	INCL	ECX
+	LEAL	EBX, rgn_ytable[EDI]	;Initialize pointer to the y index table
+	MOVL	rgn_ycount[EDI], ECX
+	LEAL	EAX, rgn_ytable[ECX*4]	;Initialize pointer to the first
+					;  segment table
+4$:	MOVL	[EBX], EAX		;Set up the Y index table
+	ADDL	EBX, #4t
+	ADDL	EAX, #12t
+	LOOP	ECX, 4$
+	MOVL	EAX, rgn_left[ESI]	;Get the left and right edges
+	MOVL	EDX, rgn_right[ESI]
+	MOVL	ECX, rgn_ycount[EDI]
+6$:	MOVL	[EBX], #1
+	MOVL	rsb_left+4[EBX], EAX
+	MOVL	rsb_right+4[EBX], EDX
+	ADDL	EBX, #12t
+	LOOP	ECX, 6$
+	MOVL	EAX, EDI
+10$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to fill a memory region or a region for a non-accelerated display
+;  interface.
+;	void xwsmemrgnfill(
+;	    DRW *drw,
+;	    RGN *rgn,
+;	    long xpos,
+;	    long ypos,
+;	    long color);	// Fill color (internal format)
+
+;This function uses the Pascal calling sequence
+
+rfm_drw  =!36t
+rfm_rgn  =!32t
+rfm_xpos =!28t
+rfm_ypos =!24t
+rfm_color=!20t
+
+$$$=!0
+FRM rfm_cnt1    , 4
+FRM rfm_cnt2    , 4
+FRM rfm_begin   , 4
+FRM rfm_bytespan, 4
+rfm_SIZE=!$$$
+
+	.ENTRY	xwsmemrgnfill
+xwsmemrgnfill::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rfm_SIZE
+	MOVL	EBX, rfm_rgn[EBP]
+	MOVL	EDX, rfm_drw[EBP]
+	MOVL	EAX, drw_bytespan[EDX]	;Get the byte span value
+	MOVL	rfm_bytespan[EBP], EAX
+	MOVL	ESI, rfm_rgn[EBP]
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Simple region?
+	JB	rfmdone			;If null region, nothing to do
+	JNE	fillcmplx		;If complex region
+
+;Here to fil a simple region
+
+	MOVL	EDI, rfm_ypos[EBP]	;Calculate starting position
+	ADDL	EDI, rgn_top[EBX]
+	IMULL	EDI, drw_pixelspan[EDX]
+	ADDL	EDI, rfm_xpos[EBP]
+	ADDL	EDI, rgn_left[EBX]
+	ADDL	EDI, EDI
+	ADDL	EDI, drw_buffer[EDX]
+	MOVL	EAX, rfm_color[EBP]	;Get the color value in both halves
+	MOVL	EDX, EAX		;  of EAX
+	SHLL	EAX, #16t
+	MOVW	AX, DX
+	MOVL	EDX, rgn_bottom[ESI]	;Get height
+	SUBL	EDX, rgn_top[ESI]
+	INCL	EDX
+	MOVL	EBX, rgn_right[ESI]	;Get width
+	SUBL	EBX, rgn_left[ESI]
+	JNE	8$			;If not single pixel wide
+2$:	MOVW	[EDI], AX		;Store signel pixel
+	ADDL	EDI, rfm_bytespan[EBP]
+	DECL	EDX
+	JNE	2$
+rfmdone:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+6$:	RET	20t
+
+;Here if the region is not a single pixel wide
+
+8$:	PUSHL	DS
+	POPL	ES
+	CLD
+	TESTL	EDI, #02		;Starting on long boundry?
+	JE	14$			;Yes
+	SHRL	EBX, #1t		;No
+	JC	12$			;If odd value
+
+;Here if not starting on a long boundry and width - 1 is even
+
+10$:	MOVL	ECX, EBX
+	MOVL	ESI, EDI
+	STOSW	[EDI]
+	RSTOSL	[EDI]
+	MOVL	EDI, ESI
+	ADDL	EDI, rfm_bytespan[EBP]
+	DECL	EDX
+	JNE	10$
+	JMP	rfmdone
+
+;Here if not starting on a long boundry and width - 1 is odd
+
+12$:	MOVL	ECX, EBX
+	MOVL	ESI, EDI
+	STOSW	[EDI]
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	MOVL	EDI, ESI
+	ADDL	EDI, rfm_bytespan[EBP]
+	DECL	EDX
+	JNE	12$
+	JMP	rfmdone
+
+;Here if starting on a long boundry
+
+14$:	INCL	EBX
+	SHRL	EBX, #1t
+	JC	18$			;If odd value
+
+;Here if starting on a long boundry and width is even
+
+16$:	MOVL	ECX, EBX
+	MOVL	ESI, EDI
+	RSTOSL	[EDI]
+	MOVL	EDI, ESI
+	ADDL	EDI, rfm_bytespan[EBP]
+	DECL	EDX
+	JNE	16$
+	JMP	rfmdone
+
+;Here if starting on a long boundry and width is odd
+
+18$:	MOVL	ECX, EBX
+	MOVL	ESI, EDI
+	RSTOSL	[EDI]
+	STOSW	[EDI]
+	MOVL	EDI, ESI
+	ADDL	EDI, rfm_bytespan[EBP]
+	DECL	EDX
+	JNE	18$
+	JMP	rfmdone
+.PAGE
+;Here to fill a complex region
+
+fillcmplx:
+	MOVL	EAX, rgn_ycount[ESI]	;Get number of lines
+	MOVL	rfm_cnt1[EBP], EAX
+	MOVL	EAX, rfm_ypos[EBP]	;Calculate start of first line
+	ADDL	EAX, rgn_top[ESI]
+	IMULL	EAX, rfm_bytespan[EBP]
+	ADDL	EAX, drw_buffer[EDX]
+	MOVL	ECX, rfm_xpos[EBP]
+	ADDL	ECX, ECX
+	ADDL	EAX, ECX
+	MOVL	rfm_begin[EBP], EAX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, rfm_color[EBP]	;Get the color value in both halves
+	MOVL	EDX, EAX		;  of EAX
+	SHLL	EAX, #16t
+	MOVW	AX, DX
+	ADDL	ESI, #rgn_ytable
+4$:	MOVL	EDX, [ESI]
+	ADDL	ESI, #4t
+	TESTL	EDX, EDX		;Null line?
+	JE	14$			;Yes
+	ADDL	EDX, rfm_rgn[EBP]
+	MOVL	ECX, [EDX]		;Get number of segments in line
+	MOVL	rfm_cnt2[EBP], ECX
+	ADDL	EDX, #4t
+8$:	MOVL	ECX, 4[EDX]		;Get length of segment
+	MOVL	EDI, [EDX]
+	SUBL	ECX, EDI
+	INCL	ECX
+	ADDL	EDI, EDI
+	ADDL	EDI, rfm_begin[EBP]
+	TESTL	EDI, #02h
+	JE	10$
+	STOSW	[EDI]
+	DECL	ECX
+10$:	MOVL	EBX, ECX
+	SHRL	ECX, #1t
+	RSTOSL	[EDI]
+	TESTB	BL, #01h
+	JE	12$
+	STOSW	[EDI]
+12$:	ADDL	EDX, #8t
+	DECL	rfm_cnt2[EBP]		;More segments for this line?
+	JNE	8$			;Yes - continue
+14$:	MOVL	EDX, rfm_bytespan[EBP]
+	ADDL	rfm_begin[EBP], EDX
+	DECL	rfm_cnt1[EBP]		;No - more lines?
+	JNE	4$			;Yes - continue
+	JMP	rfmdone
+.PAGE
+;Here if not drawing to the display - must be drawing to memory so we must
+;  do this the hard way
+;	int xwsrgncopy(
+;	    DRW *srcdrw,	// Pointer to DRW for source
+;	    DRW *dstdrw,	// Pointer to DRW for destination
+;	    RGN *rgn,		// Pointer to RGN for region
+;	    long srcxpos,	// Source X position offset
+;	    long srcypos,	// Source Y position offset
+;	    long dstxpos,	// Destination X position offset
+;	    long dstypos);	// Destination Y position offset
+;  Value returned is TRUE if OK, FALSE if error
+
+;This function uses the Pascal calling sequence
+
+$$$=!0
+FRM rc_dstoffset   , 4
+FRM rc_dstbytespan , 4
+FRM rc_dstpixelspan, 4
+FRM rc_srcoffset   , 4
+FRM rc_srcbytespan , 4
+FRM rc_srcpixelspan, 4
+FRM rc_lines       , 4
+FRM rc_cnt         , 4
+rc_SIZE=!$$$
+
+rc_srcdrw =!44t
+rc_dstdrw =!40t
+rc_rgn    =!36t
+rc_srcxpos=!32t
+rc_srcypos=!28t
+rc_dstxpos=!24t
+rc_dstypos=!20t
+
+	.ENTRY	xwsmemrgncopy
+xwsmemrgncopy::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rc_SIZE
+	CLD
+	MOVL	EDI, rc_rgn[EBP]
+	CMPB	rgn_type[EDI], #RGNTYPE_NULL ;Null region?
+	JE	rcdone			;Yes - there's nothing to do here
+	MOVL	EDX, rc_dstdrw[EBP]	;No
+	MOVL	EAX, rgn_bottom[EDI]	;Get number of lines in region
+	SUBL	EAX, rgn_top[EDI]
+	INCL	EAX
+	MOVL	rc_lines[EBP], EAX
+	MOVL	ESI, rc_srcdrw[EBP]	;Get offset of source DRW
+	MOVL	EBX, drw_bytespan[ESI]
+	MOVL	rc_srcbytespan[EBP], EBX
+	MOVL	ECX, drw_pixelspan[ESI]
+	MOVL	rc_srcpixelspan[EBP], ECX
+	MOVL	EAX, rc_srcypos[EBP]	;Get offset of first pixel to copy
+	ADDL	EAX, rgn_top[EDI]
+	IMULL	EAX, ECX
+	ADDL	EAX, rc_srcxpos[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, drw_buffer[ESI]
+	MOVL	rc_srcoffset[EBP], EAX
+	MOVL	EBX, drw_bytespan[EDX]
+	MOVL	rc_dstbytespan[EBP], EBX
+	MOVL	ECX, drw_pixelspan[EDX]
+	MOVL	rc_dstpixelspan[EBP], ECX
+	MOVL	EAX, rc_dstypos[EBP]
+	ADDL	EAX, rgn_top[EDI]
+	IMULL	EAX, ECX
+	ADDL	EAX, rc_dstxpos[EBP]
+	ADDL	EAX, EAX
+	ADDL	EAX, drw_buffer[EDX]
+	MOVL	rc_dstoffset[EBP], EAX
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Is this a simple region?
+	JA	rccmplx			;No
+
+;Here if the intersection of the two regions is simple
+
+	MOVL	EAX, rgn_left[EDI]
+	ADDL	EAX, EAX
+	ADDL	rc_dstoffset[EBP], EAX
+	ADDL	rc_srcoffset[EBP], EAX
+	MOVL	EAX, rc_dstdrw[EBP]	;Copying to same context?
+	CMPL	EAX, rc_srcdrw[EBP]
+	JNE	4$			;No
+	MOVL	EAX, rc_dstoffset[EBP]	;Yes - which way are we copying?
+	CMPL	EAX, rc_srcoffset[EBP]
+	JE	rcdone
+	JG	rcsmplback		;If need to copy backwards
+
+;Here if need to copy simple regions forwards
+
+4$:	MOVL	EBX, rc_srcbytespan[EBP]
+	MOVL	EAX, rc_dstbytespan[EBP]
+	MOVL	EDX, rgn_right[EDI]	;Get width of the area to copy
+	SUBL	EDX, rgn_left[EDI]
+	JNE	8$			;If more than one pixel wide
+
+;Here if simple region to copy is only 1 pixel wide
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	SUBL	EBX, #2t
+	SUBL	EAX, #2t
+	CLD
+6$:	MOVSW	[EDI], [ESI]
+	ADDL	EDI, EAX
+	ADDL	ESI, EBX
+	DECL	rc_lines[EBP]
+	JNE	6$
+	JMP	rcdone
+
+;Here if simple region to copy is more than 1 pixel wide
+
+8$:	JNS	10$
+	PUSHL	#msgbadsz
+	PUSHL	#0
+	CALL	xwsFail#
+
+10$:	INCL	EDX
+	TESTB	rc_dstoffset[EBP], #02h ;Copy to even long boundry?
+	JNE	16$			;No
+	SHRL	EDX, #1			;Yes - even number of longs?
+	JC	14$			;No
+12$:
+
+;;;	MOVL	EDI, #rgnbufr
+;;;	MOVL	ESI, rc_srcoffset[EBP]
+;;;	MOVL	ECX, EDX
+;;;	RMOVSL	[EDI], [ESI]
+
+;;;	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+;;;	RMOVSL	[EDI], [ESI]
+;;;;qqqqq
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+	CLD
+	RMOVSL	[EDI], [ESI]
+
+	ADDL	rc_dstoffset[EBP], EAX
+	ADDL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	12$
+	JMP	rcdone
+
+;Here if have odd number of pixels to copy forwards to a long boundry
+
+14$:	MOVL	ESI, rc_srcoffset[EBP]
+
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+;;;	INCL	ECX
+;;;	RMOVSL	[EDI], [ESI]
+
+	MOVL	EDI, rc_dstoffset[EBP]
+
+;;;	MOVL	ESI, #rgnbufr
+
+
+	MOVL	ECX, EDX
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVSW	[EDI], [ESI]
+;;;;qqqqq
+
+	ADDL	rc_dstoffset[EBP], EAX
+	ADDL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	14$
+	JMP	rcdone
+
+;Here if copying simple region to an odd pixel
+
+16$:	SHRL	EDX, #1			;Yes - even number of longs?
+	JC	20$			;No
+	DECL	EDX
+18$:
+;;;	MOVL	EDI, #rgnbufr
+	MOVL	ESI, rc_srcoffset[EBP]
+
+;;;	MOVL	ECX, EDX
+;;;	INCL	ECX
+;;;	RMOVSL	[EDI], [ESI]
+
+	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+	MOVL	ECX, EDX
+
+	CLD
+	MOVSW	[EDI], [ESI]
+	RMOVSL	[EDI], [ESI]
+	MOVSW	[EDI], [ESI]
+;;;;qqqqqq
+
+	ADDL	rc_dstoffset[EBP], EAX
+	ADDL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	18$
+	JMP	rcdone
+
+;Here if have odd number of pixels to copy forwards to a long boundry
+
+20$:
+;;;	MOVL	EDI, #rgnbufr
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+
+	MOVL	ECX, EDX
+;;;	INCL	ECX
+	CLD
+	RMOVSL	[EDI], [ESI]
+	MOVSW	[EDI], [ESI]
+
+
+;;;	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+
+;;;	MOVSW	[EDI], [ESI]
+;;;	RMOVSL	[EDI], [ESI]
+
+
+;;;;qqqqq
+
+	ADDL	rc_dstoffset[EBP], EAX
+	ADDL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	20$
+	JMP	rcdone
+
+msgbadsz:.ASCIZ	"Bad width for region in xwsmemrgncopy"
+.PAGE
+;Here if must copy the region backwards (note that we can only get here
+;  when the source and destination contexts are the same)
+
+rcsmplback:
+	MOVL	EDX, rgn_right[EDI]	;Get width - 1 of the area to copy
+	SUBL	EDX, rgn_left[EDI]
+	MOVL	EAX, rc_lines[EBP]	;Calculate offset of end of region
+	DECL	EAX
+	IMULL	EAX, rc_srcpixelspan[EBP]
+	ADDL	EAX, EDX
+	ADDL	EAX, EAX
+	ADDL	rc_dstoffset[EBP], EAX	;Adjust area offsets
+	ADDL	rc_srcoffset[EBP], EAX
+	TESTL	EDX, EDX
+	JNE	4$			;If more than one pixel wide
+
+;Here if simple region to copy is only 1 pixel wide
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	SUBL	EBX, #2t
+2$:	CLD
+	MOVSW	[EDI], [ESI]
+	SUBL	EDI, EBX
+	SUBL	ESI, EBX
+	DECL	rc_lines[EBP]
+	JNE	2$
+	JMP	rcdone
+
+;Here if simple region to copy is more than 1 pixel wide
+
+4$:	INCL	EDX
+
+	MOVL	EAX, rc_dstoffset[EBP]	;Moving exactly 1 pixel right?
+	SUBL	EAX, rc_srcoffset[EBP]
+	CMPL	EAX, #2t
+	JNE	5$
+
+;Here if moving exactly 1 pixel right - we must do a single pixel move to
+;  prevent overlap!
+
+45$:	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+
+	STD
+	RMOVSW	[EDI], [ESI]
+	CLD
+
+;;;;qqqqq
+
+	SUBL	rc_dstoffset[EBP], EBX
+	SUBL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	45$
+	JMP	rcdone
+
+;Here if not moving exactly 1 pixel right
+
+5$:	TESTB	rc_dstoffset[EBP], #02h ;Copy to even long boundry?
+	JNE	10$			;No
+	SUBL	rc_dstoffset[EBP], #2t	;Yes
+	SUBL	rc_srcoffset[EBP], #2t
+	SHRL	EDX, #1			;Even number of longs?
+	JC	8$			;No
+6$:
+;;;	MOVL	EDI, #rgnbufr
+
+	MOVL	EDI, rc_dstoffset[EBP]
+
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+	STD
+	RMOVSL	[EDI], [ESI]
+	CLD
+
+;;;	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+;;;	RMOVSL	[EDI], [ESI]
+;;;;qqqqq
+
+	SUBL	rc_dstoffset[EBP], EBX
+	SUBL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	6$
+	JMP	rcdone
+
+;Here if have odd number of pixels to copy baackwards to a long boundry
+
+8$:
+;;;	MOVL	EDI, #rgnbufr
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+;;;	INCL	ECX
+	STD
+	RMOVSL	[EDI], [ESI]
+	MOVSW	[EDI], [ESI]
+	CLD
+
+;;;	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+;;;	RMOVSL	[EDI], [ESI]
+;;;;qqqqqq
+
+	MOVW	AX, 2[ESI]
+	MOVW	2[EDI], AX
+
+	SUBL	rc_dstoffset[EBP], EBX
+	SUBL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	8$
+	JMP	rcdone
+
+;Here if copying simple region to an odd pixel
+
+10$:	SUBL	rc_dstoffset[EBP], #4t
+	SUBL	rc_srcoffset[EBP], #4t
+	SHRL	EDX, #1			;Yes - even number of longs?
+	JC	14$			;No
+	DECL	EDX
+12$:
+;;;	MOVL	EDI, #rgnbufr
+
+	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+
+;;;	INCL	ECX
+;;;	RMOVSL	[EDI], [ESI]
+
+;;;	MOVL	EDI, rc_dstoffset[EBP]
+;;;	MOVL	ESI, #rgnbufr
+;;;	MOVL	ECX, EDX
+
+	MOVW	AX, 4[ESI]
+	MOVW	4[EDI], AX
+
+	STD
+	RMOVSL	[EDI], [ESI]
+	CLD
+
+;;;;qqqqqq
+
+	MOVW	AX, 2[ESI]
+	MOVW	2[EDI], AX
+	SUBL	rc_dstoffset[EBP], EBX
+	SUBL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	12$
+	JMP	rcdone
+
+;Here if have odd number of pixels to copy backwards to a long boundry
+
+14$:	MOVL	EDI, rc_dstoffset[EBP]
+	MOVL	ESI, rc_srcoffset[EBP]
+	MOVL	ECX, EDX
+	MOVW	AX, 4[ESI]
+	MOVW	4[EDI], AX
+
+	STD
+	RMOVSL	[EDI], [ESI]
+	CLD
+
+;;;;;qqqqq
+	SUBL	rc_dstoffset[EBP], EBX
+	SUBL	rc_srcoffset[EBP], EBX
+	DECL	rc_lines[EBP]
+	JNE	14$
+	JMP	rcdone
+.PAGE
+;Here if the intersection of the two regions is complex - Since it is very
+;  expensive to copy a complex region backwards horizontally, we go to some
+;  trouble to avoid having to do this.  The only time it is absolutely
+;  necessary is when the region is being moved right horizontally without
+;  any vertical motion and with some overlap.  We first check to see if
+;  there is any overlap.  If not we just copy forwards vertically and
+;  horizontally.  If there is overlap, we see if there is vertical motion
+;  and copy forwards or backwards vertically based on the direction of the
+;  motion.  In either case, we copy forwards horizontally.  If there is no
+;  vertical motion, we check the direction of horizontal motion and copy
+;  either forward or backwards horizontally based on the direction of that
+;  motion.  In either case, we copy forwards vertically.
+
+rccmplx:MOVL	EAX, rc_dstdrw[EBP]	;Copying to same context?
+	CMPL	EAX, rc_srcdrw[EBP]
+	JNE	rccmplxfrwd		;No - can always copy forwards
+	MOVL	EAX, rc_dstypos[EBP]	;Which way are we copying?
+	CMPL	EAX, rc_srcypos[EBP]
+	JL	rccmplxfrwd		;If can copy forwards
+	JG	rccmplxbackver
+	MOVL	EAX, rc_dstxpos[EBP]
+	CMPL	EAX, rc_srcxpos[EBP]
+	JL	rccmplxfrwd
+	JE	rcdone
+
+;Here if must copy a complex region backwards horizontally
+
+	LEAL	EDX, rgn_ytable[EDI]
+4$:	MOVL	EBX, [EDX]		;Get offset of segment table
+	TESTL	EBX, EBX
+	JE	8$			;If null line
+	ADDL	EBX, rc_rgn[EBP]
+	MOVL	EAX, [EBX]		;Get number of segments
+	MOVL	rc_cnt[EBP], EAX
+	LEAL	EBX, -4[EBX+EAX*8]	;Point to last segment
+6$:	MOVL	EDI, 4[EBX]
+	MOVL	ECX, EDI		;Get number of pixels in segment
+	SUBL	ECX, [EBX]
+	INCL	ECX
+	ADDL	EDI, EDI
+	MOVL	ESI, EDI
+	ADDL	ESI, rc_srcoffset[EBP]
+	ADDL	EDI, rc_dstoffset[EBP]
+
+	STD
+	RMOVSW	[EDI], [ESI]		;Copy the segment
+	CLD
+
+;;;qqqq
+
+	SUBL	EBX, #8t		;Bump segment table pointer
+	DECL	rc_cnt[EBP]		;More segments in this line?
+	JNE	6$			;Yes - continue
+8$:	DECL	rc_lines[EBP]
+	JE	rcdone
+	ADDL	EDX, #4t
+	MOVL	EAX, rc_srcbytespan[EBP]
+	ADDL	rc_srcoffset[EBP], EAX
+	MOVL	EAX, rc_dstbytespan[EBP]
+	ADDL	rc_dstoffset[EBP], EAX
+	JMP	4$
+.PAGE
+;Here if can copy a complex region forward horizontally and vertically.
+
+rccmplxfrwd:
+	LEAL	EDX, rgn_ytable[EDI]
+	MOVL	EAX, #4t
+	JMP	4$
+
+;Here if can copy a complex region forward horizontally and backwards
+;  vertically
+
+rccmplxbackver:
+	MOVL	EAX, rc_lines[EBP]
+	LEAL	EDX, rgn_ytable-4[EDI+EAX*4]
+	DECL	EAX
+	PUSHL	EAX
+	IMULL	EAX, rc_dstbytespan[EBP]
+	ADDL	rc_dstoffset[EBP], EAX
+	POPL	EAX
+	IMULL	EAX, rc_srcbytespan[EBP]
+	ADDL	rc_srcoffset[EBP], EAX
+	NEGL	rc_srcbytespan[EBP]
+	NEGL	rc_dstbytespan[EBP]
+	MOVL	EAX, #-4t
+4$:	CLD
+6$:	MOVL	EBX, [EDX]		;Get offset of segment table
+	TESTL	EBX, EBX
+	JE	50$			;If null line
+	ADDL	EBX, rc_rgn[EBP]
+	MOVL	EDI, [EBX]		;Get number of segments
+	MOVL	rc_cnt[EBP], EDI
+	ADDL	EBX, #4t
+8$:	MOVL	EDI, [EBX]
+	MOVL	ECX, 4[EBX]		;Get number of pixels in segment
+	SUBL	ECX, EDI
+	INCL	ECX
+	ADDL	EDI, EDI
+	MOVL	ESI, EDI
+	ADDL	ESI, rc_srcoffset[EBP]
+	ADDL	EDI, rc_dstoffset[EBP]
+
+;NOTE:	THIS ROUTINE ONLY COPIES ONE PIXEL AT A TIME.  IT SHOULD BE OPTIMIZED
+;	TO DO THIS BETTER!!
+
+
+;;;	PUSHL	EDI
+;;;	PUSHL	ECX
+;;;	MOVL	EDI, #rgnbufr
+;;;	RMOVSL	[EDI], [ESI]
+;;;	POPL	ECX
+;;;	POPL	EDI
+;;;	MOVL	ESI, #rgnbufr
+
+
+	CLD
+	RMOVSW	[EDI], [ESI]		;Copy the segment
+;;;;qqqqqqq
+
+	ADDL	EBX, #8t		;Bump segment table pointer
+	DECL	rc_cnt[EBP]		;More segments in this line?
+	JNE	8$			;Yes - continue
+50$:	DECL	rc_lines[EBP]
+	JE	rcdone
+	ADDL	EDX, EAX
+	MOVL	ECX, rc_srcbytespan[EBP]
+	ADDL	rc_srcoffset[EBP], ECX
+	MOVL	ECX, rc_dstbytespan[EBP]
+	ADDL	rc_dstoffset[EBP], ECX
+	JMP	6$
+
+;Here when completely finished
+
+rcdone:	CLD			;;; SHOULD NOT NEED THIS!!!!
+	MOVL	EAX, #1			;Return TRUE
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	28t
+.PAGE
+;Function to obtain the intersection of two regions - The two regions passed
+;  as arguments are unchanged.  A new region which is the intersection of these
+;  two regions is created.
+;	RGN *rgnIntersect(
+;	    RGN *rgn1,
+;	    RGN *rgn2);
+
+;This function uses the Pascal calling sequence
+
+$$$=!0
+FRM ri_cnt1    , 4
+FRM ri_cnt2    , 4
+FRM ri_ycnt    , 4
+FRM ri_ypnt    , 4
+FRM ri_ysize   , 4
+FRM ri_segtbl  , 4
+FRM ri_segbgn  , 4
+FRM ri_segtbl  , 4
+FRM ri_top     , 4
+FRM ri_bottom  , 4
+FRM ri_minleft , 4
+FRM ri_maxright, 4
+FRM ri_lastline, 4
+FRM ri_smpchk  , 4		; 0 if no non-null lines seen
+				; 1 if non-null line seen
+				; 2 if not simple
+ri_SIZE=!$$$
+
+ri_rgn1=!24t
+ri_rgn2=!20t
+
+	.ENTRY	xwsRgnIntersect
+xwsRgnIntersect::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	ri_SIZE
+	MOVL	EDI, ri_rgn1[EBP]
+	MOVL	ESI, ri_rgn2[EBP]
+
+	CHECKRGN EDI
+	CHECKRGN ESI
+
+;First determine if either region is null - If so, the result is null.
+
+	CMPB	rgn_type[EDI], #RGNTYPE_NULL ;Is region 1 null?
+	JE	2$			;Yes
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL ;No - is region 2 null?
+	JNE	6$
+2$:	MOVL	EAX, #xwsnullrgn
+	JMP	ridone
+
+;Here if neither region is null - Now determine is there is any possibility
+;  that the regions overlap.  If they do not overlap, the intersection is
+;  always null.
+
+6$:	MOVL	EAX, rgn_top[EDI]
+	CMPL	EAX, rgn_bottom[ESI]
+	JG	2$
+	MOVL	EAX, rgn_top[ESI]
+	CMPL	EAX, rgn_bottom[EDI]
+	JG	2$
+	MOVL	EAX, rgn_left[EDI]
+	CMPL	EAX, rgn_right[ESI]
+	JG	2$
+	MOVL	EAX, rgn_left[ESI]
+	CMPL	EAX, rgn_right[EDI]
+	JG	2$
+
+;Here with some possibility that the regions overlap - Now determine if both
+;  regions are simple.  In this case the intersection is always simple.
+
+	MOVL	ri_smpchk[EBP], #0	;Indicate no non-null lines seen yet,
+					;  assume intersection will be simple
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Is region 1 simple?
+	JNE	ricmplx1		;No
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Yes- is region 2 simple?
+	JNE	ricmplx2		;No
+	PUSHL	#rgn_SIZE		;Yes - allocate space for a new
+	CALL	xwsMalloc#		;  simple region
+	TESTL	EAX, EAX
+	JE	ridone
+	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_SIMPLE
+	MOVL	rgn_size[EAX], #rgn_SIZE
+	MOVL	rgn_usecnt[EAX], #1
+	MOVL	rgn_ycount[EAX], #0
+	MOVL	EDX, rgn_top[EDI]
+	CMPL	EDX, rgn_top[ESI]
+	JGE	10$
+	MOVL	EDX, rgn_top[ESI]
+10$:	MOVL	rgn_top[EAX], EDX
+	MOVL	EDX, rgn_bottom[EDI]
+	CMPL	EDX, rgn_bottom[ESI]
+	JLE	12$
+	MOVL	EDX, rgn_bottom[ESI]
+12$:	MOVL	rgn_bottom[EAX], EDX
+	MOVL	EDX, rgn_left[EDI]
+	CMPL	EDX, rgn_left[ESI]
+	JGE	14$
+	MOVL	EDX, rgn_left[ESI]
+14$:	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rgn_right[EDI]
+	CMPL	EDX, rgn_right[ESI]
+	JLE	16$
+	MOVL	EDX, rgn_right[ESI]
+16$:	MOVL	rgn_right[EAX], EDX
+	JMP	ridone
+.PAGE
+;Here if region 1 is complex
+
+ricmplx1:
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Is region 2 simple?
+	JNE	ricmplx			;No - both regions are complex
+
+;Here if region 1 is complex and region 2 is simple - exchange the regions
+
+	XCHGL	ESI, EDI
+	MOVL	ri_rgn1[EBP], EDI
+	MOVL	ri_rgn2[EBP], ESI
+
+;Here if region 1 is simple and region 2 is complex - First check to see if
+;  the complex region is completely enclosed by the simple region and return
+;  the complex region. (This occurs quite often when masking windows.)
+
+ricmplx2:
+	MOVL	EAX, rgn_top[EDI]
+	CMPL	EAX, rgn_top[ESI]
+	JA	2$
+	MOVL	EAX, rgn_bottom[EDI]
+	CMPL	EAX, rgn_bottom[ESI]
+	JB	2$
+	MOVL	EAX, rgn_left[EDI]
+	CMPL	EAX, rgn_left[ESI]
+	JA	2$
+	MOVL	EAX, rgn_right[EDI]
+	CMPL	EAX, rgn_right[ESI]
+	JB	2$
+	PUSHL	ESI
+	CALL	xwsRgnDuplicate
+	JMP	ridone
+
+;Here if region 1 does not enclose region 2 - We must do this the hard way!
+
+2$:	MOVL	ri_lastline[EBP], #rgnbufr-4
+	MOVL	ri_minleft[EBP], #0x7FFFFFFF
+	MOVL	ri_maxright[EBP], #0x80000001
+	MOVL	EAX, rgn_top[EDI]	;Find top of intersection
+	CMPL	EAX, rgn_top[ESI]
+	JGE	4$
+	MOVL	EAX, rgn_top[ESI]
+4$:	MOVL	ri_top[EBP], EAX
+	MOVL	ECX, rgn_bottom[EDI]	;Find bottom of intersection
+	CMPL	ECX, rgn_bottom[ESI]
+	JLE	6$
+	MOVL	ECX, rgn_bottom[ESI]
+6$:	SUBL	ECX, EAX
+	INCL	ECX
+	MOVL	ri_ysize[EBP], ECX
+	MOVL	ri_ycnt[EBP], ECX
+	LEAL	EBX, rgn_ytable[ECX*4]
+	MOVL	ri_segbgn[EBP], EBX
+	MOVL	EDX, #rgnbufr
+	MOVL	ri_ypnt[EBP], EDX
+	LEAL	EDX, [EDX+ECX*4]
+	MOVL	ri_segtbl[EBP], EDX
+	MOVL	EAX, ri_top[EBP]
+	SUBL	EAX, rgn_top[ESI]
+	LEAL	ESI, rgn_ytable[ESI+EAX*4] ;Point to the region 2 Y table
+
+;Here with everything set up to begin
+
+10$:	MOVL	ri_segtbl[EBP], EBX
+	ADDL	EBX, #4t
+	MOVL	EDX, [ESI]		;Get region 2 segment
+	TESTL	EDX, EDX		;Null null
+	JE	40$			;Yes
+	ADDL	EDX, ri_rgn2[EBP]
+	MOVL	EAX, [EDX]		;Get number of region 2 segments
+	ADDL	EDX, #4t
+	MOVL	ri_cnt2[EBP], EAX
+12$:	MOVL	EAX, 4[EDX]		;Is segment completely left of region 1?
+	CMPL	EAX, rgn_left[EDI]
+	JGE	14$			;No
+	ADDL	EDX, #8t		;Yes - skip the segment
+	DECL	ri_cnt2[EBP]
+	JNE	12$
+	JMP	20$
+
+;Here if segment is not completely to the left of region 1
+
+14$:	MOVL	EAX, [EDX]		;Completely to right of region 1?
+	CMPL	EAX, rgn_right[EDI]
+	JG	20$			;Yes = finished with this line
+	CMPL	EAX, rgn_left[EDI]	;Which one is left-most?
+	JGE	16$
+	MOVL	EAX, rgn_left[EDI]
+16$:	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX ;Store left end of segment
+	MOVL	EAX, 4[EDX]		;Does segment extend right of region 1?
+	CMPL	EAX, rgn_right[EDI]
+	JAE	18$			;Yes
+
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;No - store end of segment
+	ADDL	EBX, #8t
+	ADDL	EDX, #8t
+	DECL	ri_cnt2[EBP]		;Have another region 2 segment?
+	JNE	14$			;Yes - continue
+	JMP	20$			;No - finished with this line
+
+;Here if region 2 segment extends to right of region 1
+
+18$:	MOVL	EAX, rgn_right[EDI]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+
+;Here with the line complete
+
+20$:	MOVL	ECX, ri_segtbl[EBP]
+	MOVL	EAX, EBX
+	SUBL	EAX, ECX		;Calculate number of segments
+	SHRL	EAX, #3t
+	JE	40$			;If null line
+	MOVL	rgnbufr-rgn_ytable[ECX], EAX ;Store number of segments in line
+	CMPL	ri_smpchk[EBP], #1	;Yes - could this still be simple?
+	JA	28$			;No
+	DECL	EAX			;Yes - single segment?
+	JNE	24$			;No - not simple
+	CMPL	ri_smpchk[EBP], #0	;Yes - first non-null segment
+	JNE	22$			;No - compare with previous line
+	INCL	ri_smpchk[EBP]		;Yes
+	JMP	28$
+
+;Here if not first single segment line
+
+22$:	MOVL	EAX, rgnbufr-rgn_ytable+4[ECX] ;Same as previous line?
+	CMPL	EAX, rgnbufr-rgn_ytable-8[ECX]
+	JNE	24$			;No
+	MOVL	EAX, rgnbufr-rgn_ytable+8[ECX] ;Maybe
+	CMPL	EAX, rgnbufr-rgn_ytable-4[ECX]
+	JE	28$			;Yes - it still may be single
+24$:	MOVL	ri_smpchk[EBP], #2	;Not simple
+28$:	MOVL	EAX, rgnbufr-rgn_ytable-4[EBX]
+	CMPL	EAX, ri_maxright[EBP]
+	JLE	34$
+	MOVL	ri_maxright[EBP], EAX
+34$:	MOVL	EAX, rgnbufr-rgn_ytable+4[ECX] ;Get left most position
+	CMPL	EAX, ri_minleft[EBP]	;Is it a new minimum?
+	JGE	36$			;No
+	MOVL	ri_minleft[EBP], EAX	;Yes
+36$:	MOVL	EAX, ri_ypnt[EBP]
+	MOVL	ri_lastline[EBP], EAX
+	MOVL	[EAX], ECX
+38$:	ADDL	ri_ypnt[EBP], #4t
+	ADDL	ESI, #4t
+	DECL	ri_ycnt[EBP]
+	JNE	10$
+	JMP	rifin
+
+;Here if have a null line
+
+40$:	CMPL	ri_smpchk[EBP], #0	;Seen any non-null limes yet?
+	JE	42$			;No
+	ORL	ri_smpchk[EBP], #2	;Yes - It's not simple
+42$:	SUBL	EBX, #4t
+	CLRL	EAX
+	MOVL	EDX, ri_ypnt[EBP]
+	MOVL	[EDX], EAX
+	JMP	38$
+.PAGE
+;Here if both regions are complex
+
+ricmplx:MOVB	ri_smpchk[EBP], #2	;Don't bother checking for a simple
+					;  region in this case since it is very
+					;  unlikely to happen!
+	MOVL	ri_lastline[EBP], #rgnbufr-4
+	MOVL	ri_minleft[EBP], #7FFFFFFFh
+	MOVL	ri_maxright[EBP], #80000001h
+	MOVL	EAX, rgn_top[ESI]	;Is region 1 above region 2?
+	SUBL	EAX, rgn_top[EDI]
+	JGE	4$			;Yes
+	XCHGL	ESI, EDI		;No - swap regions
+	MOVL	ri_rgn1[EBP], EDI
+	MOVL	ri_rgn2[EBP], ESI
+	NEGL	EAX
+4$:	MOVL	EDX, rgn_top[ESI]	;Store top of new region
+	MOVL	ri_top[EBP], EDX
+	MOVL	ECX, rgn_bottom[EDI]	;Store bottom of new region
+	CMPL	ECX, rgn_bottom[ESI]
+	JLE	6$
+	MOVL	ECX, rgn_bottom[ESI]
+6$:	MOVL	ri_bottom[EBP], ECX
+	SUBL	ECX, EDX		;Get maximum number of lines in new
+	INCL	ECX			;  region
+	MOVL	ri_ycnt[EBP], ECX
+	MOVL	ri_ysize[EBP], ECX
+	LEAL	EBX, rgn_ytable[ECX*4]
+	MOVL	ri_segbgn[EBP], EBX
+	MOVL	EDX, #rgnbufr
+	MOVL	ri_ypnt[EBP], EDX
+	LEAL	EDX, [EDX+ECX*4]
+	MOVL	ri_segtbl[EBP], EDX
+	LEAL	EDI, rgn_ytable[EDI+EAX*4] ;Point to the region 1 and region
+rready::ADDL	ESI, #rgn_ytable	   ; 2 Y tables
+
+;Here with everything set up to begin
+
+10$:	MOVL	ECX, [EDI]		;Get region 1 segment
+	TESTL	ECX, ECX		;Null segment?
+	JE	20$			;Yes
+	MOVL	EDX, [ESI]		;Get region 2 segment
+	TESTL	EDX, EDX		;Null segment?
+	JE	20$			;Yes
+	ADDL	ECX, ri_rgn1[EBP]	;No
+	ADDL	EDX, ri_rgn2[EBP]
+	CALL	intersectline
+	TESTL	EAX, EAX
+	JE	22$			;If line is null
+	MOVL	EDX, rgnbufr-rgn_ytable-4[EBX]
+	CMPL	EDX, ri_maxright[EBP]
+	JLE	14$
+	MOVL	ri_maxright[EBP], EDX
+14$:	MOVL	EDX, rgnbufr-rgn_ytable+4[EAX] ;Get left most position
+	CMPL	EDX, ri_minleft[EBP]	;Is it a new minimum?
+	JGE	16$			;No
+	MOVL	ri_minleft[EBP], EDX	;Yes
+16$:	MOVL	EDX, ri_ypnt[EBP]
+	MOVL	ri_lastline[EBP], EDX
+18$:	MOVL	[EDX], EAX
+	ADDL	ESI, #4t
+	ADDL	EDI, #4t
+	ADDL	ri_ypnt[EBP], #4t
+	DECL	ri_ycnt[EBP]
+	JNE	10$
+	JMP	rifin
+
+;Here if have a null line
+
+20$:	CLRL	EAX
+22$:	MOVL	EDX, ri_ypnt[EBP]
+	JMP	18$
+.PAGE
+;Here with the entire new region created - now we need to determine the
+;  actual extent of the new Y table and see if the result is simple
+;	c{EBX} = Current segment pointer for region 3
+
+rifin:	MOVL	ESI, #rgnbufr-4
+	MOVL	ECX, ri_lastline[EBP]	;Get number of lines minus number of
+	SUBL	ECX, ESI		;  trailing null lines
+	JE	6$			;If no non-null lines at all
+	SHRL	ECX, #2t
+	MOVL	EAX, ri_ysize[EBP]	;Get number of trailing null lines
+	SUBL	EAX, ECX
+
+;;;;;2$:
+;;;;;;	SHLL	EAX, #2t		;Don't include any trailing blank line
+;;;;;;	SUBL	EBX, EAX		;  pointers
+
+4$:	ADDL	ESI, #4t		;Now find the first non-null line
+	CMPL	[ESI], #0
+	JNE	8$
+	DECL	ECX
+	JNE	4$
+6$:	MOVL	EAX, #xwsnullrgn	;We have a null region!
+	JMP	20$
+
+;Here if region is not null
+
+8$:	CMPL	ri_smpchk[EBP], #1	;Is it simple?
+	JA	ricomplex
+
+;Here if the intersection is simple
+
+risimple:
+	PUSHL	ri_minleft[EBP]		;X position
+	MOVL	ECX, ri_minleft[EBP]
+	PUSHL	ECX
+	MOVL	EDX, ESI		;Y position
+	SUBL	EDX, #rgnbufr
+	SHRL	EDX, #2t
+	ADDL	EDX, ri_top[EBP]
+	PUSHL	EDX
+	MOVL	EAX, ri_maxright[EBP]	;Width
+	SUBL	EAX, ECX
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EAX, ri_lastline[EBP]
+	SUBL	EAX, ESI
+	SHRL	EAX, #2
+	INCL	EAX
+	PUSHL	EAX
+	CALL	xwsrgncreaterectns
+	JMP	ridone
+
+;Here if the intersection is complex
+
+ricomplex:
+	MOVL	EDI, EBX		;Calculate total space for segments
+	SUBL	EDI, ri_segbgn[EBP]
+	ADDL	EDI, ri_lastline[EBP]	;Plus space for the Y table plus the
+	ADDL	EDI, #4t+rgn_ytable	;  RGN header
+	SUBL	EDI, ESI
+	PUSHL	EBX
+	PUSHL	EDI
+	CALL	xwsMalloc#		;Allocate space for the new RGN
+	POPL	EBX
+	TESTL	EAX, EAX
+	JE	ridone			;If error
+	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_COMPLEX
+	MOVL	rgn_usecnt[EAX], #1
+	MOVL	rgn_size[EAX], EDI
+	MOVL	EDI, ri_rgn2[EBP]	;Store the header values
+	MOVL	EDX, ri_minleft[EBP]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, ri_maxright[EBP]
+	MOVL	rgn_right[EAX], EDX
+	MOVL	EDX, ESI		;Calculate amount to adjust top value
+	SUBL	EDX, #rgnbufr
+	SHRL	EDX, #2t
+	ADDL	EDX, ri_top[EBP]
+	MOVL	rgn_top[EAX], EDX
+	MOVL	ECX, ri_lastline[EBP]	;Calculate bottom value
+	SUBL	ECX, ESI
+	SHRL	ECX, #2t
+	ADDL	ECX, EDX
+	MOVL	rgn_bottom[EAX], ECX
+	SUBL	ECX, rgn_top[EAX]
+	INCL	ECX
+	MOVL	rgn_ycount[EAX], ECX
+	MOVL	EDX, ri_ysize[EBP]	;Get amount to adjust Y table pointers
+	SUBL	EDX, ECX
+	JE	18$			;If no adjustment needed
+	SHLL	EDX, #2t
+	PUSHL	ECX
+	PUSHL	ESI
+14$:	CMPL	[ESI], #0
+	JE	16$
+	SUBL	[ESI], EDX
+16$:	ADDL	ESI, #4t
+	DECL	ECX
+	JNE	14$
+	POPL	ESI
+	POPL	ECX
+18$:	LEAL	EDI, rgn_ytable[EAX]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]		;Copy the Y table
+	MOVL	ESI, ri_segbgn[EBP]
+	MOVL	ECX, EBX
+	SUBL	ECX, ESI
+	SHRL	ECX, #2t
+	ADDL	ESI, #rgnbufr-rgn_ytable
+	RMOVSL	[EDI], [ESI]		;Copy the segments
+20$:
+	CHECKRGN EAX
+
+ridone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to obtain the intersection of one line of two complex regions
+;	c{EDI} = Offset of region 1 segment table entry for line
+;	c{ESI} = Offset of region 2 segment table entry for line
+;	c{EBX} = Index to segment table for result
+;	CALL	intersectline
+;	c{EAX} = Initial EBX value if resulting line is not null, 0 if it
+;		   is null
+;	c{EDI} = Updated offset of region 1 segment table entry for line
+;	c{ESI} = Updated offset of region 2 segment table entry for line
+;	c{EBX} = Updated index to segment table for result
+
+$$$=!0
+FRM isl_segtbl, 4
+FRM isl_cnt1  , 4
+FRM isl_cnt2  , 4
+isl_SIZE=!$$$
+
+intersectline:
+	ENTER	isl_SIZE, 0
+	MOVL	isl_segtbl[EBP], EBX
+	ADDL	EBX, #4t
+	MOVL	EAX, [ECX]		;Get number of region 1 segments
+	ADDL	ECX, #4t
+	MOVL	isl_cnt1[EBP], EAX
+	MOVL	EAX, [EDX]		;Get number of region 2 segments
+	ADDL	EDX, #4t
+	MOVL	isl_cnt2[EBP], EAX
+
+;Start of actual line processing
+
+12$:	MOVL	EAX, [ECX]		;Is the region 2 segment completely
+	CMPL	EAX, 4[EDX]		;  left of the region 1 segment?
+	JG	20$			;Yes
+
+;Here if region 2 segment is not completely to the left of the region 1
+;  segment
+
+	MOVL	EAX, [EDX]		;Is the region 1 segment completely
+	CMPL	EAX, 4[ECX]		;  left of the region 2 segment?
+	JG	16$			;Yes
+
+;Here if have some overlap of the segments
+
+	CMPL	EAX, [ECX]
+	JGE	14$
+	MOVL	EAX, [ECX]
+14$:	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX ;Store left end of segment
+	MOVL	EAX, 4[EDX]
+	CMPL	EAX, 4[ECX]
+	JLE	18$
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+16$:	ADDL	ECX, #8t		;Yes - advance past the region 1 segment
+	DECL	isl_cnt1[EBP]		;More region 1 segments?
+	JNE	12$			;Yes - continue
+	JMP	22$			;No - finished with this line
+
+;Here if region 2 segment ends first
+
+18$:	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+20$:	ADDL	EDX, #8t		;Yes - advance past the region 2 segment
+	DECL	isl_cnt2[EBP]		;More region 2 segments?
+	JNE	12$			;Yes - continue
+
+;Here with the line complete
+
+22$:	MOVL	ECX, isl_segtbl[EBP]
+	MOVL	EAX, EBX
+	SUBL	EAX, ECX		;Calculate number of segments
+	SHRL	EAX, #3t
+	JE	30$			;If null line
+	MOVL	rgnbufr-rgn_ytable[ECX], EAX ;Store number of segments in line
+	MOVL	EAX, ECX
+	LEAVE
+	RET
+
+30$:	SUBL	EBX, #4t
+	LEAVE
+	RET
+.PAGE
+;Function to obtain the union of two regions - The two regions passed as
+;  arguments are unchanged.  A new region which is the union of these two
+;  regions is created.
+;	union = rgnUnion(rgn1, rgn2);
+;  Value returned is a pointer to the new region created.
+
+;This function uses the Pascal calling sequence
+
+$$$=!0
+FRM ru_tmp1     , 4
+FRM ru_tmp2     , 4
+FRM ru_cnt1     , 4
+FRM ru_cnt2     , 4
+FRM ru_cnto     , 4
+FRM ru_yxt1     , 4
+FRM ru_yxt2     , 4
+FRM ru_segtbl   , 4
+FRM ru_hdisjoint, 4
+FRM ru_vdisjoint, 4
+FRM ru_toplen   , 4
+FRM ru_ovllen   , 4
+FRM ru_btmlen   , 4
+FRM ru_rgnbm    , 4
+FRM ru_top      , 4
+FRM ru_bottom   , 4
+FRM ru_left     , 4
+FRM ru_right    , 4
+FRM ru_ycnt     , 4
+ru_SIZE=!$$$
+
+ru_rgn1=!24t
+ru_rgn2=!20t
+
+	.ENTRY	xwsRgnUnion
+xwsRgnUnion::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	ru_SIZE, 0
+	MOVL	EDI, ru_rgn1[EBP]
+	MOVL	ESI, ru_rgn2[EBP]
+
+	CHECKRGN EDI
+	CHECKRGN ESI
+
+;First see if we have the case of a simple rectangular region which completely
+;  includes the other region.  If so, the resulting region is just a copy of
+;  the rectangular region!
+
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL ;Is region 2 null?
+	JE	6$			;Yes - just return region 1
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Is region 1 null?
+	JB	4$			;Yes - just return region 2
+	JNE	2$			;If not simple
+	MOVL	EAX, rgn_top[EDI]	;Simple - does it enclose region 2?
+	CMPL	EAX, rgn_top[ESI]
+	JG	2$			;No
+	MOVL	EAX, rgn_bottom[EDI]	;Maybe
+	CMPL	EAX, rgn_bottom[ESI]
+	JL	2$			;No
+	MOVL	EAX, rgn_left[EDI]	;Maybe
+	CMPL	EAX, rgn_left[ESI]
+	JG	2$			;No
+	MOVL	EAX, rgn_right[EDI]	;Maybe
+	CMPL	EAX, rgn_right[ESI]
+	JG	6$			;Yes
+2$:	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Is region 2 simple?
+	JNE	10$			;No
+	MOVL	EAX, rgn_top[ESI]	;Yes - does it enclose region 2?
+	CMPL	EAX, rgn_top[EDI]
+	JG	10$			;No
+	MOVL	EAX, rgn_bottom[ESI]	;Maybe
+	CMPL	EAX, rgn_bottom[EDI]
+	JL	10$			;No
+	MOVL	EAX, rgn_left[ESI]	;Maybe
+	CMPL	EAX, rgn_left[EDI]
+	JG	10$			;No
+	MOVL	EAX, rgn_right[ESI]	;Maybe
+	CMPL	EAX, rgn_right[EDI]
+	JL	10$
+4$:	MOVL	EDI, ESI
+
+;Here with a simple region which completely encloses the other region - we
+;  just return the simple region with its use count incremented
+
+6$:	CMPL	rgn_usecnt[EDI], #0
+	JS	8$
+	INCL	rgn_usecnt[EDI]
+8$:	MOVL	EAX, EDI
+rudone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8t
+
+;Here if don't have a simple region which completely encloses the other
+;  region - now ensure that both regions are complex
+
+10$:	CLRL	EAX
+	MOVL	ru_tmp1[EBP], EAX
+	MOVL	ru_tmp2[EBP], EAX
+	MOVL	ru_hdisjoint[EBP], EAX
+	MOVL	ru_vdisjoint[EBP], EAX
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Is region 1 simple?
+	JNE	12$			;No
+	PUSHL	EDI			;Yes - convert it to complex
+	CALL	rgnconvrect
+	MOVL	ru_tmp1[EBP], EAX
+	MOVL	ru_rgn1[EBP], EAX
+	MOVL	EDI, EAX
+12$:	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Is region 2 simple?
+	JNE	runotsmpl		;No
+	PUSHL	ESI			;Yes - convert it to complex
+	CALL	rgnconvrect
+	MOVL	ru_tmp2[EBP], EAX
+	MOVL	ru_rgn2[EBP], EAX
+	MOVL	ESI, EAX
+.PAGE
+;Determine which region has the smaller Y positon and make it region 1.  This
+;  also gives us the top of the new region.
+
+runotsmpl:
+	MOVL	EAX, rgn_top[EDI]
+	CMPL	EAX, rgn_top[ESI]
+	JLE	4$
+	XCHGL	EDI, ESI
+	MOVL	ru_rgn1[EBP], EDI
+	MOVL	ru_rgn2[EBP], ESI
+	MOVL	EAX, rgn_top[EDI]
+4$:	MOVL	ru_top[EBP], EAX
+	MOVL	EDX, rgn_top[ESI]	;Calculate size of top non-overlapped
+	CMPL	EDX, rgn_bottom[EDI]	;  area
+	JLE	5$
+	MOVL	EDX, rgn_bottom[EDI]
+	INCL	EDX
+5$:	SUBL	EDX, EAX
+	MOVL	ru_toplen[EBP], EDX
+
+;Determine the bottom of the new region.  This also gives us the size of the
+;  new Y index table - This must span both regions and any space in between.
+
+	MOVL	EDX, rgn_bottom[EDI]
+	MOVL	EBX, EDI
+	CMPL	EDX, rgn_bottom[ESI]
+	JGE	6$
+	MOVL	EDX, rgn_bottom[ESI]
+	MOVL	EBX, ESI
+6$:	MOVL	ru_bottom[EBP], EDX
+	MOVL	ru_rgnbm[EBP], EBX
+	SUBL	EDX, ru_top[EBP]	;Get number of lines in region
+	INCL	EDX
+	MOVL	ru_ycnt[EBP], EDX
+	MOVL	EAX, rgn_left[EDI]	;Determine the left and right edge
+	CMPL	EAX, rgn_left[ESI]	;  positions for the new region
+	JLE	63$
+	MOVL	EAX, rgn_left[ESI]
+63$:	MOVL	ru_left[EBP], EAX
+	MOVL	EAX, rgn_right[EDI]
+	CMPL	EAX, rgn_right[ESI]
+	JGE	65$
+	MOVL	EAX, rgn_right[ESI]
+65$:	MOVL	ru_right[EBP], EAX
+	MOVL	EAX, rgn_bottom[EDI]	;Calculate size of the overlapped area
+	CMPL	EAX, rgn_bottom[ESI]
+	JLE	67$
+	MOVL	EAX, rgn_bottom[ESI]
+67$:	INCL	EAX
+	SUBL	EAX, rgn_top[ESI]
+	MOVL	ru_ovllen[EBP], EAX
+	LEAL	EBX,rgn_ytable[EDX*4]	;Get pointer value for first segment
+
+;Now we store the entires for the top non-overlapped region (if any)
+
+	MOVL	ESI, #rgnbufr		;Point to start of the Y index table
+	MOVL	EDX, ru_rgn1[EBP]
+	ADDL	EDX, #rgn_ytable
+	MOVL	ECX, ru_toplen[EBP]	;Get number of top items
+	TESTL	ECX, ECX
+	JE	rustrcenter		;If none
+	MOVL	ru_cnt1[EBP], ECX
+10$:	MOVL	ECX, [EDX]		;Get Y index table entry
+	ADDL	EDX, #4t
+	TESTL	ECX, ECX
+	JNE	12$
+	MOVL	[ESI], #0
+	ADDL	ESI, #4t
+	JMP	16$
+
+12$:	MOVL	[ESI], EBX
+	ADDL	ESI, #4t
+	ADDL	ECX, ru_rgn1[EBP]
+
+	MOVL	EAX, [ECX]		;Get number of RSBs for this line
+	ADDL	ECX, #4t
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX ;Store it
+	ADDL	EBX, #4t
+	MOVL	ru_cnt2[EBP], EAX
+
+14$:	MOVL	EAX, [ECX]		;Copy 1 RSB
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	ECX, #8t
+	ADDL	EBX, #8t
+	DECL	ru_cnt2[EBP]		;More RSBs here?
+	JNE	14$			;Yes - continue
+16$:	DECL	ru_cnt1[EBP]		;More top Y index table entries?
+	JNE	10$			;Yes - continue
+.PAGE
+;Here with the top non-overlapped area copied to our new region.  Now we must
+;  store the null center region or copy overlapped center region.
+;	c[ESI] = Offset of next Y index table entry in new region
+;	c[EBX] = Pointer value for next segment table in new region
+;	c[EDX] = Offset of next Y index table entry in top-most region
+
+rustrcenter:
+	MOVL	ECX, ru_ovllen[EBP]	;Get size of the overlapped area
+	TESTL	ECX, ECX
+	JE	8$			;If no null area and no overlap
+	JG	rustrovl		;If have some overlap
+	
+;Here to store the center null area
+
+	NEGL	ECX
+	CLRL	EAX
+4$:	MOVL	[ESI], EAX
+	ADDL	ESI, #4t
+	LOOP	ECX, 4$
+8$:	MOVL	EDX, ru_rgnbm[EBP]	;Get RGN of bottom-most region
+	MOVL	ECX, rgn_ycount[EDX]
+	JMP	rustrbtm
+.PAGE
+rustrovl:
+	MOVL	ru_cnto[EBP], ECX
+	MOVL	ru_yxt1[EBP], EDX
+	MOVL	EAX, ru_rgn2[EBP]
+	ADDL	EAX, #rgn_ytable
+	MOVL	ru_yxt2[EBP], EAX
+
+;Here when ready to process one overlapped line.
+
+2$:	MOVL	ru_segtbl[EBP], EBX	;Remember where this segment table is
+	ADDL	EBX, #4t
+	MOVL	EDX, ru_yxt1[EBP]
+	ADDL	ru_yxt1[EBP], #4t
+	MOVL	EDX, [EDX]
+	MOVL	ECX, ru_yxt2[EBP]
+	ADDL	ru_yxt2[EBP], #4t
+	MOVL	ECX, [ECX]
+	TESTL	EDX, EDX		;Have any segments in region 1?
+	JNE	4$			;Yes - go on
+	TESTL	ECX, ECX		;No - have any segments in region 2?
+	JE	34$			;No - go store the null line
+	ADDL	ECX, ru_rgn2[EBP]	;Yes - just copy them
+	MOVL	EAX, [ECX]
+	ADDL	ECX, #4t
+	MOVL	ru_cnt2[EBP], EAX
+	JMP	30$
+
+;Here if have at least one segment from region 1
+
+4$:	ADDL	EDX, ru_rgn1[EBP]
+	MOVL	EAX, [EDX]
+	MOVL	ru_cnt1[EBP], EAX
+	ADDL	EDX, #4t
+	TESTL	ECX, ECX		;Have any segments in region 2?
+	JE	32$			;No - just copy segments from region 1
+	ADDL	ECX, ru_rgn2[EBP]	;Yes
+	MOVL	EAX, [ECX]
+	MOVL	ru_cnt2[EBP], EAX
+	ADDL	ECX, #4t
+6$:	MOVL	EAX, [EDX]		;Which segment is left-most?
+	CMPL	EAX, [ECX]
+	JG	20$			;Segment from region 2
+
+;Here if the segment from region 1 is left-most
+
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX ;Store left value for segment
+12$:	MOVL	EAX, 4[EDX]		;Does this segment overlap the segment
+14$:	CMPL	EAX, [ECX]
+	JL	16$			;No
+	CMPL	EAX, 4[ECX]		;Yes - does it completely cover the
+					;  region 2 segment?
+	JL	18$			;No
+	ADDL	ECX, #8t
+	DECL	ru_cnt2[EBP]		;Yes - consume the region 2 segment
+	JNE	14$			;Continue if more region 2 segments
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;Store a complete segment
+	ADDL	EDX, #8t
+	ADDL	EBX, #8t
+	DECL	ru_cnt1[EBP]
+	JMP	32$
+
+;Here if region 1 segment does not overlap the next region 2 segment
+
+16$:	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;Store a complete segment
+	ADDL	EDX, #8t		;Consume the region 1 segment
+	ADDL	EBX, #8t
+	DECL	ru_cnt1[EBP]		;Have more region 1 segments?
+	JNE	6$			;Yes - continue
+	JMP	30$			;No
+
+;Here if the region 1 segment partially overlaps the region 2 segment
+
+18$:	ADDL	EDX, #8t		;Consume the region 1 segment
+	DECL	ru_cnt1[EBP]
+	JNE	22$			;Continue if more region 1 segments
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;Complete this segment
+	ADDL	EBX, #8t
+	ADDL	ECX, #8t		;Consume the region 2 segment
+	DECL	ru_cnt2[EBP]
+	JMP	30$			;Go finish up the line
+
+;Here if the segment from region 2 is left-most
+
+20$:	MOVL	EAX, [ECX]		;Store left value for segment
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+22$:	MOVL	EAX, 4[ECX]		;Does this segment overlap the segment
+24$:	CMPL	EAX, [EDX]
+	JL	26$			;No
+	CMPL	EAX, 4[EDX]		;Yes - does it completely cover the
+					;  region 1 segment?
+	JL	28$			;No
+	ADDL	EDX, #8t		;Yes
+	DECL	ru_cnt1[EBP]		;Consume the region 1 segment
+	JNE	24$			;Continue if more region 1 segments
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;Store a complete segment
+	ADDL	ECX, #8t		;Consume the region 2 segment
+	ADDL	EBX, #8t
+	DECL	ru_cnt2[EBP]
+	JMP	30$
+
+;Here if region 2 segment does not overlap the next region 1 segment
+
+26$:	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX ;Store a complete segment
+	ADDL	ECX, #8t		;Consume the region 2 segment
+	ADDL	EBX, #8t
+	DECL	ru_cnt2[EBP]		;Have more region 2 segments?
+	JNE	6$			;Yes - continue
+	JMP	32$			;No
+
+;Here if the region 2 segment partially overlaps the region 1 segment
+
+28$:	ADDL	ECX, #8t		;Consume the region 2 segment
+	DECL	ru_cnt2[EBP]
+	JNE	12$			;Continue if more region 2 segments
+	MOVL	EAX, 4[EDX]		;Complete this segment
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+	ADDL	EDX, #8t		;Consume the region 1 segment
+	DECL	ru_cnt1[EBP]
+	JMP	32$			;Go finish up the line
+
+;Here if we have no more region 1 segments - now copy any remaining region
+;  2 segments
+
+30$:	DECL	ru_cnt2[EBP]
+	JS	36$
+	MOVL	EAX, [ECX]
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+	ADDL	ECX, #8t
+	JMP	30$
+
+;Here if we have no more region 2 segments - now copy any remaining region
+;  1 segments
+
+32$:	DECL	ru_cnt1[EBP]
+	JS	36$
+	MOVL	EAX, [EDX]
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+	MOVL	EAX, 4[EDX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	EBX, #8t
+	ADDL	EDX, #8t
+	JMP	32$
+
+;Here if have a null line
+
+34$:	CLRL	EDX
+	SUBL	EBX, #4t
+	JMP	38$
+
+;Here when completely finished with the line - store the count for the
+;  segment table for the new region
+
+36$:	MOVL	EDX, ru_segtbl[EBP]
+	MOVL	EAX, EBX
+	SUBL	EAX, EDX
+	SHRL	EAX, #3t
+	JE	34$			;If null line
+	MOVL	rgnbufr-rgn_ytable[EDX], EAX ;Store segment count
+38$:	MOVL	[ESI], EDX
+	ADDL	ESI, #4t
+	DECL	ru_cnto[EBP]		;More lines to process here?
+	JNE	2$			;Yes - continue
+.PAGE
+;Here when ready to copy the bottom unoverlapped area
+
+	MOVL	ECX, ru_ycnt[EBP]	;Get length of the bottom non-overlapped
+	SUBL	ECX, ru_toplen[EBP]	;  area
+	SUBL	ECX, ru_ovllen[EBP]
+	JLE	rufin			;If none
+	MOVL	EDX, ru_rgnbm[EBP]	;Get RGN of bottom-most region
+rustrbtm:
+	MOVL	ru_cnt1[EBP], ECX
+
+
+	MOVL	EAX, rgn_ycount[EDX]
+	SUBL	EAX, ECX
+	LEAL	EDX, rgn_ytable[EDX+EAX*4]
+2$:	MOVL	ECX, [EDX]		;Get Y index table entry
+	ADDL	EDX, #4t
+	TESTL	ECX, ECX
+	JNE	4$
+	MOVL	[ESI], #0
+	ADDL	ESI, #4t
+	JMP	8$
+
+4$:	MOVL	[ESI], EBX
+	ADDL	ESI, #4t
+	ADDL	ECX, ru_rgnbm[EBP]
+	MOVL	EAX, [ECX]		;Get number of RSBs for this line
+	ADDL	ECX, #4t
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX ;Store it
+	ADDL	EBX, #4t
+	MOVL	ru_cnt2[EBP], EAX
+6$:	MOVL	EAX, [ECX]		;Copy 1 RSB
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	ECX, #8t
+	ADDL	EBX, #8t
+	DECL	ru_cnt2[EBP]		;More RSBs here?
+	JNE	6$			;Yes - continue
+8$:	DECL	ru_cnt1[EBP]		;More top Y index table entries?
+	JNE	2$			;Yes - continue
+.PAGE
+;Here when completely finished constructing the union - Note that the union
+;  cannot have any leading or trailing null lines!
+
+rufin:	PUSHL	EBX
+	PUSHL	EBX
+	CMPL	ru_tmp1[EBP], #0	;Give up any temporary regions we have
+	JE	10$
+	PUSHL	ru_tmp1[EBP]
+	CALL	xwsRgnDestroy
+10$:	CMPL	ru_tmp2[EBP], #0
+	JE	12$
+	PUSHL	ru_tmp2[EBP]
+	CALL	xwsRgnDestroy
+12$:
+
+;;;;;;;;;;;qqqqqqqqqqqqqqqqqqqqqqqq
+
+;;;; CHECK FOR SIMPLE ???
+
+
+	CALL	xwsMalloc#
+	POPL	ECX
+	TESTL	EAX, EAX
+	JE	20$
+	MOVL	EDX, ru_top[EBP]
+	MOVL	rgn_top[EAX], EDX
+	MOVL	EBX, ru_bottom[EBP]
+	MOVL	rgn_bottom[EAX], EBX
+	SUBL	EBX, EDX
+	INCL	EBX
+	MOVL	rgn_ycount[EAX], EBX
+	MOVL	EDX, ru_left[EBP]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, ru_right[EBP]
+	MOVL	rgn_right[EAX], EDX
+rgncpy:	MOVL	rgn_size[EAX], ECX
+	SUBL	ECX, #rgn_ytable
+	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_COMPLEX
+	MOVL	rgn_usecnt[EAX], #1
+	SHRL	ECX, #2t
+	LEAL	EDI, rgn_ytable[EAX]
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, #rgnbufr
+	CLD
+	RMOVSL	[EDI], [ESI]
+	CMPL	ESI, #rgnbufr+2000h	;Did we use more than 8K of the buffer?
+	JLE	rudone			;No
+20$:	PUSHL	EAX			;Yes - virtualize everything above 8K
+	PUSHL	#rgnbufr
+	PUSHL	#rgnbufr+2000h
+	ADDL	ESI, #0x0FFF
+	ANDL	ESI, #~0x0FFF
+	PUSHL	ESI
+	PUSHL	#PG$READ|PG$WRITE|PG$VIRTUAL
+	CALL	svcMemPageType##
+	POPL	EAX
+	JMP	rudone
+.PAGE
+;Function to obtain the difference of two regions - The two regions passed as
+;  arguments are unchanged.  A new region which is the difference of these two
+;  regions (rgn1 - rgn2) is created.
+;	xwsRgnDiff(rgn1, rgn2);
+
+;This function uses the Pascal calling sequence
+
+$$$=!0
+FRM rd_tmp1    , 4
+FRM rd_linecnt , 4
+FRM rd_cnt1    , 4
+FRM rd_cnt2    , 4
+FRM rd_ypnt    , 4
+FRM rd_segtbl  , 4
+FRM rd_segbgn  , 4
+FRM rd_lastline, 4
+FRM rd_minleft , 4
+FRM rd_maxright, 4
+rd_SIZE=!$$$
+
+rd_rgn1=!24t
+rd_rgn2=!20t
+
+	.ENTRY	xwsRgnDiff
+xwsRgnDiff::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rd_SIZE, 0
+	MOVL	rd_tmp1[EBP], #0
+	MOVL	EDI, rd_rgn1[EBP]
+	MOVL	ESI, rd_rgn2[EBP]
+
+	CHECKRGN EDI
+	CHECKRGN ESI
+
+	CMPB	rgn_type[EDI], #RGNTYPE_NULL ;Is region 1 null?
+	JE	3$			;Yes - just return it
+	CMPB	rgn_type[ESI], #RGNTYPE_NULL ;Is region 2 null?
+	JE	2$			;Yes - just return region 1
+
+;First check for the case of no intersection between the two regions.  In this
+;  case, we just return rgn1 with its use count incremented.
+
+	MOVL	EAX, rgn_top[EDI]
+	CMPL	EAX, rgn_bottom[ESI]
+	JG	2$
+	MOVL	EAX, rgn_bottom[EDI]
+	CMPL	EAX, rgn_top[ESI]
+	JL	2$
+	MOVL	EAX, rgn_left[EDI]
+	CMPL	EAX, rgn_right[ESI]
+	JG	2$
+	MOVL	EAX, rgn_right[EDI]
+	CMPL	EAX, rgn_left[ESI]
+	JGE	4$
+2$:	CMPL	rgn_usecnt[EDI], #0
+	JS	3$
+	INCL	rgn_usecnt[EDI]
+3$:	MOVL	EAX, EDI
+	JMP	rddone
+
+;Enter here if we have already checked that the regions are not null and that
+;  the regions might intersect
+
+;;;; NOTE: THIS IS DEAD CODE!!!!
+
+rgndiff2:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	rd_SIZE, 0
+	MOVL	EDI, rd_rgn1[EBP]
+	MOVL	ESI, rd_rgn2[EBP]
+
+;How we check for several special cases and handle them if they apply.  These
+;  are mainly cases that are fairly common when handling window clipping
+;  regions and thus seem worth the trouble.  First check to see if region 2
+;  is simple.  If it is, check to see if region 1 is also simple.  If it is,
+;  check to see if subtracting region 2 from region 1 leaves a simple region.
+;  If it does not or if region 1 is not simple, we do a direct subtraction of
+;  region 2 (which is simple) from region 1.  This doubles the amount of code,
+;  but is quite a bit faster than first converting region 2 to a complex
+;  region and this is a very common case.
+
+4$:	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Is region 2 simple?
+	JNE	rd2cmplx		;No - must do this the hard way
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Yes - is region 1 also simple?
+	JNE	rd2sim1cmplx		;No
+	MOVL	EAX, rgn_top[ESI]	;Yes - does region 2 completely enclose
+	MOVL	EBX, rgn_bottom[ESI]	;  region 1?
+	MOVL	ECX, rgn_left[ESI]
+	MOVL	EDX, rgn_right[ESI]
+	CMPL	EAX, rgn_top[EDI]
+	JG	8$			;No
+	CMPL	EBX, rgn_bottom[EDI]	;Maybe
+	JL	8$			;No
+	CMPL	ECX, rgn_left[EDI]	;Maybe
+	JG	22$			;No
+	CMPL	EDX, rgn_right[EDI]	;Maybe
+	JL	20$			;No
+	MOVL	EAX, #xwsnullrgn	;Yes - return the null region
+rddone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+;Here if region 1 and region 2 are both simple and region 2 does not completely
+;  enclose region 1 and region 2 does not span region 1 vertically
+
+8$:	CMPL	ECX, rgn_left[EDI]
+	JG	rd2sim1sim
+	CMPL	EDX, rgn_right[EDI]
+	JL	rd2sim1sim
+
+;Here if region 2 spans region 1 horizontally - see if the result will be a
+;  simple region
+
+	CMPL	EAX, rgn_top[EDI]
+	JG	10$
+
+;Here if region 2 spans the upper horizontal part of region 1 - return the
+;  lower part of region 1 not convered by region 2
+
+	PUSHL	#rgn_ytable
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	rddone
+	MOVL	EDX, rgn_bottom[ESI]
+	INCL	EDX
+	MOVL	rgn_top[EAX], EDX
+	MOVL	EDX, rgn_bottom[EDI]
+	MOVL	rgn_bottom[EAX], EDX
+	JMP	12$
+
+;Here if region 2 spans region 1 horizntally and the top of region 2 is
+;  below the top of region 1
+
+10$:	CMPL	EBX, rgn_bottom[EDI]
+	JL	rd2sim1sim
+
+;Here if region 2 spans the lower horizontal part of region 1 - return the
+;  upper part of region 1 not convered by region 2
+
+	PUSHL	#rgn_ytable
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	rddone
+	MOVL	EDX, rgn_top[EDI]
+	MOVL	rgn_top[EAX], EDX
+	MOVL	EDX, rgn_top[ESI]
+	DECL	EDX
+	MOVL	rgn_bottom[EAX], EDX
+12$:	MOVL	EDX, rgn_left[EDI]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rgn_right[EDI]
+	MOVL	rgn_right[EAX], EDX
+14$:	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_SIMPLE
+	MOVL	rgn_size[EAX], #rgn_SIZE
+	CLRL	EDX
+	MOVL	rgn_usecnt[EAX], #1
+	MOVL	rgn_ycount[EAX], EDX
+	JMP	rddone
+
+;Here if region 2 spans the left vertical part of region 1 - return the right
+;  part of region 1 not convered by region 2
+
+20$:	PUSHL	#rgn_ytable
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	rddone
+	MOVL	EDX, rgn_right[ESI]
+	INCL	EDX
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rgn_right[EDI]
+	MOVL	rgn_right[EAX], EDX
+	JMP	24$
+
+;Here if region 2 spans the right vertical part of region 1 - return the
+;  left part of region 1 not convered by region 2
+
+22$:	CMPL	EDX, rgn_right[EDI]	;Maybe
+	JL	rd2sim1sim		;No
+	PUSHL	#rgn_ytable
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	rddone
+	MOVL	EDX, rgn_left[EDI]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rgn_left[ESI]
+	DECL	EDX
+	MOVL	rgn_right[EAX], EDX
+24$:	MOVL	EDX, rgn_top[EDI]
+	MOVL	rgn_top[EAX], EDX
+	MOVL	EDX, rgn_bottom[EDI]
+	MOVL	rgn_bottom[EAX], EDX
+	JMP	14$
+.PAGE
+;Here if regions 1 and 2 are both simple and none of the special cases apply.
+;  In this case we know that the new region will span exactly as many lines
+;  as does region 1. (All of the cases where this is not true have been
+;  handled as special cases which generate simple regions.)
+
+rd2sim1sim:
+	MOVL	EBX, rgn_bottom[EDI]	;Calculate size of the Y table
+	SUBL	EBX, rgn_top[EDI]
+	SHLL	EBX, #2t
+	ADDL	EBX, #rgn_ytable+4
+	MOVL	EDX, #rgnbufr
+	MOVL	EAX, rgn_top[ESI]	;Determine how many lines to copy from
+	SUBL	EAX, rgn_top[EDI]	;  region 1
+	JLE	6$			;If nothing to copy here
+	MOVL	rd_linecnt[EBP], EAX
+	MOVL	EAX, rgn_left[EDI]
+	MOVL	ECX, rgn_right[EDI]
+4$:	MOVL	[EDX], EBX
+	ADDL	EDX, #4t
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], #1
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+	MOVL	rgnbufr-rgn_ytable+8t[EBX], ECX
+	ADDL	EBX, #12t
+	DECL	rd_linecnt[EBP]
+	JNE	4$
+6$:	MOVL	EAX, rgn_bottom[EDI]	;Determine the length of the overlapped
+	CMPL	EAX, rgn_bottom[ESI]	;  area
+	JLE	8$
+	MOVL	EAX, rgn_bottom[ESI]
+8$:	MOVL	ECX, rgn_top[EDI]
+	CMPL	ECX, rgn_top[ESI]
+	JGE	10$
+	MOVL	ECX, rgn_top[ESI]
+10$:	SUBL	EAX, ECX
+	INCL	EAX
+	MOVL	rd_linecnt[EBP], EAX
+	MOVL	EAX, rgn_left[ESI]	;Do we need zero, one or two segments
+	CMPL	EAX, rgn_left[EDI]	;  per line for the overlapped part?
+	JLE	22$			;Zero or one
+	MOVL	EAX, rgn_right[ESI]
+	CMPL	EAX, rgn_right[EDI]
+	JGE	16$			;One
+
+;Here if need two segments per line
+
+12$:	MOVL	ECX, rgn_right[ESI]
+	INCL	ECX
+14$:	MOVL	[EDX], EBX
+	ADDL	EDX, #4t
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], #2t
+	MOVL	EAX, rgn_left[EDI]
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+	MOVL	EAX, rgn_left[ESI]
+	DECL	EAX
+	MOVL	rgnbufr-rgn_ytable+8t[EBX], EAX
+	MOVL	rgnbufr-rgn_ytable+12t[EBX], ECX
+	MOVL	EAX, rgn_right[EDI]
+	MOVL	rgnbufr-rgn_ytable+16t[EBX], EAX
+	ADDL	EBX, #20t
+	DECL	rd_linecnt[EBP]
+	JNE	14$
+	JMP	26$
+
+;Here if need one segment per line
+
+16$:	MOVL	EAX, rgn_left[EDI]
+	MOVL	ECX, rgn_left[ESI]
+	DECL	ECX
+	JMP	20$
+
+18$:	INCL	EAX			;qqqqqqq
+	MOVL	ECX, rgn_right[EDI]
+20$:	MOVL	[EDX], EBX		;Store pointer in the Y table
+	ADDL	EDX, #4t
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], #1
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+	MOVL	rgnbufr-rgn_ytable+8t[EBX], ECX
+	ADDL	EBX, #12t
+	DECL	rd_linecnt[EBP]
+	JNE	20$
+	JMP	26$
+
+;Here if region 2 is left most - this means we need 0 or 1 segment per line
+
+22$:	MOVL	EAX, rgn_right[ESI]	;Need 1 segment?
+	CMPL	EAX, rgn_right[EDI]
+	JL	18$			;Yes
+	MOVL	ECX, rd_linecnt[EBP]	;No - store null lines for the
+	CLRL	EAX			;  overlapped region
+24$:	MOVL	[EDX], EAX
+	ADDL	EDX, #4t
+	DECL	ECX
+	JNE	24$
+
+;Here with the overlapped region stored - now store the bottom non-overlapped
+;  region
+
+26$:	MOVL	EAX, rgn_bottom[EDI]
+	SUBL	EAX, rgn_bottom[ESI]
+	JLE	30$
+	MOVL	rd_linecnt[EBP], EAX
+	MOVL	EAX, rgn_left[EDI]
+	MOVL	ECX, rgn_right[EDI]
+28$:	MOVL	[EDX], EBX		;Set up the Y index table
+	ADDL	EDX, #4t
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], #1
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+	MOVL	rgnbufr-rgn_ytable+8t[EBX], ECX
+	ADDL	EBX, #12t
+	DECL	rd_linecnt[EBP]
+	JNE	28$
+30$:
+
+;;;;;;	ADDL	EBX, #rgn_ytable
+
+	PUSHL	EBX
+	PUSHL	EBX
+	CALL	xwsMalloc#
+	POPL	ECX
+	MOVL	EDX, rgn_ycount[EDI]
+	MOVL	rgn_ycount[EAX], EDX
+	MOVL	EDX, rgn_left[EDI]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rgn_right[EDI]
+	MOVL	rgn_right[EAX], EDX
+	MOVL	EBX, rgn_top[EDI]
+	MOVL	rgn_top[EAX], EBX
+	MOVL	EDX, rgn_bottom[EDI]
+	MOVL	rgn_bottom[EAX], EDX
+	SUBL	EDX, EBX
+	INCL	EDX
+	MOVL	rgn_ycount[EAX], EDX
+	JMP	rgncpy
+.PAGE
+;Here if region 2 is complex
+
+rd2cmplx:
+	CMPB	rgn_type[EDI], #RGNTYPE_SIMPLE ;Is region 1 simple?
+	JNE	rd2sim1cmplx		;No
+	PUSHL	EDI			;Yes - make it complex
+	CALL	rgnconvrect
+	MOVL	rd_tmp1[EBP], EAX
+	MOVL	rd_rgn1[EBP], EAX
+	MOVL	EDI, EAX
+
+;Here if region 2 is simple and region 1 is complex.  In this case we do not
+;  know the exact size of the resulting Y table, but we do know it is no
+;  larger than region 1's Y table.
+
+rd2sim1cmplx:
+	MOVL	rd_lastline[EBP], #rgnbufr-4
+	MOVL	rd_minleft[EBP], #7FFFFFFFh
+	MOVL	rd_maxright[EBP], #80000001h
+	MOVL	EBX, rgn_ycount[EDI]	;Get maximum size of the Y table
+	SHLL	EBX, #2t
+	ADDL	EBX, #rgn_ytable
+	MOVL	rd_segbgn[EBP], EBX	;Remember where the segments start
+	MOVL	EDX, #rgnbufr
+	MOVL	EAX, rgn_top[ESI]	;Determine how many lines to copy from
+	SUBL	EAX, rgn_top[EDI]	;  region 1
+	LEAL	EDI, rgn_ytable[EDI]
+	JLE	rd2s1covl		;If nothing to copy here
+
+;Here if need to copy some initial lines from region 1
+
+	MOVL	rd_linecnt[EBP], EAX
+4$:	MOVL	ECX, [EDI]		;Point to the region 1 segment
+	ADDL	EDI, #4t
+	TESTL	ECX, ECX		;Null line?
+	JNE	8$			;No
+	MOVL	[EDX], ECX		;Yes
+	JMP	16$
+
+;Here if have non-null line to copy
+
+8$:	ADDL	ECX, rd_rgn1[EBP]
+	MOVL	EAX, [ECX]		;Get number of segments
+	ADDL	ECX, #4t
+	MOVL	rd_cnt1[EBP], EAX
+	MOVL	[EDX], EBX
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], EAX ;Store segment count
+	ADDL	EBX, #4t
+	MOVL	EAX, [ECX]
+	CMPL	EAX, rd_minleft[EBP]
+	JGE	12$
+	MOVL	rd_minleft[EBP], EAX
+10$:	MOVL	EAX, [ECX]		;Copy one segment
+12$:	MOVL	rgnbufr-rgn_ytable+0t[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+
+	CHECKSEGMENT
+
+	ADDL	EBX, #8t
+	ADDL	ECX, #8t
+	DECL	rd_cnt1[EBP]		;More segments?
+	JNE	10$			;Yes
+	CMPL	EAX, rd_maxright[EBP]
+	JLE	14$
+	MOVL	rd_maxright[EBP], EAX
+14$:	MOVL	rd_lastline[EBP], EDX	;No
+16$:	ADDL	EDX, #4t
+	DECL	rd_linecnt[EBP]	;More lines to copy here?
+	JNE	4$			;Yes
+	CLRL	EAX			;No
+.PAGE
+;Here with the upper non-overlapped part of region 1 copied (Note that EDI now
+;  points to the next Y table entry for region 1.
+;	c{EAX} = - number of region 2 lines to skip
+;	c{EBX} = Current pointer for region 3
+;	c{EDX} = Pointer to region 3 Y table
+;	c{EDI} = Pointer to region 1 Y table
+;	c{ESI} = Offset of region 2 RGN
+
+rd2s1covl:
+	PUSHL	EDI
+	MOVL	EDI, rd_rgn1[EBP]	;No
+	MOVL	ECX, rgn_bottom[EDI]	;Determine the length of the overlapped
+	CMPL	ECX, rgn_bottom[ESI]	;  area
+	JLE	2$
+	MOVL	ECX, rgn_bottom[ESI]
+2$:	SUBL	ECX, rgn_top[ESI]
+
+	INCL	ECX			;qqqqqqqq
+
+	ADDL	ECX, EAX
+	MOVL	rd_linecnt[EBP], ECX
+	POPL	EDI
+	CMPB	rgn_type[ESI], #RGNTYPE_SIMPLE ;Is region 2 simple?
+	JNE	rdcmplx
+
+;Here to store the overlapped region when region 1 is complex and region 2
+;  is simple
+
+10$:	MOVL	ECX, [EDI]		;Get next region 1 segment pointer
+	ADDL	EDI, #4t
+	TESTL	ECX, ECX
+	JE	38$
+
+;Here with non-null line
+
+12$:	MOVL	rd_segtbl[EBP], EBX
+	ADDL	EBX, #4t
+	ADDL	ECX, rd_rgn1[EBP]
+	MOVL	EAX, [ECX]		;Get number of segments
+	ADDL	ECX, #4t
+	MOVL	rd_cnt1[EBP], EAX
+14$:	MOVL	EAX, [ECX]		;Is there any overlap at all?
+	CMPL	EAX, rgn_right[ESI]
+	JG	22$			;No
+	MOVL	EAX, 4[ECX]		;Maybe
+	CMPL	EAX, rgn_left[ESI]
+	JL	24$			;No - go store entire segment
+
+;Here if have some or total overlap between this segment and region 2
+
+	CMPL	EAX, rgn_right[ESI]
+	JG	18$
+	MOVL	EAX, [ECX]
+	CMPL	EAX, rgn_left[ESI]
+	JGE	30$			;If have total overlap
+16$:	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX ;Store left end of segment
+	MOVL	EAX, rgn_left[ESI]	;Store right end of segment
+	DECL	EAX
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+
+	CHECKSEGMENT
+
+	ADDL	EBX, #8t
+	MOVL	EAX, 4[ECX]		;Does segment extend beyond region 3?	
+	CMPL	EAX, rgn_right[ESI]
+	JLE	30$			;No - go on to next segment
+	JMP	20$			;Yes
+
+18$:	MOVL	EAX, [ECX]
+	CMPL	EAX, rgn_left[ESI]
+	JL	16$
+	MOVL	EAX, 4[ECX]
+20$:	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	MOVL	EAX, rgn_right[ESI]
+	INCL	EAX
+	JMP	26$
+
+;Here if segment does not overlap region 2 at all - store entire segment
+
+22$:	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+
+	CHECKSEGMENT
+
+	JMP	28$
+
+;Here if segment does not overlap region 2 at all - store entire segment (This
+;  is same as above except that we have the other end of the segment in ECX -
+;  we duplicate this code to save a couple of cycles!)
+
+24$:	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	MOVL	EAX, [ECX]
+26$:	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX
+
+	CHECKSEGMENT
+
+28$:	ADDL	EBX, #8t
+30$:	ADDL	ECX, #8t
+	DECL	rd_cnt1[EBP]		;More segments in this line?
+	JNE	14$			;Yes - continue
+	MOVL	ECX, rd_segtbl[EBP]	;Get position of start of segment table
+	MOVL	EAX, EBX		;Calculate number of segments
+	SUBL	EAX, ECX
+	SHRL	EAX, #3t
+	JNE	32$			;If line is not null
+	SUBL	EBX, #4t		;Null line - fix up the pointer
+	CLRL	ECX
+	JMP	38$			;Continue
+
+;Here if stored at least one segment
+
+32$:
+	MOVL	rgnbufr-rgn_ytable[ECX], EAX ;Store number of segments in line
+	MOVL	EAX, rgnbufr-rgn_ytable-4[EBX]
+	CMPL	EAX, rd_maxright[EBP]
+	JLE	34$
+	MOVL	rd_maxright[EBP], EAX
+34$:	MOVL	EAX, rgnbufr-rgn_ytable+4[ECX] ;Get left most position
+	CMPL	EAX, rd_minleft[EBP]	;Is it a new minimum?
+	JGE	36$			;No
+	MOVL	rd_minleft[EBP], EAX	;Yes
+36$:	MOVL	rd_lastline[EBP], EDX
+38$:	MOVL	[EDX], ECX
+	ADDL	EDX, #4t
+	DECL	rd_linecnt[EBP]		;More overlapped lines?
+	JNE	10$			;Yes - continue
+	JMP	rgntm			;No - go handle bottom part
+.PAGE
+;Here to store the overlapped region when both regions are complex
+
+rdcmplx:NEGL	EAX			   ;Point to the start of region 2's
+	LEAL	ESI, rgn_ytable[ESI+EAX*4] ;  Y table
+	MOVL	rd_ypnt[EBP], EDX	;Store region 3's Y table pointer
+4$:	MOVL	ECX, [EDI]		;Get next region 1 segment pointer
+	MOVL	EDX, [ESI]		;Get next region 2 segment pointer
+	TESTL	ECX, ECX		;Is the region 1 line null?
+	JNE	6$			;No
+	CLRL	EAX			;Yes
+	JMP	18$
+
+;Here if region 1 line is not null
+
+6$:	ADDL	ECX, rd_rgn1[EBP]
+	MOVL	EAX, [ECX]		;Get number of region 1 segments
+	TESTL	EDX, EDX		;Is the region 2 line null?
+	JNE	12$			;No - go on
+
+;Here if the region 2 line is null and the region 1 line is not null - just
+;  copy the region 1 line
+
+	ADDL	ECX, #4t
+	MOVL	rd_cnt1[EBP], EAX
+	MOVL	rgnbufr-rgn_ytable[EBX], EAX
+	MOVL	rd_segtbl[EBP], EBX	;Remember where this segment table
+	ADDL	EBX, #4t		;  begins
+10$:	MOVL	EAX, [ECX]
+	MOVL	rgnbufr-rgn_ytable+0[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4[EBX], EAX
+	ADDL	ECX, #8t
+	ADDL	EBX, #8t
+	DECL	rd_cnt1[EBP]
+	JNE	10$
+	MOVL	EAX, rd_segtbl[EBP]
+	JMP	20$
+
+;Here if lines from both region 1 and region 2 are not null - Finding the
+;  difference of the two lines is quite complex, so instead we first
+;  complement the line from region 2 and then get its intersection with the
+;  line from region 1.
+
+12$:	ADDL	EDX, rd_rgn2[EBP]
+	MOVL	EAX, [EDX]		;Get number of segments in the region
+	ADDL	EDX, #4t		;  2 line
+	MOVL	rd_cnt2[EBP], EAX
+	PUSHL	ECX
+	MOVL	ECX, #linebufr+4
+	MOVL	[ECX], #80000001h	;Start the initial segment
+14$:	MOVL	EAX, [EDX]
+	DECL	EAX
+	MOVL	4[ECX], EAX
+	ADDL	ECX, #8t
+	MOVL	EAX, 4[EDX]
+	INCL	EAX
+	MOVL	[ECX], EAX
+	ADDL	EDX, #8t
+	DECL	rd_cnt2[EBP]
+	JNE	14$
+	MOVL	4[ECX], #7FFFFFFFh	;Finish the final segment
+	SUBL	ECX, #linebufr-4
+	SHRL	ECX, #3t
+	MOVL	linebufr, ECX
+	POPL	ECX
+	MOVL	EDX, #linebufr
+$$$$il::CALL	intersectline
+	TESTL	EAX, EAX		;Null line?
+	JNE	20$
+18$:	MOVL	EDX, rd_ypnt[EBP]
+	JMP	26$
+
+;Here if line is not null
+
+20$:	MOVL	EDX, rgnbufr-rgn_ytable-4[EBX] ;Get right end of line
+	CMPL	EDX, rd_maxright[EBP]	;New maximum?
+	JLE	22$			;No
+	MOVL	rd_maxright[EBP], EDX	;Yes
+22$:	MOVL	EDX, rgnbufr-rgn_ytable+4[EAX] ;Get left end of line
+	CMPL	EDX, rd_minleft[EBP]	;New minimum?
+	JGE	24$			;No
+	MOVL	rd_minleft[EBP], EDX	;Yes
+24$:	MOVL	EDX, rd_ypnt[EBP]
+	MOVL	rd_lastline[EBP], EDX
+26$:	MOVL	[EDX], EAX
+	ADDL	rd_ypnt[EBP], #4t	;Advance pointers
+28$:	ADDL	EDI, #4t
+	ADDL	ESI, #4t
+	DECL	rd_linecnt[EBP]		;More overlapped lines?
+	JNE	4$			;Yes - continue
+	MOVL	ESI, rd_rgn2[EBP]	;No - restore region 2 RGN offset
+	MOVL	EDX, rd_ypnt[EBP]	;Restore region 3 Y table pointer
+.PAGE
+;Here with the overlapped region stored - now store the bottom non-overlapped
+;  region
+
+rgntm:	MOVL	EAX, rd_rgn1[EBP]	;Calculate number of lines in bottom
+	MOVL	EAX, rgn_bottom[EAX]	;  area
+	SUBL	EAX, rgn_bottom[ESI]
+	JLE	rdfin			;If none
+	MOVL	rd_linecnt[EBP], EAX	;Store count
+4$:	MOVL	ECX, [EDI]		;Point to the region 1 segment
+	ADDL	EDI, #4t
+	TESTL	ECX, ECX		;Null line?
+	JNE	8$			;No
+	MOVL	[EDX], ECX		;Yes
+	JMP	16$
+
+;Here if have non-null line to copy
+
+8$:	ADDL	ECX, rd_rgn1[EBP]
+	MOVL	EAX, [ECX]		;Get number of segments
+	ADDL	ECX, #4t
+	MOVL	rd_cnt1[EBP], EAX
+	MOVL	[EDX], EBX
+	MOVL	rgnbufr-rgn_ytable+0t[EBX], EAX ;Store segment count
+	ADDL	EBX, #4t
+	MOVL	EAX, [ECX]
+	CMPL	EAX, rd_minleft[EBP]
+	JGE	12$
+	MOVL	rd_minleft[EBP], EAX
+10$:	MOVL	EAX, [ECX]		;Copy one segment
+12$:	MOVL	rgnbufr-rgn_ytable+0t[EBX], EAX
+	MOVL	EAX, 4[ECX]
+	MOVL	rgnbufr-rgn_ytable+4t[EBX], EAX
+
+	CHECKSEGMENT
+
+	ADDL	EBX, #8t
+	ADDL	ECX, #8t
+	DECL	rd_cnt1[EBP]		;More segments?
+	JNE	10$			;Yes
+	CMPL	EAX, rd_maxright[EBP]
+	JLE	14$
+	MOVL	rd_maxright[EBP], EAX
+14$:	MOVL	rd_lastline[EBP], EDX	;No
+16$:	ADDL	EDX, #4t
+	DECL	rd_linecnt[EBP]		;More lines to copy here?
+	JNE	4$			;Yes
+	MOVL	EDI, rd_rgn1[EBP]	;No
+.PAGE
+;Here with the entire new region created - now we need to determine the
+;  actual extent of the new Y table
+;	c{EBX} = Current pointer for region 3
+;	c{EDX} = Pointer to region 3 Y table
+
+rdfin:	MOVL	ESI, #rgnbufr-4
+	MOVL	ECX, rd_lastline[EBP]	;Get number of lines minus number of
+	SUBL	ECX, ESI		;  trailing null lines
+	JE	6$			;If no non-null lines at all
+	SHRL	ECX, #2t
+4$:	ADDL	ESI, #4t		;Now find the first non-null line
+	CMPL	[ESI], #0
+	JNE	10$
+	DECL	ECX
+	JNE	4$
+6$:	MOVL	EAX, #xwsnullrgn	;We have a null region!
+	JMP	20$
+
+;Here if region is not null
+
+10$:	MOVL	EDI, EBX		;Calculate total space for segments
+	SUBL	EDI, rd_segbgn[EBP]
+	ADDL	EDI, rd_lastline[EBP]	;Plus space for the Y table plus the
+	ADDL	EDI, #4t+rgn_ytable	;  RGN header
+
+	SUBL	EDI, ESI
+	PUSHL	EBX
+	PUSHL	EDI
+	CALL	xwsMalloc#		;Allocate space for the new RGN
+	POPL	EBX
+	TESTL	EAX, EAX
+	JE	20$			;If error
+	MOVL	rgn_label[EAX], #'RGN#'
+	MOVB	rgn_type[EAX], #RGNTYPE_COMPLEX
+	MOVL	rgn_usecnt[EAX], #1
+	MOVL	rgn_size[EAX], EDI
+	MOVL	EDI, rd_rgn1[EBP]	;Store the header values
+	MOVL	EDX, rd_minleft[EBP]
+	MOVL	rgn_left[EAX], EDX
+	MOVL	EDX, rd_maxright[EBP]
+	MOVL	rgn_right[EAX], EDX
+	MOVL	EDX, ESI		;Calculate amount to adjust top value
+	SUBL	EDX, #rgnbufr
+	SHRL	EDX, #2t
+	ADDL	EDX, rgn_top[EDI]
+	MOVL	rgn_top[EAX], EDX
+	MOVL	ECX, rd_lastline[EBP]	;Calculate bottom value
+	SUBL	ECX, ESI
+	SHRL	ECX, #2t
+	ADDL	ECX, EDX
+	MOVL	rgn_bottom[EAX], ECX
+	SUBL	ECX, rgn_top[EAX]
+	INCL	ECX
+	MOVL	rgn_ycount[EAX], ECX
+	MOVL	EDX, rgn_ycount[EDI]	;Get amount to adjust Y table pointers
+	SUBL	EDX, ECX
+	JE	18$			;If no adjustment needed
+	SHLL	EDX, #2t
+	PUSHL	ECX
+	PUSHL	ESI
+14$:	CMPL	[ESI], #0
+	JE	16$
+	SUBL	[ESI], EDX
+16$:	ADDL	ESI, #4t
+	DECL	ECX
+	JNE	14$
+	POPL	ESI
+	POPL	ECX
+18$:	LEAL	EDI, rgn_ytable[EAX]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	RMOVSL	[EDI], [ESI]		;Copy the Y table
+	MOVL	ESI, rd_segbgn[EBP]
+	MOVL	ECX, EBX
+	SUBL	ECX, ESI
+	SHRL	ECX, #2t
+	ADDL	ESI, #rgnbufr-rgn_ytable
+	RMOVSL	[EDI], [ESI]		;Copy the segments
+20$:	CMPL	rd_tmp1[EBP], #0	;Do we have a temporary region?
+	JE	22$			;No
+	PUSHL	EAX
+	PUSHL	rd_tmp1[EBP]		;Yes - give it up
+	CALL	xwsFree#
+	POPL	EAX
+22$:
+	CHECKRGN EAX
+
+	JMP	rddone
+.PAGE
+	.PSECT	_DATA_p
+
+	.ENTRY	xwsnullrgn
+xwsnullrgn::
+	.LONG	'RGN#'		;rgn_id
+	.WORD	0
+	.BYTE	RGNTYPE_NULL	;rgn_type
+	.BYTE	0
+	.LONG	rgn_ytable	;rgn_size
+	.LONG	-1		;rgn_usecnt
+	.LONG	0		;rgn_ycount
+	.LONG	0		;rgn_left
+	.LONG	-1		;rgn_right
+	.LONG	0		;rgn_top
+	.LONG	-1		;rgn_bottom
+
+xwsunivrgn::
+	.LONG	'RGN#'		;rgn_id
+	.WORD	0
+	.BYTE	RGNTYPE_SIMPLE	;rgn_type
+	.BYTE	0
+	.LONG	rgn_ytable	;rgn_size
+	.LONG	-1		;rgn_usecnt
+	.LONG	0		;rgn_ycount
+	.LONG	0x80000001	;rgn_left
+	.LONG	0x7FFFFFFF	;rgn_right
+	.LONG	0x80000001	;rgn_top
+	.LONG	0x7FFFFFFF	;rgn_bottom
+
+lit8:	.LONG	8t
+
+	.END

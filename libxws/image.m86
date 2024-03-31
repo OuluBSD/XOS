@@ -1,0 +1,32 @@
+;Function to draw an image from a file in a window.
+;	WIN *xwsDrawImage(
+;	    WIN  *win,		// Offset of WIN for window (may be NULL, in
+;				//   which case a new context is created with
+;				//   a base window which just holds the image)
+;	    long  xpos,		// X position (should be 0 if win is NULL)
+;	    long  ypos,		// Y position (should be 0 if win is NULL)
+;	    long  width,	// Width (0 means use image width)
+;	    long  height,	// Height (0 means use image width)
+;	    long  bits,		// ????
+;	    char *file);	// File specification for image file
+;	Value returned is the offset of the WIN containing the image if normal
+;	  or NULL if error.  If the win arguement was not NULL, it is returned.
+;	  Otherwise the offset of the WIN for the newly created window is
+;	  returned.
+
+;  This version requires that width and height arguments be 0!  This version
+;  only supports MS-Windows BMP files.
+
+di_win   =!40t
+di_xpos  =!36t
+di_ypos  =!32t
+di_width =!28t
+di_height=!24t
+di_bits  =!20t
+di_file  =!16t
+
+	.ENTRY	xwsDrawImage
+xwsDrawImage::
+
+
+	RET	28t

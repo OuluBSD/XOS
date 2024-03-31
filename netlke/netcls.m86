@@ -1,0 +1,1955 @@
+	.TITLE	netcls - Network class driver for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXNET.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!2t
+MINV   =!0t
+EDITNUM=!0t
+
+;1.2.2 - 31-Oct-95
+;	Fixed a couple of problems in netclose routine: was loading parameter
+;	list address from wrong place, was using wrong register to pick up
+;	offset of fork level close routine from the IDB.
+
+	LKEHEAD	NETCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+;This device class implements the low-level raw interface to the network(s).
+;  This is a non-buffered block oriented interface.  Data is transfered
+;  directly between the user's buffers and the network interface.  Each
+;  input or output operation transfers a single complete network packet.
+
+	.EXPORT	xosnetAbort
+;;;;;;	.EXPORT	xosnetAllDone
+	.EXPORT	xosnetCheckNetAddr
+	.EXPORT	xosnetFinXmit
+	.EXPORT	xosnetGetBuffer
+	.EXPORT	xosnetGetIdbData
+	.EXPORT	xosnetGetSdbData
+	.EXPORT	xosnetGiveDcb
+	.EXPORT	xosnetGiveBuffer
+	.EXPORT	xosnetGiveList
+	.EXPORT	xosnetIdbHead
+	.EXPORT	xosnetIdbTail
+	.EXPORT	xosnetIopCMode
+	.EXPORT	xosnetIopSMode
+	.EXPORT	xosnetMakeDcb
+	.EXPORT	xosnetMakeIdb
+	.EXPORT	xosnetMsgBadSize
+	.EXPORT	xosnetMsgTooBig
+	.EXPORT	xosnetMsgBcPktIn
+	.EXPORT	xosnetMsgCrcErr
+	.EXPORT	xosnetMsgDev
+	.EXPORT	xosnetMsgFixedCnt
+	.EXPORT	xosnetMsgLnkDown
+	.EXPORT	xosnetMsgNetAddr
+	.EXPORT	xosnetMsgNoSap
+	.EXPORT	xosnetMsgNoSBfr
+	.EXPORT	xosnetMsgOAbort
+	.EXPORT	xosnetMsgOvrErr
+	.EXPORT	xosnetMsgPktIn
+	.EXPORT	xosnetMsgPktOut
+	.EXPORT	xosnetMsgSapDev
+	.EXPORT	xosnetMsgSapNext
+	.EXPORT	xosnetMsgSapThis
+	.EXPORT	xosnetMsgXHung
+	.EXPORT	xosnetNewDriver
+	.EXPORT	xosnetOutputIsDone
+	.EXPORT	xosnetOutputWait
+	.EXPORT	xosnetRcvPkt
+	.EXPORT	xosnetRspIsDone
+	.EXPORT	xosnetRspIsDoneOut
+	.EXPORT	xosnetWaitForRsp
+	.EXPORT xosnetSendPkt
+	.EXPORT	xosnetSetIdbData
+	.EXPORT	xosnetSetSdbData
+	.EXPORT	xosnetSendIsDone
+	.EXPORT	xosnetWaitForWin
+	.EXPORT	xosnetSrchBlk2
+	.EXPORT xosnetSrchBlock
+	.EXPORT	xosnetWaitForPktOut
+
+	.SBTTL	SVC dispatch table for network class devices
+
+;SVC dispatch table for network class devices
+
+	CODE
+
+netdsp: .LONG	knlRtnZero##	;sd_mount    =  0 - Mount
+	.LONG	xosnetGiveDcb	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlNullQio##	;sd_opena    =  8 - Open additional
+	.LONG	netopen		;sd_open1    = 12 - Open device/file
+	.LONG	0		;sd_findfile = 16 - Device parameters
+	.LONG	0		;sd_delete   = 20 - Delete file
+	.LONG	0		;sd_rename   = 24 - Rename file
+	.LONG	netinpblk	;sd_inblock  = 28 - Input block
+	.LONG	netoutblk	;sd_outblock = 32 - Output block
+	.LONG	knlRtnMOne##	;sd_getiosts = 36 - Get input/output status
+	.LONG	0		;sd_special  = 40 - Special device function
+	.LONG	netclose	;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Get device label
+	.LONG	0		;sd_commit   = 52 - Commit data to disk
+	.LONG	sysIoInfoNone##	;sd_devinfo  = 56 - Get device info
+	.LONG	0		;sd_vfychn   = 60 - Verify changed disk
+	.LONG	netopnparms	;sd_opnsdpt  = 64 - Open paramter table
+	.LONG	knlComDPParms##	;sd_opnddpt  = 68 - Device dependent paramaters
+NETDSPSZ=!{$-netdsp}/4
+
+;Class function dispatch table for network class devices
+
+	.LONG	CLSFMX
+netcls:	.LONG	netaddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	netunitinfo	;CF_PUNITS  =  9 - Get information about
+				;                    physical units
+	.LONG	0		;CF_AUNITS  = 10 - Get information about active
+				;                    units
+CLSFMX=!{$-netcls}/4
+.PAGE
+;Device characteristics tables for NET devices are defined in the network
+;  interface driver modules
+
+;Class characteristics tables for the NET device class
+
+	.MOD	4
+netcctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  NUMBER , DECV, , 4, msgnumber , knlGetSysVal##, 0             , netdcbnum
+ CHARENT  MAXIMUM, DECV, , 4, msgmaximum, knlGetSysVal##, knlSetSysVal##, netdcbmax
+ CHARENT  LIMIT  , DECV, , 4, msglimit  , knlGetSysVal##, knlSetSysVal##, netdcblmt
+ CHAREND
+
+msgnumber:  CHARINFO  {Number of in use NET devices}
+msgmaximum: CHARINFO  {Maximum number of in use NET devices}
+msglimit:   CHARINFO  {Maximum number of NET devices allowed}
+
+xosnetMsgBadSize: CHARINFO  {Discarded - bad size for packet}
+xosnetMsgTooBig:  CHARINFO  {Discarded - packet is too big}
+xosnetMsgFixedCnt:CHARINFO  {Number of times input byte count fixed}
+xosnetMsgBcPktIn: CHARINFO  {Number of broadcast packets input}
+xosnetMsgCrcErr:  CHARINFO  {Discarded - input CRC error}
+xosnetMsgDev:     CHARINFO  {Network interface device}
+xosnetMsgLnkDown: CHARINFO  {Discarded - link down}
+xosnetMsgNetAddr: CHARINFO  {Physcial network address}
+xosnetMsgNoSBfr:  CHARINFO  {Discarded - no system buffer available}
+xosnetMsgNoSap:   CHARINFO  {Discarded - no destination for SAP}
+xosnetMsgOvrErr:  CHARINFO  {Discarded - input overrun error}
+xosnetMsgPktIn:   CHARINFO  {Number of packets input}
+xosnetMsgPktOut:  CHARINFO  {Number of packets output}
+xosnetMsgSapDev:  CHARINFO  {Device for SAP}
+xosnetMsgSapNext: CHARINFO  {This SAP}
+xosnetMsgSapThis: CHARINFO  {Next SAP}
+xosnetMsgXHung:   CHARINFO  {Number of hung output errors}
+xosnetMsgOAbort:  CHARINFO  {NUmber of output aborts}
+.PAGE
+;Device parameter table for NET: opens
+
+	.MOD	4
+	.LONG	OPARMMAX
+netopnparms:
+	.LONG	netopngenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File IO parameters
+	.LONG	netopntrmparms	 ;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	netopnnetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+OPARMMAX=!{$-netopnparms}/4
+
+	.LONG	OPARMGENMAX	;Size of table
+netopngenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopDummyN##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIopDummyS##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	0		;IOPAR_INPSTS      = 0008h
+	.LONG	0		;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT	   = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	knlIopBufrLmt##	;IOPAR_BUFRLMT	   = 0010h
+OPARMGENMAX=!{$-netopngenparms}/4
+
+	.LONG	OPARMTRMMAX
+netopntrmparms:
+	.LONG	0		;		   = 0200h
+	.LONG	0		;IOPAR_TRMSINPMODE = 0201h
+	.LONG	0		;IOPAR_TRMCINPMODE = 0202h
+	.LONG	0		;IOPAR_TRMSOUTMODE = 0203h
+	.LONG	0		;IOPAR_TRMCOUTMODE = 0204h
+	.LONG	0		;IOPAR_TRMBFRLIMIT = 0205h
+	.LONG	0		;IOPAR_TRMCLRBUFR  = 0206h
+	.LONG	0		;IOPAR_TRMCURTYPE  = 0207h
+	.LONG	0		;IOPAR_TRMCURPOS   = 0208h
+	.LONG	0		;IOPAR_TRMDISPAGE  = 0209h
+	.LONG	0		;IOPAR_TRMSPSTATUS = 020Ah
+	.LONG	0		;IOPAR_TRMSPBREAK  = 020Bh
+	.LONG	netiopmodem	;IOPAR_TRMSPMODEM  = 020Ch
+OPARMTRMMAX=!{$-netopntrmparms}/4
+
+	.LONG	OPARMNETMAX
+netopnnetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+	.LONG	netiopprotocol	;IOPAR_NETPROTOCOL = 0502h
+OPARMNETMAX=!{$-netopnnetparms}/4
+
+;Device parameter table for NET: IO operations
+
+	.LONG	PARMMAX
+netioparms:
+	.LONG	netiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms##;IOPAR_FILxxx = 01xx - File IO parameters
+	.LONG	netiotrmparms	 ;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	0		 ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+	.LONG	0		 ;IOPAR_TAPxxx = 04xx - Tape IO parameters
+	.LONG	netionetparms	 ;IOPAR_NETxxx = 05xx - Network IO parameters
+PARMMAX=!{$-netioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+netiogenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopFilOptn##	;IOPAR_FILOPTN     = 0001h
+	.LONG	knlIopFilSpec##	;IOPAR_FILSPEC     = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	knlIopDelay##	;IOPAR_DELAY       = 0006h
+	.LONG	knlIopTimeOut##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	0		;IOPAR_INPSTS      = 0008h
+	.LONG	0		;IOPAR_OUTSTS      = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT	   = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	knlIopBufrLmt##	;IOPAR_BUFRLMT	   = 0010h
+PARMGENMAX=!{$-netiogenparms}/4
+
+	.LONG	PARMTRMMAX
+netiotrmparms:
+	.LONG	0		;		   = 0200h
+	.LONG	0		;IOPAR_TRMSINPMODE = 0201h
+	.LONG	0		;IOPAR_TRMCINPMODE = 0202h
+	.LONG	0		;IOPAR_TRMSOUTMODE = 0203h
+	.LONG	0		;IOPAR_TRMCOUTMODE = 0204h
+	.LONG	0		;IOPAR_TRMBFRLIMIT = 0205h
+	.LONG	0		;IOPAR_TRMCLRBUFR  = 0206h
+	.LONG	0		;IOPAR_TRMCURTYPE  = 0207h
+	.LONG	0		;IOPAR_TRMCURPOS   = 0208h
+	.LONG	0		;IOPAR_TRMDISPAGE  = 0209h
+	.LONG	0		;IOPAR_TRMSPSTATUS = 020Ah
+	.LONG	0		;IOPAR_TRMSPBREAK  = 020Bh
+	.LONG	netiopmodem	;IOPAR_TRMSPMODEM  = 020Ch
+PARMTRMMAX=!{$-netiotrmparms}/4
+
+	.LONG	PARMNETMAX
+netionetparms:
+	.LONG	0		;		   = 0500h
+	.LONG	0		;IOPAR_NETSUBUMASK = 0501h
+	.LONG	netiopprotocol	;IOPAR_NETPROTOCOL = 0502h
+PARMNETMAX=!{$-netionetparms}/4
+
+;Device dependent parameter table for NET: IO operations
+
+	.LONG	1
+netddparms:
+	.LONG	netdd0parms
+
+	.LONG	2
+netdd0parms:
+	.LONG	knlIoparClass##	;IOPAR_CLASS       = 8000 - Device class
+	.LONG	netiopctlmode	;IOPAR_NET_CTLMODE = 8001 - Set or clear control
+				;			      mode
+.PAGE
+;Initialization routine
+
+	INITSUB	initnet
+
+initnet:PUSHL	#netccb			;Install the BULK class
+	CALL	sysIoNewClass##
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ECX, #codetop
+	CLRL	EDX
+	CLRL	EAX
+4$:	RET
+
+	CODE
+.PAGE
+	.SBTTL	xosnetNewDrive - Subroutine to register low level network driver
+
+;Subroutine to register low level network driver - must be called with the
+;  exec memory resource
+;	c{EBX} = Name of driver (4 characters)
+;	c{EDX} = Offset of addunit subroutine
+;	CALL	xosnetNewDrive
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long xosnetNewDriver(
+;	    qqqqqq
+
+
+xosnetNewDriver:
+	MOVL	ECX, #12t
+	CALL	knlGetXMem##		;Get memory for the driver data block
+	JC	4$.S			;If error
+	MOVL	4[EDI], EBX		;OK - store name
+	MOVL	8[EDI], EDX		;Store offset of addunit subroutine
+	MOVL	EAX, fnetdrv		;Link into list of network drivers
+	MOVL	[EDI], EAX
+	MOVL	fnetdrv, EDI
+	CLRL	EAX			;Make sure C is clear and return 0
+4$:	RET
+.PAGE
+	.SBTTL	netadadunit - Class function to add unit
+
+;Here for the CL_ADDUNIT function - for this device the add unit function
+;  actually sets up a single network interface.  It does this by calling
+;  the apropriate network device driver.
+;	c{ES:EDI} = Address of parameter block
+;	CALL	netaddunit
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX}  = 0
+
+;Description block for addunitchar
+
+	.MOD	4
+netaublk:
+ CHARBGN  2, 0
+ CHARENT  UNIT, DECV, , 1, 0, 0, nauunit, 0
+ CHARENT  TYPE, TEXT, , 4, 0, 0, nautype, 0
+ CHAREND
+
+$$$=!0
+FRM nau_unit  , 4		;Unit number
+FRM nau_type  , 8		;Controller type name
+nau_SIZE=!$$$
+
+netaddunit:
+	ENTER	nau_SIZE
+	PUSHL	#1			;Ignore bad names
+	PUSHL	#netaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JS	nauerr
+
+;Here with all parameters processed - make sure we got everything we need
+
+	MOVL	EAX, nau_unit[EBP]
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EDX, nau_type[EBP]
+	CMPL	EDX, #-1
+	JNE	16$
+10$:	MOVL	EAX, #ER_CHARM
+	JMP	nauerr
+
+;Here if network unit is already defined
+
+12$:	MOVL	EAX, #ER_DUADF
+	JMP	nauerr
+
+;Here network driver type not defined
+
+14$:	MOVL	EAX, #ER_NSTYP
+nauerr:	MOVL	knlTda+tdaError#, EAX
+	JMP	naudn
+
+;Here with all needed parameters found
+
+16$:	MOVL	ESI, xosnetIdbHead	;Point to first IDB
+18$:	TESTL	ESI, ESI
+	JE	22$			;If no more IDBs
+	CMPB	idb_unit[ESI], AL	;Same unit?
+	JE	12$			;Yes - fail
+20$:	MOVL	ESI, idb_nextd[ESI]	;Not this one - try next
+	JMP	18$			;Continue
+
+;Here if this unit not defined now
+
+22$:	LEAL	EAX, nau_type[EBP]	;Type name
+	PUSHL	EAX
+	PUSHL	#netccb			;Address of the NET CCB
+	PUSHL	nau_unit[EBP]		;Unit number
+	CALL	sysIoDriverAddUnit##
+	TESTL	EAX, EAX
+	JS	nauerr
+	MOVL	knlTda+tdaAmount##, EAX
+naudn:	LEAVE
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	MOVL	knlTda+tdaDcb##, EAX
+	RET
+.PAGE
+;Subroutine called by adduchars when "TYPE" characteristic found
+
+nautype:MOVL	nau_type[EBP], EAX
+	CLC
+	RET
+
+;Subroutine called by adduchars when "UNIT" characteristic found
+
+nauunit:MOVL	nau_unit[EBP], EAX
+	CLC
+	RET
+.PAGE
+	.SBTTL	xosnetGetIdbData - Subroutine to get data item from an IDB
+
+;Subroutine to get data item from an IDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetGetIdbData
+;	C:clr always
+;	c{EAX} = Data value
+
+xosnetGetIdbData:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the data item
+	MOVL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+
+	.SBTTL	xosnetGetSdbData - Subroutine to get data item from an SDB
+
+;Subroutine to get data item from an SDB for QFNC_DEVCHAR
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetGetSdbData
+;	C:clr always
+;	c{EAX} = Data value
+
+xosnetGetSdbData:
+	ADDL	EBX, dcb_netsdb[EDI]	;Point to the data item
+	MOVL	EAX, [EBX]		;Get value
+	CLC
+	RET				;Thats all
+
+	.SBTTL	xosnetSetIdbData - Subroutine to set data item in an IDB
+
+;Subroutine to set data item in an IDB for QFNC_DEVCHAR
+;	c{EAX} = Data value
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetSetIdbData
+;	C:clr always
+
+xosnetSetIdbData:
+	ADDL	EBX, dcb_netidb[EDI]	;Point to the data item
+	MOVL	[EBX], EAX		;Store value
+	CLC
+	RET				;Thats all
+
+	.SBTTL	xosnetSetSdbData - Subroutine to set data item in an SDB
+
+;Subroutine to set data item in an SDB for QFNC_DEVCHAR
+;	c{EAX} = Data value
+;	c{EBX} = Offset of item
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetSetSdbData
+;	C:clr always
+
+xosnetSetSdbData:
+	ADDL	EBX, dcb_netsdb[EDI]	;Point to the data item
+	MOVL	[EBX], EAX		;Store value
+	CLC
+	RET				;Thats all
+.PAGE
+	.SBTTL	netunitinfo - Network class get phyical unit information function
+
+;Here for the get physical unit information class function (CL_PUNITS) for the
+;  network class
+;	c{EBX} = Offset of CCB
+;	c{ESI} = Offset of IORB
+;	CALL	netunitinfo
+;	c{EAX} = Error code
+;	c{EBX} = Status bits
+;	c{ECX} = Item count
+;  A zero count requests that the number of units only be returned in
+;    qab_amount.  A non-zero count indicates that a buffer is available for
+;    that many unit names (8 characters each, null padded).
+
+netunitinfo:
+	CRASH	NIYT
+.PAGE
+	.SBTTL	xosnetMakeIdb - Subroutine to create network IDB
+
+;Subroutine to create network interface data block (IDB) - must be called
+;  with the exec memory resource
+;	c{EAX} = Unit number
+;	c{ECX} = Size of IDB
+;	c{EDX} = Offset of device characteristics table for NET: device
+;	CALL	xosnetMakeIdb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Address of IDB just created
+
+xosnetMakeIdb:
+	PUSHL	EAX			;Save unit number
+	PUSHL	EDX			;Save device characteristics offset
+	CALL	knlGetXMem##		;Allocate exec memory for the IDB
+	POPL	ECX			;Restore device characteristics offset
+	POPL	EDX			;Restore unit number
+	JC	6$			;If error
+	MOVL	ESI, EDI
+	MOVL	idb_label[ESI], #'IDB*'
+	MOVL	idb_devchar[ESI], ECX	;Store device characteristics offset
+	MOVL	idb_unit[ESI], EDX	;Store unit number
+;;;;;;	MOVL	idb_sffdisp[ESI], #netsffork ;Store send-self fork dispatch
+	DECL	idb_sffnext[ESI]
+	MOVL	EAX, xosnetIdbTail	;Link into our chain of IDBs
+	TESTL	EAX, EAX
+	JE	2$
+	MOVL	idb_nextd[EAX], ESI
+	JMP	4$
+
+2$:	MOVL	xosnetIdbHead, ESI
+4$:	MOVL	xosnetIdbTail, ESI
+	DECL	idb_fnext[ESI]
+	LEAL	EBX, idb_name+3[ESI]	;Construct unit name
+	MOVL	-3[EBX], #'NET'
+	MOVL	EAX, EDX
+	CALL	knlPutDecNmbr##
+	CLC
+6$:	RET
+.PAGE
+	.SBTTL	xosnetAbort - Subroutine to terminate all IO for a network interface
+
+;Subroutine to terminate all IO for a network interface
+;	c{ESI} = Offset of IDB
+;	CALL	xosnetAbort
+
+xosnetAbort:
+	MOVL	EBX, idb_outhead[ESI]
+	CLRL	EAX
+	MOVL	idb_outhead[ESI], EAX
+	MOVL	idb_outtail[ESI], EAX
+4$:	TESTL	EBX, EBX
+	JE	6$
+	PUSHL	npb_nextsnd[EBX]
+	MOVL	EAX, #ER_ABORT		;Do output done processing
+	CALL	xosnetFinXmit
+	POPL	EBX			;Restore offset of next packet
+	JMP	4$
+
+;;;;; SHOULD THIS CALL A DEVICE LEVEL ABORT ROUTINE????
+
+6$:	PUSHL	ESI
+	MOVL	ESI, idb_sdbhead[ESI]
+8$:	TESTL	ESI, ESI
+	JE	10$
+	MOVL	EAX, sdb_disp[ESI]
+	CALLI	CS:nsf_abort[EAX]
+	MOVL	ESI, [ESI]
+	JMP	8$
+
+10$:	POPL	ESI
+	RET
+.PAGE
+;Device check routine for NET devices
+;	long netdchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path);	// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;  Value returned is 0 if no match, 1 if found a match, 2 if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+
+;This is a generic device. The device names may have any form, so there is
+;  no preliminary check we can make to eliminate impossible names.
+
+dchk_name=!8
+dchk_path=!4
+
+netdchk:MOVL	EDX, dchk_name[ESP]
+	MOVL	EAX, [EDX]
+	ANDL	EAX, #0xFFFFFF
+	CMPL	EAX, #'NET'		;Is this NET*?
+	JE	6$			;Yes
+2$:	CLRL	EAX			;No - return 0
+4$:	RET	8
+
+;Here if have a name that starts with 'NET'. First make sure the name is not
+;  too long.
+
+6$:	CMPB	5[EDX], #0
+	JNE	2$
+
+;Search through the network interface devices looking for a matching name.
+
+	MOVL	ECX, xosnetIdbHead	;Point to first network IDB
+	TESTL	ECX, ECX
+	JE	2$
+	MOVL	EAX, 3[ECX]
+8$:	CMPL	EAX, idb_name+3[ECX]
+	JE	12$
+	MOVL	ECX, idb_next[ECX]	
+	TESTL	ECX, ECX
+	JNE	8$
+	JMP	2$
+
+;Here with the desired interface
+
+12$:	LEAL	EAX, dchk_name[ESP]
+	PUSHL	EAX
+	PUSHL	#netccb			;Make a DCB
+	PUSHL	ECX
+	CALLI	ndf_makedcb[EAX]
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	EDX, knlTda+tdaDcb##
+	MOVL	dcb_sdisp[EDX], #netdsp ;Store offset of SVC dispatch table
+	MOVL	EAX, #1
+	JMP	4$
+.PAGE
+	.SBTTL	sd_cleardcb - Clear DCB
+
+;Here for the clear DCB entry
+;	c{EDI} = Offset of DCB
+
+gvdcb_dcb=!4
+
+xosnetGiveDcb:
+	DECL	netdcbnum		;Reduce in-use count
+	PUSHL	gvdcb_dcb[ESP]
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	RET	4
+.PAGE
+	.SBTTL	xosnetSrchBlock - Search for data block for network device
+
+;Subroutine to search for data block for network device
+;	c{SS:ECX} = Address of start of unit number in device name
+;	c{EDI} = Offset of first data block (PDB, TPDB, or DPDB)
+;	CALL	xosnetSrchBlock
+;	C:clr Always
+;	Z:clr = Not found
+;	Z:set = Found
+;	  c{EDI}    = Offset of data block
+;	  c{SS:ECX} = Address of network letter in device name (will point to
+;			final null character is not network specified)
+;  EBX and ESI are preserved
+
+;Original device names are of the form NAMEppXssss, where NAME is a 2 to 4
+;  character network device name, p is a 1 or 2 digit primary unit number, X
+;  is the interface letter, and ssss is a 0 to 5 character secondary unit
+;  number.  The secondary unit number is optional and is not used here.  X may
+;  be missing, indicating the default interface.  The value passed in SS:ECX is
+;  the address of the first character of the primary unit number in this name.
+
+xosnetSrchBlock:
+	CLRL	EDX
+	MOVB	AL, SS:[ECX]
+	CMPB	AL, #'0'
+	JB	12$
+	CMPB	AL, #'9'
+	JA	12$
+2$:	INCL	ECX
+	IMULL	EDX, #10t
+	ANDL	EAX, #0Fh
+	ADDL	EDX, EAX
+	MOVB	AL, SS:[ECX]
+	CMPB	AL, #0
+	JE	4$
+	CMPB	AL, #'0'
+	JB	4$
+	CMPB	AL, #'9'
+	JBE	2$
+4$:	CMPL	EDX, #99t		;Valid unit number?
+	JA	12$			;No
+	CMPB	AL, #0			;End of name?
+	JNE	12$			;No - fail
+xosnetSrchBlk2:
+	TESTL	EDI, EDI		;Have another data block
+	JE	12$			;No - indicate not found
+	CMPB	pdb_unit[EDI], DL	;Yes - same unit number?
+	JE	14$			;Yes - found it
+	MOVL	EDI, pdb_nextd[EDI]	;No - try next
+	JMP	xosnetSrchBlk2		;Continue
+
+;Here if no match on name
+
+12$:	TESTL	ESP, ESP		;Clear Z
+14$:	RET
+.PAGE
+	.SBTTL	xosnetMakeDcb - Subroutine to allocate a network DCB
+
+;Subroutine to allocate a network DCB
+;	c{{ESP}+24t} = Device name (16 characters)
+;	c{{ESP}+20t} = Primary unit number
+;	c{{ESP}+16t} = Secondary unit number
+;	c{{ESP}+12t} = Size index for DCB
+;	c{{ESP}+8t}  = Offset of CCB
+;	c{{ESP}+4t}  = Offset of IDB
+;	c{{ESP}+0t}  = Description bits
+;	CALL	xosnetMakeDcb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of network DCB allocated
+;  On return, 40 bytes (10 longs) are removed from the stack
+
+;	long xosnetMakeDcb(
+;	    char *name,		// Device name (16 characters)
+;	    long  punit,	// Primary unit number
+;	    long  sunit,	// Secondary unit number
+;	    long  sizex,	// Size index for DCB (negative value)
+;	    CCB  *ccb,		// Offset of CCB
+;	    IDB  *idb,		// Offset of IDB
+;	    long  desc)		// Description bits
+;  Value returned is ???
+
+$$$=!0
+FRM gd_index  , 4
+FRM gd_numpdb , 4	;Number of PDBs
+FRM gd_hashtbl, 4	;Offset of hash table
+gd_SIZE=!$$$
+
+gd_name   =!36t
+gd_punit  =!32t
+gd_sunit  =!28t
+gd_sizex  =!24t
+gd_ccb    =!20t
+gd_idb    =!16t
+gd_desc   =!12t
+
+xosnetMakeDcb:
+	PUSHL	EDI
+	ENTER	gd_SIZE, 0
+	MOVL	EAX, netdcbnum
+	CMPL	EAX, netdcblmt
+	JAE	8$
+	PUSHL	EAX
+	MOVL	EAX, ESP
+	LEAL	EDX, gd_name[EBP]
+	PUSHL	EDX
+	PUSHL	gd_desc[EBP]
+	PUSHL	gd_sizex[EBP]
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	EAX, gd_punit[EBP]	;Store unit numbers in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVW	dcb_sunit[EDI], #0	;Sub-unit number is always 0 in this
+					;  version
+	PUSHL	EDI
+	PUSHL	gd_ccb[EBP]
+	CALL	sysIoLinkDcb##
+	INCL	netdcbnum
+	MOVL	EAX, netdcbnum
+	CMPL	EAX, netdcbmax
+	JB	4$
+	MOVL	netdcbmax, EAX
+4$:	MOVL	EAX, gd_sizex[EBP]
+	MOVL	EDX, gd_idb[EBP]
+	MOVL	EAX, idb_typname[EDX]	;Copy type name
+	MOVL	dcb_typename[EDI], EAX
+	MOVL	EAX, idb_devchar[EDX]	;Copy offset of device characteristics
+	MOVL	dcb_devchar[EDI], EAX	;  table of interface device
+	MOVL	dcb_netidb[EDI], EDX	;Store IDB offset in the DCB
+	MOVL	knlTda+tdaDcb##, EDI
+	CLRL	EAX
+6$:	LEAVE
+	POPL	EDI
+	RET	36t
+
+;Here if no network DCB is available
+
+8$:	MOVL	EAX, #ER_TMDVC		;Error = Too Many DeVices open for
+	JMP	6$
+.PAGE
+	.SBTTL	netiopprotocol - Process IOPAR_PROTOCOL device parameter
+
+;Here to process the IOPAR_PROTOCOL device parameter - Low level protocol
+
+	DPARMHDR  BOTH, DECV, 4
+netiopprotocol:
+	MOVL	ESI, dcb_netidb[EDI]
+	MOVL	EDX, idb_disp[ESI]
+	JMPIL	ndf_protocol[ESI]
+.PAGE
+	.SBTTL	netiopctlmode - Process IOPAR_NET_CTLMODE device parameter
+
+;Here to process the IOPAR_NET_CTLMODE device parameter - Set or clear link
+;  control mode.  Link control mode allows a serial network port to be used
+;  as a normal async port for communicating with a modem.  A non-zero parameter
+;  value enables link control mode, a zero value disables it and resumes normal
+;  link operation.  Link control mode is exclusive (only one DCB can have link
+;  control mode set at a time) and is cleared automatically when the DCB is
+;  closed.  When link control mode is set, all normal network IO is suspended
+;  and normal input and output calls can be used to talk to a connected modem.
+;  Synchronous links switch to async operation when link control mode is
+;  enabled.  If bit 1 is set, DTR is forced low (this forces some modems into
+;  command mode).
+
+	DPARMHDR  SET, DECV, 1
+netiopctlmode:
+	CALL	knlGetParm##		;Get parameter value
+	JC	ret002.S		;If error
+	MOVL	ESI, dcb_netidb[EDI]	;OK - get IDB offset
+	CMPL	EAX, #0
+	JE	4$.S
+	MOVL	EAX, #LNKCTL_SET
+4$:	MOVL	EDX, EAX
+	MOVL	ECX, idb_disp[ESI]
+	JMPIL	CS:ndf_linkctl[ECX]	;Dispatch to the link level driver
+.PAGE
+	.SBTTL	netiopspmodem - Process IOPAR_SPMODEM device parameter
+
+;Here to process the IOPAR_SPMODEM device parameter - Set or clear modem
+;  control bits
+
+	DPARMHDR  BOTH, DECV, 2
+netiopmodem:
+	MOVL	ESI, dcb_netidb[EDI]
+	CMPL	idb_lnkctldcb[ESI], EDI ;In modem control mode?
+	JNE	10$.S			;No - fail
+	TESTB	AH, #PAR$SET		;Yes - want to change the values?
+	JE	4$.S			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get parameter value
+	JC	ret002.S		;If error
+	MOVL	EDX, #LNKCTL_SETMC
+	MOVL	ECX, idb_disp[ESI]
+	CALLI	CS:ndf_linkctl[ECX]	;Dispatch to the link level driver
+	JC	6$.S
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	ret002.S
+	MOVL	EDX, #LNKCTL_GETMC
+
+	MOVL	ECX, idb_disp[ESI]
+	CALLI	CS:ndf_linkctl[ECX]	;Dispatch to the link level driver
+	JMP	knlStrParm4##
+
+6$:	POPL	EDX
+ret002:	RET
+
+;Here if not in link control mode - report as illegal parameter index
+
+10$:	MOVL	EAX, #ER_PARMI
+	STC
+	RET
+
+	.SBTTL	xosnetIopSMode - Process IOPAR_NETSMODE device parameter
+
+;Here to process the IOPAR_NETSMODE device parameter - Set network mode bits
+
+	DPARMHDR  BOTH, HEXV, 4
+xosnetIopSMode:
+	TESTB	AH, #PAR$SET		;Want to change the value?
+	JE	14$.S			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get parameter value
+	JC	6$.S
+	ORL	dcb_netmode[EDI], EAX	;Set the bits
+	JMP	12$.S
+
+	.SBTTL	xosnetIopCMode - Process IOPAR_NETCMODE device parameter
+
+;Here to process the IOPAR_NETCMODE device parameter - Clear network mode bits
+
+	DPARMHDR  BOTH, HEXV, 4
+xosnetIopCMode:
+	TESTB	AH, #PAR$SET		;Want to change the value?
+	JE	14$.S			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get parameter value
+	JC	6$.S
+	NOTL	EAX
+	ANDL	dcb_netmode[EDI], EAX	;Clear the bits
+12$:	POPL	EAX
+14$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	ret002.S		;No
+	MOVL	EAX, dcb_netmode[EDI]	;Yes - get value
+	JMPIL	knlStrParm4##
+.PAGE
+	.SBTTL	sd_open - Open device
+
+;Here for the open device entry (sd_open) - also used for the device parameters
+;  entry (sd_parm)
+;	c{EDI} = Offset of DCB
+
+netopen:CLRL	EAX
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	4$			;No
+	PUSHL	#netopnparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+4$:	RET
+.PAGE
+	.SBTTL	sd_close - Close device
+
+;Here for the close device entry
+;	c{ECX} = Close option bits
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of IORB
+;	CALL	netclose
+;	C:set = Error or not ready
+;	  c{EAX} = Error code (0 means not ready)
+;	C:clr = Normal
+
+netclose:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_netidb[EDI]
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	4$			;No
+	PUSHL	#netioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JNS	4$
+	MOVL	knlTda+tdaError##, EAX
+4$:	MOVL	EDX, idb_disp[ESI]	;Go the the device routine
+	PUSHL	ESI
+	CALLI	ndf_close1[EDX]
+	CALL	sysIoCloseFin##
+	POPL	ESI
+	POPL	EDI
+	RET
+
+.IF NE 0
+
+2$:	CLRL	EAX
+4$:	CMPL	dcb_opencnt[EDI], #1	;Final close?
+	JE	10$.S			;Yes
+6$:	TOFORK				;No
+	JMP	knlCloseFin##		;Go finish up
+
+	FAULTHDR
+8$:	MOVL	EAX, #ER_ADRER
+	JMP	4$.S
+
+;Here if final close
+
+10$:	MOVL	EBX, dcb_netidb[EDI]	;Get offset of our IDB
+	CMPL	idb_lnkctldcb[EBX], EDI ;Are we in link control mode?
+	JE	12$.S			;Yes
+	LEAL	EBX, dcb_ndvsdb[EDI]	;No - get offset of our SDB
+	CMPL	sdb_sapnext[EBX], #-1	;Have a SAP address?
+	JE	6$.S			;No - don't bother with a fork
+12$:	MOVL	EDX, idb_disp[ESI]	;Yes - get offset of fork routine
+	MOVL	EDX, ndf_close1[EDX]
+	TESTL	EDX, EDX		;Is there one?
+	JE	6$			;No - just finish up here
+	MOVL	iorb_count[ESI], EAX	;Yes - save error code from here
+
+
+	MOVB	iorb_queue[ESI], #dcb_outthrd
+	MOVL	iorb_routine[ESI], EDX
+	JMP	knlXfQueue##		;Switch to extended fork context
+.ENDC
+
+.PAGE
+	.SBTTL	sd_inpblock - Input block
+
+;Here for the sd_inpblock entry - input block
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	netinpblock
+;	c{EAX} = Error code
+;	c{ECX} = Amount output
+;	c{EBX} = Status bits
+
+netinpblk:
+	MOVL	knlTda+tdaTimeOut##, #-1
+	MOVL	knlTda+tdaTimeOut##+4, #-1
+	CMPL	knlTda+tdaParm##+0, #0
+	JE	4$
+	PUSHL	#netioparms		;Process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	18$
+4$:	CMPL	knlTda+tdaCount##, #0	;Really want to do input?
+	JE	14$			;No
+	MOVL	ESI, dcb_netidb[EDI]	;Yes - get offset of our IDB
+	CMPL	idb_lnkctldcb[ESI], #0	;In link control mode?
+	JE	10$			;No
+	CMPL	idb_lnkctldcb[ESI], EDI ;Yes - by us?
+	JNE	6$			;No - fail
+	MOVL	EDX, #LNKCTL_INPUT	;Yes
+	MOVL	ECX, idb_disp[ESI]
+	JMPIL	ndf_linkctl[ECX]	;Dispatch to the link level driver
+
+6$:	MOVL	EAX, #ER_BUSY
+	JMP	18$
+
+;Here if not in link control mode
+
+10$:	PUSHL	knlTda+tdaTimeOut##+4	;Wait for input to appear
+	PUSHL	knlTda+tdaTimeOut##+0
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	MOVL	EBX, dcb_ndvrcvpkt[EDI] ;Get offset of the packet
+	CLRL	EAX
+	MOVL	dcb_ndvrcvpkt[EDI], EAX
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, EBX
+	IFFAULT	20$
+	MOVL	EDI, knlTda+tdaBuffer1## ;Get address of buffer
+	MOVL	ECX, knlTda+tdaCount##
+	CMPL	ECX, #4			;4 bytes or fewer?
+	JBE	12$			;Yes
+	MOVL	EAX, ECX		;No
+	CLRL	ECX			;Get destination long aligned
+	SUBL	ECX, EDI
+	ANDL	ECX, #03
+	SUBL	EAX, ECX
+	IFFAULT	20$
+	RMOVSB	[EDI], [ESI]
+	MOVL	ECX, EAX
+	SHRL	ECX, #2
+	IFFAULT	20$
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #03
+	IFFAULT	20$
+12$:	RMOVSB	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	PUSHL	npb_count[EBX]
+
+	PUSHL	EBX
+	CALL	xosnetGiveBuffer	;Give up the buffer
+	POPL	ECX
+	ADDL	knlTda+tdaAmount##, ECX
+14$:	CLRL	EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	RET
+
+;Here if error
+
+18$:	MOVL	knlTda+tdaError##, EAX
+	JMP	14$.S
+
+;Here if address error
+
+	FAULTHDR
+20$:	POPL	ESI
+	POPL	EDI
+	MOVL	EAX, #ER_ADRER
+	JMP	18$.S
+.PAGE
+	.SBTTL	xosnetRcvPkt - Subroutine called when packet has been input
+
+;Subroutine called when packet has been input for network level device
+;	c{EBX} = Offset of start of packet
+;	c{ECX} = Length of packet
+;	c{EDI} = Offset of PDB
+;	c{ESI} = Offset of IDB
+;	CALL	xosnetRcvPkt
+
+xosnetRcvPkt:
+	SUBL	EDI, #dcb_ndvsdb	;Point to our DCB
+	CMPL	dcb_inpthrd[EDI], #0	;Is input active?
+	JE	4$			;No - ignore this packet
+	CMPL	dcb_ndvrcvpkt[EDI], #0	;Yes - have a packet pending now?
+	JNE	4$			;Yes - ignore this one
+	MOVL	dcb_ndvrcvpkt[EDI], EBX ;No - accept this one
+	CLRL	EAX
+	JMP	sysIoResumeInput##	;Yes - continue with input
+
+;Here if no one is ready for the received packet
+
+4$:	INCL	idb_cntublxcd[ESI]	;Count this
+	PUSHL	EBX
+	CALL	xosnetGiveBuffer
+	RET
+.PAGE
+	.SBTTL	sd_outblock - Output block
+
+;Here for the sd_outblock entry - output block
+;	c{ESI} = Offset of IORB
+;	c{EDI} = Offset of DCB
+;	CALL	netoutblk
+;	c{EAX} = Error code
+;	c{ECX} = Amount output
+;	c{EBX} = Status bits
+
+netoutblk:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	knlTda+tdaTimeOut##, #-1
+	MOVL	knlTda+tdaTimeOut##+4, #-1
+	CMPL	knlTda+tdaParm##, #0	;Have any parameters?
+	JE	4$			;No
+	PUSHL	#netioparms		;Process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	18$
+4$:	CLRL	EAX
+	MOVL	ECX, knlTda+tdaCount##
+	TESTL	ECX, ECX
+	JE	14$			;If nothing to output
+	MOVL	ESI, dcb_netidb[EDI]	;Get offset of our IDB
+	CMPL	idb_lnkctldcb[ESI], #0	;In link control mode?
+	JE	10$			;No
+	CMPL	idb_lnkctldcb[ESI], EDI ;Yes - by us?
+	JNE	6$			;No - fail
+	MOVL	EDX, #LNKCTL_OUTPUT	;Yes
+	MOVL	ECX, idb_disp[ESI]
+	CALLI	ndf_linkctl[ECX]	;Dispatch to the link level driver
+	JMP	14$
+
+6$:	MOVL	EAX, #ER_BUSY
+	JMP	18$
+
+;Here if not in link control mode
+
+10$:	CMPL	dcb_netpdb[EDI], #0	;Do we have a protocol?
+	JE	16$			;No - fail
+	PUSHL	EDI
+	PUSHL	knlTda+tdaTimeOut##+4
+	PUSHL	knlTda+tdaTimeOut##+0
+	CALL	xosnetGetBuffer		;Yes - allocate a buffer
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	MOVL	npb_count[EBX], ECX	;OK - store buffer size
+	CLRL	EAX
+	MOVL	npb_next[EBX], EAX
+	MOVL	EDI, EBX
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, knlTda+tdaBuffer1## ;Get address of buffer
+	MOVL	EAX, ECX		;Copy user's data to our buffer
+	SHRL	ECX, #2t
+	CLD
+	IFFAULT	20$
+	RMOVSL	[EDI], FS:[ESI]
+	MOVL	ECX, EAX
+	ANDL	ECX, #03
+	IFFAULT	20$
+	RMOVSB	[EDI], FS:[ESI]
+	MOVL	npb_outdone[EBX], #xosnetOutputIsDone
+	CALL	xosnetSendPkt		;Output the packet
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	PUSHL	ESI
+	PUSHL	EBX
+	PUSHL	knlTda+tdaTimeOut##+4	 ;Get time-out value
+	PUSHL	knlTda+tdaTimeOut##+0
+	CALL	xosnetWaitForPktOut
+	TESTL	EAX, EAX
+	JS	18$			;If error while waiting
+	MOVL	ECX, knlTda+tdaCount##	;Get amount we output
+	ADDL	knlTda+tdaAmount##, ECX
+14$:	CLRL	EAX
+	MOVL	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+
+;Here if no network protocol defined for the device
+
+16$:	MOVL	EAX, #ER_NNOPC
+18$:	MOVL	knlTda+tdaError##, EAX
+	JMP	14$
+
+;Here if address error
+
+	FAULTHDR
+20$:	MOVL	EAX, #ER_ADRER
+	JMP	18$
+.PAGE
+	.SBTTL	xosnetWaitPkt - Subroutine to wait until packet has been output
+
+;Subroutine to wait until packet has been output - upon return output is either
+;  complete or has been canceled, in either case, the packet may be used
+;  freely, including being deallocated immediately - note: an error return
+;  from this routine does NOT guarentee that the packet was not output, but
+;  it probably was not output in this case
+;	c{EAX} = Timeout value
+;	c{EBX} = Offset of packet header
+;	c{ESI} = Offset of IDB
+;	CALL	xosnetWaitPkt
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = 0
+
+;	long xosnetWaitForPktOut(
+;	    NPB  *npb,
+;	    llong timeout);
+
+wfpo_npb=!12t
+wfpo_to =!8
+
+xosnetWaitForPktOut:
+	PUSHL	EBX
+	MOVL	EBX, wfpo_npb[ESP]
+	CMPL	npb_nextsnd[EBX], #-1	;Is output already finished?
+	JE	10$			;Yes - nothing needed here
+	MOVL	npb_outdone[EBX], #xosnetOutputIsDone ;No - change done dispatch
+4$:	PUSHL	wfpo_to+4+4[ESP]
+	PUSHL	wfpo_to+0+8[ESP]
+	CALL	xosnetOutputWait	;Wait until output is done
+	TESTL	EAX, EAX
+	JS	12$			;If error while waiting
+	CMPL	npb_nextsnd[EBX], #-1	;Is output really finished?
+	JE	10$			;Yes - all done here
+	JMP	4$			;Wait some more
+
+;Here if finished with output
+
+10$:	CLRL	EAX			;Return 0
+12$:	POPL	EBX
+	RET	12t
+
+.PAGE
+;Here if error while waiting
+
+netwper:CMPL	npb_nextsnd[EBX], #-1	;Is the packet idle now?
+	JE	24$			;Yes - just return the error
+	TESTB	npb_sts[EBX], #NPS$XMITING ;No - is it being output now?
+	JE	4$			;No - go remove it from the queue
+	PUSHL	EAX
+2$:	PUSHL	#-1			;Yes - must wait until interface gets
+	PUSHL	#-1			;  done with it (which should happen
+	CALL	xosnetOutputWait	;  soon since all output has a
+	CMPL	npb_nextsnd[EBX], #-1	;  hardware level time-out)
+	JNE	2$
+	POPL	EAX
+	STC
+	RET
+
+;Here if have error and the packet has not been output yet - remove it from
+;  the output queue, the send self list, or the routing table hold list
+
+4$:	PUSHL	EAX
+	PUSHL	EDX
+	TESTB	npb_sts[EBX], #NPS$SELF ;No - did we send it to ourselves?
+	JE	14$			;No
+	LEAL	EDX, idb_sfhead[ESI]	;Yes - find predecessor in send-self
+					;  list
+6$:	CMPL	[EDX], EBX		;This one?
+	JE	8$			;Yes
+	MOVL	EDX, [EDX]		;No - advance to next
+	TESTL	EDX, EDX
+	JE	12$
+	ADDL	EDX, #npb_nextsnd
+	JMP	6$
+
+;Here with predecessor in send self list
+
+8$:	MOVL	EAX, npb_nextsnd[EBX]	;Remove this packet from the list
+	MOVL	[EDX], EAX
+	TESTL	EAX, EAX		;Last packet in list?
+	JNE	22$			;No - finished
+	CMPL	idb_sfhead[ESI], #0	;Yes - was it the only one?
+	JE	10$			;Yes
+	LEAL	EAX, -npb_nextsnd[EDX]	;No - point to start of new tail packet
+10$:	MOVL	idb_sftail[ESI], EAX	;Update tail pointer for list
+	JMP	22$
+
+12$:	CRASH	BPSL			;[Bad Packet Send-self List]
+
+;Here if not sending the packet to ourselves
+
+14$:	CMPL	npb_holdrt[EBX], #0	;Is this packet being held by a routing
+					;  table entry?
+	JE	15$			;No
+	CALL	unholdpkt		;Yes - remove it
+	JMP	22$			;Continue
+
+;Here if packet should be in the output list
+
+15$:	LEAL	EDX, idb_outhead[ESI]	;Find predecessor in output list
+16$:	CMPL	[EDX], EBX
+	JE	18$
+	MOVL	EDX, [EDX]
+	TESTL	EDX, EDX
+	JE	26$			;Not in list - serious error
+	ADDL	EDX, #npb_nextsnd
+	JMP	16$
+
+;Here with predecessor in packet output list
+
+18$:	MOVL	EAX, npb_nextsnd[EBX]	;Remove this packet from the list
+	MOVL	[EDX], EAX
+	TESTL	EAX, EAX		;Last packet in list?
+	JNE	22$			;No - finished
+	CMPL	idb_outhead[ESI], #0	;Yes - was it the only one?
+	JE	20$			;Yes
+	LEAL	EAX, -npb_nextsnd[EDX]	;No - point to start of new tail packet
+20$:	MOVL	idb_outtail[ESI], EAX	;Update tail pointer for list
+22$:	MOVL	npb_nextsnd[EBX], #-1
+	POPL	EDX
+	POPL	EAX			;Restore error code
+24$:	STC				;Indicate error
+	RET
+
+26$:	CRASH	BPOL			;[Bad Packet Output List]
+.PAGE
+	.SBTTL	unholdpkt - Subroutine to remove packet from routing hold list
+
+;Subroutine to remove packet from a routing table hold list
+
+unholdpkt:
+	PUSHL	ECX
+	MOVL	ECX, npb_holdrt[EBX]	;Get offset of routing table entry
+	LEAL	EDX, rt_holdhead[ECX]	;Find predecessor in hold list
+2$:	CMPL	[EDX], EBX
+	JE	4$.S
+	MOVL	EDX, [EDX]
+	TESTL	EDX, EDX
+	JE	10$.S
+	ADDL	EDX, #npb_nextsnd
+	JMP	2$.S
+
+;Here with predecessor in packet hold list
+
+4$:	MOVL	EAX, npb_nextsnd[EBX]	;Remove this packet from the list
+	MOVL	[EDX], EAX
+	TESTL	EAX, EAX		;Last packet in list?
+	JNE	8$.S			;No - finished
+	CMPL	rt_holdhead[ECX], #0	;Yes - was it the only one?
+	JE	6$.S			;Yes
+	LEAL	EAX, npb_nextsnd[EDX]	;No - point to start of new tail packet
+6$:	MOVL	rt_holdtail[ECX], EAX	;Update tail pointer for list
+8$:	POPL	ECX
+	RET
+
+10$:	CRASH	BPHL			;[Bad Packet Hold List]
+.PAGE
+	.SBTTL	xosnetSendPkt - Subroutine to send packet
+
+;Subroutine to send packet without waiting - caller may later call
+;  xosnetWaitForPktOut to wait until output is finished - Must be called
+;  at device fork level.
+;	c{EBX} = Offset of packet buffer (npb_outdone must be set)
+;	c{ESI} = Offset of IDB
+;	CALL	xosnetSendPkt
+;	C:set = Error (output done routine WILL NOT be called (???))
+;	  c{EAX} = Error code
+;	  c{EBX} = Offset of packet buffer
+;	C:clr = Normal
+;	  c{EBX} = 0
+
+;NOTE:	This is the lowest level externally available sendpkt routine.  It
+;	directly calls the hardware driver to send the packet.  No packet
+;	processing is done here. The main function performed by this routine
+;	is to queue packets for transmission when the interface is busy.
+
+spkt_idb=!
+spkt_ebx=!
+
+xosnetSendPkt:
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, spkt_idb[ESP]
+	MOVL	EBX, spkt_ebx[ESP]
+	CMPL	idb_label[ESI], #'IDB*' ;Make sure really have an IDB here
+	JE	2$
+	CRASH	NIDB
+
+2$:	CMPL	npb_nextsnd[EBX], #-1	;Is this packet on an output list now?
+	JE	4$			;No
+	CRASH	BPOL			;[Bad Packet Output List]
+
+4$:	CMPL	npb_outdone[EBX], #0	;Have output done dispatch offset?
+	JNE	6$			;Yes
+	CRASH	BPDO			;[Bad Packet Done Offset]
+
+6$:	TESTB	npb_sts[EBX], #NPS$XMITING ;Now outputing this packet?
+	JE	8$			;No
+	CRASH	SPK2			;[Sending PacKet 2 times]
+
+8$:	CMPL	idb_lnkctldcb[ESI], #0	;In link control mode?
+	JNE	14$			;Yes - fail
+	CMPB	idb_state[ESI], #LNKS_CNCTD ;No - connected or established?
+	JB	14$			;No - fail
+	TESTB	npb_sts[EBX], #NPS$SELF ;Yes - is it for us?
+	JNE	sendself		;Yes
+	TESTB	idb_sts[ESI], #IS$RESET|IS$REXMIT ;No - doing hardware reset?
+	JNE	18$			;Yes - must queue this packet
+	CMPL	idb_xmtavail[ESI], #0	;No - can we do output now?
+	JE	18$			;No - must queue this packet
+	DECL	idb_xmtavail[ESI]	;Yes - reduce output availability
+sendpk4:CLRL	EAX
+	MOVL	npb_nextsnd[EBX], EAX	;Set link to 0 to indicate packet is
+					;  being output
+	MOVL	npb_holdrt[EBX], EAX	;Also make sure hold list back pointer
+					;  is clear
+	MOVL	EAX, idb_disp[ESI]
+	CALLI	ndf_sendpkt[EAX]	;Dispatch to the driver
+sndpkdn:POPL	EBX
+	POPL	ESI
+	RET	8			;Finished
+
+;Here if in link control mode
+
+14$:	MOVL	EAX, #ER_NLKNA
+	JMP	sndpkdn
+
+;Here if packet output is busy - queue this packet for output later
+
+18$:	INCL	npb_nextsnd[EBX]	;Put request on the output list
+	MOVL	EAX, idb_outtail[ESI]
+	TESTL	EAX, EAX
+	JE	20$			;If list is empty now
+	MOVL	npb_nextsnd[EAX], EBX	;Link to end of list
+	JMP	22$
+
+;Here if output list was empty
+
+20$:	MOVL	idb_outhead[ESI], EBX
+22$:	MOVL	idb_outtail[ESI], EBX
+	CLRL	EAX
+	JMP	sndpkdn
+.PAGE
+;Here if sending this packet to ourselves
+
+sendself:
+
+	CRASH	????
+
+	MOVL	EAX, idb_sftail[ESI]	;Link it to the end of our send-self
+	TESTL	EAX, EAX		;  list
+	JNE	2$
+	MOVL	idb_sfhead[ESI], EBX
+	JMP	4$
+
+2$:	MOVL	npb_nextsnd[EAX], EBX
+4$:	MOVL	idb_sftail[ESI], EBX
+	CLRL	EAX
+	MOVL	npb_nextsnd[EBX], EAX
+	PUSHL	EDI
+	LEAL	EDI, idb_sfidb[ESI]
+;;;;;;	CALL	knlReqFork##
+	POPL	EDI
+	CLRL	EBX
+	RET
+.PAGE
+;Send-self routine
+
+.IF NE 0
+
+netsffork:
+	LEAL	ESI, -idb_sfidb[EDI]	;Point to the IDB
+2$:	MOVL	EBX, idb_sfhead[ESI]	;Get a packet
+	TESTL	EBX, EBX
+	JE	ret004.S
+	MOVL	EAX, npb_nextsnd[EBX]	;Remove from list
+	MOVL	idb_sfhead[ESI], EAX
+	TESTL	EAX, EAX
+	JNE	4$.S
+	MOVL	idb_sftail[ESI], EAX
+4$:	MOVL	npb_nextsnd[EBX], #-1
+	MOVL	ECX, npb_count[EBX]	;Get length of packet
+	PUSHL	ESI
+	PUSHL	ECX
+	PUSHL	EBX
+	CLRL	EDI			;No DCB or PDB
+
+qqqqqqqqqqq
+
+;	long xosnetGetBuffer(
+;	    ICB  *icb,		// Address of the IDB
+;	    void *blk,		// Address of DCB, PDB, or SDB
+;	    long  size,		// Data size needed
+;	    NPB **pnpb);	// Address of pointer to receive address of
+;				//   buffer
+
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	ESI
+	PUSHL	#0
+	PUSHL	npb_count[EBX]
+	PUSHL	EAX
+	CALL	xosnetGetBuffer		;Get a network buffer
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	MOVL	ESI, [ESP]		;OK - set up to copy the data
+	MOVL	EDI, EBX
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EDX, [ESP]
+	MOVZBL	EAX, npb_sizex[ESI]	;Get size index for buffer
+	MOVL	EAX, knlXmbSize##[EAX*4]
+	SUBL	EAX, #npb_mSIZE
+	ADDL	ECX, #3
+	SHRL	ECX, #2			;Get number of longs
+	RMOVSL	[EDI], [ESI]		;Copy packet to the output packet buffer
+	XCHGL	EBX, [ESP]		;Save offset of "received" packet,
+					;  get offset of "transmitted" packet
+	MOVL	ESI, 8[ESP]		;Restore offset of IDB
+	MOVL	EDI, npb_dcb[EBX]	;Restore offset of sender's DCB
+	MOVL	ECX, npb_outdone[EBX]
+	CLRL	EAX
+	MOVL	npb_outdone[EBX], EAX
+	CALLI	ECX			;Do output done processing
+
+	POPL	EBX			;Restore offset of "received" packet
+	POPL	ECX			;Restore size of packet
+
+	MOVL	ESI, [ESP]
+	MOVL	EAX, idb_disp[ESI]
+	CALLI	CS:ndf_rcvpkt[EAX]	;Process the "received" packet
+	POPL	ESI
+16$:	JMP	2$
+
+;Here if cannot allocate a buffer
+
+18$:	POPL	EBX			;Restore registers
+	POPL	ECX
+	POPL	ESI
+	JMP	16$.S
+.ENDC
+.PAGE
+	.SBTTL	xosnetFinXmit - Subroutine to do output done processing
+
+;Subroutine to do output done processing
+;	c{ESI} = Offset of IDB
+;	c{EAX} = Error code (0 if no error)
+;	c{EBX} = Offset of packet
+;	CALL	xosnetFinXmit
+
+xosnetFinXmit:
+	MOVB	idb_outtimer[ESI], #0	;Stop the output timer
+	ANDB	npb_sts[EBX], #~NPS$XMITING
+	INCL	idb_cntpktout[ESI]	;Count the packet
+	MOVL	EDX, npb_count[EBX]	;Add in to byte count
+	ADDL	idb_cntbyteout[ESI], EDX
+	MOVL	npb_nextsnd[EBX], #-1	;Indicate not being output
+	MOVL	EDI, npb_dcb[EBX]	;Restore offset of DCB
+	MOVL	ECX, npb_outdone[EBX]
+	TESTL	ECX, ECX
+	JE	2$.S
+	MOVL	npb_outdone[EBX], #0
+	PUSHL	ESI
+	CALLI	ECX			;Do output done processing (this may
+	POPL	ESI			;  queue another request)
+2$:	INCL	idb_xmtavail[ESI]	;No - increase output availability
+	RET				;Thats all for now
+.PAGE
+	.SBTTL	xosnetOutWait - Subroutine to wait until output is done
+
+;Subroutine to wait until output is done
+;	c{EAX} = Time-out value
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetOutWait
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long xosnetOutputWait(
+;	    llong timeout);
+
+opw_to =!4
+
+xosnetOutputWait:
+	CMPB	knlTda+tdaFrame##, #dcb_outthrd ;Is this the output frame?
+	JNE	2$			;No
+	ORB	dcb_netsts1[EDI], #NS1$OFWOUT ;Yes
+
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWOUT
+	JMP	4$
+
+2$:	ORB	dcb_netsts1[EDI], #NS1$IFWOUT
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWOUT
+4$:	RET	4
+.PAGE
+	.SBTTL	xosnetSndWait - Subroutine to wait until output window is open
+
+;Subroutine to wait until output window is open
+;	c{EAX} = Time-out value
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetSndWait
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+wfw_to =!
+
+xosnetWaitForWin:
+	CMPB	knlTda+tdaFrame##, #dcb_outthrd ;Is this the output frame?
+	JNE	2$			;No
+	ORB	dcb_netsts1[EDI], #NS1$OFWSND ;Yes
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWSND
+	JMP	4$
+
+2$:	ORB	dcb_netsts1[EDI], #NS1$IFWSND
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWSND
+4$:	RET	4
+.PAGE
+	.SBTTL	xosnetRspWait - Subroutine to wait for a response
+
+;Subroutine to wait for a response
+;	c{EAX} = Time-out value
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetRspWait
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long xosnetWaitForRsp(
+;	    DCB  *dcb,
+;	    llong timeout);
+
+xosnetWaitForRsp:
+	CMPB	knlTda+tdaFrame##, #dcb_outthrd ;Is this the output frame?
+	JNE	2$			;No
+	ORB	dcb_netsts1[EDI], #NS1$OFWRSP ;Yes
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWRSP
+	JMP	4$
+
+2$:	ORB	dcb_netsts1[EDI], #NS1$IFWRSP
+	PUSHL	opw_to+4[ESP]
+	PUSHL	opw_to+0+4[ESP]
+	PUSHL	#knlS_DW2##.B
+	CALL	sysIoWait##
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWRSP
+4$:	RET	4
+.PAGE
+	.SBTTL	xosnetOutDone - Subroutine called when output is complete
+
+;Subroutine called when output is complete
+;	c{EAX} = Error code
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetOutDone
+;  All registers except ES are preserved
+
+;	long xosnetOutputIsDone(
+;	    DCB *dcb,
+;	    long code);
+
+oid_dcb =!12t
+oid_code=!8
+
+xosnetOutputIsDone:
+	PUSHL	EDI
+	TESTB	dcb_netsts1[EDI], #NS1$OFWOUT ;Is an output thread waiting?
+	JE	2$			;No
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWOUT ;Yes
+	PUSHL	EDI
+	PUSHL	oid_code+4[ESP]
+	CALL	sysIoResumeOutput##
+2$:	TESTB	dcb_netsts1[EDI], #NS1$IFWOUT ;Is input fork waiting?
+	JE	4$				;No
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWOUT ;Yes
+	PUSHL	EDI
+	PUSHL	oid_code+4[ESP]
+	CALL	sysIoResumeInput##
+4$:	POPL	EDI
+	RET	8
+.PAGE
+	.SBTTL	xosnetSndDone - Subroutine called when output window is open
+
+;Subroutine called when output window is open
+;	c{EAX} = Error code
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetSndDone
+;  All registers except ES are preserved
+
+;Function to wake up anyone waiting for the output window
+;	long xosnetSendIsDone(
+;	    DCB *dcb,
+;	    long code);
+
+sid_dcb =!12t
+sid_code=!8
+
+xosnetSendIsDone:
+	PUSHL	EDI
+	MOVL	EDI, sid_dcb[ESP]
+	TESTB	dcb_netsts1[EDI], #NS1$OFWSND ;Is an output thread waiting?
+	JE	4$			;No
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWSND ;Yes
+	PUSHL	EDI
+	PUSHL	sid_code+4[ESP]
+	CALL	sysIoResumeOutput##
+4$:	TESTB	dcb_netsts1[EDI], #NS1$IFWSND ;Is an input thread waiting?
+	JE	6$			;No
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWSND ;Yes
+	PUSHL	EDI
+	PUSHL	EAX
+	CALL	sysIoResumeInput##
+6$:	POPL	EDI
+	RET	8
+
+	.SBTTL	xosnetRspDone - Subroutine called when a response is received
+
+;Subroutine called when a response is received
+;	c{EAX} = Error code
+;	c{EDI} = Offset of DCB
+;	CALL	xosnetRspDone		;Enter at netRspDoneOut to only
+;					;  check output fork frame
+;  All registers except ES are preserved
+
+rid_dcb =!12t
+rid_code=!8
+
+xosnetRspIsDone:
+	PUSHL	EDI
+	MOVL	EDI, rid_dcb[ESP]
+	TESTB	dcb_netsts1[EDI], #NS1$IFWRSP ;Is an input thread waiting?
+	JE	10$			;No
+	ANDB	dcb_netsts1[EDI], #~NS1$IFWRSP ;Yes
+	PUSHL	EDI
+	PUSHL	rid_code+4[ESP]
+	CALL	sysIoResumeInput##
+	JMP	10$
+
+xosnetRspIsDoneOut:
+	PUSHL	EDI
+	MOVL	EDI, rid_dcb[ESP]
+10$:	TESTB	dcb_netsts1[EDI], #NS1$OFWRSP ;Is output fork waiting?
+	JE	12$			;No
+	ANDB	dcb_netsts1[EDI], #~NS1$OFWRSP ;Yes
+	PUSHL	EDI
+	PUSHL	rid_code+4[ESP]
+	CALL	sysIoResumeOutput##
+12$:	POPL	EDI
+	RET	8
+
+.PAGE
+	.SBTTL	xosnetGetBufr - Subroutine to allocate network buffer
+
+;Subroutine to allocate a network buffer - must be called at fork level
+;	c{ECX} = Data space needed
+;	c{EDI} = Offset of DCB, PDB, or SDB
+;	c{ESI} = Offset of IDB
+;	CALL	xosnetGetBufr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Offset of buffer
+;  EAX is destroyed, all other registers (except EBX) are preserved
+
+;	long xosnetGetBuffer(
+;	    ICB  *icb,		// Address of the IDB
+;	    void *blk,		// Address of DCB, PDB, or SDB
+;	    long  size,		// Data size needed
+;	    NPB **pnpb);	// Address of pointer to receive address of
+;				//   buffer
+;  Value returned is 0 if OK or a negative XOS error code if error.
+
+gtbfr_icb =!16t
+gtbfr_blk =!12t
+gtbfr_size=!8
+gtbfr_pnpb=!4
+
+xosnetGetBuffer:
+	REQUIREFORK
+	PUSHL	#0
+	MOVL	EDX, ESP
+	MOVL	EAX, gtbfr_size+4[ESP]
+	ADDL	EAX, #npb_data
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	sysMemGetXmb##		;Get an exec memory buffer
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	npb_label[EDX], #NPB_LABEL<16t
+	MOVL	EAX, gtbfr_blk[ESP]	;Store address of the DCB, PDB, or SDB
+	MOVL	npb_dcb[EDX], EAX
+	MOVL	npb_nextsnd[EBX], #-1	;Indicate not in an output list
+	CLRL	EAX
+	MOVL	npb_next[EBX], EAX	;Clear pointer to next buffer
+	MOVL	npb_outdone[EBX], EAX	;Clear output done dispatch
+	MOVL	npb_holdrt[EBX], EAX	;Clear hold list back pointer
+6$:	RET	16t			;Finished
+.PAGE
+	.SBTTL	xosnetGiveLst - Subroutine to give up list of network buffers
+
+;Subroutine to give up list of network buffers
+;	c{EBX} = Offset of first buffer in list
+;	CALL	xosnetGiveList
+;	c{EBX} = 0
+;  All registers except EBX are preserved
+
+;	long xosnetGiveList(
+;	    NBF *bfr);
+
+gvlst_bfr=!4
+
+xosnetGiveList:
+	MOVL	EDX, gvlst_bfr[ESP]
+2$:	PUSHL	npb_next[EBX]
+	PUSHL	EDX
+	CALL	xosnetGiveBuffer
+	POPL	EDX
+	TESTL	EDX, EDX
+	JNE	2$
+	RET	4
+.PAGE
+	.SBTTL	xosnetGiveBufr - Subroutine to give up network buffer
+
+;Subroutine to give up network buffer - must be called at fork level
+;	c{EBX} = Offset of buffer
+;	CALL	xosnetGiveBufr
+;	c{EBX} = 0
+;  All registers except EBX are preserved
+
+;	long xosnetGiveBuffer(
+;	    NBF *bfr);
+
+gvbfr_bfr=!4
+
+xosnetGiveBuffer:
+	REQUIREFORK
+	MOVL	EDX, gvbfr_bfr[ESP]
+	CMPW	npb_label[EDX], #NPB_LABEL ;Is this really a network buffer?
+	JE	2$
+	CRASH	NNPB
+
+2$:	CMPL	npb_nextsnd[EDX], #-1	;Is this buffer being output?
+	JNE	6$			;Yes - go handle that case
+	PUSHL	EDX			;No
+	CALL	sysMemGiveXmb##		;Get up the XMB
+4$:	CLRL	EAX
+	RET	4
+
+;Here if buffer is being output
+
+6$:	MOVL	npb_outdone[EDX], #xosnetGiveBuffer
+	JMP	4$			;Change output done dispatch to give up
+					;  buffer when output is complete
+.PAGE
+	.SBTTL	xosnetChkNetAddr - Subroutine to see if a network address was specified
+
+;Subroutine to see if a network address was specified - a network address is
+;  of the form:
+;		stringofchracters::
+;  Generally, the string will be of the form n.n.n.n (dotted decimal notation),
+;  n-n-n-n ("dotted" hexidecimal notation), or name.name.name... (domain name),
+;  although this routine does not care about this. It only checks for the ::.
+;	c{EDX} = Offset of start of name string
+;	CALL	xosnetChkNetAddr
+;	c{EDX} = Unchanged
+;	Z:set = Network address specified
+;	  c{ECX} = Offset of second colon after network address
+;	Z:clr = No network address
+
+;	long xosnetCheckNetAddr(
+;	    char *str);
+;  Value returned is >0 if a network address was found (Value is the position
+;    in the string of the character following the second colon.), 0 if no
+;    network address was found, or a negative XOS error code if error.
+
+cna_str=!4
+
+xosnetCheckNetAddr:
+	MOVL	EAX, cna_str[ESP]
+4$:	MOVZBL	EDX, [EAX]		;Look for a double colon
+	INCL	EAX
+	CMPB	DL, #0
+	JE	6$
+	CMPB	DL, #':'
+	JNE	4$
+	CMPB	[EAX], DL
+	JE	10$			;Have double colon
+6$:	CLRL	EAX			;No colon - return 0
+	JMP	12$
+
+;Here if a network address was given - Z is set here
+
+10$:	SUBL	EAX, cna_str[ESP]	;Get offset of next character
+	INCL	EAX
+12$:	RET	4
+.PAGE
+;Network class driver data
+
+	DATA
+		
+netdcbnum:    .LONG 0		;Number of in use network DCBs
+netdcbmax:    .LONG 0		;Maximum in use network DCBs
+netdcblmt:    .LONG 10000t	;Maximum number of network DCBs allowed
+netccb:	      .LONG 'CCB*'	;Network CCB
+	      .LONG 0		;ccb_next    - Address of next CCB
+	      .LONG 'NET', 0	;ccb_name    - Name of this class
+	      .LONG 0		;ccb_npfxmsk - Name prefix part mask
+	      .LONG 0		;ccb_npfxval - Name prefix part value
+	      .LONG netdchk	;ccb_dchk    - Address of device check routine
+	      .LONG netcls	;ccb_fdsp    - Address of class func disp table
+	      .LONG netcctbl	;ccb_clschar - Address of class char table
+	      .LONG 0		;ccb_dcbhead - Address of first DCB for class
+	      .LONG 0		;ccb_dcbtail - Address of last DCB for class
+	      .LONG 0		;ccb_blkhead - Address of first data block for class
+	      .LONG 0		;ccb_blktail - Address of last data block for class
+	      .LONG 0		;ccb_dlbhead - Address of first DLB for class
+fnetdrv:      .LONG 0		;Offset of first network driver data block
+thisprotpdb:  .LONG 0		;Data for PROTTHIS, PROTNEXT, and PROTDEV device
+				;  charateristics
+
+extendcnt::   .LONG 0		;#########
+xosnetIdbHead:.LONG 0
+xosnetIdbTail:.LONG 0
+
+	LKEEND

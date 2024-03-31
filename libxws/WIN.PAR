@@ -1,0 +1,84 @@
+
+WP_STYLE       =!1t<2		;Style number
+WP_TEXTSIZE    =!2t<2		;Text size
+WP_TEXTWIDTH   =!3t<2		;Text width
+WP_TEXTFONT    =!4t<2		;Text font
+WP_TEXTATTR    =!5t<2		;Text attributes
+WP_ZORDER      =!6t<2		;Z-order
+WP_LEFTMARGIN  =!7t<2		;Left margin
+WP_RIGHTMARGIN =!8t<2		;Right margin
+WP_TOPMARGIN   =!9t<2		;Top margin
+WP_BTMMARGIN   =!10t<2		;Bottom margin
+WP_LINESPACE   =!11t<2		;Line spacing
+WP_MAXSPACE    =!12t<2		;Maximum line spacing
+WP_LEADING     =!13t<2		;Leading
+WP_PARSPACE    =!14t<2		;Paragraph spacing
+;	       =!15t<2		;Reserved
+WP_TEXTCOLORN  =!16t<2		;Normal text color
+WP_TEXTCOLORA  =!17t<2		;Alternate text color
+;	       =!18t<2		;Reserved
+;	       =!19t<2		;Reserved
+WP_BGCOLORN    =!20t<2		;Normal background color
+WP_BGCOLORA    =!21t<2		;ALternate background color
+;	       =!22t<2		;Reserved
+;	       =!23t<2		;Reserved
+WP_HILCOLORN   =!24t<2		;Normal highlight color
+WP_HILCOLORA   =!25t<2		;Alternate highlight color
+WP_SHDCOLORN   =!26t<2		;Normal shadow color
+WP_SHDCOLORA   =!27t<2		;Alternate shadow color
+WP_BRDCOLOR    =!28t<2		;Border color
+WP_BRDWIDTHO   =!29t<2		;Outer border width
+WP_BRDWIDTHC   =!30t<2		;Center border width
+WP_BRDWIDTHI   =!31t<2		;Inner border width
+WP_BRDBITS     =!32t<2		;Border bits
+;	       =!33t<2		;Reserved
+;	       =!34t<2		;Reserved
+WP_RADIUSP     =!35t<2		;Corner radius (per-cent)
+WP_RADIUSA     =!36t<2		;Corner radius (absolute)
+WP_ORIENT      =!37t<2		;Orientation
+WP_POFFSET     =!38t<2		;Position offset for pressed button
+WP_ACTFRAME    =!39t<2		;Activation frame
+WP_ACTFUNC     =!40t<2		;Activation function
+WP_MAXVALUE    =!41t<2		;Maximum value
+WP_MINVALUE    =!42t<2		;Minimum value
+WP_INC1VALUE   =!43t<2		;First increment/decrement value
+WP_INC2VALUE   =!44t<2		;Second increment/decrement value
+WP_INCSIZES    =!45t<2		;Increment/decrement button sizes
+;	       =!46t<2		;Reserved
+;	       =!47t<2		;Reserved
+WP_SBSIZE      =!48t<2		;Scroll bar sizes
+WP_SBBUTSIZE   =!49t<2		;Scroll bar button sizes
+WP_SBTEXTCOLORN=!50t<2		;Scroll bar normal text color
+WP_SBTEXTCOLORA=!51t<2		;Scroll bar alternate text color
+WP_SBBGCOLORN  =!52t<2		;Scroll bar button normal background color
+WP_SBBGCOLORA  =!53t<2		;Scroll bar button alternate background color
+WP_SBBARCOLOR  =!54t<2		;Scroll bar bar background color
+WP_SBHILCOLORN =!55t<2		;Scroll bar normal highlight color
+WP_SBHILCOLORA =!56t<2		;Scroll bar alternate highlight color
+WP_SBSHDCOLORN =!57t<2		;Scroll bar normal shadow color
+WP_SBSHDCOLORA =!58t<2		;Scroll bar alternate shadow color
+WP_SBSHDWIDTH  =!59t<2		;Scroll bar shading widths
+
+;Following are long parameters - Header is 2 or 3 bytes. First byte contains
+;  the parameter index. Second and third bytes contain the number of value
+;  bytes which follow. If the number of bytes is less  than 128, only one
+;  header is used. If it is 128 or greater, two header bytes are used to
+;  contain the value high order byte first, with the high bit of the first
+;  byte set to indicate a two byte value.
+
+;	       =!240t		;Reserved
+;	       =!241t		;Reserved
+;	       =!242t		;Reserved
+;	       =!243t		;Reserved
+;	       =!244t		;Reserved
+;	       =!245t		;Reserved
+;	       =!246t		;Reserved
+;	       =!247t		;Reserved
+;	       =!248t		;Reserved
+;	       =!249t		;Reserved
+;	       =!250t		;Reserved
+;	       =!251t		;Reserved
+;	       =!252t		;Reserved
+WP_TITLE       =!253t		;Frame title
+WP_BKGDBM      =!254t		;Background bit-map
+;	       =!255t		;Reserved

@@ -1,0 +1,799 @@
+	.TITLE	onceprot - XOS once-only protected mode code
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xosboot.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+
+DEBUG_INIT=!0			;Do not include code for debugging INIT process
+
+	ONCE
+
+$$$=!0
+FRM once_unavail, 4t	;First unavailable paragraph in base memory area
+FRM once_avail  , 4t	;First available paragraph in base memory area
+FRM once_boot   , 4t	;Boot disk data
+FRM once_ramdisk, 4t	;Size of the once-only RAM-disk
+FRM once_curpos , 4t	;Cursor position
+once_SIZE=!$$$
+
+;First do the minimum setup needed to let the debugger run
+;	c{EAX} = First unavailable paragraph in base memory area
+;	c{EBX} = First available address in base memory area
+
+;	c(DH)  = Bit  7   - Set if floppy units are swapped
+;		 BIts 6-0 - Partition number (0 if boot device not partitioned)
+;	c(DL)  = Bits 7-5 - Boot disk type:
+;			      0x00 - Floppy disk (might be USB floppy) or
+;				     CDROM/DVD with floppy boot image
+;			      0x80 - Hard disk (controller type is not known)
+;		 Bits 4-0 - Boot disk unit number
+;	c{ESI} = Size of the once-only RAM-disk
+;	c{EDI} = Cursor position on screen (row * 100h + column)
+
+oncep::!CLI				;Make sure no interrupts here
+	MOVL	ECX, #GS_XDATA		;Initialize the stack pointer and the
+	MOVL	ESP, #oostack		;  segment registers
+	MOVL	SS, ECX
+	MOVL	DS, ECX			;  and make sure all segment registers
+	MOVL	ES, ECX
+	MOVL	FS, ECX			;  are valid
+	MOVL	GS, ECX
+	LGDTL	gdtval#			;Reload the GDT pointer to be safe
+					;  (possible 386 B1 problem!)
+	LIDTL	idtval#			;Load the IDT pointer
+	MOVB	AL, #0x02		;Make sure A20 is enabled
+	OUTB	P_PROCCTL
+	ENTER	once_SIZE, 0		;Set up a stack frame - Note that
+					;  meminit will change the stack pointer
+					;  but will leave EBP pointing to this
+					;  frame which remains valid.
+	PUSHL	EAX
+	PUSHL	EDX
+	MOVL	EDX, #P_EGAGCINDX
+	MOVL	EAX, #6
+	OUTB	[DX]
+	IOPAUSE
+	INCL	EDX
+	OUTB	[DX]
+	POPL	EDX
+	POPL	EAX
+
+	PUSHL	#0x4700+'0'
+	CALL	knlPutDebugChr#
+
+	MOVL	once_unavail[EBP], EAX	;Save data from real mode
+	MOVL	once_avail[EBP], EBX
+	MOVL	once_boot[EBP], EDX
+	MOVL	once_ramdisk[EBP], ESI
+	MOVL	once_curpos[EBP], EDI
+	MOVB	AL, #04h		;Enable IO-CHK NMI interrupts, disable
+	OUTB	61h			;  failsafe NMI interrupts
+	IOPAUSE
+	MOVB	AL, #1Ah		;Set NMI master enable
+	OUTB	P_CLKADDR
+
+
+;;;	CLRL	EAX			;Clear the page 0 mapping we used to
+;;;	MOVL	SS:pdaPageDir#, EAX	;  switch to protected mode
+;;;	MOVL	knlPgTable+{knlPgTableS10#}, EAX
+
+
+	MOVB	AL, #0x11		;Initialize first interrupt controller
+	OUTB	P_INC1P0		;ICW1 - edge, master, ICW4 present
+	IOPAUSE
+	MOVB	AL, #ID_HBASE/8		;ICW2 - vector base
+	OUTB	P_INC1P1
+	IOPAUSE
+	MOVB	AL, #0x04		;ICW3 - master level 2
+	OUTB	P_INC1P1
+	IOPAUSE
+	MOVB	AL, #0x01		;ICW4 - non-buffered, master, 8086 mode
+	OUTB	P_INC1P1
+	IOPAUSE
+	MOVB	AL, #0xFF		;Mask off all levels
+	OUTB	P_INC1P1
+	IOPAUSE
+	MOVB	AL, #0x11		;Initialize second interrupt controller
+	OUTB	P_INC2P0		;ICW1 - edge, slave, ICW4 present
+	IOPAUSE
+	MOVB	AL, #ID_HBASE/8+8	;ICW2 - vector base
+	OUTB	P_INC2P1
+	IOPAUSE
+	MOVB	AL, #0x02		;ICW3 - slave level 2
+	OUTB	P_INC2P1
+	IOPAUSE
+	MOVB	AL, #0x01		;ICW4 - non-buffered, slave, 8086 mode
+	OUTB	P_INC2P1
+	IOPAUSE
+	MOVB	AL, #0xFF		;Mask off all levels
+	OUTB	P_INC2P1
+	IOPAUSE
+	MOVB	AL, #~0x04		;Enable level 2 on the first controller
+	OUTB	P_INC1P1
+
+	CALL	vectorinit#		;Initialize error vectors
+
+	PUSHL	DS
+	PUSHL	#GS_XDATA
+	POPL	DS
+	PUSHL	#0x4700+'1'
+	CALL	knlPutDebugChr#
+	POPL	DS
+
+	MOVL	EAX, #geckoxdispatch#	;Was GECKOX loaded?
+	TESTL	EAX, EAX
+	JE	oncep2			;No - go on
+	PUSHL	#0			;Yes - setup stack to call GECKOX
+	CALLF	geckoxdispatch#+0	;Go to GECKOX
+	MOVL	knlGeckoSig#+0, #'GECK'	;Set GECKO signature to indicate have
+	MOVL	knlGeckoSig#+4, #'O$'	;  GECKO available
+	CALL	vectorinit#		;Setup the error vectors again to undo
+					;  the values GECKO left in some of them!
+oncep2:	MOVL	EAX, knlPageZero+p0_guid+0 ;Store the boot disk ID
+	MOVL	knlBootID#, EAX
+	MOVB	AL, #0D1h		;8042 command to write output port
+	OUTB	P_KEYCMD		;  to enable memory above 1MB
+	CALL	oemp8042		;Wait for 8042 to accept command
+	MOVB	AL, #0DFh		;Value for output port
+	OUTB	P_KEYDATA
+	CALL	oemp8042		;Wait until 8042 takes it
+	MOVB	AL, #0FFh		;Follow it with a null command to
+	OUTB	P_KEYCMD		;  wait until it is done
+	CALL	oemp8042
+
+	MOVL	EAX, #geckotdispatch#	;Was GECKOT loaded?
+	TESTL	EAX, EAX
+	JE	oncep4			;No - go on
+	MOVL	knlGeckoSig#+0, #'GECK'	;Set GECKO signature to indicate have
+	MOVL	knlGeckoSig#+4, #'O$'	;  GECKO available
+
+	PUSHL	#0x4700+'2'
+	CALL	knlPutDebugChr#
+
+	PUSHL	#0			;Yes - setup stack to call GECKOT
+	CALLF	geckotdispatch#+0	;Go to GECKOT
+oncep4:
+	CALL	oncechk#		;Verify the offsets for the PDA and
+					;  TDA structures
+	MOVL	EAX, once_unavail[EBP]	;Restore memory data from real mode
+	MOVL	EBX, once_avail[EBP]	;  once-only
+	MOVL	ECX, once_ramdisk[EBP]
+	CALL	meminit#		;Initialize memory routines
+
+	MOVL	EAX, once_curpos[EBP]	;Initialize the once-only console
+	CALL	oocdinit#		;  routine
+	MOVL	EBX, #pmimsg		;Display initial protected mode message
+	CALL	dispmsg
+
+;We assume that the BIOS has correctly inialized the DMA controllers.  Since
+;  both DMA controllers must be functioning correctly for RAM refresh to work,
+;  we would not get this far if they were not set up right!  We do set the mask
+;  bits for the 6 available DMA channels to make sure that the BIOS has not
+;  left a channel enabled (this has been observed on some machines!)
+
+	MOVB	AL, #05			;Set mask bit for channel 1, on
+	OUTB	P_DMA1WSMB		;  DMA controller 1
+	IOPAUSE
+	MOVB	AL, #06			;Set mask bit for channel 2, on
+	OUTB	P_DMA1WSMB		;  DMA controller 1
+	IOPAUSE
+	MOVB	AL, #07			;Set mask bit for channel 3, on
+	OUTB	P_DMA1WSMB		;  DMA controller 1
+	IOPAUSE
+	MOVB	AL, #05			;Set mask bit for channel 1, on
+	OUTB	P_DMA2WSMB		;  DMA controller 2
+	IOPAUSE
+	MOVB	AL, #06			;Set mask bit for channel 2, on
+	OUTB	P_DMA2WSMB		;  DMA controller 2
+	IOPAUSE
+	MOVB	AL, #07			;Set mask bit for channel 3, on
+	OUTB	P_DMA2WSMB		;  DMA controller 2
+.PAGE
+;Now determine what kind of processor we are running on. XOS will not run on
+;  anything less than an 80386 so that's the first processor we check for.
+;- First see if we can change the AC EFR bit. This bit can be changed on all
+;  processors after the 80386 but not on the 80386
+
+cpuchk:	PUSHFL				;Get current EFR
+	POPL	EAX
+	MOVL	ECX, EAX		;Save it
+	XORL	EAX, #0x40000		;Try to change the AC bit
+	PUSHL	EAX
+	POPFL
+	PUSHFL
+	POPL	EAX
+	XORL	EAX, ECX		;Did it change?
+	TESTL	EAX, #0x40000
+	JNE	4$			;Yes - must be at least an 80486
+	MOVB	cputype#, #CPUTYPE_386	;No - it's an 80386
+	JMP	fpusetup
+
+;Here if not an 80386. Now see if the CPUID instruction is available. This is
+;  indicated if bit 21 of the EFR can be changed. Some 80486s and all later
+;  processors support CPUID.
+
+4$:	MOVL	EAX, ECX
+	BTCL	EAX, #21t		;Try to change bit 21
+	PUSHL	EAX
+	POPFL
+	PUSHFL
+	POPL	EAX
+	XORL	EAX, ECX
+
+	PUSHL	ECX			;Restore the EFR value
+	POPFL
+	BTL	EAX, #21t		;Did bit 21 change?
+	JC	10$			;Yes - the means the CPUID instruction
+					;  is available
+6$:	MOVB	cputype#, #CPUTYPE_486	;No - it must be an 80486 without the
+	JMP	fpusetup		;  CPUID instruction
+
+;Here if the CPUID instruction is available
+
+10$:	CLRL	EAX
+	CLRL	EBX			;Clear these in case CPUID does not
+	CLRL	EDX			;  set them!
+	CLRL	ECX
+	CPUID
+	MOVL	cpulabel#+0, EBX	;Store the label
+	MOVL	cpulabel#+4, EDX
+	MOVL	cpulabel#+8, ECX
+	MOVL	EBX, #ventbl		;See if it's a vendor we know about
+12$:	CMPL	ECX, [EBX]
+	JE	14$
+	ADDL	EBX, #4
+	CMPL	[EBX], #0
+	JNE	12$
+	JMP	16$
+
+14$:	SUBL	EBX, #ventbl-4
+	SHRL	EBX, #2
+	MOVB	cpuven#, BL
+16$:	CMPL	EAX, #1			;Is function 1 supported?
+	JB	6$			;No (strange) - say it's an 80486
+	ORB	cpubits0#, #0x01	;Yes - indicate basic bits are valid
+	MOVL	EAX, #1			;Get the basic CPU bits
+	CPUID
+	SHRL	EAX, #8			;For now, just look at the base family
+	ANDL	EAX, #0x0F
+	MOVZBL	EAX, cputbl[EAX]	;Translate the family value to our
+	MOVB	cputype#, AL		;  processor type value
+	MOVL	cpubits1#, EDX		;Store the processor feature bits
+	MOVL	cpubits2#, ECX
+	MOVL	EAX, #0x80000000	;Are extended functions supported?
+	CPUID
+	CMPL	EAX, #0x80000001	;Are the extended CPU bits available?
+	JB	fpusetup		;No
+	ORB	cpubits0#, #0x02	;Yes
+	MOVL	ESI, EAX
+	MOVL	EAX, #0x80000001
+	CPUID
+	MOVL	cpubits3#, EDX		;Save the extended bits
+	MOVL	cpubits4#, ECX
+	CMPL	ESI, #0x80000004	;Is the "brand string" available?
+	JB	fpusetup		;No
+	MOVL	EDI, #cpudesc#
+	MOVL	EAX, #0x80000002
+	CALL	getdesc
+	MOVL	EAX, #0x80000003
+	CALL	getdesc
+	MOVL	EAX, #0x80000004
+	CALL	getdesc
+	MOVL	EDI, #cpudesc		;Fix up the description string
+	MOVL	ESI, EDI
+20$:	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JE	24$
+	CMPB	AL, #' '
+	JE	20$
+22$:	MOVB	[EDI], AL
+	INCL	EDI
+	MOVZBL	EAX, [ESI]
+	INCL	ESI
+	CMPB	AL, #0
+	JNE	22$
+24$:	CMPL	EDI, #cpudesc#+48t
+	JAE	fpusetup
+	MOVB	[EDI], #0
+	INCL	EDI
+	JMP	24$
+
+
+getdesc:CPUID
+	MOVL	[EDI], EAX
+	MOVL	4[EDI], EBX
+	MOVL	8[EDI], ECX
+	MOVL	12t[EDI], EDX
+	ADDL	EDI, #16t
+	RET
+
+cputbl:	.BYTE	CPUTYPE_UNKN	; 0
+	.BYTE	CPUTYPE_UNKN	; 1
+	.BYTE	CPUTYPE_UNKN	; 2
+	.BYTE	CPUTYPE_UNKN	; 3
+	.BYTE	CPUTYPE_486	; 4
+	.BYTE	CPUTYPE_PEN	; 5
+	.BYTE	CPUTYPE_PEN2	; 6
+	.BYTE	CPUTYPE_UNKN	; 7
+	.BYTE	CPUTYPE_UNKN	; 8
+	.BYTE	CPUTYPE_UNKN	; 9
+	.BYTE	CPUTYPE_UNKN	; A
+	.BYTE	CPUTYPE_UNKN	; B
+	.BYTE	CPUTYPE_UNKN	; C
+	.BYTE	CPUTYPE_UNKN	; D
+	.BYTE	CPUTYPE_UNKN	; E
+	.BYTE	CPUTYPE_PEN4	; F
+
+ventbl:	.LONG	'ntel'		;CPUVEN_INTEL    = 1
+	.LONG	'cAMD'		;CPUVEN_AMD      = 2
+	.LONG	'auls'		;CPUVEN_CENTAUR  = 3
+	.LONG	'tead'		;CPUVEN_CYRIX    = 4
+	.LONG	'Mx86'		;CPUVEN_TRNSMETA = 5
+	.LONG	' NSC'		;CPUVEN_NSC      = 6
+	.LONG	'iven'		;CPUVEN_NEXGEN   = 7
+	.LONG	'Rise'		;CPUVEN_RISE     = 8
+	.LONG	'SiS '		;CPUVEN_SIS      = 9
+	.LONG	'UMC '		;CPUVEN_UMC      = 10
+	.LONG	'VIA '		;CPUVEN_VIA      = 11
+	.LONG	0
+.PAGE
+;Here to determine if we have an FPU and to initialize it if there is one.
+;  Based on processor type the possible results are:
+;	Unknown - NONE, INT, or EXT (we do the best we can in this case!)
+;	80386   - NONE or EXT
+;	80486   - NONE, INT, or EXT
+;	Pentium - INT
+
+;WARNING: The code for detecting an FPU on 80386 and 80486 systems has NOT
+;         been tested on the respective CPUs. Execution of this code has been
+;         forced on a Pentium4 class machine and does work in that environment.
+
+fpusetup:
+	TESTB	cpubits0#, #0x01	;Did we get the basic CPUID bits?
+	JE	2$			;No - must do this the hard way!
+	TESTB	cpubits1#, #0x01	;Yes - do we have an FPU?
+	JE	bugchk			;No
+	MOVB	fputype#, #FPUTYPE_INT	;Yes - assume no media instructions
+	BTL	cpubits1, #24t		;Are the FXSAVE/FXRSTOR instructions
+					;  available?
+	JNC	fpuchk			;No
+	INCB	fputype#		;Yes - change type to FPUTYPE_INTM
+	JMP	fpuchk
+
+;Here if we do not have the basic CPUID bits - we must directly determine if
+;  we have an FPU
+
+2$:	MOVL	EAX, CR0		;Make sure not emulating FPU
+	BTZL	EAX, #2			;  instructions
+	MOVL	CR0, EAX
+	FNINIT				;Reset the FPU (if there is one)
+	FNSTSW	fdata			;Get the FPU status word
+	CMPW	fdata, #0
+	JNE	bugchk			;No FPU if not 0
+	FNSTCW	fdata			;Get the FPU control word
+	MOVZWL	EAX, fdata
+	ANDL	EAX, #0x103F		;Is it right?
+	CMPL	EAX, #0x003F
+	JNE	bugchk			;No - no FPU
+	CMPB	cputype, #CPUTYPE_386	;Is this an 80386 or unknown CPU?
+	JA	6$			;No - don't need the next check
+
+;Here if have an FPU and an 80386 or unknown CPU. We check to see if the
+;  FPU is an 80287 and say there is no FPU if it is. (This is probably not
+;  really necessary since we are VERY unlikely to be running on such a
+;  machine!)
+
+	FLD1				;Create + infinity
+	FLDZ
+	FDIV
+	FLD	ST
+	FCHS				;Get - infinity
+	FCOMPP				;Are they the same?
+	FWAIT
+	FNSTSW	[ESP]
+	MOVL	EAX, [ESP]
+	SAHF
+	JZ	bugchk			;Yes - we have an 80287!
+
+;Here if we have an FPU which is not an 80267. We must determine if it is
+;  internal or external.
+
+6$:	MOVB	fputype#, #FPUTYPE_INT	;Assume FPU is internal
+	MOVL	EAX, CR0		;Try to clear ET (bit 4)
+	BTZL	EAX, #4
+	MOVL	CR0, EAX
+	MOVL	EAX, CR0
+	BTL	EAX, #4
+	JC	fpuchk			;FPU is internal if can't clear it
+	MOVB	fputype#, #FPUTYPE_EXTI	;External, assume using harware
+					;  interrupt
+
+;Here if we have an FPU. This check should not be needed with an internal FPU
+;  but we have observed internal FPU's that generate hardware interrupts when
+;  operating in native mode! If this is the case, we need to set up the
+;  hardware interrupt (1RQ13) as a shared interrupt in case the BIOS decides
+;  to assign it to something else so that the hardware FPU exception latch
+;  will be cleared when necessary.
+;We must determine how the FPU is connected to handle exceptions. The only
+;  way we can do this is to to generate an exception and see what happens.
+;  If the FPU is connected according to the DOS kludge (always uses hardware
+;  interrupts), we will get a hardware interrupt on IRQ13 only. If it is
+;  connected as Intel intended (using the processor's ERROR input)  we will
+;  get a fault through vector 16 (0x10) only. In some cases with an internal
+;  FPU we will get both and interrupt and an exception! In the first and
+;  thrid cases we must reserve INT13 for the use of the FPU. We must also
+;  reserve IO registers 0xF0 and 0xF1 which are used to control the latched
+;  FPU interrupt request and to reset the FPU. Virtually all 80386 systems
+;  used the DOS kludge.
+
+fpuchk:	MOVL	EAX, CR0		;Set FPU to native mode if internal
+	BTSL	EAX, #5			;  (This has no effect if external FPU)
+	MOVL	CR0, EAX
+
+	NOP
+	MOVL	EAX, CR0
+
+	PUSHL	knlIDTable#+ID_FPUERR+0	;Save the FPU trap vector
+	PUSHL	knlIDTable#+ID_FPUERR+4
+	MOVL	EAX, #ofpuerr		;Set it to point to our trap routine
+	MOVW	knlIDTable#+ID_FPUERR+0, AX
+	SHRL	EAX, #16t
+	MOVW	knlIDTable#+ID_FPUERR+6, AX
+	PUSHL	knlIDTable#+ID_IRQ13+0	;Save the FPU interrupt vector
+	PUSHL	knlIDTable#+ID_IRQ13+4
+	MOVL	EAX, #ofpuint		;Set it to point to our interrupt
+	CLI				;  routine
+	MOVW	knlIDTable#+ID_IRQ13+0, AX
+	SHRL	EAX, #16t
+	MOVW	knlIDTable#+ID_IRQ13+6, AX
+	STI
+	MOVB	AL, #0			;Clear possible FPU interrupt latch
+	OUTB	P_MATHCBSY
+	IOPAUSE
+	INB	P_INC2P1		;Enable the FPU interrupt
+	ANDB	AL, #~0x20
+	OUTB	P_INC2P1
+	CLRL	EDX			;Clear interrupt/exception indication
+	MOVL	ECX, #0x10000
+	FLDCW	fcwedc			;Enable divide by zero exceptions
+
+	FNSTCW	fdata
+
+fpuxxx::
+	FLD1
+	FLDZ
+	FDIVP
+	FWAIT				;Interrupt or trap should occur here
+
+	FNSTSW	fdata
+
+
+10$:	TESTL	EDX, EDX		;Wait until have interrupt or exception
+	JNE	12$
+	LOOP	ECX, 10$
+	MOVB	fputype#, #FPUTYPE_NONE
+	JMP	bugchk
+
+;Here if have interrupt or exception
+
+12$:	MOVL	ECX, #100t		;Wait a bit to make sure don't get a
+	CALL	knlSDelay#		;  delayed interrupt
+	INB	P_INC2P1		;Disable the FPU enterrupt (it will be
+	ORB	AL, #0x20		;  reenabled below if necessary)
+	OUTB	P_INC2P1
+	CLI
+	POPL	knlIDTable#+ID_IRQ13+4	;Restore the FPU interrupt vector
+	POPL	knlIDTable#+ID_IRQ13+0
+	STI
+	POPL	knlIDTable#+ID_FPUERR+4	;Restore the FPU exception vector
+	POPL	knlIDTable#+ID_FPUERR+0
+	TESTB	DL, #0x01		;Did we get an exception?
+	JE	14$			;No
+	CMPB	fputype, #FPUTYPE_EXTI	;Yes - is the FPU external?
+	JB	14$			;No
+	INCB	fputype			;Yes - change type to FPUTYPE_EXTX
+14$:	TESTB	DL, #0x02		;Did we get an interrupt?
+	JE	fpudone			;No
+	CALL	knlGetXRes#
+	PUSHL	#hwname			;Yes - register our IO register
+	PUSHL	#0xF0			;  addresses
+	PUSHL	#0xF1
+	CALL	sysIoRegPorts#
+	PUSHL	#hwname
+	PUSHL	#13t|0x100		;Set up our interrupt vector
+	PUSHL	#DT_INT
+	PUSHL	#fpuint#
+	PUSHL	#fpuintexit#
+	CALL	sysIoSetInt#
+	CALL	knlGiveXRes#
+	MOVL	ECX, #13t
+	CALL	knlEnableInt#
+fpudone:FNINIT				;Reset the FPU
+.PAGE
+;The following code checks for the presense of several know x86 hardware bugs.
+
+;The following code checks for the B1 stepping mutliplication bug (taken from
+;  Advanced 80386 Programming Techniques by James L. Turley)
+
+bugchk:	CLRL	ECX
+	MOVB	CL, #41h
+	MOVL	EAX, #42E8h		;Test 32-bit multiply
+	MULL	ECX
+	CMPL	EAX, #10FCE8h
+	JNE	2$
+	TESTL	EDX, EDX
+	JNE	2$
+	MOVL	EAX, #85D00h
+	MULL	ECX
+	CMPL	EAX, #21F9D00h
+	JNE	2$
+	TESTL	EDX, EDX
+	JNE	2$
+	MOVL	EAX, #0x42E80000
+	MULL	ECX
+	CMPL	EAX, #0xFCE80000
+	JNE	2$
+	CMPL	EDX, #0x10
+	JNE	2$
+	MOVL	EAX, #0x0417A000
+	MOVB	CL, #0x81
+	MULL	ECX
+	CMPL	EAX, #0x0FE7A000
+2$:	JNE	4$
+	CMPL	EDX, #2
+	JNE	4$			;If wrong!
+	MOVW	DX, #0xAB66		;OK, now test 16-bit multiply
+	MOVW	AX, #0x9AE8
+	MULW	DX
+	CMPW	AX, #0xB070
+	JNE	4$
+	MOVW	DX, #0xFDF3
+	MOVW	AX, #0x9AE8
+	MULW	DX
+	CMPW	AX, #0x5238
+	JNE	4$
+	MOVW	DX, #0xB554
+	MOVW	AX, #0xE8EA
+	MULW	DX
+	CMPW	DX, #0xA4F9
+	JNE	4$
+	MOVW	DX, #0xB4C6
+	MOVW	AX, #0xE8EA
+	MULW	DX
+	CMPW	AX, #0xACFC
+	JNE	4$
+	CMPW	DX, #0xA478
+	JNE	4$
+	MOVW	DX, #0xB318
+	MOVW	AX, #0xE8EA
+	MULW	DX
+	CMPW	DX, #0xA2F1
+	JNE	4$
+	MOVW	DX, #0xB438
+	MOVW	AX, #0xE8EA
+	MULW	DX
+	CMPW	DX, #0xA3F7
+	JE	5$			;If OK
+4$:	INCB	intmulbug#		;If wrong
+
+;The following code checks for the Pentium floating point multiply bug
+
+5$:	CMPB	fputype#, #FPUTYPE_NONE	;Do we have an FPU?
+	JNE	6$			;Yes
+	DECB	fpudivbug#		;No
+	JMP	8$
+
+6$:	PUSHL	#0
+	PUSHL	#0
+	FLDL	CS:val1
+	FDIVL	CS:val2
+	FMULL	CS:val2
+	FSUBL	CS:val1
+	FSTL	[ESP]
+	POPL	ECX
+	POPL	EDX
+	JREGZ	ECX, 8$
+	INCB	fpudivbug#
+
+8$:	MOVB	AL, #0x34		;Initialize timer 0 to interrupt
+	OUTB	P_TMRCWR		;  200 times a second
+	IOPAUSE
+	MOVB	AL, #CCPERSP&0xFF
+	OUTB	P_TMRCNT0
+	IOPAUSE
+	MOVB	AL, #CCPERSP>8
+	OUTB	P_TMRCNT0
+
+	PUSHL	#GS_XDATA		;Set DS to normal exec data segment
+	POPL	DS
+	MOVL	EBX, #status1		;Display first status character
+	CALL	dispmsg
+	CLRL	EAX			;Set LDT for the null process
+	LLDT	AX
+	MOVL	EAX, #GS_NULLTSS	;Set TR for null process
+	LTR	AX
+	STI				;Allow interrupts now
+	MOVL	EBX, #status2		;Display second status character
+	CALL	dispmsg
+
+	MOVL	EBX, #status3		;Display third status character
+	CALL	dispmsg
+	CALL	ioinit#			;Initialize the IO routines
+	MOVL	EBX, #status4		;Display fourth status character
+	CALL	dispmsg
+
+	CALL	initprocesses#		;Initialize the first process
+
+	MOVL	EBX, #status5		;Display fifth status character
+	CALL	dispmsg
+	MOVL	EDI, #oocddcb#		;Assign a global ID for the once-only
+	CALL	knlGetDcbId#		;  console device (Can't do this until
+					;  we have called initsched!)
+	CALL	datetimeinit#		;Get date and time from the RTC
+	MOVB	AL, once_boot+1[EBP]	;Get the unit swap bit
+	ANDB	AL, #80h
+	MOVB	flopswap#, AL		;Store it
+	MOVL	EAX, knlPda+pdaAddr#	;Grab the exec memory resource
+	MOVL	knlXResPda#, EAX
+	CALL	initsystem#		;Initialize the SYSTEM device class
+	MOVL	EBX, #status6		;Display sixth status character
+	CALL	dispmsg
+	MOVL	EAX, knlSysTime#	;Get time of day in ticks / 2
+	SHRL	EAX, #1t
+	MOVL	fileseqnum#+0, EAX
+	MOVL	EDX, knlSysDate#	;Get low 10 bits of the date
+	ANDL	EAX, #3FFh
+	MOVL	fileseqnum#+4, EAX
+	CALL	doinit#			;Initialize devices using the old scheme
+	MOVL	EBX, #status7		;Display seventh status character
+	CALL	dispmsg
+	MOVL	EBX, #inittbl#		;Initialize devices using the new scheme
+12$:	CALLI	[EBX]
+	ADDL	EBX, #4
+	CMPL	[EBX], #0
+	JNE	12$
+
+	MOVL	knlXResPda#, #0	;Give up exec memory resource
+	CALL	logicalinit#		;Initialize logical names
+	INB	P_INC1P1		;Enable timer 0 interrupts (also
+	IOPAUSE				;  enables interrupt controller 2
+	ANDB	AL, #~0x05		;  interrupts) (IRQ0 and IRQ2)
+	OUTB	P_INC1P1
+	MOVL	EBX, #status8		;Display eight status character
+	CALL	dispmsg
+.PAGE
+	CALL	knlGetClkTotal#
+	PUSHL	EAX
+	PUSHL	EDX
+	MOVL	ECX, #83822t		;Calibrate our short delay routine
+	CALL	knlSDelay#		;  so that one count is about ten
+	CALL	knlGetClkTotal#		;  microseconds
+	POPL	ECX
+	POPL	EBX
+	SUBL	EAX, EBX
+	SBBL	EDX, ECX
+	MOVL	ECX, EAX
+	MOVL	EAX, #1000000t
+	CLRL	EDX
+	DIVL	ECX
+	MOVL	knlDelFactor#, EAX	;Store delay factor
+	CLD
+	CMPL	ESP, #tdabase+tdaXStkBegin# ;DEBUG CHECK!
+	JE	20$
+	CRASH	BSTK
+
+20$:	MOVL	EBX, #strtmsg		;Display starting system message
+	CALL	dispmsg
+	MOVL	ESP, #knlNullTda+tdaXStkBegin#
+	MOVB	knlForkLvl#, #FORK_MFORK
+	JMP	scheduler#		;Go to the scheduler
+.PAGE
+;Data and routines used when setting up the FPU
+
+fcwedc:	.WORD	0x037A		;FPU CW which enables divide by 0 exception
+fdata:	.WORD	0x5555
+hwname:	.ASCIZ "SYSTEM_FPU"
+
+;Here on an FPU interrupt when checking for exception behavior. (We don't
+;  bother saving any registers since we know where this interrupted is from
+;  and know that we don't care about EAX, which is the only register we use.
+;  We modify EDX to indicate that the interrupt occured.)
+
+ofpuint:FNCLEX
+	MOVB	AL, #0			;Clear the FPU busy latch
+	OUTB	P_MATHCBSY
+	IOPAUSE
+	BTSL	EDX, #0			;Indicate have interrupt
+	MOVB	AL, #INT_EOI		;Release the interrupt controllers
+	OUTB	P_INC1P0
+	IOPAUSE
+	OUTB	P_INC2P0
+	IRET
+
+;Here on an FPU exception through vector 16 when checking for exception
+;  behavior.
+
+ofpuerr:FNCLEX				;Clear the FPU exception
+	BTSL	EDX, #1			;Indicate have exception
+	IRET
+.PAGE
+;Subroutine to output message to the console
+;	c{EBX} = Offset of message in code segment
+;	CALL	dispmsg
+
+dispmsg:MOVL	EDI, #oocddcb#
+4$:	MOVB	AL, [EBX]
+	CMPB	AL, #0
+	JE	ret010
+	INCL	EBX
+	PUSHL	EBX
+	CALL	oocddispchr#
+	POPL	EBX
+	JMP	4$
+
+ret010:	RET
+.PAGE
+;Subroutine to check for 8042 input buffer empty during initialization
+;	CALL	oemp8042
+;	Z:set = Normal
+;	Z:clr = Error
+
+oemp8042:
+	MOVL	ECX, #0x1000
+2$:	NOP
+	LOOP	ECX, 2$
+4$:	INB	P_KEYDATA		;Make sure no input data left
+	IOPAUSE
+	INB	P_KEYSTS		;Get 8042 status
+	IOPAUSE
+	ANDB	AL, #02h		;Check input buffer full bit
+	LOOPNE	CX, 4$			;Loop if not empty
+	JE	ret010
+	CRASH	KBIE
+.PAGE
+	.MOD	4
+fcw:!	.WORD	0x037B		;FPU CW which enables divide by 0 exception
+
+val1:	.LONG	4195835t	;Data for Pentium divide bug check
+val2:	.LONG	3145727t
+
+	.BLKL	128t		;The initial once-only stack
+oostack:
+pmimsg:	.ASCIZ	"Protected mode initialization: "
+status1:.ASCIZ	"1"
+status2:.ASCIZ	"2"
+status3:.ASCIZ	"3"
+status4:.ASCIZ	"4"
+status5:.ASCIZ	"5"
+status6:.ASCIZ	"6"
+status7:.ASCIZ	"7"
+status8:.ASCIZ	"8"{CR,LF}
+strtmsg:.ASCIZ	"Starting system"{CR,LF}
+
+.IF NE DEBUG_INIT
+conname:!.ASCIZ	"TRM0S1:"
+.ENDC
+
+	END

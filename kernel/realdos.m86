@@ -1,0 +1,1087 @@
+	.TITLE	realdos - Real mode DOS emulation routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+
+	.SBTTL	initdos - Initialize DOS emulation routines
+
+;Once-only routine to initialize the DOS emulation routines
+
+	ONCE
+
+initdos::
+	MOVL	EAX, #0x0600		;Install blocks for functions which we
+	MOVL	EDX, #0xFF00		;  cannot allow to be installed
+	MOVL	EBX, #int2Fno
+	CALL	newdosint2F
+	MOVL	EAX, #0x0800
+	CALL	newdosint2F
+	MOVL	EAX, #0x1100
+	CALL	newdosint2F
+	MOVL	EAX, #0x1400
+	CALL	newdosint2F
+	MOVL	EAX, #0x1900
+	CALL	newdosint2F
+	MOVL	EAX, #0x1A00
+	MOVL	EDX, #0xFE00
+	CALL	newdosint2F
+	MOVL	EAX, #0x1000		;Install dummy SHARE routine so programs
+	MOVL	EDX, #0xFF00		;  will think SHARE is installed (since
+	MOVL	EBX, #int2Fshare	;  we fully emulate the SHARE functions)
+	CALL	newdosint2F
+
+	RET
+
+;;;;;;	JMP	initdpmi#		;Go initialize the DPMI routines
+
+	CODE
+.PAGE
+	.SBTTL	rintv20 - Routine to handle INT 20h in real mode
+
+;Routine to handle INT 20h in real mode - this is the old-style
+;  program terminate function
+
+rintv20::
+	MOVL	ECX, #uterm20#
+	JMP	rmchnguser#
+.PAGE
+	.SBTTL	rintv21 - Routine to handle INT 21h in real mode
+
+;Routine to handle INT 21h in real mode - This is the general DOS
+;  function call.
+
+rintv21::
+	MOVL	knlTda+tdaRMIndex#, #21h*4 ;Store index for waits
+	MOVZBL	EAX, knlTda+tdaURegEAX#+1 ;Get the INT 21 function
+	CMPB	AL, #I21MAX		;Legal function?
+	JA	villi21			;No
+	MOVL	ECX, int21tbl[EAX*4]	;Yes - get offset of routine
+	CMPL	ECX, #codebase		;User mode routine?
+	JB	rmchnguser#		;Yes - go handle that
+	CALLI	ECX			;No - dispatch to exec routine
+	JC	4$			;If error
+	RET				;OK
+
+;Here if error return from the DOS routine
+
+4$:	CMPL	EAX, #SYSMAXERR#	;Make sure valid error code
+	JAE	6$
+	MOVL	EAX, #ER_ERROR
+6$:	MOVL	EAX, knlDosErrTbl#[EAX*4] ;OK - get DOS error data
+
+;;;;;;	MOVL	dxd_lasterr, EAX	;Store it for later
+
+	MOVB	AH, #0			;Give the user just the error code in
+	MOVW	knlTda+tdaURegEAX#, AX	;Give him the error code
+	ORB	knlTda+tdaURegEFR#, #01	;Set C
+	RET
+
+;Here for illegal DOS INT 21 function
+
+villi21:MOVL	EAX, #DE_FINV+{DC_APPLI<8t}+{DA_CLNUP<16t}+{DL_UNKWN<24t}
+	MOVL	dxd_lasterr, EAX	;Store error code for later
+	ORB	knlTda+tdaURegEFR#, #01	;Set caller's C bit
+	MOVB	AH, #0			;Give the user just the error code in
+	MOVW	knlTda+tdaURegEAX#, AX	;  his AX
+	CLC
+ret004:	RET
+
+;Here for illegal INT 21 function which should terminate the process
+
+vbadi21:MOVZBL	ECX, AL			;Get INT 21 function
+	SHLL	ECX, #16t
+	MOVW	CX, #21CDh		;Indicate INT 21h instruction
+	JMP	knlUnimOp#		;Go kill process
+.PAGE
+;Dispatch table for INT 21 functions
+
+UM=!0		;;;;; 80000000h
+
+	DATA
+
+int21tbl:
+	.LONG  UM+uterm20#	; 00 - Program terminate (old style)
+	.LONG  UM+ucinput#	; 01 - Character input with echo
+	.LONG  UM+ucoutput#	; 02 - Character output
+	.LONG  UM+uainput#	; 03 - Auxiliary input
+	.LONG  UM+uaoutput#	; 04 - Auxiliary output
+	.LONG  UM+upoutput#	; 05 - Printer output
+	.LONG  UM+uconio#	; 06 - Direct console IO
+	.LONG  UM+uicinne#	; 07 - Image character input without echo
+	.LONG  UM+ucinne#	; 08 - Character input without echo
+	.LONG  UM+uoutstr#	; 09 - Output character string
+	.LONG  UM+ubinput#	; 0A - Buffered input
+	.LONG  UM+ugtists#	; 0B - Get input status
+	.LONG  UM+ucincta#	; 0C - Clear type-ahead and input character
+	.LONG     ret004	; 0D - Disk reset
+	.LONG     villi21	; 0E - Set default disk drive
+	.LONG  UM+ufcbopen#	; 0F - Open file using FCB
+	.LONG  UM+ufcbclose#	; 10 - Close file using FCB
+	.LONG  UM+ufcbsffm#	; 11 - Search for first match using FCB
+	.LONG  UM+ufcbsfnm#	; 12 - Search for next match using FCB
+	.LONG  UM+ufcbdel#	; 13 - Delete file using FCB
+	.LONG  UM+ufcbsread#	; 14 - Sequential read using FCB
+	.LONG  UM+ufcbswrite#	; 15 - Sequential write using FCB
+	.LONG  UM+ufcbcreate#	; 16 - Create or truncate file using FCB
+	.LONG  UM+ufcbrename#	; 17 - Rename file using FCB
+	.LONG     ret004	; 18 - No-op
+	.LONG  UM+ugtdftd#	; 19 - Get default disk drive
+	.LONG     vstdtaa	; 1A - Set disk transfer address
+	.LONG  UM+ugtalcid#	; 1B - Get allocation information for default
+				;	 disk
+	.LONG  UM+ugtalcia#	; 1C - Get allocation information for any disk
+	.LONG     ret004	; 1D - No-op
+	.LONG     ret004	; 1E - No-op
+	.LONG  UM+vbadi21	; 1F - Get default drive parameter block
+	.LONG     ret004	; 20 - No-op
+	.LONG  UM+ufcbrread#	; 21 - Random read using FCB
+	.LONG  UM+ufcbrwrite#	; 22 - Random write using FCB
+	.LONG  UM+ufcbgtfsz#	; 23 - Get file size using FCB
+	.LONG     vfcbstrrn	; 24 - Set random record number
+	.LONG     vstintv	; 25 - Set interrupt vector
+	.LONG  UM+umakepsp26#	; 26 - Create program segment prefix
+	.LONG  UM+ufcbmread#	; 27 - Multiple record random read using FCB
+	.LONG  UM+ufcbmwrite#	; 28 - Multiple record random write using FCB
+	.LONG  UM+uparse#	; 29 - Parse filename
+	.LONG     vgetdate	; 2A - Get system date
+	.LONG     vrtnFFh	; 2B - Set system date
+	.LONG     vgettime	; 2C - Get system time
+	.LONG     vrtnFFh	; 2D - Set system time
+	.LONG     vsetvrfy	; 2E - Set verify flag
+	.LONG     vgtdma	; 2F - Get disk transfer address
+	.LONG     vgtversn	; 30 - Get system version number
+	.LONG  UM+utermsr#	; 31 - Terminate and stay resident
+	.LONG     vbadi21	; 32 - Get drive parameter block
+	.LONG     vctlbrk	; 33 - Get or set ctrl-break flag
+	.LONG     vgtindos	; 34 - Return critical section flag pointer
+	.LONG     vgtintv	; 35 - Get interrupt vector
+	.LONG  UM+ugtfdsks#	; 36 - Get free disk space
+	.LONG     vswchar	; 37 - Get/set switch character/device names
+	.LONG  UM+ucountry#	; 38 - Get or set country
+	.LONG  UM+umkdir#	; 39 - Create directory
+	.LONG  UM+urmdir#	; 3A - Remove directory
+	.LONG  UM+ustcdir#	; 3B - Set current directory
+	.LONG  UM+ucreate#	; 3C - Create or truncate file
+	.LONG  UM+uopen#	; 3D - Open file
+	.LONG  UM+uclose#	; 3E - Close file
+	.LONG  UM+uread#	; 3F - Read file
+	.LONG  UM+uwrite#	; 40 - Write file
+	.LONG  UM+udelete#	; 41 - Delete file
+	.LONG  UM+usetpos#	; 42 - Set file position
+	.LONG  UM+ufattr#	; 43 - Get or set file attributes
+	.LONG  UM+uioctl#	; 44 - Device driver control
+	.LONG  UM+uduphndl#	; 45 - Duplicate handle
+	.LONG  UM+ufdphndl#	; 46 - Force duplicate of handle
+	.LONG  UM+ugtcdir#	; 47 - Get current directory
+	.LONG  UM+uallocm#	; 48 - Allocate memory
+	.LONG  UM+urelsm#	; 49 - Release memory
+	.LONG  UM+umodm#	; 4A - Modify memory allocation
+	.LONG  UM+uexec#	; 4B - Execute program
+	.LONG  UM+utermc#	; 4C - Terminate with return code
+	.LONG  UM+ugtrtnc#	; 4D - Get return code
+	.LONG  UM+usffm#	; 4E - Search for first match
+	.LONG  UM+usfnm#	; 4F - Search for next match
+	.LONG     vsetpsp	; 50 - Set PSP segment
+	.LONG     vgetpsp	; 51 - Get PSP segment
+	.LONG     vgetlol	; 52 - Get list of lists
+	.LONG     vbadi21	; 53 - Translate BIOS parameter block
+	.LONG     vgtvflg	; 54 - Get verify flag
+	.LONG  UM+umakechild#	; 55 - Create DOS child process
+	.LONG  UM+urename#	; 56 - Rename file
+	.LONG  UM+ufdttm#	; 57 - Get or set file date and time
+	.LONG     vallocs	; 58 - Get or set allocation strategy
+	.LONG     vgtxerr	; 59 - Get extended error information
+	.LONG  UM+ucrtemp#	; 5A - Create temporary file
+	.LONG  UM+ucrnew#	; 5B - Create new file
+	.LONG  UM+urlock#	; 5C - Record locking
+	.LONG     villi21	; 5D - Server function call
+	.LONG     villi21	; 5E - Network call
+	.LONG     villi21	; 5F - Network call
+	.LONG  UM+ucanonical#	; 60 - Resolve path string to canonical path
+	.LONG     vbadi21	; 61 - No-op
+	.LONG     vgetpsp	; 62 - Get program segment prefix address
+	.LONG     villi21	; 63 - Get lead byte table (2.25 only)
+	.LONG     vbadi21	; 64 - Unknown function!
+	.LONG     vextcountry	; 65 - Country dependent character functions
+	.LONG     vcodepage	; 66 - Get or set code page
+	.LONG  UM+usethndl#	; 67 - Set handle count
+	.LONG  UM+ucommitf#	; 68 - Commit file
+	.LONG     villi21	; 69 - Get or set disk serial number
+	.LONG     villi21	; 6A - Reserved
+	.LONG     villi21	; 6B - Reserved
+	.LONG  UM+uextopen#	; 6C - Extended open file
+I21MAX=!{$-int21tbl}/4-1
+
+	CODE
+.PAGE
+	.SBTTL	rintv29 - Routine to handle INT 29h in real mode
+
+;Routine to handle INT 29h in real mode - this is the DOS fast character output
+;  call
+
+rintv29::
+	MOVL	ECX, #uputchar#
+	JMP	rmchnguser#
+.PAGE
+	.SBTTL	INT 21 function 1A - Set disk transfer address
+
+;Here for INT 21 function 1A - Set disk transfer address
+;	c(AH)    = 1Ah
+;	c[DS:DX] = Disk transfer area address
+;	INT	21h
+;	Nothing is returned!
+
+vstdtaa::
+	MOVL	EAX, knlTda+tdaURegVDS#	;Get his DMA address
+	SHLL	EAX, #16t
+	MOVW	AX, knlTda+tdaURegEDX#
+	MOVL	dda_dtaa, EAX	;Store new address
+	CLC
+	RET
+.PAGE
+	.SBTTL	INT 21 function 24 - Set random record number
+
+;Here for INT 21 function 24 - Set random record number
+;	c(AH)    = 24h
+;	c[DS:DX] = Address of FCB
+;	INT	21h
+;	Nothing is returned! (Random-record field in FCB is updated)
+
+vfcbstrrn::
+	MOVZWL	ESI, knlTda+tdaURegEDX#	;Get address of FCB
+	MOVZWL	EAX, knlTda+tdaURegVDS#
+	SHLL	EAX, #4
+	ADDL	ESI, EAX
+	IFFAULT	6$
+	MOVZWL	EAX, 12t[ESI]		;Get current block
+	IFFAULT	6$
+	MOVZBL	ECX, 32t[ESI]		;Get current record in block
+	SHLL	EAX, #7			;Calculate record
+	ADDL	EAX, ECX
+	IFFAULT	6$
+	MOVZWL	ECX, 14t[ESI]		;Get record size
+	CMPL	ECX, #64t		;Small records?
+	JAE	4$			;No
+	IFFAULT	6$
+	MOVL	33t[ESI], EAX		;Yes - give him all 32 bits
+	CLC
+	RET
+
+;Here if have "large" records (equal to or greater than 64 bytes)
+
+	IFFAULT	6$
+4$:	MOVW	33t[ESI], AX		;Give him 24 bits
+	SHRL	EAX, #16t
+	IFFAULT	6$
+	MOVB	35t[ESI], AL
+	FAULTHDR
+6$:	CLC				;Make sure C is clear
+	RET				;And return
+.PAGE
+	.SBTTL	INT 21 function 2F - Get disk transfer address
+
+;Here for INT 21 function 2F - Get disk transfer address
+;	c(AH) = 2Fh
+;	INT	21h
+;	c[ES:BX] = Address of disk transfer area
+
+vgtdma::MOVL	EAX, dda_dtaa		;Get disk transfer area address
+	MOVW	knlTda+tdaURegEBX#, AX	;Give it to the caller
+	SHRL	EAX, #16t
+	MOVW	knlTda+tdaURegVES#, AX
+	CLC				;Make sure C is clear
+	RET				;Finished
+.PAGE
+	.SBTTL	INT 21 - function 25 - Set interrupt vector
+
+;Here for INT 21 function 25 - Set interrupt vector
+;	c(AL)    = Interrupt vector number
+;	c(AH)    = 25h
+;	c[DS:DX] = New contents for vector
+;	INT	21h
+;	Nothing is returned!
+
+vstintv::
+	MOVZBL	EBX, knlTda+tdaURegEAX#+0 ;Get offset of vector
+	SHLL	EBX, #2
+	MOVL	EAX, knlTda+tdaURegVDS#	;Get new contents for vector
+	SHLL	EAX, #16t
+	MOVW	AX, knlTda+tdaURegEDX#
+	MOVL	[EBX], EAX
+	CLC
+	RET
+
+	.SBTTL	INT 21 - function 35 - Get interrupt vector
+
+;Here for INT 21 function 35 - Get interrupt vector
+;	c(AL) = Interrupt vector number
+;	c(AH) = 35h
+;	INT	21h
+;	c[ES:BX] = Interrupt vector contents
+
+vgtintv::
+	MOVZBL	EBX, knlTda+tdaURegEAX#+0 ;Get the vector number
+	SHLL	EBX, #2
+	MOVL	EAX, [EBX]		;Get vector contents
+	MOVW	knlTda+tdaURegEBX#, AX	;Store offset part
+	SHRL	EAX, #16t
+	MOVW	knlTda+tdaURegVES#, AX	;Store segment part
+	CLC
+	RET				;Finished
+.PAGE
+;Here for INT 21 function 2A - Get system date
+;	c(AH) = 2Ah
+;	INT	21h
+;	c(AL) = Day of week (0 = Sunday, 1 = Monday, etc.)
+;	c[CX] = Year (1980 through 2099)
+;	c(DL) = Day of month (1 through 31)
+;	c(DH) = Month (1 through 12)
+
+vgetdate::
+	MOVL	EBX, knlDosDate#	;Get DOS format date
+	MOVB	AL, BL			;Get day
+	ANDB	AL, #1Fh
+	SHRL	EBX, #5			;Get month
+	MOVB	AH, BL
+	ANDB	AH, #0Fh
+	MOVW	knlTda+tdaURegEDX#, AX
+	SHRL	EBX, #4			;Get year
+	ADDW	BX, #1980t
+	MOVW	knlTda+tdaURegECX#, BX
+	MOVL	EAX, knlSysDate#	;Get knl/386 format date
+	CLRL	EDX
+	DIVL	lit7#			;Get day of the week
+	MOVB	knlTda+tdaURegEAX#, DL
+	CLC				;Make sure C is clear
+	RET				;Thats all
+.PAGE
+;Here for INT 21 function 2C - Get system time
+;	c(AH) = 2Ch
+;	INT	21h
+;	c(CH) = Hours (0 - 23)
+;	c(CL) = Minutes (0 - 59)
+;	c(DH) = Seconds (0 - 59)
+;	c(DL) = Hundredths of seconds (0 - 99)
+
+vgettime::
+	CLI				;No interrupts here
+	MOVL	EDX, knlSysDate#+4	;Get system format date too (for day of
+					;  the week calculation below)
+	MOVL	EAX, knlSysTime#+0	;Get tick count
+	STI				;Interrupts OK now
+;;;;;;;	DIVL	lit86400000#		;Get millseconds since midnight
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit3600000#		;Get hours
+	IFFAULT	knlRtnAdrEr#
+	MOVW	ES:6[EBX], AX
+	MOVB	knlTda+tdaURegECX#+1, AL ;Store hours
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit60000#		;Get minutes
+	MOVB	knlTda+tdaURegECX#+0, AL	;Store minutes
+	MOVL	EAX, EDX
+	CLRL	EDX
+	DIVL	lit1000#		;Get seconds
+	MOVB	knlTda+tdaURegEDX#+1, AL	;Store seconds
+	MOVL	EAX, EDX
+	DIVL	knlLit10#
+	MOVB	knlTda+tdaURegEDX#+0, AL	;Store hundredths of seconds
+	CLC				;Make sure C is clear
+	RET				;And return
+.PAGE
+	.SBTTL	INT 21 function 2E - Set verify flag
+
+;Here for INT 21 function 2E - Set verify flag
+;	c(AL) = Value for verify flag:
+;		  0 = Off
+;		  1 = On
+;	c(AH) = 2Eh
+;	INT	21h
+;	Nothing is returned!
+;  In the current version of knl/386, read-after-write verification is not
+;    supported, so this function does nothing!
+
+vsetvrfy::
+	RET
+
+	.SBTTL	INT 21 function 54 - Get verify flag
+
+;Here for INT 21 function 54 - Get verify flag
+;	c(AH) = 54h
+;	INT	21h
+;	c(AL) = Current value of verify flag:
+;		  0 = Off
+;		  1 = On
+;  Always returns a value of 0!
+
+vgtvflg::
+	MOVB	knlTda+tdaURegEAX#, #0
+	RET
+
+	.SBTTL	INT 21 function 30 - Get system version number
+
+;Here for INT 21 function 30 - Get system version number
+;	c(AH) = 30h
+;	INT	21h
+;	c(AL) = Major DOS version number
+;	c(AH) = Minor DOS version number
+;	c[BX] = 0
+;	c[CX] = 0
+
+vgtversn::
+	MOVZWL	EAX, dosver#+2
+	XCHGB	AL, AH	
+	MOVL	knlTda+tdaURegEAX#, EAX
+	CLRL	EAX
+	MOVL	knlTda+tdaURegEBX#, EAX
+	MOVL	knlTda+tdaURegECX#, EAX
+	RET
+.PAGE
+	.SBTTL	INT 21 function 33 - Get or set ctrl-break flag
+
+;Here for INT 21 function 33 - Get or set ctrl-break flag
+;	c(AL) = Function:
+;		  0 = Get current value
+;		  1 = Set value
+;	c(AH) = 33h
+;	c(DL) = New value for ctrl-break flag if c(AL) = 1:
+;		  0 = Off
+;		  1 = On
+;	INT	21h
+;	If c(AL) = 0 on call, c(DL) = Current value of ctrl-break flag
+;	If c(AL) = 1 on call, nothing is returned
+
+vctlbrk::
+	CMPB	knlTda+tdaURegEAX#+0, #0	;Want to change value?
+	JNE	4$			;Yes - do nothing!!!
+	MOVB	knlTda+tdaURegEDX#+0, #1	;For now, always say enabled!!
+4$:	RET
+.PAGE
+	.SBTTL	INT 21 function 34 - Get address of the InDOS flag
+
+;Here for INT 21 function 34 - Get address of the InDOS flag
+;	c(AH) = 34h
+;	INT	21h
+;	c[ES:BX] = Address of the InDOS flag (note that since knl does not
+;		     use (or need) the InDOS flag, this points to a byte
+;		     which is always 0)
+
+vgtindos::
+	MOVL	knlTda+tdaURegEBX#, #dda_critsecf&0FFh
+	MOVL	knlTda+tdaURegVES#, #{dda_critsecf&0FFF00h}>4
+	CLC
+	RET
+.PAGE
+	.SBTTL	INT 21 function 37 - Get or set switch character
+
+;Here for INT 21 function 37 - Get or set switch character and device name
+;  handling
+;	c(AL) = Sub-function
+;		  0 = Get current switch character
+;		  1 = Set switch character
+;		  2 = Get device name format:
+;			=0 = Device names only valid in /DEV/
+;			#0 = Device names valid in any directory
+;		  3 = Get device name format (see above)
+;	c(AH) = 37h
+;	c(DL) = Data (if c(AL) = 1 or 3)
+;	INT	21h
+;	c(AL) = 0FFh if error, unchanged if OK
+;	c(DL) = Data (if no error and c(AL) = 0 or 2)
+
+vswchar::
+	MOVZBL	EAX, knlTda+tdaURegEAX#+0	;Get sub-function
+	CMPL	EAX, #3			;Valid?
+	JA	vrtnFFh			;No
+	CLC				;Yes
+	JMPIL	swchardsp[EAX*4]	;Dispatch on sub-function
+
+;Here to return value of 0FFh in AL with C clear (standard CP/M error return)
+
+vrtnFFh::
+	MOVB	knlTda+tdaURegEAX#, #0FFh
+	CLC
+	RET
+
+;Switch character sub-function dispatch table
+
+	DATA
+
+swchardsp:
+	.LONG	gtswchar	; 0 - Get switch character
+	.LONG	stswchar	; 1 - Set switch character
+	.LONG	gtdevnmf	; 2 - Get device name format
+	.LONG	stdevnmf	; 3 - Set device name format
+
+	CODE
+
+;Here for INT 21 function 37 sub-function 0 - get switch character
+
+gtswchar:
+	MOVB	AL, dxd_switchchr	;Get current switch character
+	JMP	4$
+
+;Here for INT 21 function 37 sub-function 1 - set switch character
+
+stswchar:
+	MOVB	AL, knlTda+tdaURegEDX#+0	;Get new switch character
+	MOVB	dxd_switchchr, AL	;Store it
+	RET
+
+;Here for INT 21 function 37 sub-function 2 - get device name format
+
+gtdevnmf:
+	MOVB	AL, #1			;For now, we can't change this!
+4$:	MOVB	knlTda+tdaURegEDX#+0, AL
+
+;Here for INT 21 function 37 sub-function 1 - set device name format
+
+stdevnmf:
+	RET
+.PAGE
+	.SBTTL	INT 21 function 66 - Get or set code page
+
+;Here for INT 21 function 66 - Get or set code page
+;	c(AL) = 1 - Get global code page table
+;	      = 2 - Set global code page table
+;		     extended value from c[BX]
+;	c(AH) = 66h
+;	c[BX] = Code page (if c(AL) = 2)
+;	INT	21h
+;	C:set = Error
+;	  c[AX] = Error code
+;	C:clr = Normal
+;	  c[BX] = Active code page
+;	  c[DX] = Default code page
+
+;THIS CODE NEEDS TO BE UPDATED TO PROVIDE FULL COUNTRY SUPPORT!!!!!
+
+vcodepage:
+	MOVW	knlTda+tdaURegEBX, #437t
+	MOVW	knlTda+tdaURegEDX, #437t
+	RET
+.PAGE
+
+
+vextcountry:
+	MOVL	EAX, #ER_FILNF
+	STC
+	RET
+.PAGE
+	.SBTTL	INT 21 function 58 - Get or set allocation strategy
+
+;Here for INT 21 function 58 - Get or set allocation strategy
+;	c(AL) = Sub-function:
+;		  0 = Get current value
+;		  1 = Set value
+;	c(AH) = 58h
+;	INT	21h
+;	C:set = Error
+;	  c[AX] = Error code
+;	C:clr = Normal
+;	  If c(AL) = 0 on call: c[AX] = Current value
+;	  If c(AL) = 1 on call: Nothing is returned!
+
+vallocs:CMPB	knlTda+tdaURegEAX#+0, #0	;Want to set the strategy?
+	JNE	4$			;Yes
+	MOVL	EAX, dxd_mstrat		;No - return current value
+	MOVW	knlTda+tdaURegEAX#, AX
+	RET
+
+;Here to set the allocation strategy
+
+
+4$:	MOVB	AL, knlTda+tdaURegEBX#+0	;Get new strategy value
+	CMPB	AL, #2			;Valid value?
+	JA	6$			;No - fail
+	MOVB	dxd_mstrat, AL		;Yes - store new value
+	CLC
+	RET
+
+;Here if illegal strategy value is specified
+
+6$:	MOVL	EAX, #ER_FUNC
+	STC
+	RET
+
+	.SBTTL	INT 21 function 59 - Get extended error information
+
+;Here for INT 21 function 59 - Get extended error information
+;	c(AH) = 59h
+;	c[BX] = Version (should be 0 now)
+;	INT	21h
+;	c[AX] = Extended error code
+;	c(BL) = Recommended action
+;	c(BH) = Error class
+;	c(CH) = Error locus
+
+vgtxerr:IFFCALL	badusrstk#
+	MOVL	EAX, dxd_lasterr
+	MOVB	knlTda+tdaURegEAX#+0, AL
+	MOVB	knlTda+tdaURegEAX#+1, #0
+	MOVB	knlTda+tdaURegEBX#+1, AH
+	SHRL	EAX, #16t
+	MOVB	knlTda+tdaURegEBX#+0, AL
+	MOVB	knlTda+tdaURegECX#+1, AH
+	RET
+.PAGE
+	.SBTTL	INT 21 function 50 - Set selector for current PSP
+
+;Here for INT 21 function 50 - Set selector for current PSP
+;	c(AH) = 51h or 62h
+;	c[BX] = Selector for new PSP
+;	INT	21h
+
+vsetpsp:MOVZWL	EAX, knlTda+tdaURegEBX#	;Get new PSP selector
+	MOVL	dda_curpsp, EAX		;Store it
+	RET
+
+	.SBTTL	INT 21 functions 51 and 62 - Get selector for current PSP
+
+;Here for INT 21 functions 51 and 62 - Get selector for current PSP
+;	c(AH) = 51h or 62h
+;	INT	21h
+;	c[BX] = Selector for current PSP
+
+vgetpsp:MOVL	EAX, dda_curpsp		;Get selector of current PSP
+	MOVW	knlTda+tdaURegEBX#, AX	;Store in user's BX
+	RET				;Thats all
+
+	.SBTTL	INT 21 function 52 - Get list of lists
+
+;Here for INT 21 function 52 - Get list of lists
+;	c(AH) = 52h
+;	INT	21h
+;	c[ES:BX] = Address of list of lists
+
+vgetlol:
+	MOVW	knlTda+tdaURegVES#, #dda_base>4t
+	MOVW	knlTda+tdaURegEBX#, #dda_lstoflsts-dda_base
+	RET
+.PAGE
+	.SBTTL	rintv25 - Routine to handle INT 25 in real mode
+
+;Routine to handle INT 25 in real mode
+
+rintv25::
+	UNIMOP	0CDh, 25h, 00h, 00h
+.PAGE
+	.SBTTL	rintv26 - Routine to handle INT 26 in real mode
+
+;Routine to handle INT 26 in real mode
+
+rintv26::
+	UNIMOP	0CDh, 26h, 00h, 00h
+.PAGE
+	.SBTTL	rintv27 - Routine to handle INT 27 in real mode
+
+;Routine to handle INT 27 in real mode
+
+rintv27::
+	UNIMOP	0CDh, 27h, 00h, 00h
+.PAGE
+	.SBTTL	rintv28 - Routine to handle INT 28 in real mode
+
+;Routine to handle INT 28 in real  mode - this function is used by
+;  DOS to indicate that a keyboard busy loop is being executed.  It can
+;  be hooked by an application to determine when disk IO is safe.
+
+rintv28::
+	CLC
+	RET				;Do nothing!
+.PAGE
+	.SBTTL	rintv2A - Routine to handle INT 2A in real mode
+
+;Routine to handle INT 2A in real mode - this function is used as an interface
+;  to Micsoft/LANtastic network software - we treat it as a no-op.
+
+rintv2A::
+	CLC
+	RET				;Do nothing!
+.PAGE
+	.SBTTL	rintv2F - Routine to handle INT 2F in real mode
+
+;Routine to handle INT 2F in real mode - this is the DOS multiplex interrupt
+;  that is used for many internal (and some not-so-internal) DOS functions.
+;  Unfortunately, the function values cover the full 16 bit range, so we must
+;  use a skip chain to dispatch!
+
+rintv2F::
+	MOVL	EAX, knlTda+tdaURegEAX#	;Get the function value
+	MOVL	EDI, firstint2F		;Get first block
+2$:	MOVL	EDX, EAX
+	XORL	EDX, int2F_value[EDI]	;Is it this one?
+	TESTL	EDX, int2F_mask[EDI]
+	JE	4$			;Yes
+	MOVL	EDI, [EDI]		;No - advance to next
+	TESTL	EDI, EDI		;Have another?
+	JNE	2$			;Yes - continue
+	RET				;No - just return quietly!
+
+;Here with a match on the function
+
+4$:	JMPIL	int2F_func[EDI]	;Dispatch to the function routine
+.PAGE
+	.SBTTL	newdosint2F - Subroutine to register new DOS INT 2F routine
+
+;Subroutine to register new DOS INT 2F routine - must be called with the
+;  exec memory resource
+;	c{EAX} = Function value
+;	c{EBX} = Offset of routine to call
+;	c{EDX} = Function mask
+;	CALL	netdosint2F
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  No checks are made for duplicate functions.  New routines are installed at
+;    the beginning of the chain.  A function will normally return with C clear
+;    which causes a return to the caller.  It may return with C set, in which
+;    case the function search continues down the chain.  In this case, EAX and
+;    EDI must be preserved.
+
+newdosint2F::
+	MOVL	ECX, #int2F_SIZE
+	PUSHL	EAX
+	CALL	knlGetXMem#
+	POPL	ECX
+	JC	4$			;If error
+	MOVL	EAX, firstint2F		;Link to beginning of chain
+	MOVL	firstint2F, EDI
+	MOVL	[EDI], EAX
+	MOVL	int2F_value[EDI], ECX	;Store function value
+	MOVL	int2F_mask[EDI], EDX	;Store mask
+	MOVL	int2F_func[EDI], EBX	;Store offset of routine for function
+4$:	RET
+.PAGE
+;Here for multiplex functions to indicate that option is not installed and
+;  cannot be installed
+
+int2Fno:MOVB	knlTda+tdaURegEAX#, #01	;Say not installed, cannot install!
+	CLC
+	RET
+.PAGE
+;Here for SHARE INT 2F functions
+
+int2Fshare:
+	CMPB	knlTda+tdaURegEAX#+0, #0	;Check subfunction
+	JNE	4$			;Do nothing if not installation check
+	MOVB	knlTda+tdaURegEAX#+0, #0FFh	;OK - indicate installed
+4$:	RET
+.PAGE
+	.SBTTL	rintv33 - Routine to handle INT 33 in real mode
+
+;Routine to handle INT 33 in real mode
+
+rintv33::
+	CLC
+	RET
+.PAGE
+	.SBTTL	dosnameset - Once-only routine to create DOS special name table
+
+;Once-only routine to create DOS special name table - this table is stored in
+;  the null processe's PDA so that it can be expanded when desired - this
+;  routine creates an empty table and then calls the subroutine which inserts
+;  entires to add each standard DOS name
+
+	INITSUB	dosnameset
+
+dosnameset:
+
+	RET
+
+;;;;;	MOVW	ES, knlProcTable#	;Get null process PDA selector
+	CLRL	ECX
+	TOFORK
+;;;;;	CALL	knlGetPdaMemP#		;Get null memory block
+	JC	6$			;If error
+	FROMFORK
+	MOVL	dosspctbl, ESI		;OK - store offset of table
+	CLRL	EAX			;Indicate table is empty
+	MOVL	dosspcnum, EAX
+	MOVL	EAX, CS			;Point to initialization table
+	MOVL	FS, EAX
+	MOVL	GS, EAX
+	MOVL	EDI, #spcnamtbl
+	MOVL	ECX, #SPCNAMNUM
+2$:	MOVL	EDX, [EDI]		;Get offset of special name
+	MOVL	EBX, 4[EDI]		;Get offset of knl name
+	PUSHL	EDI
+	PUSHL	ECX
+	CALL	knlDosNameReg		;Register the name
+	POPL	ECX
+	POPL	EDI
+	JC	6$
+	ADDL	EDI, #8			;Bump pointer
+	LOOP	ECX, 2$			;Loop if more to do
+	RET				;All done here
+
+6$:	CRASH	DOSN
+
+spcnamtbl:
+	.LONG	dosnul , knlnul
+	.LONG	doscon , knlcon
+	.LONG	dosprn , dosprn
+	.LONG	dosaux , dosaux
+	.LONG	doscom1, doscom1
+	.LONG	doscom2, doscom2
+	.LONG	doslpt1, doslpt1
+	.LONG	doslpt2, doslpt2
+SPCNAMNUM=!{$-spcnamtbl}/8
+
+dosnul:	.ASCIZ	"NUL"
+doscon:	.ASCIZ	"CON"
+dosprn:	.ASCIZ	"PRN"
+dosaux:	.ASCIZ	"AUX"
+doscom1:.ASCIZ	"COM1"
+doscom2:.ASCIZ	"COM2"
+doslpt1:.ASCIZ	"LPT1"
+doslpt2:.ASCIZ	"LPT2"
+knlnul: .ASCIZ	"NULL"
+knlcon: .ASCIZ	"TRM"
+
+	CODE
+.PAGE
+	.SBTTL	knlDosNameReg - Subroutine to register DOS special device name
+
+;Subroutine to reigster DOS special device name
+;	c{EDX} = Address of special device name (without colon, must be 8
+;		   characters or less)
+;	c{EBX} = Address of corresponding knl device name (without colon,
+;		   must be 8 characters or less)
+;	CALL	knlDosNameReg
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;Format of the name table (stored in a null process PDA block)
+;	Size        Use
+;	 8     Memory block header
+;	 4*n   Table of first half of each DOS name
+;	 4*n   Table of second half of each DOS name
+;	 8*n   Table of knl names
+
+$$$=!0
+FRM dnr_dosname, 8
+FRM dnr_knlname, 8
+dnr_SIZE=!$$$
+
+knlDosNameReg::
+
+	CLRL	EAX
+	RET
+
+	ENTER	dnr_SIZE, 0		;Setup a stack frame
+	CLRL	EAX
+	MOVL	dnr_dosname+0[EBP], EAX
+	MOVL	dnr_dosname+4[EBP], EAX
+	MOVL	dnr_knlname+0[EBP], EAX
+	MOVL	dnr_knlname+4[EBP], EAX
+	PUSHL	SS
+	POPL	ES
+	LEAL	EDI, dnr_dosname[EBP]
+	MOVL	ECX, #8
+2$:	MOVB	AL, [EDX]
+	CMPB	AL, #0
+	JE	4$
+	STOSB	[EDI]
+	INCL	EDX
+	LOOP	ECX, 2$
+	CMPB	[EDX], #0
+	JNE	8$
+4$:	NEGL	ECX
+	LEAL	EDX, 8[ECX]		;Get length of DOS name in EDX
+	LEAL	EDI, dnr_knlname[EBP]
+	MOVB	CL, #8
+6$:	MOVB	AL, [EBX]
+	CMPB	AL, #0
+	JE	12$
+	STOSB	[EDI]
+	INCL	EBX
+	LOOP	ECX, 6$
+	CMPB	[EBX], #0
+	JE	12$
+8$:	MOVL	EAX, #ER_VALUE
+	STC
+10$:	LEAVE
+	RET
+
+;Here with both names copied to our stack frame
+
+12$:
+;;;;;;	MOVW	ES, knlProcTable#	;Get null process PDA selector
+	MOVL	ECX, dosspcnum		;Get current number of table entries
+	INCL	ECX			;Plus one
+	SHLL	ECX, #4			;Times 16
+	TOFORK
+;;;;;	CALL	knlGetPdaMemP#		;Allocate PDA memory
+	JC	10$
+	FROMFORK
+	BTSL	dosspclen, EDX		;Set bit for length of name
+	MOVL	EDI, ESI		;Point to place to store data
+	PUSHL	ESI
+	MOVL	ESI, dosspctbl		;Point to current table
+	CLD
+	MOVL	ECX, dosspcnum
+	RMOVSL	[EDI], ES:[ESI]		;Copy first table
+	MOVL	EAX, dnr_dosname+0[EBP] ;Add new entry
+	STOSL	[EDI]
+	MOVL	ECX, dosspcnum
+	RMOVSL	[EDI], ES:[ESI]		;Copy second table
+	MOVL	EAX, dnr_dosname+4[EBP] ;Add new entry
+	STOSL	[EDI]
+	MOVL	ECX, dosspcnum
+	ADDL	ECX, ECX
+	RMOVSL	[EDI], ES:[ESI]
+	MOVL	EAX, dnr_knlname+0[EBP] ;Add new entry
+	STOSL	[EDI]
+	MOVL	EAX, dnr_knlname+4[EBP]
+	STOSL	[EDI]
+	TOFORK
+	MOVL	ESI, dosspctbl		;Get offset of old memory block
+	POPL	dosspctbl		;Point to our new block
+	INCL	dosspcnum		;And increase count
+;;;;;	CALL	knlGivePdaMemP#		;Give up old block
+	FROMFORK
+	CLC
+	LEAVE
+	RET
+.PAGE
+	.SBTTL	dosnameck - Subroutine to check for special DOS name
+
+;Subroutine to check for special DOS name - reconizes NUL, CON, PRN, AUX, COM1,
+;  COM2, LPT1, LPT2, and EMMXXXX0
+;	c{ES:EBX} = Address of device specification
+;	CALL	dosnameck
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:clr = Not a special DOS name
+;	  Z:set = Special DOS name
+;	    c{EAX} = First 4 characters of corresponding XOS device name
+;	    c{EBX} = Second 4 characters of corresponding XOS device name
+
+dosnameck::
+	TESTL	EBX, EBX
+	RET
+
+
+	MOVL	ESI, EBX		;Find last :, /, or \
+	MOVL	EDX, ESI
+	CLD
+2$:	IFFAULT	knlRtnAdrEr#
+	LODSB	ES:[ESI]		;Get character
+	TESTB	AL, AL
+	JE	6$
+	CMPB	AL, #'.'
+	JE	6$
+	CMPB	AL, #':'
+	JE	4$
+	CMPB	AL, #'/'
+	JE	4$
+	CMPB	AL, #'\'
+	JNE	2$
+4$:	MOVL	EDX, ESI
+	JMP	2$
+
+;Here at end of specification
+;	c{ES:EDX} = Beginning of name part
+;	c{ES:ESI} = End of name part
+
+6$:	SUBL	ESI, EDX		;Get length of name
+	DECL	ESI
+	CMPL	ESI, #8			;Longer than 8 characters?
+	JA	16$			;Yes - not special
+	BTL	dosspclen, ESI		;Is there a special name of this length?
+	JNC	16$			;No - not special
+	PUSHL	EBX			;Yes - must search the special name
+	PUSHL	EDI			;  table
+	PUSHL	ES
+	MOVL	ECX, ESI
+	PUSHL	#0			;Put 8 bytes on the stack
+	PUSHL	#0
+	PUSHL	ES
+	POPL	FS
+	PUSHL	SS
+	POPL	ES
+	MOVL	EDI, ESP
+8$:	IFFAULT	20$
+	MOVB	AL, [EDX]
+	INCL	EDX
+	CMPB	AL, #'a'
+	JB	10$
+	SUBB	AL, #20h
+10$:	STOSB	[EDI]
+	LOOP	ECX, 8$
+	MOVL	EAX, [ESP]		;Get first part of name
+	MOVL	EBX, 4[ESP]		;Get second part of name
+;;;;;;	MOVW	ES, knlProcTable#
+	MOVL	EDI, dosspctbl
+	MOVL	ECX, dosspcnum
+	MOVL	EDX, ECX
+	CLD
+14$:	RNSCASL	[EDI]			;Search special name table
+	JE	18$			;If match
+	ADDL	ESP, #8			;Fix up the stack
+	POPL	ES
+	POPL	EDI
+	POPL	EBX
+16$:	TESTL	ESP, ESP		;Clear Z and C
+	RET
+
+;Here with match on first half of special name
+
+18$:	CMPL	EBX, ES:-4[EDI+EDX*4]	;Does entire name match?
+	JNE	14$			;No - continue search
+	SUBL	EDI, dosspctbl		;Yes - calculate offset of knl name
+	ADDL	EDI, EDI
+	ADDL	EDI, dosspctbl
+	MOVL	EAX, ES:-8[EDI+EDX*8]	;Get knl device name
+	MOVL	EBX, ES:-4[EDI+EDX*8]
+	ADDL	ESP, #20t		;Fix up the stack
+	CLRL	EDI			;Set Z and clear C
+	RET				;Finished
+
+;Here if address error with stuff on the stack
+
+	FAULTHDR
+20$:	ADDL	ESP, #20t		;Fix up the stack
+	JMP	knlRtnAdrEr#		;Go return the error
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+firstint2F::
+	  .LONG  0		;Offset of first INT 2F function block
+dskname:  .ASCIZ "Z:"
+	  .MOD   4
+dosspctbl:.LONG  0		;Offset of DOS special name table
+dosspcnum:.LONG  0		;Number of DOS special names
+dosspclen:.LONG  0		;Bits for lengths of DOS special names
+lastint21::.LONG 0
+
+	END

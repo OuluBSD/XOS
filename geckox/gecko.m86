@@ -1,0 +1,759 @@
+	.TITLE	GECKO
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD	GECKO.PAR
+	.INCLUD	XOSINC:/XMAC/XOS.PAR
+	.INCLUD	XOSINC:/XMAC/XOSTRM.PAR
+	.INCLUD	XOSINC:/XMAC/XOSRUN.PAR
+
+;;;GS_EXPORT=0C0h
+
+.IF NDF $$DEBUG
+  $$DEBUG==0
+.ENDC
+
+	.SEG	code_s, 32BIT, SELECT=GS_UCODE, CODE, READ
+	.SEG	data_s, 32BIT, SELECT=GS_UDATA, DATA, READ, WRITE
+
+	.MSECT	code_m, code_s, ADDR=0xA0000000
+	.MSECT	data_m, data_s, ADDR=0xA1000000
+
+	.PSECT	code_p,  code_m
+	.PSECT	data_p,  data_m, MOD=4
+dbase:
+	.PSECT	start_p, data_m, MOD=4
+
+	.PSECT	code_p
+	.START	gecko
+	.STACK	stack
+
+;Format of the symbol table file:
+;16 bit format:
+;  File header (12 bytes):
+;	ID       (4 bytes)  = 0x030222D4
+;	Length   (4 bytes)  = Number of bytes in file
+;	Count    (4 bytes)  = Number of table entries in file
+;  Symbol definition:
+;	Flags    (1 byte)   = Symbol flags:
+;				80h - Symbol is a selector value
+;				40h - Symbol is multiply defined
+;				20h - Symbol is an address
+;				10h - Symbol is suppressed
+;				08h - Symbol is global
+;				04h - Symbol is a msect selector/offset value
+;				02h - Symbol is a module name
+;	Offset   (2 bytes)  = Offset part of value
+;	Selector (2 bytes)  = Selector part of value
+;	Name     (variable) = Symbol name (high bit set on last byte)
+;32 bit format:
+;  File header (12 bytes):
+;	ID       (4 bytes)  = 0x040222D4
+;	Length   (4 bytes)  = Number of bytes in file
+;	Count    (4 bytes)  = Number of table entries in file
+;  Symbol definition:
+;	Flags    (1 byte)   = Symbol flags:
+;				80h - Symbol is a selector value
+;				40h - Symbol is multiply defined
+;				20h - Symbol is an address
+;				10h - Symbol is suppressed
+;				08h - Symbol is global
+;				04h - Symbol is a msect selector/offset value
+;				02h - Symbol is a module name
+;				01h - Symbol value is relocatable
+;	Offset   (4 bytes)  = Offset part of value
+;	Selector (2 bytes)  = Selector part of value if absolute or msect
+;				number if relocatable
+;	Name     (variable) = Symbol name (high bit set on last byte)
+;Format of symbol table entry in memory:
+;	Length   (1 byte)   = Length of symbol name (in bytes)
+;	Flags    (1 byte)   = Symbol flags:
+;				SF$MLT = 40h - Symbol is multiply defined
+;				SF$ADR = 20h - Symbol is an address
+;				SF$SUP = 10h - Symbol is suppressed
+;				SF$GLB = 08h - Symbol is global
+;				SF$MOD = 02h - Symbol is a module name
+;				SF$V86 = 01h - Symbol is a V86 address
+;	Offset   (4 bytes)  = Offset part of value
+;	Selector (2 bytes)  = Selector part of value
+;	Name     (variable) = Symbol name
+
+;Format of the kernel's exported symbol table:
+;  The table starts with a table head. The first 4 bytes (long) contain the
+;  offset in the table of the first group table. The remainder is unused.
+;  Each group table starts with a 16-byte header. The first 4 bytes contain the
+;  offset in the table of the next group table. The next 8 bytes contain the
+;  prefix. The final 4 bytes contain the number of symbols in the group. This
+;  is followed by the indicated number of symbol entries. Each symbol entry
+;  has a 2-byte header. The first header bytes contains the total length of
+;  the entry, including this byte. The second header byte contains 1 less than
+;  the length of the name of the symble (without the prefix) in the low 5
+;  bytes. Bit 7 is set if the value is an address (selector value is included).
+;  If bit 7 is set, bit 6 is set if the selector value is 2 bytes. Otherwise
+;  it is one byte. Bit 5 indicate the sign extension used if the data value is
+;  less than 4 bytes. If bit 5 is set, the value is extended with 1s, otherwise
+;  it is extended with 0s. The length of the data value is determined from the
+;  overall length, the length of the name, and the length of the selector value.
+;  There will always be at least one 0 byte following the last entry in a group.
+.PAGE
+	.PSECT	code_p
+
+;;;argmem =!0x40000
+;;;rld    =argmem
+;;;symbufr=argmem+512t
+;;;argdata=argmem+1024t
+
+gecko::	PUSHL	#!data_m		;Initialize DS
+	POPL	DS
+	MOVL	ECX, arg_cmdofs[EDI]	;Allocate memory for argument data
+	ADDL	ECX, arg_cmdlen[EDI]
+	ADDL	ECX, #4t
+	CALL	getspace
+
+.IF NE 0
+	PUSHL	#argmem
+	PUSHL	#PG$READ|PG$WRITE
+	LEAL	EAX, 1024t[ECX]
+	PUSHL	EAX
+	CALL	svcMemChange##
+	TESTL	EAX, EAX
+	JS	nomem
+.ENDC
+
+	PUSHL	EDI			;First arg for svcMemChange below
+
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, EDI		;Copy the argument data
+	MOVL	EDI, EBX
+	SHRL	ECX, #2
+	CLD
+	RMOVSL	[EDI], [ESI]
+
+	PUSHL	#0			;Give up the data msect
+	PUSHL	#0
+	CALL	svcMemChange##
+
+	MOVL	EDI, EBX		;Point to beginning of command string
+	ADDL	EDI, arg_cmdofs[EBX]
+	CALL	findtx			;Skip any leading whitespace
+	CALL	findws			;Skip first atom
+	CALL	findtx			;Skip terminating whitespace
+	MOVL	ESI, EDI		;Remember where second atom starts
+	MOVL	arglst, EDI		;Also store as start of argument for run
+
+	CALL	findws			;Find end of atom
+	MOVL	ECX, EDI		;Calculate length of atom
+	SUBL	ECX, ESI
+	JLE	10$
+	PUSHL	ECX
+	ADDL	ECX, #19t		;Get memory for program name
+	CALL	getspace
+	MOVL	prgname, EBX
+	POPL	ECX
+	PUSHL	DS
+	POPL	ES
+	MOVL	EDI, EBX
+2$:	LODSB	[ESI]
+	CMPB	AL, #'a'
+	JB	4$
+	SUBB	AL, #'a'-'A'
+4$:	STOSB	[EDI]
+	LOOP	ECX, 2$
+	MOVL	nameend, EDI		;Remember where name ends
+	MOVW	errbfrx, #'G>'
+	MOVL	EDX, #errbfrx+2
+5$:	MOVB	AL, [EBX]
+	CMPB	AL, #0
+	JE	55$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	JMP	5$
+
+55$:	MOVB	[EDX], #0
+	PUSHL	#errbfrx
+	CALL	svcSysSetPName##
+	MOVB	CL, #19t
+	CLRL	ECX
+	DECL	ECX
+	CLRL	EAX
+	MOVL	EDI, arglst		;Count characters in command tail
+	RNSCASB	[EDI]
+	NOTL	ECX
+	DECL	ECX
+	MOVL	argcnt, ECX		;Store for run SVC
+	MOVW	argcnt+2, CX
+	MOVL	EAX, #'.run'
+	CALL	dorun
+	JNC	loaded
+	MOVL	EAX, #'.exe'
+	CALL	dorun
+	JNC	loaded
+	MOVL	EAX, #'.com'
+	CALL	dorun
+	JNC	loaded
+	MOVL	EBX, #cntload
+fail:	PUSHL	EAX			;Stack error code
+	PUSHL	#DH_STDTRM		;Output first part of string
+	PUSHL	EBX
+	PUSHL	#0
+	CALL	svcIoOutString#
+	CMPL	[ESP], #0		;Have error code?
+	JE	8$			;No
+	PUSHL	#3			;Yes - get error message
+	PUSHL	#errbfrx
+	CALL	svcSysErrMsg#
+	MOVL	errbfrx[EAX], #0x0A0D
+	PUSHL	#DH_STDTRM		;Output error message
+	PUSHL	#errbfr
+	PUSHL	#0
+	CALL	svcIoOutString##
+8$:	PUSHL	#1
+	CALL	svcSchExit##
+
+;Here if no program specified
+
+10$:	CLRL	EAX
+	MOVL	EBX, #noprog
+	JMP	fail
+.PAGE
+;Here with program to be debugged loaded
+
+loaded:	MOVL	EAX, rld+rd_size
+	MOVL	totsize, EAX
+	MOVZWL	EAX, rld+rd_nmsect
+	MOVL	numms, EAX
+	MOVZWL	EAX, rld+rd_nseg
+	MOVL	numas, EAX
+	CMPW	rld+rd_data, #0xFFFFFFF8 ;Is this a real mode XOS or
+					 ;  DOS image?
+	JB	10$			;No
+	INCB	v86img#+2		;Yes - remember this
+	MOVL	EAX, #line1real		;Assume XOS real mode program
+	TESTB	rld+rd_data, #01	;Right?
+	JE	9$			;Yes
+	ADDL	EAX, #line1dos-line1real ;No - its a DOS program
+9$:	MOVL	line1pnt, EAX
+	MOVL	EAX, rld+rd_data+8	;Save the virtual relocation amount
+	SHRL	EAX, #4
+	MOVL	v86reloc, EAX
+10$:	MOVL	EBX, #line1arg		;Setup the first message line
+	MOVL	ESI, line1pnt
+	CALL	fmtmsg
+	MOVL	EDI, nameend		;Construct name for symbol file
+	MOVL	[EDI], #'.SYM'
+	MOVB	4[EDI], #0
+	PUSHL	#O$IN			;Open the symbol file
+	PUSHL	prgname
+	PUSHL	#0
+	CALL	svcIoOpen#
+	TESTL	EAX, EAX
+	JNS	symopen			;If it worked
+	MOVL	line2pnt, #nosmsg	;Can't open the symbol file - tell
+	JMP	symdon2			;  him this
+.PAGE
+;Here with symbol table file open
+
+symopen:MOVL	symhndl, EAX		;Store handle for symbol file
+
+	INT3
+
+	PUSHL	EAX			;Read first block of symbol file
+	PUSHL	#symbufr
+	PUSHL	#0x200
+	CALL	svcIoInBlock#
+	TESTL	EAX, EAX
+	JS	symerr			;If error
+	SUBL	EAX, #0x0C		;Get amount read minus size of header
+	JS	badsym			;We must at least get the header!
+	CMPL	symbufr+0, #0x030222D4	;16 bit symbol file?
+	JE	2$			;Yes
+	CMPL	symbufr+0, #0x040222D4	;No - 32 bit symbol file?
+	JNE	badsym			;No
+	MOVB	symadj, #1		;Yes - fix up the adjustment value
+	MOVZWL	EDX, rld+rd_nseg	;Calculate offset of msect data
+	LEAL	EDX, rld+rd_data[EDX*4]
+	MOVL	mspnt, EDX
+2$:	MOVL	bytepnt, #symbufr+0x0C	;Initialize pointer and and count for
+	MOVL	bytecnt, EAX		;  getbyte
+	MOVL	EAX, symbufr+8		;Get number of entries in symbol table
+	MOVL	geckosymcnt, EAX
+	MOVL	symcnt, EAX
+	IMULL	EAX, symadj		;Calculate space needed for symbol table
+	ADDL	EAX, symbufr+4		;  (we use 1 or 3 more bytes per entry
+	MOVL	symsize, EAX		;  than is present in the symbol file)
+	MOVL	symleft, EAX
+	MOVL	ECX, EAX
+	CALL	getspace		;Allocate space for symbol table
+	MOVL	geckosymtbl, EBX
+	MOVL	ESI, EBX
+symloop:MOVB	[ESI], #1		;Initialize the size
+	CALL	getbyte			;Get flag byte
+	MOVB	1[ESI], AL		;Store it
+	MOVB	AH, AL			;Save if for now
+	CLRL	EBX
+	CALL	getbyte			;Get offset part of value
+	MOVB	BL, AL
+	CALL	getbyte
+	MOVB	BH, AL
+	CMPB	symadj, #1		;32 bit symbol table?
+	JE	sym32			;Yes - go handle that
+	CLRL	EDX			;No
+	CALL	getbyte			;Get selector part of value
+	MOVB	DL, AL
+	CALL	getbyte
+	MOVB	DH, AL
+	TESTB	1[ESI], #SF$ADR		;Is this an address?
+	JNE	10$			;Yes
+	TESTL	EDX, EDX		;Maybe - is selector part non-zero?
+	JNE	12$			;Yes - make it an address but don't
+					;  relocate it
+	CMPL	EBX, #0x8000		;No - sign extend the value if should
+	JE	8$
+	MOVXWL	EBX, BX
+8$:	JMP	symstr
+
+;Here if need to relocate address
+
+10$:	ADDL	EDX, v86reloc		;Relocate it
+12$:	ORB	1[ESI], #SF$ADR|SF$V86	;Mark it as a V86 address
+	JMP	symstr			;Continue
+.PAGE
+;Here to process entry in 32 bit symbol file
+;	c[BX] = Low 16 bits of symbol value
+
+sym32:	RORL	EBX, #16t
+	CALL	getbyte			;Get high 16 bits of offset
+	MOVB	BL, AL
+	CALL	getbyte
+	MOVB	BH, AL
+	RORL	EBX, #16t
+	CLRL	EDX
+	CALL	getbyte			;Get selector part of value
+	MOVB	DL, AL
+	CALL	getbyte
+	MOVB	DH, AL
+	TESTB	1[ESI], #SF$REL		;Is the value relocatable?
+	JE	symstr			;No
+	ANDB	1[ESI], #~SF$REL	;Yes - clear the bit (its also used for
+					;  SF$V86!)
+	TESTB	1[ESI], #SF$SEL		;Is it a selector value?
+	JE	4$			;No
+	TESTL	EDX, EDX		;Yes - valid segment number?
+	JS	2$			;No
+	CMPW	DX, rld+rd_nseg		;Maybe
+	JBE	6$			;Yes
+2$:	JMP	badsym			;No
+
+;Here if not a selector
+
+4$:	DECL	EDX			;Valid msect number?
+	JS	2$			;No
+	CMPW	DX, rld+rd_nmsect	;Maybe
+	JAE	2$			;No
+	SHLL	EDX, #4t		;Yes - point to msect data
+	ADDL	EDX, mspnt
+	ADDL	EBX, 4[EDX]		;Relocate the offset value
+	MOVL	EDX, [EDX]		;Get segment number	
+	TESTL	EDX, EDX		;Segment specified?
+	JE	symstr			;No
+	CMPW	DX, rld+rd_nseg		;Yes - valid number?
+	JA	2$			;No
+6$:	MOVL	EDX, rld+rd_data-4[EDX*4] ;Yes - get selector
+symstr:	MOVL	2[ESI], EBX		;Store offset part of value
+	MOVW	6[ESI], DX		;Store selector part of value
+	LEAL	EDI, 8[ESI]
+
+;Here to store symbol name in the symbol table
+
+symname:PUSHL	ESI
+8$:	CALL	getbyte			;Get symbol name character
+	ORB	AL, AL			;Last character?
+	JS	10$.S			;Yes
+	STOSB	[EDI]			;No - store in symbol table
+	INCB	[ESI]			;Bump count
+	JMP	8$.S			;Continue
+
+;Here with last character of name
+
+10$:	ANDB	AL, #7Fh		;Remove high bit
+	STOSB	[EDI]			;Store in symbol table
+	MOVZBL	EAX, [ESI]		;Get length of entry
+	ADDL	EAX, #8
+	POPL	EDX
+	SUBL	symleft, EAX		;Make sure it really fits
+	JL	badsym
+	TESTB	1[EDX], #SF$IMP		;Is this an imported symbol?
+	JE	28$			;No - go on
+
+;;;;;	JMP	28$
+
+	CMPB	[EDX], #4		;Yes - is it at least 4 characters?
+	JB	20$			;No - can't match!
+	PUSHL	EDI			;Yes
+	PUSHL	ES
+
+	MOVL	EBX, knlExportTable##
+
+	ADDL	EBX, [EBX]
+	MOVL	EAX, 8[EDX]		;Get symbol name prefix
+	ANDL	EAX, #0xFFFFFF
+	ADDL	EBX, #4
+12$:	CMPL	EAX, 4[EBX]		;This one?
+	JE	14$			;Yes
+	ADDL	EBX, [EBX]		;No
+	CMPL	[EBX], #0
+	JNE	12$
+	JMP	20$			;If no more
+
+;Here with group for the symbol
+
+14$:	MOVL	ECX, 8[EBX]
+	MOVL	EBX, 4[EBX]
+	MOVZBL	EAX, [EDX]		;Get length of this symbol
+	SUBL	EAX, #3			;Minus 3
+16$:	CMPB	AL, [EBX]
+	JNE	18$
+	LEAL	EDI, 7[EBX]
+	LEAL	ESI, 11t[EDX]
+	PUSHL	ECX
+	MOVL	ECX, EAX
+	RECMPSB	[EDI], [ESI]
+	POPL	ECX
+	JE	22$
+18$:	MOVZBL	ESI, [EBX]
+	LEAL	EBX, 7[EBX+ESI]
+	LOOP	ECX, 16$
+20$:	CLRL	EAX
+	DECL	EAX
+	MOVL	2[EDX], EAX
+	JMP	24$
+
+;Here with match on symbol
+
+22$:	MOVL	EAX, 1[EBX]		;Get value
+	MOVL	2[EDX], EAX
+	MOVZWL	EAX, 5[EBX]		;Get selector
+24$:	MOVW	6[EDX], AX
+	TESTL	EAX, EAX
+	JE	26$
+	ORB	1[EDX], #SF$ADR
+26$:	ORB	1[EDX], #SF$GLB
+	ANDB	1[EDX], #~SF$IMP
+	POPL	ES
+	POPL	EDI
+
+28$:	MOVL	ESI, EDI
+	DECL	symcnt			;More symbols?
+	JNE	symloop			;Yes - continue
+	MOVW	[EDI], #SF$MOD*100h+0	;No - store dummy module entry at end
+					;  to stop local searches
+	INCL	geckosymcnt		;Adjust count for dummy entry at end
+	MOVL	EBX, #line2arg		;Setup the second message line
+	MOVL	ESI, #sldma
+	CALL	fmtmsg
+	JMP	symdone
+
+;Here if illegal format in symbol table
+
+badsym:	MOVL	EBX, #bdsmsg
+	JMP	nosyms
+
+;Here if error while loading symbol table
+
+symerr:	MOVL	EBX, #erdmsg
+nosyms:	MOVL	line2pnt, EBX		;Store offset of message for later
+	MOVL	EAX, geckosymtbl
+	MOVL	mempnt, EAX
+	CLRL	EAX			;Clear out the symbol table
+	MOVL	symsize, EAX
+	MOVL	geckosymcnt, EAX
+	MOVL	geckosymtbl, EAX
+symdone:PUSHL	symhndl			;Close the symbol table file
+	PUSHL	#0
+	CALL	svcIoClose#
+symdon2:MOVL	EBX, rld+rd_EBX		;Get user register values
+	MOVL	ECX, rld+rd_ECX
+	MOVL	EDX, rld+rd_EDX
+	MOVL	EDI, rld+rd_EDI
+	MOVL	ESI, rld+rd_ESI
+	MOVL	EBP, rld+rd_EBP
+	CMPB	v86img#+2, #0		;Is this a V86 mode image?
+	JNE	30$			;Yes
+	MOVL	SS, rld+rd_SS		;No - switch to user stack
+	MOVL	ESP, rld+rd_ESP
+	MOVL	EAX, #0x0200		;Get initial user EFR value
+	JMP	32$
+
+;Here if debugging a V86 mode image
+
+30$:	PUSHL	#GS_UCODE|0x03		;Switch to the default protected mode
+	POPL	SS			;  stack for V86 programs
+	MOVL	ESP, #rmda_stack
+	MOVL	uESP#, ESP		;Save our stack pointer as the user
+	MOVL	uSS#, SS		;  stack pointer so switch to the user
+	PUSHL	rld+rd_SS		;  program will work the first time
+	PUSHL	rld+rd_ESP		;Push user stack pointer value
+	MOVL	EAX, #0x20200		;Get initial EFR value
+32$:	PUSHL	#0
+	PUSHL	rld+rd_DS		;Push user segment register values
+	PUSHL	rld+rd_ES
+	PUSHL	rld+rd_FS
+	PUSHL	rld+rd_GS
+	PUSHL	EAX			;Push initial user EFR
+	PUSHL	rld+rd_CS
+	PUSHL	rld+rd_EIP
+	PUSHL	rld+rd_EAX
+	POPL	EAX
+	JMP	geckoentr#		;Go to GECKO
+.PAGE
+;Subroutine to do RUN SVC
+;	c{EAX} = Extension
+;	CALL	dorun
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+dorun:	MOVL	ECX, nameend
+	MOVL	[ECX], EAX
+	MOVB	4[ECX], #0
+	PUSHL	#runqab
+	CALL	svcIoRun#
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EAX, runqab+qab_error
+	TESTL	EAX, EAX
+	JNS	6$
+4$:	STC
+6$:	RET
+.PAGE
+;Subroutine to allocate memory space
+;	c{ECX} = Number of bytes needed
+;	CALL	getspace
+;	c{EBX} = Address of memory obtained
+
+getspace::
+
+	INT3
+
+	MOVL	EAX, mempnt		;Get new hightest address
+	ADDL	EAX, ECX
+	CMPL	EAX, memtop		;Need to allocate more memory?
+	JBE	2$			;No
+	PUSHL	#dbase			;Yes
+	PUSHL	#3
+	SUBL	EAX, #dbase
+	PUSHL	EAX
+	CALL	svcMemChange#
+	TESTL	EAX, EAX		;Error?
+	JS	nomem			;Yes
+	ADDL	EAX, #dbase
+	MOVL	memtop, EAX		;No - update memory top value
+2$:	MOVL	EBX, mempnt		;Get offset of memory
+	ADDL	mempnt, ECX		;Advance pointer
+	RET
+
+;Here if can't get the required memory
+
+nomem:	PUSHL	#DH_STDTRM
+	PUSHL	#nommsg
+	PUSHL	#0
+	CALL	svcIoOutString#
+	PUSHL	#1
+	CALL	svcSchExit#
+.PAGE
+;Subroutine to find non-whitespace character in command line
+;	CALL	findtx
+
+findtx::MOVB	AL, [EDI]		;Get command line character
+	INCL	EDI
+	ORB	AL, AL
+	JE	2$.S
+	CMPB	AL, #' '		;Is it a whitespace?
+	JE	findtx			;Yes
+	CMPB	AL, #HT
+	JE	findtx
+2$:	DECL	EDI
+	RET
+
+;Subroutine to find next whitespace character in command line
+;	CALL	findws
+
+findws::MOVB	AL, [EDI]
+	INCL	EDI
+	ORB	AL, AL
+	JE	4$
+	CMPB	AL, #' '
+	JE	4$
+	CMPB	AL, #HT
+	JNE	findws
+4$:	DECL	EDI
+	RET
+.PAGE
+;Subroutine to get next byte from symbol table file
+;	CALL	getbyte
+
+getbyte:DECL	bytecnt			;Another byte in the buffer?
+	JNS	6$			;Yes
+	PUSHL	symhndl			;No - read another block
+	PUSHL	#symbufr
+	PUSHL	#0x200
+	CALL	svcIoInBlock#
+	TESTL	EAX, EAX
+	JG	4$			;If OK
+	POPL	EBX			;Error - fix up the stack
+	JE	badsym			;Say bad format if EOF
+	JMP	symerr			;Otherwise say error reading file
+
+;Here with new block input
+
+4$:	DECL	EAX			;Store new count
+	MOVL	bytecnt, EAX
+	MOVL	bytepnt, #symbufr	;Reset pointer
+6$:	MOVL	EAX, bytepnt		;Get pointer
+	MOVB	AL, [EAX]		;Get character
+	INCL	bytepnt			;Bump pointer
+	RET				;And return
+.PAGE
+;Subroutine to format message line
+;	c{EBX} = Offset of argument table
+;	c{ESI} = Offset of text string
+;	CALL	fmtmsg
+
+fmtmsg:	MOVL	EDI, ESI
+	PUSHL	DS
+	POPL	ES
+2$:	LODSB	[ESI]			;Get character
+	CMPB	AL, #'#'		;Numeric field?
+	JE	6$			;Yes
+	CMPB	AL, #'@'		;"s" field?
+	JE	8$
+4$:	STOSB	[EDI]			;No - store character
+	CMPB	AL, #0			;Finished
+	JNE	2$			;No - continue
+	RET				;Yes
+
+;Here with numeric field
+
+6$:	LODSB	[ESI]			;Scan to end of field
+	CMPB	AL, #'d'
+	JNE	6$
+	MOVL	EAX, [EBX]
+	ADDL	EBX, #4
+	CALL	fmtval			;Convert value
+	JMP	2$			;Continue
+
+;Here with "s" field
+
+8$:	CMPL	-4[EBX], #1		;Was previous value 1?
+	JE	2$			;Yes
+	MOVB	AL, #'s'		;No
+	JMP	4$
+
+fmtval:	CLRL	EDX
+	IDIVL	lit10			;Get next digit
+	PUSHL	EDX
+	TESTL	EAX, EAX		;Finished?
+	JE	10$			;Yes
+	CALL	fmtval			;No - get next digit
+10$:	POPL	EAX			;Get digit to output
+	ADDB	AL, #'0'		;Change to ASCII
+	STOSB	[EDI]			;Store it
+	RET
+.PAGE
+	.SBTTL	Data
+
+	.PSECT	start_p
+
+	 .BLKL	256t
+stack:
+nommsg:   .ASCIZ "? GECKO: Not enough memory available"{CR,LF}
+cntload:  .ASCIZ "? GECKO: Can't load program"{CR,LF}
+noprog:	  .ASCIZ "? GECKO: No program specified"{CR,LF}
+nosmsg:	  .ASCIZ "No symbols loaded: cannot find symbol table file"{CR,LF}
+bdsmsg:   .ASCIZ "No symbols loaded: illegal format in symbol table file"{CR,LF}
+erdmsg:	  .ASCIZ "No symbols loaded: error reading symbol table file"{CR,LF}
+sldmsg:   .ASCII "Symbol table loaded: "
+sldma:	  .ASCIZ "#######d symbol@ using #########d byte@"{CR,LF}
+line1prot:.ASCII "XOS protected mode program loaded: "
+	  .ASCIZ "#########d byte@, ###d msect@ in ###d segment@"{CR,LF}
+line1real:.ASCII "XOS real mode program loaded: "
+	  .ASCIZ "#########d byte@"{CR,LF}
+line1dos: .ASCII "DOS program loaded: "
+	  .ASCIZ "#########d byte@"{CR,LF}
+errbfr:	  .ASCII "       "
+errbfrx:  .BLKB	 80t
+	  .MOD	 4
+
+runparm:.BYTE	PAR$GET|REP_STR, 0
+	.WORD	IOPAR_RUNDEBUGBFR
+	.LONG	rld
+	.WORD	256t, 0
+	.BYTE	PAR$SET|REP_STR, 0
+	.WORD	IOPAR_RUNCMDTAIL
+arglst:	.LONG	0
+argcnt:	.WORD	0, 0
+	.LONG	0
+
+runqab:	.WORD	RFNC$WAIT|RFNC_RUN	;qab_func
+	.WORD	0			;qab_status
+	.LONG	0			;qab_error
+	.LONG	0			;qab_amount
+	.LONG	0			;qab_handle
+	.BYTE	0, 0, 0, 0		;qab_vector
+	.LONG	R$SAMEPROC|R$DEBUG	;qab_option
+	.LONG	0			;qab_count
+prgname:.LONG	0			;qab_buffer1
+	.LONG	0			;qab_buffer2
+	.LONG	runparm			;qab_parm
+
+line1pnt::.LONG	line1prot	;Offset of message for line 1
+line2pnt::.LONG	sldmsg		;Offset of message for line 2
+line2arg:
+
+geckosymcnt::
+	 .LONG	0		;Number of symbol table entries
+symsize: .LONG	0		;Total size of symbol table in bytes
+symcnt:  .LONG	0
+symhndl: .LONG	0		;Handle for symbol table file
+symleft: .LONG	0
+geckosymtbl::
+	 .LONG	0
+
+rld:	 .BLKB	256t
+symbufr: .BLKB	0x200
+
+nameend: .LONG	0
+bytepnt: .LONG	0		;Byte pointer for getbyte
+bytecnt: .LONG	0		;Byte count for getbyte
+v86sel:: .LONG	0		;Selector for segment linked to V86 space
+v86reloc:.LONG	0
+line1arg:
+totsize: .LONG	12345t
+numms:	 .LONG	1t
+numas:	 .LONG	0
+lit10:	 .LONG	10t
+symadj:	 .LONG	3		;Amount to adjust length of symbol table entries
+mspnt:	 .LONG	0		;Offset of segment relocation data
+mempnt:  .LONG	membgn
+memtop:  .LONG	membgn
+membgn:

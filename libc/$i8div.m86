@@ -1,0 +1,233 @@
+	.TITLE	$i8div - 64-bit divide functions for OWCX
+	.SBTTL	STDC run-time library for XOS
+
+;*****************************************************************************
+;*
+;*                            Open Watcom Project
+;*
+;*    Portions Copyright (c) 1983-2002 Sybase, Inc. All Rights Reserved.
+;*
+;*  ========================================================================
+;*
+;*    This file contains Original Code and/or Modifications of Original
+;*    Code as defined in and that are subject to the Sybase Open Watcom
+;*    Public License version 1.0 (the 'License'). You may not use this file
+;*    except in compliance with the License. BY USING THIS FILE YOU AGREE TO
+;*    ALL TERMS AND CONDITIONS OF THE LICENSE. A copy of the License is
+;*    provided with the Original Code and Modifications, and is also
+;*    available at www.sybase.com/developer/opensource.
+;*
+;*    The Original Code and all software distributed under the License are
+;*    distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+;*    EXPRESS OR IMPLIED, AND SYBASE AND ALL CONTRIBUTORS HEREBY DISCLAIM
+;*    ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF
+;*    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR
+;*    NON-INFRINGEMENT. Please see the License for the specific language
+;*    governing rights and limitations under the License.
+;*
+;*  ========================================================================
+;*
+;* Description:  WHEN YOU FIGURE OUT WHAT THIS FILE DOES, PLEASE
+;*               DESCRIBE IT HERE!
+;*
+;*****************************************************************************
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;========================================================================
+;==     Name:           I8D                                            ==
+;==     Operation:      Signed 8 byte divide                           ==
+;==     Inputs:         EDX;EAX  Dividend                              ==
+;==                     ECX;EBX  Divisor                               ==
+;==     Outputs:        EDX;EAX  Quotient                              ==
+;==                     ECX;EBX  Remainder (same sign as dividend)     ==
+;==     Volatile:       none                                           ==
+;==                                     same sign as dividend for      ==
+;==                                     consistency with 8086 idiv     ==
+;==                                     and so (a/b)*b + a%b == a      ==
+;==                                     to get a 64-bit version for 386==
+;========================================================================
+
+	.ENTRY	__I8D
+__I8D:	TESTL	EDX, EDX		; Check sign of dividend
+	JS	divneg			; Handle case where dividend < 0
+        TESTL	ECX, ECX		; Check sign of divisor
+        JS	notU8D			; Easy case if it is also positive
+
+; Here it dividend >= 0, divisor >= 0
+
+	CALL	__U8D
+        RET
+
+; Here if dividend >= 0, divisor < 0
+
+notU8D:	NEGL	ECX			; Take positive value of divisor
+	NEGL	EBX
+        SBBL	ECX, #0
+	CALL	__U8D			; Do unsigned division
+	NEGL	EDX			; Negate quotient
+	NEGL	EAX
+	SBBL	EDX, #0
+	RET				; And return
+
+; Here if dividend is negative
+
+divneg:	NEGL	EDX			; Take absolute value of dividend
+	NEGL	EAX
+	SBBL	EDX, #0
+        TESTL	ECX, ECX		; Check sign of divisor
+	JNS	negres			; Negative result if divisor > 0
+
+; Here if dividend < 0, divisor < 0
+
+	NEGL	ECX			; Negate divisor too
+        NEGL	EBX
+	SBBL	ECX, #0
+	CALL	__U8D			; And do unsigned division
+	NEGL	ECX			; Negate remainder
+	NEGL	EBX
+	SBBL	ECX, #0
+	RET				; And return
+
+; Here if dividend < 0, divisor >= 0
+
+negres:	CALL	__U8D			; Do unsigned division
+	NEGL	ECX			; Negate remainder
+	NEGL	EBX
+	SBBL	ECX, #0
+	NEGL	EDX			; Negate quotient
+	NEGL	EAX
+	SBBL	EDX, #0
+	RET				; And return
+
+;========================================================================
+;==     Name:           U8D                                            ==
+;==     Operation:      Unsigned 8 byte divide                         ==
+;==     Inputs:         EDX;EAX  Dividend                              ==
+;==                     ECX;EBX  Divisor                               ==
+;==     Outputs:        EDX;EAX  Quotient                              ==
+;==                     ECX;EBX  Remainder                             ==
+;==     Volatile:       none                                           ==
+;========================================================================
+
+	.ENTRY	__U8D
+__U8D:	TESTL	ECX, ECX		; Check for easy case
+	JNE	noteasy			; Easy if divisor is 16 bit
+	DECL	EBX			; Decrement divisor
+	JE	8$
+
+; Here if not dividing by 1
+
+	INCL	EBX			; Put divisor back
+	CMPL	EBX, EDX		; if quotient will be >= 64K
+	JA	6$
+
+; 12-aug-88, added thanks to Eric Christensen from Fox Software
+; divisor < 64K, dividend >= 64K, quotient will be >= 64K
+
+; *note* this sequence is used in ltoa's #pragmas; any bug fixes should
+;        be reflected in ltoa's code bursts
+
+	MOVL	ECX, EAX		; Save low word of dividend
+	MOVL	EAX, EDX		; Get high word of dividend
+	SUBL	EDX, EDX		; Zero high part
+	DIVL	EBX			; Divide bx into high part of dividend
+	XCHGL	EAX, ECX		; Swap high part of quot, low word of
+					;   dvdnd
+6$:	DIVL	EBX			; Calculate low part
+	MOVL	EBX, EDX		; Get remainder
+	MOVL	EDX, ECX		; Get high part of quotient
+	SUBL	ECX, ECX		; Zero high part of remainder
+8$:	ret                     ; return
+
+
+; Here if have to work to do the division, first check for divisor > dividend
+
+noteasy:CMPL	ECX, EDX		; Go on if divisor <= dividend
+	JB	18$
+	JNE	16$			; If high parts are the same
+	CMPL	EBX, EAX		; Compare the lower order words
+	JA	16$			; Is divisor <= dividend?
+	SUBL	EAX, EBX		; Yes - Calulate remainder
+	MOVL	EBX, EAX
+	SUBL	ECX, ECX
+	CLRL	EDX			; Quotient = 1
+	MOVL	EAX, #1
+	RET				; Return
+
+
+; Here if divisor > dividend
+
+16$:	CLRL	ECX			; Set divisor = 0 (this will be the
+	CLRL	EBX			;   quotient)
+	XCHGL	EAX, EBX		; Return remainder = dividend
+	XCHGL	EDX, ECX		; And quotient = 0
+	RET				; Return
+
+; Here if divisor <= divident
+
+18$:	PUSHL	EBP			; Save work registers
+        PUSHL	ESI
+        PUSHL	EDI
+        CLRL	ESI			; Zero quotient
+        MOVL	EDI, ESI
+        MOVL	EBP, ESI		; And shift count
+
+; Loop until divisor > dividend
+
+moveup:	ADDL	EBX, EBX		; Divisor *= 2
+	ADCL	ECX, ECX
+	JB	backup			; Know its bigger if carry out
+	INCL	EBP			; Increment shift count
+	CMPL	ECX, EDX		; Check if its bigger yet
+	JB	moveup			; No - keep going
+	JA	divlup			; If below, know we're done
+	CMPL	EBX, EAX		; Check low parts (high parts equal)
+	JBE     moveup			; Until divisor > dividend
+
+; Division loop
+
+divlup:	CLC				; Clear carry for rotate below
+20$:	ADCL	ESI, ESI		; Shift bit into quotient
+	ADCL	EDI, EDI
+	DECL	EBP			; quif(--shift < 0) NB carry not changed
+	JS	donediv
+backup:					; Entry to remove last shift
+	RCRL	ECX, #1			; Divisor /= 2 (NB also used by 'backup')
+	RCRL	EBX, #1
+	SUBL	EAX, EBX		; Dividend -= divisor
+	SBBL	EDX, ECX		; c = 1 iff it won't go
+	CMC				; c = 1 iff it will go
+	JC	20$			; Until it won't go
+22$:	ADDL	ESI, ESI		; Shift 0 into quotient
+	ADCL	EDI, EDI
+	DECL	EBP			; Going to add, check if done
+	JS	toomuch			; If done - we subtracted to much
+	SHRL	ECX, #1			; Divisor /= 2
+	RCRL	EBX, #1
+	ADDL	EAX, EBX		; Dividend += divisor
+	ADCL	EDX, ECX		; c = 1 iff bit of quotient should be 1
+	JNC	22$			; Until divisor will go into dividend
+
+; Here if we subtracted too much
+
+toomuch:ADDL	EAX, EBX         ; dividend += divisor
+        ADCL	EDX, ECX
+
+; Now quotient is in EDI;ESI, remainder in EDX;EAX
+
+donediv:MOVL	EBX, EAX		; Move remainder to ECX;EBX
+        MOVL	ECX, EDX
+        MOVL	EAX, ESI		; Move quotient to EDX;EAX
+        MOVL	EDX, EDI
+        POPL	EDI			; Restore registers
+        POPL	ESI
+	POPL	EBP
+        RET				; And return
+
+	.END

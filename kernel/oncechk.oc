@@ -1,0 +1,103 @@
+//++++
+// This software is in the public domain.  It may be freely copied and used
+// for whatever purpose you see fit, including commerical uses.  Anyone
+// modifying this software may claim ownership of the modifications, but not
+// the complete derived code.  It would be appreciated if the authors were
+// told what this software is being used for, but this is not a requirement.
+
+//   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+//   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+//   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+//   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+//   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+//   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+//   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+//   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+//   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+//   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//----
+
+
+#include <xos.h>
+#include <xosx.h>
+#include <xossvc.h>
+#include <xoserr.h>
+#include <ctype.h>
+#include <stddef.h>
+
+
+
+extern char pdaAvlPriv[], pdaLnb[], pdaAlrmCnt[], pdaHndlTbl[], pdaEnd[];
+extern char tdaState[];
+extern char tdaLabel[], tdaFrame[], tdaOpenDisp[], tdaCcb[], tdaL1HeadP[];
+extern char tdaResponse[], tdaEnd[];
+
+extern char dcb_devdep[], ccb_dlbhead[], slb_data[], rmb_SIZE[], mdb_fault[];
+extern char hdlb_count[];
+
+extern char tdaTss[];
+extern char tdaTimeOut[];
+extern char tdaCmd[];
+
+void oncechk(void)
+{
+	if (((int)pdaAvlPriv) != offsetof(PDA, avlpriv))
+		CRASH('PDA1');
+	if (((int)pdaLnb) != offsetof(PDA, lnb))
+		CRASH('PDA2');
+	if (((int)pdaAlrmCnt) != offsetof(PDA, alrmcnt))
+		CRASH('PDA3');
+	if (((int)pdaHndlTbl) != offsetof(PDA, hndltbl))
+		CRASH('PDA4');
+	if (((int)pdaEnd) != sizeof(PDA))
+		CRASH('PDAS');
+
+	if (((int)tdaLabel) != offsetof(TDA, label))
+		CRASH('TDA1');
+
+	if (((int)tdaTss) != offsetof(TDA, tss))
+		CRASH('TDA2');
+
+///	INT3;
+
+	if (((int)tdaState) != offsetof(TDA, state))
+		CRASH('TDA2');
+
+	if (((int)tdaCmd) != offsetof(TDA, cmd))
+		CRASH('TDA2');
+
+	if (((int)tdaTimeOut) != offsetof(TDA, timeout))
+		CRASH('TDA2');
+
+
+	if (((int)tdaFrame) != offsetof(TDA, frame))
+		CRASH('TDA2');
+	if (((int)tdaOpenDisp) != offsetof(TDA, opendisp))
+		CRASH('TDA3');
+	if (((int)tdaCcb) != offsetof(TDA, ccb))
+		CRASH('TDA4');
+	if (((int)tdaL1HeadP) != offsetof(TDA, l1headp))
+		CRASH('TDA5');
+	if (((int)tdaResponse) != offsetof(TDA, response))
+		CRASH('TDA6');
+	if (((int)tdaEnd) != sizeof(TDA))
+		CRASH('TDAS');
+
+	if (((int)dcb_devdep) != sizeof(DCB))
+		CRASH('DCBS');
+
+	if (((int)ccb_dlbhead) != offsetof(CCB, dlbhead))
+		CRASH('CCBS');
+
+	if (((int)slb_data) != offsetof(SLB, data))
+		CRASH('SLBS');
+
+	if (((int)rmb_SIZE) != sizeof(RMB))
+		CRASH('RMBS');
+
+	if (((int)mdb_fault) != offsetof(MDB, fault))
+		CRASH('MDBS');
+
+	if (((int)hdlb_count) != offsetof(HDLB, count))
+		CRASH('HDLS');
+}

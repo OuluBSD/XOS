@@ -1,0 +1,18 @@
+$&o5W{0B 09 00 00 04}		Driver configuration
+$&bnW				Configuration
+$*r4800S			Source raster wdith
+$&l0M				Medial type
+$*o5W{0D 03 00 00 01}
+$&l1H				Paper source
+$l2A				Page size
+$&l0E				Top margin
+$&l0L				Perf skip
+$&u600D				Units
+$*o0M				Quality (0 = draft)
+$&l-2H				Paper source
+$&l0O				Page orientation
+$*o5W
+$*o7W
+$*g20W
+$*r1A				Start raster mode
+$*b353y0v13w .... K

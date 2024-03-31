@@ -1,0 +1,852 @@
+	.TITLE	ioparam - Routines related to processing IO parameters
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;Common device parameter table for devices which only support the minimum
+;  required parameters
+
+	.MOD	4
+comparms::
+	.LONG	PARMMAX		;Size of table
+	.LONG	0		;		   = 0.
+	.LONG	knlIopFileOptn#	;IOPAR_FILOPTN     = 1.
+	.LONG	knlIopFileSpec#	;IOPAR_FILSPEC     = 2.
+	.LONG	knlIopDevSts#	;IOPAR_DEVSTS      = 3.
+	.LONG	knlIopUnitNum#	;IOPAR_UNITNUM     = 4.
+	.LONG	knlIopGlbId#	;IOPAR_GLBID       = 5.
+	.LONG	knlIopNullN	;IOPAR_DELAY       = 6.
+	.LONG	knlIopNullN	;IOPAR_TIMEOUT     = 7.
+	.LONG	knlIopIoSts#	;IOPAR_INPSTS	   = 8.
+	.LONG	knlIopIoSts#	;IOPAR_OUTSTS	   = 9.
+	.LONG	knlIopInpQLmt#	;IOPAR_INPQLMT	   = 10.
+	.LONG	knlIopOutQLmt#	;IOPAR_OUTQLMT	   = 11.
+PARMMAX=!{$-comparms}/4
+
+;Common device dependent device parameter table - this table may be used by
+;  device drivers which do not require any device dependent parameters
+
+	.LONG	1
+knlComDPParms::
+	.LONG	comdp0parms
+
+	.LONG	1
+comdp0parms:
+	.LONG	knlIoparClass	;IOPAR_CLASS = 8000h - Device class
+
+	.LONG	1
+dmyparms::
+	.LONG	0
+.PAGE
+;Function to process device parameters - This routine is called by each device
+;  driver to compare the given parameters against a parameter table and to call
+;  a routine for each parameter given. The address of the DCB is taken from
+;  tdaDcb. The address of the parameter list is taken from tdaParm.
+;	long sysIoProcDevParam(
+;	    PTBL *spt,		// Address of standard parameter table
+;	    PTBL *ddpt,		// Address of device dependent parameter table
+;	    long  flgs);	// Initial flag bits:
+;				//   Bit 7: PDPF$CLASS - Have seen correct
+;				//                       IOPAR_CLASS value
+;				//   Bit 6: PDPF$IGNBP - Ignore illegal
+;				//                       parameter index values
+;  Value returned is the PDPF$ flag bits (positive) if normal or a negative
+;    XOS error code if error.
+
+;Each parameter table is a simple table of memory offsets indexed by the
+;  parameter index.  The first long in each table contains the maximum index
+;  for the table.  The standard table starts with the entry for parameter 0
+;  and the device dependent table starts with the entry for parameter 128t.
+;  Each table entry points to a parameter handling routine which must be
+;  immediately prefixed in memory with a two bytes which indicate valid
+;  parameter formats.  The first byte (offset -1) contains two bits which
+;  indicate if the set or get functions are valid:
+;       Name    Value          Use
+;     PAR$SET     80   Set if set operation is NOT valid
+;     PAR$GET     40   Set if get operation is NOT valid
+;     PAR$ERROR   20   Cleared at start of parameter processing, set if error
+;			 occures
+;     PAR$INFO    10   Not used, must be 0
+;     PAR$REP     0F   Prefered representation of value
+;  The second byte (offset -2) specifies the prefered size of the value.
+;  The DPARMHDR macro may be used to define these two bytes as follows:
+;	DPARMHDR oper, rep
+;    where:  oper = One of: SET, GET, or BOTH to inidicate LEGAL operation(s)
+;            rep  = Perfered representation (DECV, HEXV, OCTV, DECB, HEXB,
+;		      OCTV, TEXT, or STR)
+;	     size = Perfered size of value in bytes
+
+;The parameter subroutine is called as follows:
+;	c(AL)  = Parameter index
+;	c(AH)  = Parameter description byte
+;	c{EBX} = Address of value
+;	c{ECX} = Number of value bytes or length of string buffer
+;	c{EDX} = Address of word to receive string length (long string value
+;		      only)
+;	Registers EDI, ESI, and EBP are unchanged from the call to
+;	  knlProcDevParm
+;	CALL	subroutine
+;	C:set = Error (causes error return from knlProcDevParm)
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;  Registers do not need to be preserved (except for EBP and ESP, of course).
+;    This subroutine may get the parameter value from the parameter list, store
+;    a new value in the parameter list for the parameter or it may store the
+;    address and value size information and later store a value (anytime before
+;    the IO routine does its final return.  The subroutines getparm, strparm4,
+;    and strparm8 are provided for this purpose.
+
+$$$=!0
+FRM pdp_param , 4	;Pointer to the parameter list
+FRM pdp_length, 4	;Lenth of parameter value
+FRM           , 3
+FRM pdp_typex , 1	;Type and index for current parameter
+pdp_SIZE=!$$$
+
+2$:	CLRL	EAX
+	RET
+
+pdp_stable=!28t
+pdp_dtable=!24t
+pdp_flags =!20t
+
+sysIoProcDevParam::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	pdp_SIZE
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	EDX, knlTda+tdaParm#
+	TESTL	EDX, EDX		;Null pointer?
+	JE	12$			;Yes - nothing to do here!
+	CMPL	EDX, #systembase
+	JAE	dopader
+	MOVL	pdp_param[EBP], EDX
+doparm:	MOVL	EDX, pdp_param[EBP]	;Get address of next parameter
+	IFFAULT	dopader
+	ANDB	[EDX], #~PAR$ERROR	;Clear bad parameter indication
+	IFFAULT	dopader
+	MOVZBL	ECX, [EDX]		;Get parameter description byte
+	CMPB	CL, #0			;End of list?
+	JE	12$			;Yes - finished
+	MOVB	pdp_typex[EBP], CL	;No - store description byte for later
+	IFFAULT	dopader
+	MOVZBL	EAX, 3[EDX]		;Get parameter page number
+	MOVL	ESI, pdp_stable[EBP]	;Assume standard parameter
+	TESTB	AL, AL			;Right?
+	JNS	6$			;Yes
+	SUBL	EAX, #0x80		;No - its a device dependent parameter
+	JNE	3$
+	CMPB	2[EDX], #0		;Is it the device class?
+	JNE	3$			;No
+	TESTB	CL, #PAR$SET		;Yes - are we setting it?
+	JE	4$			;No
+	ORB	pdp_flags[EBP], #PDPF$CLASS ;Yes
+3$:	TESTB	pdp_flags[EBP], #PDPF$CLASS ;Have we seen the device class?
+	JE	9$			;No - say bad parameter
+4$:	MOVL	ESI, pdp_dtable[EBP]	;Get right table offset
+	TESTL	ESI, ESI		;Do we have a device dependent table?
+	JE	10$			;No - skip this
+6$:	CMPL	EAX, -4[ESI]		;Valid value?
+	JAE	8$			;No
+	MOVL	ESI, [ESI+EAX*4]	;Yes - get offset of next table
+	TESTL	ESI, ESI		;Do we have a 2nd level table?
+	JE	8$			;No - fail
+	MOVB	AL, 2[EDX]		;Yes - get 2nd level index
+	CMPL	EAX, -4[ESI]		;Valid value?
+	JAE	8$			;No
+	MOVL	ESI, [ESI+EAX*4]	;Yes - get offset of routine
+	TESTL	ESI, ESI		;Is there one?
+	JNE	14$			;Yes - go on
+8$:	TESTB	pdp_flags[EBP], #PDPF$IGNBP ;No - should we ignore this?
+9$:	JE	badparmi		;No - fail
+10$:	ANDB	CL, #0Fh		;Yes - get representation
+	MOVL	EAX, #16t		;Assume string
+	CMPB	CL, #REP_STR		;Right?
+	JE	24$			;Yes
+	CMPB	CL, #REP_DATAS
+	JE	24$
+	IFFAULT	dopader
+	MOVB	AL, 1[EDX]		;No - get length
+	JMP	22$			;Continue
+
+;Here when finished
+
+12$:	MOVZBL	EAX, pdp_flags[EBP]
+dopdone:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+;Here with valid parameter index
+
+14$:	MOVB	AH, CL			;Yes
+	MOVB	CH, -1[ESI]
+	ANDB	CL, CH			;Legal request?
+	TESTB	CL, #PAR$GET|PAR$SET
+	JNE	badparmf		;No - fail
+	MOVB	CL, AH			;Yes - get value type
+	ANDB	CL, #0x0F
+	ANDB	CH, #0x0F
+	CMPB	CL, CH			;Same representation?
+	JE	16$			;Yes - go on
+	CMPB	CL, #REP_TEXT		;No - are both numeric?
+	JAE	badparmt
+	CMPB	CH, #REP_TEXT
+	JAE	badparmt		;No fail
+16$:	CMPB	CL, #REP_STR		;Is this a string?
+	JE	18$			;Yes - go handle that
+	CMPB	CL, #REP_DATAS
+	JE	18$
+	IFFAULT	dopader
+	MOVZBL	ECX, 1[EDX]		;No - get size of value
+	MOVL	pdp_length[EBP], ECX
+	MOVL	EBX, pdp_param[EBP]	;Point to the value
+	ADDL	EBX, #4
+	JMP	20$			;Continue
+
+;Here if have a string or data value
+
+18$:	MOVL	pdp_length[EBP], #8	;Store length of parameter item
+	MOVL	EBX, #4			;Get address of string
+	IFFAULT	dopader
+	MOVL	EBX, 4[EDX]		;Get address of string
+	CMPL	EBX, #systembase
+	JAE	dopader
+	IFFAULT	dopader
+	MOVZWL	ECX, 8[EDX]		;Get length of buffer
+	ADDL	EDX, #10t		;Get address of length word
+20$:	PUSHL	EBP			;Save our stack frame
+	PUSHL	#21$
+	PUSHL	ESI
+	MOVL	EBP, 0[EBP]		;Restore previous stack frame
+	CLC
+	RET				;"Call" subroutine for device
+
+21$:	POPL	EBP			;Restore our stack frame
+	JC	baddp
+	MOVL	EAX, pdp_length[EBP]	;Bump pointer
+22$:	ADDL	EAX, #4
+24$:	ADDL	pdp_param[EBP], EAX
+	JMP	doparm			;Continue
+.PAGE
+;Here with illegal index for parameter
+
+badparmi:
+	MOVL	EAX, #ER_PARMI
+	JMP	4$
+
+;Here with illegal function for parameter
+
+badparmf:
+	MOVL	EAX, #ER_PARMF
+	JMP	4$
+
+;Here with illegal parameter type value
+
+badparmt:
+	MOVL	EAX, #ER_PARMT
+baddp:	BTL	EAX, #31t		;Valid error code?
+	JNC	10$			;No!
+4$:	MOVL	EDX, pdp_param[EBP]	;Restore address of parameter list
+	IFFAULT	dopader
+	ORB	[EDX], #PAR$ERROR	;Indicate bad parameter
+	JMP	dopdone
+
+10$:	CRASH	BDEC			;[BaD Error Code]
+
+;Here if address error in sysIoProcDevParam
+
+	FAULTHDR
+dopader:MOVL	EAX, #ER_ADRER
+	JMP	dopdone
+.PAGE
+	.SBTTL	knlIopNullN - Subroutine to handle null parameter with numeric value
+
+;Subroutine to handle null parameter with numeric value
+
+	DPARMHDR  BOTH, DECV
+knlIopNullN::
+	TESTB	AH, #PAR$GET		;Want a value returned?
+	JE	4$			;No - nothing needed here
+	CLRL	EAX			;Yes - return 0
+	JMP	knlStrParm4
+
+	.SBTTL	knlIopNullT - Subroutine to handle null parameter with text value
+
+;Subroutine to handle null parameter with text value
+
+	DPARMHDR  BOTH, TEXT
+knlIopNullT::
+	JMP	knlIopNullN
+
+	.SBTTL	knlIopNullS - Subroutine to handle null parameter with string value
+
+;Subroutine to handle null parameter with string value
+
+	DPARMHDR  BOTH, STR
+knlIopNullS::
+	TESTB	AH, #PAR$GET		;Want a value returned?
+	JE	4$			;No - nothing needed here
+	CLRL	EAX			;Yes - return a null string
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL
+	IFFAULT	knlRtnAdrEr#
+	MOVW	[EDX], AX
+4$:	RET
+
+	.SBTTL	knlIopDummyN - Subroutine to handle dummy parameter with numeric value
+
+;Subroutine to handle dummy parameter with numeric value
+
+	DPARMHDR  BOTH, DECV
+knlIopDummyN::
+	CLC				;Just indicate no error
+	RET
+
+	.SBTTL	knlIopDummyT - Subroutine to handle dummy parameter with text value
+
+;Subroutine to handle dummy parameter with text value
+
+	DPARMHDR  BOTH, TEXT
+knlIopDummyT::
+	CLC				;Just indicate no error
+	RET
+
+	.SBTTL	knlIopDummyS - Subroutine to handle dummy parameter with string value
+
+;Subroutine to handle dummy parameter with string value
+
+	DPARMHDR  BOTH, STR
+knlIopDummyS::
+	CLC				;Just indicate no error
+	RET
+.PAGE
+	.SBTTL	knlIoparClass - Subroutine to handle IOPAR_CLASS parameter
+
+;Subroutine to process IOPAR_CLASS parameter
+
+	DPARMHDR  BOTH, TEXT
+knlIoparClass::
+	TESTB	AH, #PAR$SET		;Want to "set" the value?
+	JE	4$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm		;Get value
+	JC	8$
+	MOVL	ESI, dcb_ccb[EDI]
+	CMPL	EAX, ccb_name+0[ESI]	;Is it correct?
+	JNE	6$			;No
+	CMPL	EDX, ccb_name+4[ESI]	;Maybe
+	JNE	6$			;No
+	POPL	EAX			;Yes
+4$:	TESTB	AH, #PAR$GET		;Want a value returned?
+	JE	10$			;No
+	MOVL	ESI, dcb_ccb[EDI]	;Yes
+	MOVL	EAX, ccb_name+0[ESI]
+	MOVL	EDX, ccb_name+4[ESI]
+	JMP	knlStrParm8		;Store value
+
+;Here if class name is wrong
+
+6$:	MOVL	EAX, #ER_PARMV
+8$:	POPL	ECX			;Fix up the stack
+	STC
+10$:	RET
+.PAGE
+;Subroutine to get parameter value - this subroutine is intended to be called
+;  from the routine called by knlProcDevParm to get a new value for a device
+;  parameter from the user's parameter list
+;	c{EBX} = Address of value
+;	c{ECX} = Size of value in bytes (0 to 8)
+;	CALL	knlGetParm
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+;	  c{EDX,EAX} = Value (64 bits)
+
+knlGetParm::
+	CMPL	ECX, #8			;Is it too long?
+	JA	2$.S			;Yes - fail
+	JMPIL	getdsp[ECX*4]		;Dispatch on the value size
+
+2$:	MOVL	EAX, #ER_PARMS
+	STC
+	RET
+
+	DATA
+
+getdsp:	.LONG	get0byte	; 0
+	.LONG	get1byte	; 1
+	.LONG	get2byte	; 2
+	.LONG	get3byte	; 3
+	.LONG	get4byte	; 4
+	.LONG	get5byte	; 5
+	.LONG	get6byte	; 6
+	.LONG	get7byte	; 7
+	.LONG	get8byte	; 8
+
+	CODE
+
+;Here for 0 byte value
+
+get0byte:
+	CLRL	EAX
+	CLRL	EDX
+	RET
+
+;Here to get a 1 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get1byte:
+	MOVZBL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+;Here to get a 2 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get2byte:
+	MOVZWL	EAX, [EBX]
+	CLRL	EDX
+	RET
+
+;Here to get a 3 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get3byte:
+	MOVZBL	EAX, 2[EBX]
+	SHLL	EAX, #16t
+	IFFAULT	knlRtnAdrEr#
+	MOVW	AX, [EBX]
+	CLRL	EDX
+	RET
+
+;Here to get a 4 byte value
+
+get4byte:
+	CLRL	EDX
+	IFFAULT	knlRtnAdrEr#
+4$:	MOVL	EAX, [EBX]
+	RET
+
+;Here to get a 5 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get5byte:
+	MOVZBL	EDX, 4[EBX]
+	JMP	4$
+
+;Here to get a 6 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get6byte:
+	MOVZWL	EDX, 4[EBX]
+	JMP	4$
+
+;Here to get a 7 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get7byte:
+	MOVZBL	EDX, 6[EBX]
+	SHLL	EDX, #16t
+	IFFAULT	knlRtnAdrEr#
+	MOVW	DX, 4[EBX]
+	JMP	4$
+
+;Here to get an 8 byte value
+
+	IFFAULT	knlRtnAdrEr#
+get8byte:
+	MOVL	EDX, 4[EBX]
+	JMP	4$
+.PAGE
+;Subroutine to store 4 byte parameter value - this subroutine is intended to be
+;  called from the routine called by knlProcDevParm to store the value of a
+;  device parameter in the user's parameter list
+;	c{EAX} = Value
+;	c{EBX} = Address for value
+;	c{ECX} = Size of area for value in bytes
+;	CALL	knlStrParm4
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+
+knlStrParm4::
+	CLRL	EDX			;Zero extend to 8 bytes
+					;Fall into strparm8
+
+;Subroutine to store 8 byte parameter value - this subroutine is intended to be
+;  called from the routine called by knlProcDevParm to store the value of a
+;  device parameter in the user's parameter list
+;	c{EDX,EAX} = Value
+;	c{EBX}     = Address for value
+;	c{ECX}     = Size of field for value in bytes
+;	CALL	knlStrParm8
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+
+knlStrParm8::
+	CMPL	ECX, #8t		;Is this a large field?
+	JA	strmbyte		;Yes
+	JMPIL	strdsp[ECX*4]		;No - dispatch on the field size
+
+	DATA
+
+strdsp:	.LONG	str0byte	; 0
+	.LONG	str1byte	; 1
+	.LONG	str2byte	; 2
+	.LONG	str3byte	; 3
+	.LONG	str4byte	; 4
+	.LONG	str5byte	; 5
+	.LONG	str6byte	; 6
+	.LONG	str7byte	; 7
+	.LONG	str8byte	; 8
+
+	CODE
+
+;Here to store a value longer than 8 bytes
+
+strmbyte:
+	CALL	str8byte
+	JC	6$
+	PUSHL	ECX
+	SUBL	ECX, #8
+	PUSHL	EDI
+	LEAL	EDI, 8[EBX]
+	MOVB	AL, #0
+	IFFAULT	2$
+	RSTOSB	[EDI]
+	POPL	EDI
+	POPL	ECX
+	RET
+
+	FAULTHDR
+2$:	POPL	EDI
+	POPL	ECX
+	JMP	knlRtnAdrEr#
+
+;Here for 0 byte value
+
+str0byte:
+	ORL	EAX, EDX		;Is the value 0?
+	JE	6$			;Yes - OK
+4$:	MOVL	EAX, #ER_PARMV		;No - fail
+	STC
+6$:	RET
+
+;Here to store a 1 byte value
+
+str1byte:
+	TESTL	EAX, #0FFFFFF00h	;Will the value fit in 1 byte?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	MOVB	[EBX], AL		;Yes - store value
+	RET
+
+;Here to store a 2 byte value
+
+str2byte:
+	TESTL	EAX, #0FFFF0000h	;Will the value fit in 2 bytes?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	MOVW	[EBX], AX		;Yes - store value
+	RET
+
+;Here to store a 3 byte value
+
+str3byte:
+	TESTL	EAX, #0FF000000h	;Will the value fit in 2 bytes?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	MOVW	[EBX], AX		;Yes - store value
+	SHRL	EAX, #16t
+	IFFAULT	knlRtnAdrEr#
+	MOVB	2[EBX], AL
+	CLC
+	RET
+
+;Here to store a 4 byte value
+
+str4byte:
+	TESTL	EDX, EDX		;Will the value fit in 4 bytes?
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EBX], EAX		;Yes - store value
+	RET
+
+;Here to store a 5 byte value
+
+str5byte:
+	TESTL	EDX, #0FFFFFF00h	;Will the value fit in 5 bytes?
+10$:	JNE	4$			;No
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EBX], EAX		;Yes - store value
+	IFFAULT	knlRtnAdrEr#
+	MOVB	4[EBX], DL
+	CLC
+	RET
+
+;Here to store a 6 byte value
+
+str6byte:
+	TESTL	EDX, #0FFFF0000h	;Will the value fit in 6 bytes?
+	JNE	10$			;No
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EBX], EAX		;Yes - store value
+	IFFAULT	knlRtnAdrEr#
+	MOVW	4[EBX], DX
+	RET
+
+;Here to store a 7 byte value
+
+str7byte:
+	TESTL	EDX, #0FF000000h	;Will the value fit in 7 bytes?
+	JNE	10$			;No
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EBX], EAX		;Yes - store value
+	IFFAULT	knlRtnAdrEr#
+	MOVW	4[EBX], DX
+	SHRL	EDX, #16t
+	IFFAULT	knlRtnAdrEr#
+	MOVB	6[EBX], DL
+	CLC
+	RET
+
+;Here to store an 8 byte value
+
+	IFFAULT	knlRtnAdrEr#
+str8byte:
+	MOVL	[EBX], EAX		;Store value
+	IFFAULT	knlRtnAdrEr#
+	MOVL	4[EBX], EDX
+	CLC
+	RET
+.PAGE
+;Subroutine to store long parameter value - this subroutine is intended to be
+;  called from the routine called by knlProcDevParm to store the value of a
+;  device parameter in the user's parameter list
+;	c{EAX} = Length of available value
+;	c{ESI} = Address of value string
+;	c{EBX} = Address for value
+;	c{ECX} = Size of field for value in bytes
+;	CALL	knlStrParmLng
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+
+knlStrParmLng::
+	XCHGL	EAX, ECX
+	SUBL	EAX, ECX
+	JB	knlBadParmV#		;If it won't fit
+	PUSHL	EDI
+	MOVL	EDI, EBX
+	CLD
+	IFFAULT	4$
+	RMOVSB	[EDI], [ESI]		;Copy the value
+	MOVL	ECX, EAX		;Zero out the remainder
+	MOVB	AL, #0
+	IFFAULT	4$
+	RSTOSB	[EDI]
+	POPL	EDI
+	CLC
+	RET
+
+	FAULTHDR
+4$:	POPL	EDI
+	JMP	knlRtnAdrEr#
+.PAGE
+;Subroutine to add to 4 byte parameter value - this subroutine is intended to
+;  be called from the routine called by knlProcDevParm to store the value of a
+;  device parameter in the user's parameter list
+;	c{EDX,EAX} = Value
+;	c{EBX}     = Address for value
+;	c{ECX}     = Size of area for value in bytes
+;	CALL	knlAddParm4
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+
+knlAddParm4::
+	CLRL	EDX			;Zero extend to 8 bytes
+					;Fall into strparm8
+
+;Subroutine to add to 8 byte parameter value - this subroutine is intended to
+;  be called from the routine called by knlProcDevParm to store the value of a
+;  device parameter in the user's parameter list
+;	c{EDX,EAX} = Value
+;	c{EBX}     = Address for value
+;	c{ECX}     = Size of field for value in bytes
+;	CALL	knlAddParm8
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:normal
+
+knlAddParm8::
+	CMPL	ECX, #8t		;Is this a large field?
+	JA	addmbyte		;Yes
+	JMPIL	adddsp[ECX*4]		;No - dispatch on the field size
+
+	DATA
+
+adddsp:	.LONG	str0byte	; 0
+	.LONG	add1byte	; 1
+	.LONG	add2byte	; 2
+	.LONG	add3byte	; 3
+	.LONG	add4byte	; 4
+	.LONG	add5byte	; 5
+	.LONG	add6byte	; 6
+	.LONG	add7byte	; 7
+	.LONG	add8byte	; 8
+
+	CODE
+
+;Here to add in a value longer than 8 bytes
+
+addmbyte:
+	SUBL	ECX, #8
+	IFFAULT	knlRtnAdrEr#
+	ADDL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+	ADCL	4[EBX], EDX
+2$:	ADCB	8[EBX], #0
+	JNC	6$
+	LOOP	ECX, 2$
+	JMP	4$
+
+;Here to add in a 1 byte value
+
+add1byte:
+	TESTL	EAX, #0xFFFFFF00	;Will the value fit in 1 byte?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	ADDB	[EBX], AL		;Yes
+	JC	4$
+	RET
+
+;Here to add in a 2 byte value
+
+add2byte:
+	TESTL	EAX, #0FFFF0000h	;Will the value fit in 2 bytes?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	IFFAULT	knlRtnAdrEr#
+	ADDW	[EBX], AX		;Yes
+	JC	4$
+	RET
+
+;Here to add in a 3 byte value
+
+add3byte:
+	TESTL	EAX, #0FF000000h	;Will the value fit in 2 bytes?
+	JNE	4$			;No
+	TESTL	EDX, EDX
+	JNE	4$
+	MOVL	EDX, EAX
+	SHRL	EDX, #16t
+	IFFAULT	knlRtnAdrEr#
+	ADDW	[EBX], AX
+	IFFAULT	knlRtnAdrEr#
+	ADCB	2[EBX], DL
+	JC	4$
+	RET
+
+;Here to add in a 4 byte value
+
+add4byte:
+	TESTL	EDX, EDX		;Will the value fit in 4 bytes?
+	JNE	4$.S
+	IFFAULT	knlRtnAdrEr#
+	ADDL	[EBX], EAX		;Yes
+	JNC	6$.S
+4$:	MOVL	EAX, #ER_PARMV		;Fail if overflow
+	STC
+6$:	RET
+
+;Here to add in a 5 byte value
+
+add5byte:
+	TESTL	EDX, #0FFFFFF00h	;Will the value fit in 5 bytes?
+	JNE	4$			;No
+	IFFAULT	knlRtnAdrEr#
+	ADDL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+	ADCB	4[EBX], DL
+	JC	4$
+	RET
+
+;Here to add in a 6 byte value
+
+add6byte:
+	TESTL	EDX, #0FFFF0000h	;Will the value fit in 5 bytes?
+	JNE	4$			;No
+	IFFAULT	knlRtnAdrEr#
+	ADDL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+	ADCW	4[EBX], DX
+	JC	4$
+	RET
+
+;Here to add in a 7 byte value
+
+add7byte:
+	TESTL	EDX, #0FF000000h	;Will the value fit in 5 bytes?
+	JNE	4$			;No
+	MOVL	ECX, EDX
+	SHRL	ECX, #16t
+	IFFAULT	knlRtnAdrEr#
+	ADDL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+	ADCW	4[EBX], DX
+	JC	4$
+	IFFAULT	knlRtnAdrEr#
+	ADCB	6[EBX], CL
+	RET
+
+;Here to add in an 8 byte value
+
+	IFFAULT	knlRtnAdrEr#
+add8byte:
+	ADDL	[EBX], EAX
+	IFFAULT	knlRtnAdrEr#
+	ADCL	4[EBX], EDX
+	JC	4$
+	RET
+
+	END

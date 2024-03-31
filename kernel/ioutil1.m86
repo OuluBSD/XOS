@@ -1,0 +1,429 @@
+	.TITLE	ioutil1 - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+	.SBTTL	svcIoControl - Queued IO control functions
+
+;Here for the svcIoControl SVC - Queued IO control functions - these
+;  functions affect only active queued IO operations - the function will
+;  fail with an ER_NACT (device or request not active) error if the indicated
+;  request is not active
+;	long svcIoControl(
+;	    QAB *qab,		// Address of QAB
+;	    long func,		// Function:
+;				//   QIOC_SITO = 1 - Set input timeout
+;				//   QIOC_SOTO = 2 - Set output timeout
+;	    long data);		// Data value
+;  Value returned is 0 if normal or negative error code if error
+
+psvcIoControl::
+
+	CRASH	????
+
+	IFFAULT	knlRtnAdrEr#
+	MOVL	ESI, knlTda+tdaArg1#	;Get address of the QAB
+	CMPL	ESI, #systembase-qab_SIZE
+	JA	knlRtnAdrEr#
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EAX, qab_handle[ESI]	;Get handle
+;;;;;	CALL	knlGetDcb#		;Find the DCB
+	JC	4$			;If error
+	MOVL	EAX, knlTda+tdaArg2#	;Get function
+	CMPL	EAX, #CANFNCMAX		;Legal function?
+	JA	knlBadFunc#		;No - fail
+	JMPIL	canfncdsp[EAX*4]	;Yes - dispatch on the function
+
+4$:	RET
+
+;WARNING: THESE FUNCTIONS ONLY CHANGE THE LOW ORDER 32 BITS OF THE TIMEOUT
+;         VALUE!
+
+	DATA
+
+canfncdsp:
+	.LONG	knlBadFunc	;	   = 0 - Illegal
+	.LONG	qiocsito	;QIOC_SITO = 1 - Set input timeout
+	.LONG	qiocsoto	;QIOC_SOTO = 2 - Set output timeout
+CANFNCMAX=!{$-canfncdsp}/4-1
+
+	CODE
+.PAGE
+	.SBTTL	qiocsito - IOC_SITO function
+
+;Here for the IOC_SITO function of the svcIoControl call
+
+qiocsito:
+	LEAL	EBX, dcb_inptda[EDI]
+	JMP	4$
+
+	.SBTTL	qiocsoto - IOC_SOTO function
+
+;Here for the IOC_SOTO function of the svcIoControl call
+
+qiocsoto:
+	LEAL	EBX, dcb_outtda[EDI]
+4$:	CMPW	[EBX], #0		;Have a current IO operation?
+	JE	14$			;No
+	TOFORK				;Yes - raise to fork level
+	CMPW	[EBX], #0		;Still have an IO operation?
+	JE	12$			;No
+	MOVL	EBX, [EBX]		;Yes - get fork frame selector
+	MOVL	EAX, knlTda+tdaArg1#	;Is this the current operation?
+	CMPL	tdaQab#[EBX], EAX
+	JNE	12$			;No
+	MOVL	EAX, tdaWakeTmr#+0[EBX]	;Yes - have a time-out now?
+	ORL	EAX, tdaWakeTmr#+4[EBX]
+	JE	6$			;No
+	MOVL	EAX, tdaWakeTmr#+0[EBX]	;Yes
+	MOVL	EDX, tdaWakeTmr#+4[EBX]
+	CLRL	ECX			;Yes - kill the timer
+	MOVL	tdaWakeTmr#+0[EBX], ECX
+	MOVL	tdaWakeTmr#+4[EBX], ECX
+
+	CRASH	????
+
+	PUSHL	EDX
+	PUSHL	EAX
+	CALL	sysSchTmrCancel#
+
+6$:	MOVL	EAX, knlTda+tdaArg4#	;Get new time-out value
+	MOVL	tdaTimeOut#[EBX], EAX	;Save it in case device needs it
+	CMPL	EAX, #-1		;Want any limit?
+	JE	6$			;No
+	CLRL	EDX			;Yes
+	DIVL	knlLitTICKPERSP#	;Change to number of scheduler periods
+	CMPL	EAX, #2			;Make sure at least 2
+	JA	8$
+	MOVB	AL, #2
+8$:	MOVL	ECX, #MSPERSP*ST_MILLISEC
+	MULL	ECX
+	PUSHL	EDX
+	PUSHL	EAX
+
+;;;;	PUSHL	#xfwdone#
+
+	CRASH
+
+;;;;	PUSHL	?????
+;;;;	CALL	sysSchTimerRequest#	;Enter the timer request
+	JC	10$			;If error
+;;;;;	MOVL	tdaWakeTmr#[EBX], ESI	;OK - save offset of the wake block
+	CLRL	EAX			;Finished
+10$:	FROMFORK
+	RET
+
+;Here if indicated request is not currently active
+
+12$:	FROMFORK
+14$:	MOVL	EAX, #ER_NACT
+	RET
+.PAGE
+	.SBTTL	svcIoGetHndlMap - Get device handle map
+
+;Here for the svcIoGetHndlMap SVC - Get device handle map - This function
+;  stores a bit-map which indicates which device handles are in use.
+;	long svcIoGetHndlMap(
+;	    long   func,	// Function
+;	    uchar *map);	// Address of bit map array
+;  Value returned is 0 if normal or a negative error code if error.
+
+psvcIoGetHndlMap::
+	MOVL	ECX, knlTda+tdaArg2#	;Get size of his array
+	CLRL	EAX
+	LEAL	EDX, [EAX+ECX*8]	;Get highest handle which will fit in
+	IFFAULT	knlRtnAdrEr#		;  his array
+	MOVL	EDI, knlTda+tdaArg1#	;Point to his array
+	CMPL	EDI, #systembase
+	JAE	knlRtnAdrEr#
+	MOVL	EBX, EDI
+	CLD
+	IFFAULT	knlRtnAdrEr#
+	RSTOSB	[EDI]			;Clear his array
+	MOVL	ESI, knlPda+pdaHndlTbl#	;Get offset of the handle table
+	ADDL	ESI, #0x20	
+	MOVL	ECX, knlPda+pdaHndlNum#	;Get maximum handle number
+	CLRL	EBP
+4$:	CMPL	[ESI], #0x1000		;Is this handle in use?
+	JBE	6$			;No
+	LEAL	EAX, 1[EBP]		;Yes - remember it
+	CMPL	EBP, EDX		;Will it fit in his array?
+	JAE	6$			;No
+	IFFAULT	knlRtnAdrEr#
+	BTSL	[EBX], EBP		;Yes - set the bit
+6$:	ADDL	ESI, #0x20		;Advance to next handle
+	INCL	EBP
+	LOOP	ECX, 4$			;Continue if more to check
+ret008:	RET
+.PAGE
+	.SBTTL	svcIoPorts - Set up IO port access
+
+;Here for the svcIoPorts SVC - Set up IO port access for user programs.
+;	long svcIoPorts(
+;	    long    func,	// Function: 1 = Allow access to port(s)
+;				//	     2 = Don't allow access to port(s)
+;	    ushort *table);	// Address of IO port table
+;  Value returned is 0 if normal or a negative error code if error.
+
+psvcIoPorts::
+	BTL	knlPda+pdaActPriv#, #PP%PORTIO ;Can he do this?
+	JNC	knlPrivFail#		;No - fail
+	PUSHL	knlTda+tdaArg1#		;Yes - get function
+	PUSHL	knlTda+tdaArg2#		;Get address of his port table
+	CALL	setioports
+	RET
+.PAGE
+;Function to set up user mode IO port access
+;	long setioports(
+;	    long    func,	// Function
+;	    ushort *table);	// Address of IO port table
+;  Value returned is 0 if normal or a negative XOS error code if error. On
+;    an error return, one or more groups may have been enabled or disabled.
+
+;  The IO port table consists of pairs of ushorts. The first specifies the
+;    number of ports in the group and the second specifies the base port
+;    for the group. The table is terminated with a single ushort which
+;    contains 0.
+
+$$$=!0
+FRM siop_base, 4
+FRM siop_size, 4
+siop_SIZE=!$$$
+
+siop_func=!20t
+siop_tbl =!16t
+
+setioports::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	siop_SIZE, 0
+	MOVL	ESI, siop_tbl[EBP]
+	IFFAULT	siopae
+sioplp:	MOVZWL	EAX, [ESI]		;Get size of the group
+	TESTL	EAX, EAX		;Finished?
+	JE	siopdn			;Yes
+	MOVL	siop_size[EBP], EAX
+	IFFAULT	siopae
+	MOVZWL	EBX, 2[ESI]		;Get base port
+	MOVL	siop_base[EBP], EBX
+	ADDL	ESI, #4t
+	LEAL	EDX, [EBX+EAX]		;Get highest register to affect + 1
+	CMPL	EDX, #0x10000		;Too big?
+2$:	JA	siopbv			;Yes - fail
+	CMPB	siop_func[EBP], #1	;Is function "allow access"?
+	JNE	10$			;No
+	ADDL	EDX, #31t		;Get highest address needed (including
+	SHRL	EDX, #3			;  a guard byte)
+	ANDL	EDX, #0xFFFFFFFC
+	ADDL	EDX, #tdaIoBitMap+4
+	ADDL	EDX, knlTda+tdaAddr#
+	CMPL	EDX, knlTda+tdaIoBMTop#	;Is it big enough now?
+	JB	10$			;Yes - go clear some bits
+
+;Here if need to expand the IO bitmap.
+
+	MOVL	EDI, EDX
+	ADDL	EDX, #0xFFF		;Get new top page number
+	SHRL	EDX, #12t
+	MOVL	EAX, knlTda+tdaIoBMTop#	;Get current top page number
+	ADDL	EAX, #0xFFF
+	SHRL	EAX, #12t
+	SUBL	EDX, EAX
+	JE	6$			;If don't need more memory
+	SHLL	EAX, #12t		;Get first address we need
+	PUSHL	EAX
+	PUSHL	EDX
+	PUSHL	#MT_TDA
+	PUSHL	#0x63
+	PUSHL	knlTda+tdaAddr#
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	siopdn
+6$:	MOVL	ECX, EDI		;Set all of the new bits
+	SUBL	ECX, knlTda+tdaIoBMTop#
+	SHRL	ECX, #2
+	XCHGL	EDI, knlTda+tdaIoBMTop#
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, #-1
+	RSTOSL	[EDI]
+
+8$:	MOVL	EAX, knlTda+tdaTssSel#
+	MOVL	ECX, knlTda+tdaIoBMTop#
+	SUBL	ECX, knlTda+tdaAddr#
+	SUBL	ECX, #tdaTss#
+	MOVW	gdtable+st_limit[EAX], CX
+	CLI				;No interrupts while we are playing with
+					;  the TSS state
+	ANDB	gdtable+5[EAX], #0xFD	;Clear the busy bit for the TSS so we
+					;  can update the task register
+	LTR	knlTda+tdaTssSel#	;Load the task register so the change in
+	STI				;  the limit takes effect immediately
+
+10$:	MOVL	EAX, siop_base[EBP]
+	MOVL	ECX, siop_size[EBP]
+	MOVL	EBX, knlTda+tdaAddr#
+	ADDL	EBX, #tdaIoBitMap#
+12$:	BTZL	[EBX], EAX
+	INCL	EAX
+	LOOP	ECX, 12$
+	JMP	sioplp
+
+;Here if function is not 1
+
+20$:	CMPB	siop_func[EBP], #2	;Is function "dis-allow access"?
+	JNE	siopbf			;No - fail
+	MOVL	ECX, knlTda+tdaIoBMTop#	;Yes - get current maximum port
+	SUBL	ECX, knlTda+tdaAddr#
+	SUBL	ECX, #tdaIoBitMap#
+	SHLL	#3
+	SUBL	ECX, siop_base[EBP]
+	JLE	sioplp
+	CMPL	ECX, siop_size[EBP]
+	JGE	24$
+	MOVL	ECX, siop_size[EBP]
+24$:	MOVL	EBX, knlTda+tdaAddr#
+	ADDL	EBX, #tdaIoBitMap#
+26$:	BTSL	[EBX], EAX ;Set a bit in the IO bit-map
+	INCL	EAX
+	LOOP	ECX, 26$
+	JMP	sioplp
+
+siopbf:	MOVL	EAX, #ER_FUNC
+siopdn:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+siopbv:	MOVL	EAX, #ER_VALUE
+	JMP	siopdn
+
+	FAULTHDR
+siopae:	MOVL	EAX, #ER_ADRER
+	JMP	siopdn
+.PAGE
+;Function to allocate a device handle
+;	long gethandle(
+;	    long hndl);		// Handle value at which to start search (Bit
+;				//   31 set to force use of specified handle.)
+;  Value returned is the handle allocated (positive) or a negative XOS error
+;    code if error.
+
+gthndl_hndl=!4
+
+gethandle::
+	MOVZWL	EAX, gthndl_hndl[ESP]
+	TESTL	EAX, EAX
+	JE	4$
+	CMPL	EAX, knlPda+pdaHndlNum#	;Is the table big enough?
+	JBE	gthndl2
+	CMPL	EAX, #1024t		;No - valid handle value?
+	JAE	4$			;No - fail
+	JMP	exphndltbl		;Yes - expand the tab le
+
+gthndl2:MOVL	ECX, knlPda+pdaHndlNum#	;Calculate number to check
+	SUBL	ECX, EAX
+	INCL	ECX
+	LEAL	EAX, knlPda+pdaHndlTbl#[EAX*8] ;Point to first slot to check
+	TESTB	gthndl_hndl+3[ESP], #0x80 ;Forcing a specific handle?
+	JE	8$			;No
+	CMPL	[EAX], #0		;Yes - is it in use?
+	JE	14$			;No - go use it
+	CMPL	[EAX], #0x0FFE		;Maybe not
+	JE	14$			;OK
+4$:	MOVL	EAX, #ER_BDDVH
+	JMP	hndldn
+
+;Here to search handle table
+
+8$:	CMPL	[EAX], #0		;Is this slot in use?
+	JE	14$			;No - found one!
+	ADDL	EAX, #8t		;Yes - bump to next
+	LOOP	ECX, 8$			;Continue if more to check
+	SUBL	EAX, #knlPda+pdaHndlTbl	;Get the handle we need
+	SHRL	EAX, #3
+	MOVL	gthndl_hndl[ESP], EAX	;Get this handle (This will expand the
+	JMP	gethandle		;  table if we can.)
+
+;Here with an available handle
+
+14$:	MOVL	[EAX], #0xFFF		;Indicate handle is allocated
+	SUBL	EAX, #knlPda+pdaHndlTbl
+	SHRL	EAX, #3
+hndldn:	RET	4
+.PAGE
+;Here if need to expand the handle table - The handle table is expanded in
+;  multiples of 32 entires (256 bytes) to be large enough to contain the handle
+;  being allocated. The handle table is located at a fixed offset at the top of
+;  the PDA. It is always expanded in place. If an LDT has been set up, it is
+;  located immediatly above the handle table and must be moved when the handle
+;  table is expanded.
+;	c{EAX} = Desired handle
+
+$$$=!0
+FRM exph_newnum, 4
+FRM exph_hndl  , 4
+FRM exph_added , 4
+FRM exph_cnt   , 4
+exph_SIZE=!$$$
+
+exphndltbl:
+	ENTER	exph_SIZE, 0
+	MOVL	exph_hndl[EBP], EAX	;Save the handle
+	ADDL	EAX, #31t		;Round up to a multiple of 32
+	ANDL	EAX, #0xFFFFFFE0
+	MOVL	exph_newnum[EBP], EAX
+	MOVL	EDX, EAX
+	SUBL	EDX, knlPda+pdaHndlNum#	;Get space being added
+	SHLL	EDX, #3
+	MOVL	exph_added[EBP], EDX
+	SHLL	EAX, #3			;Get new size (bytes)
+	ADDL	EAX, #pdaHndlTbl#	;Plus base of the handle table
+	ADDL	EAX, knlPda+pdaAddr#
+	SUBL	EAX, knlPda+pdaTop#	;Is the PDA big enough now?
+	JBE	4$			;Yes
+	ADDL	EAX, #0xFFF		;No - get number of additional pages
+	SHRL	EAX, #12t		;  needed
+	PUSHL	EAX			;Allocate the additional pages
+	CALL	sysMemExtendPda#
+	TESTL	EAX, EAX
+	JNS	4$
+	LEAVE
+	JMP	hndldn
+
+;Here with enough memory for the expanded handle table
+
+4$:	MOVL	EAX, exph_newnum[EBP]
+	MOVL	knlPda+pdaHndlNum#, EAX
+	MOVL	EAX, exph_hndl[EBP]
+	LEAVE
+	JMP	gthndl2
+
+	END

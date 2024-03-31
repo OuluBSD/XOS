@@ -1,0 +1,779 @@
+	.TITLE	trmfnc - Terminal function routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+
+	CODE
+
+;Here for the svcIoQueue function QFNC_TRMFUNC
+
+trmfunc::
+	MOVL	EAX, #ER_NIYT
+	RET
+.PAGE
+	.SBTTL	svcSchCtlCDone - SVC to report that control-C processing is done
+
+;Here for the svcSchCtlCDone SVC - report that control-C processing is done
+;	rtn = svcSchCtlCDone();
+;  Value returned is always 0
+
+psvcSchCtlCDone::
+	ANDB	knlPda+pdaStatus1#, #~P1$TRMJUNK ;Allow terminal output
+	CLRL	EAX
+	RET
+.PAGE
+;Here for the svcTrmFunction SVC - General terminal functions
+;	long svcTrmFunction(handle, function);
+;	    int handle,		// Device handle
+;	    int function);	// Function
+
+psvcTrmFunction::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EAX, knlTda+tdaArg2#	;Get function
+	CMPL	EAX, #MAXFUNC		;Legal function?
+	JAE	knlBadFunc#		;No
+	JMPIL	trmfdsp[EAX*4]		;Yes - dispatch on the function
+
+4$:	RET
+
+;Terminal functions dispatch table
+
+	DATA
+
+trmfdsp:.LONG	tfreset		;TF_RESET  =  0. - Reset terminal data to
+				;		     defaults
+	.LONG	tfenecho	;TF_ENECHO =  1. - Enable echoing
+	.LONG	tfdsecho	;TF_DSECHO =  2. - Disable echoing
+	.LONG	tfclrinp	;TF_CLRINP =  3. - Clear input buffer
+	.LONG	tfclrout	;TF_CLROUT =  4. - Clear output buffer
+	.LONG	tfenbout	;TF_ENBOUT =  5. - Enable output
+MAXFUNC=!{$-trmfdsp}/4
+
+	CODE
+.PAGE
+	.SBTTL	tfreset - Reset to defaults
+
+;Here for the TF_RESET function for the svcTrmFunction svc - value returned is
+;  0 if normal or negative error code if error
+
+tfreset:PUSHL	tdb_imode[ESI]		;Save the current mode bits
+	PUSHL	tdb_omode[ESI]
+	TESTL	knlTda+tdaCmd#, #XO$PHYS|XO$RAW ;Is terminal open for
+						;  "physical IO"?
+	JNE	4$			;Yes
+	MOVL	tdb_imode[ESI], #TIM$ECHO|TIM$ELFWCR
+	MOVL	tdb_omode[ESI], #TOM$ICRBLF
+	JMP	8$
+
+;Here if terminal open for "physical IO"
+
+4$:	MOVL	tdb_imode[ESI], #TIM$IMAGE ;Set up for image mode
+	MOVL	tdb_omode[ESI], #TOM$IMAGE
+8$:	ANDB	tdb_stsout[ESI], #~TSO$JUNK
+	POPL	EAX			;Did the output mode change?
+	CMPL	EAX, tdb_omode[ESI]
+	JE	10$			;No
+	MOVL	EDX, tdb_ddisp[ESI]	;Yes - tell the driver about it
+	CALLI	tfx_omodechng[EDX]
+10$:	POPL	EAX			;Did the input mode change?
+	CMPL	EAX, tdb_imode[ESI]
+	JE	12$			;No
+	MOVL	EDX, tdb_ddisp[ESI]	;Yes - tell the driver about it
+	CALLI	tfx_imodechng[EDX]
+12$:	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	tfenecho - Enable echoing
+
+;Here for the TF_ENECHO function for the svcTrmFunction svc - value returned
+;  is previous value (0 = disaabled or 1 = enabled) if normal or negative error
+;  code if error
+
+tfenecho::
+	MOVL	EAX, tdb_imode[ESI]	;Get current bits
+	ORL	tdb_imode[ESI], #TIM$ECHO ;Enable echoing
+	JC	4$			;If it was previously set
+	MOVL	EDX, tdb_ddisp[ESI]	;Tell the driver which input bits we set
+	CALLI	tfx_imodechng[EDX]
+	STC
+	JMP	4$
+
+	.SBTTL	tfdsecho - Disable echoing
+
+;Here for the TF_DSECHO function for the svcTrmFunction svc - value returned
+;  is previous value (0 = disaabled or 1 = enabled) if normal or negative error
+;  code if error
+
+tfdsecho::
+	MOVL	EAX, tdb_imode[ESI]	;Get current bits
+	BTZL	tdb_imode[ESI], #TIM%ECHO ;Disable echoing
+	JC	4$			;If it was previously clear
+	MOVL	EDX, tdb_ddisp[ESI]	;Tell the driver which input bits we set
+	CALLI	tfx_imodechng[EDX]
+	CLC
+4$:	SETC	AL			;Set EAX to 1 if set previously or to
+	RET				;  0 if not (this depends on the high
+					;  24 bits of EAX being clear from the
+					;  dispatch at svctrmfunction!)
+.PAGE
+	.SBTTL	tfclrinp - Clear input buffer
+
+;Here for the TF_CLRI function for the svcTrmFunction svc - value returned is
+;  0 if normal or negative error code if error
+
+tfclrinp::
+	CALL	trmclrtypa#		;Clear input ring and line buffer
+	CLRL	EAX			;All done
+	RET
+.PAGE
+	.SBTTL	tfclrout - Clear output buffer
+
+;Here for the TF_CLRO function for the svcTrmFunction svc - value returned is
+;  0 if normal or negative error code if error
+
+tfclrout::
+	CLI				;No interrupts here (quicker than
+					;  going to fork level for a few
+					;  instructions!)
+	MOVL	EAX, tdb_ddisp[ESI]	;Clear the output buffer
+	CALLI	tfx_clrout[EAX]
+	STI				;Allow interrupts
+	RET				;All done
+.PAGE
+	.SBTTL	tfenbout - Enable output
+
+;Here for the TF_ENBOUT function for the svcTrmFunction svc - value returned
+;  is 0 if normal or negative error code if error
+
+tfenbout::
+	ANDB	tdb_stsout[ESI], #~TSO$JUNK ;Stop junking output
+	BTSL	tdb_stsout[ESI], #TSO%OUTA
+	JC	4$
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_resume[EBX]
+4$:	CLRL	EAX
+	RET
+.PAGE
+;Here for the svcTrmWrtInB SVC - Write to input buffer. The user buffer
+;  contains an ASCII string which is stored in the input ring buffer as
+;  ASCII characters without scan codes for shift key bits. Keyboard is first
+;  disabled (any real keyboard input is discarded), the input ring buffer
+;  is cleared, the caller's buffer is copied to the input ring buffer, and
+;  keyboard input is re-enabled. This function is intended to be used by
+;  the command shell (or any other program) to implement command recall.
+;	long svcTrmWrtInB(
+;	    int   hndl,		// Device descriptor
+;	    char *string,	// Address of string to write
+;	    int   count);	// Length of string
+;  Value returned is 0 if normal or negative error code if error
+
+psvcTrmWrtInB::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get address of his string
+	MOVL	ECX, knlTda+tdaArg3#	;Get length of string
+	TESTL	ECX, ECX		;Make sure not 0
+	JE	18$
+	CMPL	ECX, tdb_irsize[ESI]	;Make sure its will fit
+	JAE	18$
+	ORB	tdb_stsinp[ESI], #TSI$DISCARD ;Disable all keyboard input now
+	MOVL	tdb_ircnt[ESI], #0	;Clear the input ring buffer
+	MOVL	EDX, tdb_irtak[ESI]
+	MOVL	tdb_irput[ESI], EDX
+	PUSHL	ECX			;Save the count
+	IFFAULT	14$
+6$:	MOVZBL	EAX, [EBX]		;Get character from his buffer
+	INCL	EBX			;Bump pointer
+	MOVL	[EDX], EAX		;Store character in the ring
+	ADDL	EDX, #4			;Bump pointer
+	CMPL	EDX, tdb_ibufr[ESI]	;No - at end of buffer now?
+	JB	8$			;No
+	MOVL	EDX, tdb_iring[ESI]	;Yes - reset pointer to beginning
+8$:	DECL	ECX			;Finished?
+	JNE	6$			;No
+
+;Here when finished
+
+;;;;10$:
+	MOVL	tdb_irput[ESI], EDX	;Store new putter pointer value
+	POPL	tdb_ircnt[ESI]		;Store new count value (This makes
+					;  what we stored visible.)
+	ANDB	tdb_stsinp[ESI], #~TSI$DISCARD ;Accept keyboard input now
+	CLRL	EAX			;Return 0
+12$:	RET
+
+;Here if address error
+
+	FAULTHDR
+14$:	POPL	EAX
+	MOVL	EAX, #ER_ADRER
+	RET
+
+18$:	MOVL	EAX, #ER_ICDEV
+	RET
+.PAGE
+;Here for the svcTrmDebugIn SVC - Debug input
+;	long svcTrmDebugIn(
+;	    long  hndl);	// Device handle for terminal (bit 31 set to
+;				//   terminate debug mode)
+;  Value returned is a 32-bit character value if normal (always positive) or a
+;    negative error code if error. If terminating debug mode, the normal return
+;    value is 0.
+
+;  If bit 31 is not set in the hndl argument, this function sets debug input
+;    mode for the terminal if it is not already set and waits for the next
+;    input character. This is a blocking call but the wait is interruptable
+;    by signals. If bit 31 is set debug input mode is terminated immediately.
+
+;  When in debug input mode, all characters are held in the input ring bufffer
+;    until read by this function. Character processing is effectively the same
+;    as for image mode input.
+
+psvcTrmDebugIn::
+	TESTB	knlTda+tdaTSts1#, #T1$KILL
+	JNE	12$
+	BTZL	knlTda+tdaArg1#, #31t	;Remember if want to terminate debug
+	SETC	BL			;  input mode
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ESI, knlTda+tdaAdb#
+	TOFORK
+	CMPB	BL, #0			;Want to terminate debug input mode?
+	JNE	20$			;Yes
+	tESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;No - in debug input mode now?
+	JNE	4$			;Yes
+	MOVL	EAX, tdb_iring[ESI]	;No - clear the input ring buffer
+	MOVL	tdb_irtak[ESI], EAX
+	MOVL	tdb_irput[ESI], EAX
+	MOVL	tdb_ircnt[ESI], #0
+	ORB	tdb_stsinp[ESI], #TSI$DEBUGIN ;Indicate now in debug input mode
+4$:	CMPL	tdb_ircnt[ESI], #0	;Have any input now?
+	JNE	6$			;Yes
+	MOVL	EAX, knlTda+tdaDcb#	;No
+	SHRL	EAX, #6			;Use the address of the DCB divided
+	PUSHL	EAX			;  by 64 as the wait index
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#		;Requeue the thread
+	PUSHL	#THDS_DS2
+	CALL	sysSchRequeue#
+	MOVB	knlSchedReq#, #1	;Request scheduling
+	FROMFORK
+	MOVL	knlTda+tdaDcb#, #0
+	MOVL	EAX, #SVC$REDOREQ|SVC$DIRECT ;Indicate direct IO re-do
+	RET				;Return from psvcTrmDebugIn with re-do
+					;  request
+
+;Here with at least one character available
+
+6$:	MOVL	EBX, tdb_irtak[ESI]	;Get the character
+	MOVL	EAX, [EBX]
+	ADDL	EBX, #4
+	CMPL	EBX, tdb_ibufr[ESI]	;At end of the ring?
+	JB	8$			;No
+	MOVL	EBX, tdb_iring[ESI]	;Yes - reset the taker pointer
+8$:	MOVL	tdb_irtak[ESI], EBX
+	DECL	tdb_ircnt[ESI]
+	FROMFORK
+10$:
+	MOVL	EDX, dbirpnt
+	MOVL	[EDX], EAX
+	ADDL	EDX, #4
+	CMPL	EDX, #dbirend
+	JB	11$
+	MOVL	EDX, #dbiring
+11$:	MOVL	dbirpnt, EDX
+
+	RET
+
+12$:	MOVL	EAX, #ER_ABORT
+	RET
+
+;Here to terminate debug input mode
+
+20$:	ANDB	tdb_stsinp[ESI], #~TSI$DEBUGIN
+	MOVL	EAX, EDI		;Wake up any input waiters - This is
+	SHRL	EAX, #6			;  only needed if there was type-ahead
+	PUSHL	EAX			;  and a different thread is waiting
+	CALL	sysSchEndWaitAll#	;  for input!
+	FROMFORK
+	CLRL	EAX
+	RET
+
+	DATA
+dbiring::.BLKL	128t
+dbirend::.LONG	0xFFFFFFFF
+dbirpnt::.LONG	dbiring
+
+	CODE
+.PAGE
+	.SBTTL	svcTrmSwScreen - Switch screen
+
+;Here for the svcTrmSwScreen SVC - Switch screen
+;	long svcTrmSwScreen(
+;	    long hndl,
+;	    long num);
+;  Value returned is 0 if normal or a negative error code if error.
+
+$$$=!0
+FRM tss_msg, 8
+tss_SIZE=!$$$
+
+psvcTrmSwScreen::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EDI, knlTda+tdaDcb#
+	ENTER	tss_SIZE, 0
+	MOVL	tss_msg+0[EBP], #MT_SSREPORT
+	MOVZBL	EAX, dcb_punit[EDI]	;Construct the message to send
+	MOVB	tss_msg+2[EBP], AL
+	MOVL	EBX, #swaddr+7
+	CALL	knlPutDecNmbr#
+	MOVB	[EBX], #0
+	MOVZBL	EAX, dcb_sunit[EDI]
+	MOVB	tss_msg+3[EBP], AL
+	MOVL	EAX, knlTda+tdaArg2#
+	MOVB	tss_msg+4[EBP], AL
+	TOFORK
+	PUSHL	#swaddr
+	PUSHL	EBX
+	PUSHL	knlPda+pdaPid#
+	LEAL	EAX, tss_msg[EBP]
+	PUSHL	EAX
+	PUSHL	#5
+	CALL	sysIpmSendMsg#
+	FROMFORK
+	LEAVE
+10$:	RET
+.PAGE
+	.SBTTL	svcTrmInsertChr - SVC to insert character into input buffer
+
+;Here for the svcTrmInsertChr SVC - Insert character into terminal's input
+;   buffer
+;	long rtn = svcTrmInsertChr
+;	  long hndl,		// Handle for terminal
+;	  long chr);		// Character value (internal scan code)
+;  Value returned is 1 if normal or a negative error code if error
+
+;  This call is intended to be used by the debugger to send a character
+;    to the program being debugged. This is mainly used to forward the
+;    SSCOMP character to a graphic mode program after a screen switch while
+;    the debugger was running.
+
+psvcTrmInsertChr::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	TOFORK
+	PUSHL	knlTda+tdaAdb#
+	PUSHL	knlTda+tdaArg2#		;Get character
+	CALL	sysTrmInput#
+	FROMFORK
+	MOVL	EAX, #1			;Return 1
+	CLC
+10$:	RET
+.PAGE
+;Here for the svcTrmMapScreen SVC - Map screen buffer
+;	long svcTrmMapScreen(
+;	    long  hndl,		// Device handle
+;	    char *buffer,	// Address for msect to create
+;	    long  size,		// Buffer size
+;	    long  offset);	// Offset of start of part of screen to map
+;  Value returned is actual size of msect created if normal or negative error
+;    code if error
+
+psvcTrmMapScrn::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ESI, knlTda+tdaAdb#
+	PUSHL	knlTda+tdaArg3#		;Size
+	PUSHL	knlTda+tdaArg4#		;Offset in buffer
+	PUSHL	knlTda+tdaArg2#		;Address for msect
+	PUSHL	#PG$READ|PG$WRITE
+	PUSHL	ESI
+	MOVL	EAX, tdb_ddisp[ESI]	;Get dispatch to driver
+	CALLI	tfx_mapphys[EAX]
+	ADDL	ESP, #20t
+10$:	RET				;Go to driver
+.PAGE
+;Here for the svcTrmDspMode SVC - Get or set display mode
+;	long svcTrmDspMode(
+;	    long      hndl,	// Device handle
+;	    long      bits,	// Function bits
+;	    MODEDATA *md);	// Address of mode data
+;  Value returned is mode bits (positive) if normal or negative error code
+;    if error
+
+psvcTrmDspMode::
+	CMPL	knlTda+tdaArg1#, #0x1000 ;Was a TDB offset given?
+	JB	4$			;No
+
+;NEED PRIVL. CHECK HERE!!!
+
+	MOVL	ESI, knlTda+tdaArg1#	;Yes - get it
+	JMP	6$
+
+;Here if device handle given
+
+4$:	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	ESI, knlTda+tdaAdb#
+6$:	MOVL	EAX, knlTda+tdaArg2#	;Get mode bits
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EBX, knlTda+tdaArg3#	;Get address of data block
+	MOVL	EDX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_dspmode[EDX]
+12$:	RET
+.PAGE
+;Here for the svcTrmCurType SVC - Get or set cursor type - this is equivalent
+;  to INT 10, function 01 (there is no BIOS function to get the cursor type)
+;	long descriptor;	// Device descriptor
+;	long curtype;		// New cursor type (ending line value + 256
+;				//   times starting line value, -1 means do
+;				//   not change cursor type)
+;	rtn = svcTrmCurType(descriptor, curtype);
+;  Value returned is previous cursor type if normal or negative error code
+;    if error
+
+psvcTrmCurType::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	ECX, knlTda+tdaArg2#	;Get cursor new type
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_curtype[EAX]
+4$:	RET
+.PAGE
+;Here for the svcTrmCurPos SVC - Get or set cursor position
+;	long descriptor;	// Device descriptor
+;	long page;		// Page number (-1 means current page)
+;	long char;		// New character position (-1 means do not
+;				//   change character position)
+;	int line;		// New line position (-1 means do not change
+;				//   line position)
+;	rtn = svcTrmCurPos(descriptor, page, char, line);
+;  Value returned is previous position (encoded as char + 256 * line) if
+;    normal or negative error code if error
+
+psvcTrmCurPos::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get page number
+	TESTL	EBX, EBX
+	JNS	4$
+	MOVZBL	EBX, tdb_dsppage[ESI]
+4$:	MOVL	ECX, knlTda+tdaArg3#	;Get character position
+	MOVL	EDX, knlTda+tdaArg4#	;Get line position
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_curpos[EAX]
+8$:	RET
+.PAGE
+;Here for the svcTrmDspPage SVC - Get or set current display position
+;	long rtn = svcTrmDspPos(
+;	  long handle,		// Device handle
+;	  long page);		// New page:
+;				//   Text mode: Low byte is page number, 2nd
+;				//     byte is function:
+;				//	 0 = Change both display and access
+;				//	     pages
+;				//	 1 = Change display page only
+;				//	 2 = Change access page only
+;				//	 3 = Return display page
+;				//	 4 = Return access page
+;				//   Graphic mode: Set pixel offset from start
+;				//     of display buffer, -1 means no change
+;  Value returned is previous page if normal or negative error code if error
+
+psvcTrmDspPos::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	14$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get new page number
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_dsppos[EAX]
+14$:	RET
+.PAGE
+	.SBTTL	svcTrmLdStdFont - Load standard display font
+
+;Here for the svcTrmLdStdFont SVC - Load standard display font
+;	long rtn = svcTrmLdStdFont(
+;	  long  handle,		// Device handle
+;	  long  table,		// Bits 2-0 = Table number
+;				// Bits 6-3 = Not used, must be 0
+;				// Bit  7:  0 = Do not change display set up
+;				//	    1 = Adjust display set up for font
+;	  long  font,		// Standard font to load:
+;				//   1 = Standard 8x8 font
+;				//   2 = Standard 8x14 font
+;				//   3 = Standard 8x16 font
+;				//   5 = Standard 9x8 font
+;				//   6 = Standard 9x14 font
+;				//   7 = Standard 9x16 font
+;	  long  begin,		// First character to load
+;	  long  count);		// Number of characters to load
+
+psvcTrmLdStdFont::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVB	AH, knlTda+tdaArg2#		;Get table number
+	MOVB	AL, knlTda+tdaArg3#		;Get font number
+	MOVL	EDX, knlTda+tdaArg4#	;Get first character to load
+	MOVL	ECX, knlTda+tdaArg5#	;Get number of characters to load
+	JMP	4$
+
+;Here for the svcTrmLdCusFont SVC - Load custom display font
+;	long rtn = svcTrmLdCusFont(
+;	    long   handle,	// Device handle
+;	    long   table,	// Bits 2-0 = Table number
+;				// Bits 6-3 = Not used, must be 0
+;				// Bit  7:  0 = Do not change display set up
+;				//	    1 = Adjust display set up for font
+;	    long   size,	// Bytes per character
+;	    uchar *data,	// Pointer to data for custom font
+;	    long   begin,	// First character to load
+;	    long   count);	// Number of characters to load
+
+psvcTrmLdCusFont::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVB	AH, knlTda+tdaArg2#	;Get table number
+	MOVB	AL, #0			;Indicate loading custom font
+	MOVB	BL, knlTda+tdaArg3#	;Get size of the font
+	MOVL	EDI, knlTda+tdaArg4#	;Get address of font data
+	MOVL	EDX, knlTda+tdaArg5#	;Get first character to load
+	MOVL	ECX, knlTda+tdaArg6#	;Get number of characters to load
+4$:	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBP, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_loadfont[EBP]
+10$:	RET
+.PAGE
+;Here for the svcTrmSelFont SVC - Select font table and mode
+;	long rtn = svcTrmSelFont(
+;	  long  handle,		// Device handle
+;	  long  primary,	// Primary font table (0 - 7)
+;	  long  seconary);	// Secondary font table (0 - 7)
+
+psvcTrmSelFont::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	ECX, tdaArg2#		;Get primary font table
+	MOVL	EDX, tdaArg3#		;Get secondary font table
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_selfont[EAX]
+4$:	RET
+.PAGE
+;Here for the svcTrmScroll SVC - Scroll window - this is equivilant to BIOS
+;  functions 06 and 07
+;	long svcTrmScroll(
+;	    long handle;	// Device handle
+;	    long func;		// Function: )1 = up, 2= down, 3 = right,
+;				//   4 = left) + page number * 0x100
+;	    long upperleft;	// X,Y coordinates of upper left corner of
+;				//   window
+;	    long lowerright;	// X,y coordinates of lower right corner of
+;				//   window
+;	    long count;		// Number of lines to scroll (0 clears
+;				//   window)
+;	    long fillclr);	// Foreground color for filling + 0x100 *
+;				//   background color for filling
+;  Value returned is 0 if normal or negative error code if error
+
+psvcTrmScroll::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ESI, knlTda+tdaAdb#
+
+	CRASH	????
+
+	MOVL	EAX, knlTda+tdaArg2#	;Get function
+	DECL	EAX
+	JS	knlBadFunc#
+	CMPL	EAX, #3
+	JA	knlBadFunc#
+	MOVZBL	EDX, tdb_tattrfil[ESI]	;No - text mode
+	PUSHL	EDX			;Save current fill attributes
+	MOVB	DL, knlTda+tdaArg9#	        ;Get foreground color
+	ANDL	EDX, #0Fh
+	MOVB	DH, knlTda+tdaArg10#	;Get background color
+	SHLB	DH, #4t
+	ORB	DL, DH
+	MOVB	tdb_tattrfil[ESI], DL
+	MOVL	EBX, knlTda+tdaArg3#	;Get page number value
+	TESTL	EBX, EBX
+	JNS	6$
+	MOVB	BL, tdb_dsppage[ESI]
+6$:	MOVB	CL, knlTda+tdaArg4#		;Get X coordinate of upper left corner
+	MOVB	CH, knlTda+tdaArg5#		;Get Y coordinate of upper left corner
+	MOVB	DL, knlTda+tdaArg6#		;Get X coordinate of lower right corner
+	MOVB	DH, knlTda+tdaArg7#		;Get Y coordinate of lower right corner
+	MOVB	BH, knlTda+tdaArg8#		;Get number of lines to scroll
+	MOVL	EBP, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_scroll[EBP]
+	POPL	EDX
+	MOVB	tdb_tattrfil[ESI], DL
+10$:	RET
+.PAGE
+;Here for the svcTrmSetChr SVC - Set character - this is equivilent to BIOS
+; INT 10, function 0A)
+;	long descriptor;	// Device descriptor
+;	long page;		// Page number
+;	long char;		// Character value
+;	long color;		// Color value graphics modes only
+;	long count;		// Repeat count
+;	rtn = svcTrmSetChr(descriptor, page, char, color, count);
+;  Value returned is 0 if normal or negative error code if error
+
+psvcTrmSetChr::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	8$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get page number
+	TESTL	EBX, EBX
+	JNS	4$.S
+	MOVZBL	EBX, tdb_dsppage[ESI]
+4$:	MOVB	AL, knlTda+tdaArg3#		;Get character value
+	MOVB	AH, knlTda+tdaArg4#		;Get color value
+	MOVL	ECX, knlTda+tdaArg5#	;Get repeat count
+	MOVL	EDX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_setchr[EDX]
+8$:	RET
+.PAGE
+;Here for the svcTrmSetAtChr SVC - Set attribute and character - this is
+;  equivilent to BIOS INT 10, function 09)
+;	long descriptor;	// Device descriptor
+;	long page;		// Page number
+;	long char;		// Character value
+;	long attrib;		// Attribute value
+;	long count;		// Repeat count	
+;	rtn = svcTrmSetAtChr(descriptor, page, char, attrib, count);
+;  Value returned is 0 if normal or negative error code if error
+
+psvcTrmSetAtChr::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get page number
+	TESTL	EBX, EBX
+	JNS	2$
+	MOVZBL	EBX, tdb_dsppage[ESI]
+2$:	MOVB	AL, knlTda+tdaArg3#		;Get character value
+	MOVB	AH, knlTda+tdaArg4#		;Get attribute value
+	MOVL	ECX, knlTda+tdaArg5#	;Get repeat count
+	MOVL	EDX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_setatc[EDX]
+4$:	RET
+.PAGE
+;Here for the svcTrmGetAtChr SVC - Get attribute and character - this is
+;  equivilent to BIOS INT 10, function 08)
+;	long descriptor;	// Device descriptor
+;	long page;		// Page number
+;	rtn = svcTrmGetAtChr(descriptor, page);
+;  Value returned is character value + 256 times attribute value (high 16 bits
+;    are 0) if normal or negative error code if error
+
+psvcTrmGetAtChr::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EBX, knlTda+tdaArg2#	;Get page number
+	TESTL	EBX, EBX
+	JNS	2$
+	MOVZBL	EBX, tdb_dsppage[ESI]
+2$:	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_getatc[EAX]
+4$:	RET
+.PAGE
+;Here for the svcTrmAttrib SVC - Get or set screen attributes
+;	long svcTrmAttrib(
+;	    long  hndl,		// Device handle
+;	    long  func,		// Function:
+;				//   Bit 7 set to change current values
+;				//   Bit 6 set to return previous values
+;				//   Bits 0-5 specify set of values:
+;				//     1 - Text mode base values
+;				//     2 - Graphics mode base values
+;				//     3 - Current values
+;	    long *data);	// Address of data block
+;  Value returned is 0 if normal or negative error code if error
+
+;Format of data block used:
+;	long foreground;	// Foreground color
+;	long background;	// Background color
+;	long forgndfill;	// Foreground fill color
+;	long backgndfill;	// Background fill color
+;	long bits;		// Extended attribute bits
+
+psvcTrmAttrib::
+	CALL	sysTrmGetDcb#		;Get DCB and TDB
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVB	AL, knlTda+tdaArg2#	;Get function
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EDI, knlTda+tdaArg3#	;Get address of data block
+	MOVL	EDX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_attrib[EDX]
+4$:	RET
+.PAGE
+;Subroutine to return terminal information to user - called for the GSI_TERM
+;  function of the svcSysGetInfo system call
+;	c{EDI} = Address of user buffer to receive information
+;	CALL	getterminfo
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = 0
+
+getterminfo::
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+	DATA
+
+swaddr:	.ASCII	"SYS^TRM####"
+
+	END

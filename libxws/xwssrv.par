@@ -1,0 +1,49 @@
+	.SBTTL	XWSSRV - Parameter file for the XWS display server
+
+.IF NDF DEFINES
+	.NLIST
+        .INCLUD XOSINC:\XMAC\DEFINES.PAR
+	.LIST
+.ENDC
+	.PARM
+
+;Define TDB offsets (note that XWS will create up to 35 64KB TDBs starting
+;  at 10000000 - most of these are used for deferred loading of images)
+
+basetdb  =!20010000h-tdb_SIZE	;Base TDB
+tcpcontdb=!20030000h-tdb_SIZE	;TCP connection TDB
+rcpcontdb=!20050000h-tdb_SIZE	;RCP connection TDB
+memcontdb=!20070000h-tdb_SIZE	;Shared memory connection TDB
+clienttdb=!20090000h-tdb_SIZE	;First available client TDB
+
+;Define signal vectors used
+
+VECT_XWS =!60t			;First vector for use by XWS
+VECT_BASE=!70t			;The threads routines will use up to 74 vectors
+				;  starting with this vector
+
+;Define offsets in the client data block (CDB), which is an extension of the
+;  client TDB
+
+$$$=!0
+BLK cdb_tdb    , tdb_SIZE	;Client TDB
+BLK cdb_next   , 4t		;Offset of next CDB for display
+BLK cdb_fwin   , 4t		;Offset of WIN for first top-level window
+BLK cdb_edb    , edb_SIZE	;Client's EDB
+BLK cdb_inpleft, 4t		;Number of input bytes left in buffer
+BLK cdb_inppntr, 4t		;Input buffer pointer
+BLK cdb_handle , 4t		;Device handle
+BLK cdb_input  , 4t		;Offset of input function
+BLK cdb_output , 4t		;Offset of output function
+BLK cdb_objtbl , 4t		;Offset of the object table
+BLK cdb_objnum , 4t		;Number of object handles available
+BLK cdb_inpbufr, 1024t		;Input buffer
+cdb_SIZE=!$$$
+
+;Define object types
+OT_WIN   =!0t			;Window
+OT_FONT  =!1t			;Font
+OT_CURSOR=!2t			;Cursor
+OT_BITMAP=!3t			;Bit-map
+OT_REGION=!4t			;Region
+

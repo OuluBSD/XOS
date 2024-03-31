@@ -1,0 +1,118 @@
+	.TITLE	TESTCL - Test for code list
+
+	.PROC	80486
+
+	.SEG	data_s, DATA, READ, WRITE
+	.SEG	code_s, CODE, 16BIT
+	.SEG	stack_s, STACK, READ, WRITE
+
+	.MSECT	data_m, data_s, READ, WRITE
+	.MSECT	code_m, code_s, READ, WRITE
+	.MSECT	stack_m, stack_s, READ, WRITE
+
+	.PSECT	data_p, data_m
+
+	.long	0
+data::
+
+	.ASCIZ	{11}"This is a test"{33}"xxxxx"
+
+	.WORD	1,2,3,4,5,6,7,8,9,1,2,3,4,5
+
+	.LONG	label2-label1
+qqq::	.LONG	xxx#+3, 111, 2, 5
+	.BYTE	1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0
+	.LONG	label1
+
+	.ADDRW	label0, labelw, labely, label1
+	.ADDRL	label0, labelw, labely, label1
+
+
+	.PSECT	code_p, code_m
+codebgn::
+
+	MOVB	AL, 44[EDI]
+	MOVB	AL, 99[EDI]
+	MOVB	BL, xxx#[EDI]
+
+	IDIVL	ES:data
+
+	IDIVW	CX
+	IDIVL	ECX
+
+2$:	ANDB	[EDI], #~02
+
+	JMP	4$.S
+
+	CALL	aaa#
+	CALL	aaa#
+	CALL	aaa#
+	JE	aaa#
+	JE	aaa#
+	JMP	aaa#
+	JMP	aaa#
+
+
+	CALLF	44:123456
+	CALLF	2$
+	CALLF	4$
+
+	ANDW	[EDI], #2
+	ADNW	[EDI], #2.B
+	ADDB	BL, #2
+
+4$:	ANDW	BX, #2
+	ANDW	BX, #2.B
+	JMP	2$.S
+.PAGE
+
+4$:	ANDW	BX, CX
+	ANDB	data, AL
+	ANDB	data, BL
+	ANDB	BL, data
+	JMP	4$.S
+
+
+	STOSL	[EDI]
+	INCL	EBX
+	MOVL	5.B[EBP], ESI
+label0:	MOVZBL	EDX, AL
+
+labelq=$
+labelw=123
+labely=label0
+labelz=label1
+
+	.LONG	labelz
+
+	JMP	label1.S
+
+	.LONG	label1 - $
+	.LONG	label2 - label1
+	.LONG   $ - label1
+
+	.BLKB	58
+
+	IDIVL	#1234
+	BSWAPL	EAX
+	BSWAPL	EDI
+	BSWAPL	data
+label1:	JMP	label2.S
+	JMP	label2.S
+	JE	label0.S
+	JE	label0.S
+	JNE	label0.S
+
+	.BLKB	5C
+
+	.LONG	label1
+
+	ADDW	data, #yyy
+
+	ADDB	data, [BX]
+	ADDB	data, AL
+	ADDW	data, BX
+	ADDL	data, ECX
+	ADDL	ECX, data
+label2:
+	MOVL	data, EAX

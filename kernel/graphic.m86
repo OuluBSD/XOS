@@ -1,0 +1,76 @@
+	.TITLE	graphic - Graphic support symbiont SVCs
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xostrm.par
+	.INCLUD	XOSINC:\xmac\xosxtrm.par
+
+	CODE
+
+;Here for the svcGphDone SVC - Graphic support function is complete
+;	long rtn = svcGphDone(
+;	    long  tid,		// TID of thread issuing request
+;	    long  value,	// Actual resolution if > 0, otherwise error
+;				//   code
+;	    long  bfraddr,	// Buffer physical address
+;	    long  bfrsize,	// Buffer size
+;	    long  regaddr,	// Memory mapped register block physical address
+;	    long  regsize);	// Memory mapped register block size
+;  Value returned is 0 if normal or a negative error code if error.
+
+psvcGphDone::
+	PUSHL	knlTda+tdaArg1#		;Get the TDA address
+	CALL	findtda#
+	TESTL	EAX, EAX
+	JE	4$			;If the PID is bad
+	CMPL	tdaState#[EAX], #THDS_SYMW ;Is it in the right queue?
+	JNE	6$			;No
+	MOVL	EDX, knlTda+tdaArg2#	;Yes - store the returned values
+	MOVL	tdaRtnValue0#[EAX], EDX
+	MOVL	EDX, knlTda+tdaArg3#
+	MOVL	tdaRtnValue1#[EAX], EDX
+	MOVL	EDX, knlTda+tdaArg4#
+	MOVL	tdaRtnValue2#[EAX], EDX
+	MOVL	EDX, knlTda+tdaArg5#
+	MOVL	tdaRtnValue3#[EAX], EDX
+	MOVL	EDX, knlTda+tdaArg6#
+	MOVL	tdaRtnValue4#[EAX], EDX
+2$:	TOFORK
+	PUSHL	EAX			;Wake up the thread
+	CALL	sysSchRunRequeue#
+	FROMFORK
+	CLRL	EAX
+	RET
+
+;Here if the PID is bad
+
+4$:	MOVL	EAX, #ER_BDTID
+	RET
+
+;Here if the thread is in the wrong scheduler queue
+
+6$:	MOVL	EAX, #ER_BDQUE
+	RET
+
+	END

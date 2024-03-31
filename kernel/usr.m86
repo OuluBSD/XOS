@@ -1,0 +1,468 @@
+	.TITLE	usr - XOS user mode kernel IO routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+	.INCLUD	svcdef.inc
+
+	DATA
+	USERDATA
+
+;;;;knl_IRET   ==!ID_IRET/8
+knl_DISMISS==!ID_DISMISS/8
+knl_SSVC   ==!ID_SSVC/8
+knl_DSVC   ==!ID_DSVC/8
+
+userdata::
+	.BLKL	256t		;Stack for final process termination (also
+				;  used during system startup as an exec stack)
+killstack==!$
+USERDSIZE==!$-userdata
+
+	CODE
+	USERCODE
+.PAGE
+;The null process
+
+nullproc::
+	INCL	EAX
+	JMP	nullproc
+
+;Routine that a thread function "returns" to
+
+thrdterminate::
+	PUSHL	EAX
+	MOVL	EAX, #svc_SchExit
+	INT	knl_DSVC
+
+;Routine used when initially creating a process - This is needed to provide
+;  executable user mode code to run after an exec signal routine is complete
+;  and before the final user code is ready to be executed. This code is
+;  normally called without a valid stack pointer (since there may not be any
+;  user memory allocated yet). The svcSchSleep SVC has no arguments so the
+;  kernel never uses the user stack pointer.
+
+idleproc::
+	MOVL	EAX, #svc_SchSleep
+	INT	knl_DSVC
+	JMP	idleproc
+.PAGE
+;Create the SVC stubs. Each of these is called with a call. These stubs
+;  exist to make it easier for C compiliers to generate system calls.
+
+$$$=!1
+	.MACRO	SD pcnt, pname
+.IF NB {pname}
+  .IF GE pcnt
+svc'pname::
+	MOVL	EAX, #$$$
+	INT	knl_SSVC
+svc_'pname==!$$$
+$$$=!$$$+1
+  .ENDC
+.ENDC
+	.ENDM
+
+	SVCDEFSYS
+
+;Generate the stub for the svcSchDismiss SVC. A user program can JMP to
+;  this location or it may directly execute the INT. If it directly executes
+;  the INT, it MUST use the exported symbol defined below to specify the INT
+;  number, as this may change in future versions of XOS.
+
+svcSchDismiss::
+	INT	knl_DISMISS
+
+;;;;svcSchIRet::
+;;;;	INT	knl_IRET
+.PAGE
+;Here when a protected mode SVC routine which was called from real mode
+;  completes
+
+uvsvcdone::
+	RORL	EAX, #16t		;Put high 16 bits of EAX into DX
+	MOVW	DX, AX			;  for real mode code which expects
+	RORL	EAX, #16t		;  this
+	INT	knl_DISMISS		;Return to the caller
+
+;Here to dismiss a hardware interrupt
+
+;;;;;usriret::
+;;;;;	INT	knl_IRET
+
+;;;;;rawiret::
+;;;;;	IRET
+.PAGE
+.IF NE 0
+
+	.SBTTL	Default user interrupt routines
+
+;Following are the default interrupt routines.  The default vectors are
+;  hardware vectors so programs which expect hardware vectors and "chain" to
+;  the default routine will work right.  There is a separate routine for each
+;  possible interrupt and exception (256 interrupts + 48 exceptions).  There
+;  are separate tables for 16-bit and 32-bit clients!
+
+;The 256 standard interrupts are all treated the same (with the exception of
+;  INT 21, INT 2F, INT 31, and INT 33, which have their own handlers).  If the
+;  process has a DOS environment, the interrupt is "reflected" to real mode if
+;  the corresponding real mode vector is set up.  If there is no DOS environment
+;  or if the real vector is not set up, the process is terminated with an
+;  TC_NOVECT termination code.
+
+	.MOD	4
+pint16dft::
+$$$=!0
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16a
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16a:JMP	cint16i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16b
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16b:JMP	cint16i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16c
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16c:JMP	cint16i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16d
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16d:JMP	cint16i
+
+$$$=!0
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16e
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16e:JMP	cint16h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16f
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16f:JMP	cint16h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16g
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16g:JMP	cint16h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint16h
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint16h:ADDB	[ESP], #0x80
+cint16i:MOVZWL	ESP, SP			;Make sure no junk in ESP
+	SUBL	ESP, #6t		;Allocate more stack space
+	PUSHL	EAX			;Save EAX
+	MOVL	EAX, 10t[ESP]		;Move the interrupt number
+	MOVL	4t[ESP], EAX
+	MOVZWL	EAX, 14t[ESP]		;Move the IP value and extend it to 32
+	MOVL	8t[ESP], EAX		;  bits
+	MOVZWL	EAX, 16t[ESP]		;Move the CS value and clear the high
+	MOVL	12t[ESP], EAX		;  half
+	MOVZWL	EAX, 18t[ESP]		;Move the FR value and extend it to 32
+	MOVL	16t[ESP], EAX		;  bits
+	JMP	cintcom			;Continue with the 32-bit routine
+.PAGE
+	.MOD	4
+pint32dft::
+$$$=!0
+	.REPT	31t
+	PUSHL	#$$$
+	JMP	cint32a
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$
+cint32a:JMP	cint32i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32b.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32b:JMP	cint32i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32c.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32c:JMP	cint32i
+$$$=!$$$+1
+
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32d.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32d:JMP	cint32i
+
+$$$=!0h
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32e.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32e:JMP	cint32h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32f.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32f:JMP	cint32h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32g.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32g:JMP	cint32h
+
+$$$=!$$$+1
+	.MOD	4
+	.REPT	31t
+	PUSHL	#$$$.B
+	JMP	cint32h.S
+$$$=!$$$+1
+	.ENDR
+	PUSHL	#$$$.B
+cint32h:ADDB	[ESP], #80h
+
+;When get here we have the caller's stack (protected mode) in a standard
+;  format as follows:
+;	c{{ESP}+12} = Saved protected mode EFR
+;	c{{ESP}+8}  = Saved protected mode CS
+;	c{{ESP}+4}  = Saved protected mode EIP
+;	c{{ESP}+0}  = Interrupt number
+
+;We construct a real mode stack frame which is used to dismiss the real mode
+;  interrupt.  This stack frame has the following format:
+;	c[[SP]+10] = Saved protected mode interrupt SS
+;	c{[SP]+6}  = Saved protected mode interrupt ESP
+;	c[[SP]+4]  = Return FR
+;	c[[SP]+2]  = Return CS
+;	c[[SP]+0]  = Return IP
+
+;We also construct a protected mode stack frame (after switching stacks if
+;  necessary) as follows:
+;	c{{ESP}+72} = Saved protected mode GS	;This is an interrupt return
+;	c{{ESP}+68} = Saved protected mode FS	;  frame which is used to
+;	c{{ESP}+64} = Saved protected mode DS	;  return to protected mode
+;	c{{ESP}+60} = Saved protected mode ES	;  when the user's INT routine
+;	c{{ESP}+56} = Saved protected mode SS	;  executes its IRET
+;	c{{ESP}+52} = Saved protected mode ESP
+;	c{{ESP}+48} = Saved protected mode EFR
+;	c{{ESP}+44} = Saved protected mode CS
+;	c{{ESP}+40} = Saved protected mode EIP
+;	c{{ESP}+36} = Saved real mode SS:SP	;This is used to restore the
+;						;  user's real mode SS:SP
+;	c{{ESP}+32} = Real mode GS (= 0)	;This is an interrupt return
+;	c{{ESP}+28} = Real mode FS (= 0)	;  frame which is used to
+;	c{{ESP}+24} = Real mode DS (= 0)	;  initially switch to real
+;	c{{ESP}+20} = Real mode ES (= 0)	;  mode
+;	c{{ESP}+16} = Real mode SS
+;	c{{ESP}+12} = Real mode SP
+;	c{{ESP}+8}  = Real mode EFR
+;	c{{ESP}+4}  = Real mode CS
+;	c{{ESP}+0}  = Real mode IP
+
+;The ESP value saved on the real mode stack points to the {ESP}+36 item above.
+
+cint32i:PUSHL	EAX
+cintcom:PUSHL	#0x24			;Disable signals
+	CALL	svcSchSetLevel
+	SHRL	EAX, #1t
+	NOTB	AL
+	ANDB	AL, #02h
+	ANDB	17t[ESP], #~02h		;Set the IE bit in his saved EFR
+	ORB	17t[ESP], AL		;  to the correct value
+	POPL	EAX
+	PUSHL	GS
+	PUSHL	#GS_UCODE|0x03
+	POPL	GS
+	CMPB	GS:dda_dpmilckpsflg, #0	;Using locked stack now?
+	JNE	4$.S			;Yes
+	PUSHL	DS			;No
+	PUSHL	EBX
+	PUSHL	SS
+	POPL	DS
+	LEAL	EBX, 28t.B[ESP]
+	MOVB	GS:dda_dpmilckpsflg, #1	;Indicate using interrupt stack
+	LSSL	ESP, GS:dda_dpmilckpESP
+	PUSHL	-20t.B[EBX]		;Save GS
+	PUSHL	FS			;Save FS
+	PUSHL	-24t.B[EBX]		;Save DS
+	PUSHL	ES			;Save ES
+	PUSHL	DS			;Save his stack pointer on our stack
+	PUSHL	EBX
+	PUSHL	-4t.B[EBX]		;Save his return EFR
+	MOVB	3.B[ESP], #08h		;Indicate to clear dda_dpmilckpsflg
+					;  when returning
+	PUSHL	-8t.B[EBX]		;Save his return CS
+	PUSHL	-12t.B[EBX]		;Save his return EIP
+	SUBL	ESP, #40t.B		;Allocate space for the real mode stack
+					;  pointer and the return frame used
+					;  to switch to real mode
+	PUSHL	EAX			;Save EAX
+	MOVL	EAX, -16t[EBX]		;Get the interrupt number
+	MOVL	EBX, -28t[EBX]		;Restore his EBX
+	JMP	6$			;Continue
+
+;Here to continue using the same stack
+
+4$:	SUBL	ESP, #4		;Allocate additional stack space
+	PUSHL	20t[ESP]		;Move return EFR to the right place
+	MOVB	3[ESP], #00h		;Indicate to not clear dda_dpmilckpsflg
+					;  when returning
+	PUSHL	20t[ESP]		;Move return CS to the right place
+	PUSHL	20t[ESP]		;Move return EIP to the right place
+	SUBL	ESP, #40t		;Allocate additional stack space
+	PUSHL	EAX			;Save EAX
+	MOVL	EAX, 60t[ESP]		;Move the saved GS value to the right
+	MOVL	76t[ESP], EAX		;  place on the stack
+	MOVL	EAX, 64t[ESP]		;Get interrupt number
+	MOVL	72t[ESP], FS		;Save FS
+	MOVL	68t[ESP], DS		;Save DS
+	MOVL	64t[ESP], ES		;Save ES
+	MOVL	60t[ESP], SS		;Save his original stack pointer
+	MOVL	56t[ESP], ESP
+	ADDL	56t[ESP], #80t.B
+6$:	PUSHL	EDX			;Save another register
+	SHLL	EAX, #2t
+	CMPL	[EAX], #0		;Has this real mode vector been set up?
+	JNE	10$			;Yes
+	MOVZWL	EAX, 4[ESP]		;No - fail!
+	MOVZWL	EDX, 6[ESP]
+	MOVZWL	ECX, 8[ESP]
+	MOVB	3[ESP], #TC_NOVECT	;Terminate the process
+	PUSHL	#0			;Process number (this process)
+	PUSHL	#0			;Memory address
+	PUSHL	#0
+	PUSHL	EDX			;CS:EIP value
+	PUSHL	EAX
+	PUSHL	ECX			;EFR value
+	PUSHL	#0			;Data value
+	MOVL	EAX, #svc_SchExitX
+	INT	knl_DSVC
+
+;Here if have a real mode vector to use
+
+10$:	MOVZWL	EDX, GS:[EAX]
+	MOVL	8t.B[ESP], EDX		;Store CS:IP value
+	MOVZWL	EDX, GS:2.B[EAX]
+	MOVL	12t.B[ESP], EDX
+	MOVL	EAX, 56t.B[ESP]		;Store EFR value for real mode
+	BTSL	EAX, #17t
+	MOVL	16t.B[ESP], EAX
+	MOVL	EAX, GS:dda_dpmicurrSSSP ;Get his current real mode stack
+					 ;  pointer
+	MOVL	44t.B[ESP], EAX		;Save it
+	CMPB	GS:dda_dpmilckrsflg, #0	;Using real mode locked stack now?
+	JNE	12$.S			;Yes - continue using it
+	MOVL	EAX, GS:dda_dpmilckrSSSP ;No - switch to the locked stack
+	MOVL	GS:dda_dpmicurrSSSP, EAX
+	MOVB	GS:dda_dpmilckrsflg, #1
+	ORB	56t+3.B[ESP], #20h	;Indicate to clear dda_dpmilckrsflg
+12$:	MOVL	EDX, EAX		;  when returning
+	SHRL	EDX, #16t
+	SUBL	EAX, #12t.B
+	MOVZWL	EAX, AX
+	MOVL	20t.B[ESP], EAX
+	MOVL	24t.B[ESP], EDX
+	SHLL	EDX, #4t
+	ADDL	EDX, EAX			;Store CS:IP for the real to
+	MOVL	GS:[EDX], #0ED000000h+rmpmiret# ;  protected mode return routine
+	LEAL	EAX, 44t.B[ESP]		;Store protected mode stack pointer on
+	MOVL	GS:6t.B[EDX], EAX	;  the real mode stack
+	MOVW	GS:10t.B[EDX], SS
+	CLRL	EAX
+	MOVW	GS:4.B[EDX], AX		;Store FR
+	MOVL	28t.B[ESP], EAX		;Store real mode segment register
+	MOVL	32t.B[ESP], EAX		;  values (all 0)
+	MOVL	36t.B[ESP], EAX
+	MOVL	40t.B[ESP], EAX
+	POPL	EDX			;Restore registers we used here
+	POPL	EAX
+	INT	knl_DISMISS		;Switch to real mode
+
+.ENDC
+
+	END

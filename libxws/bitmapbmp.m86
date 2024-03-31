@@ -1,0 +1,540 @@
+	.TITLE	bitmapbmp
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	bmp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;This module contains routines for loading MS Windows device-independent
+;  bitmap (BMP) files.
+
+;Subroutine to create a BITMAP object from a BMP file.
+;	long xwsBitmapLoadBMP(
+;	    FILE    *infile,	// Input file stream
+;	    WIN     *win,	// WIN object
+;	    long     bits,	// Bits
+;	    BITMAP **bm);
+
+;  Value returned is the address of a BITMAP object if successful or NULL if
+;    an error occured.
+
+;When the caller is finished with the BITMAP object, it should be deallocated
+;  by calling xwsBitmapFree.
+
+;This function uses the Pascal calling sequence
+
+bl_infilea=!28t
+bl_win    =!24t
+bl_bits   =!20t
+bl_bm     =!16t
+
+$$$=!0				;Order of the first 9 items must match the
+				;  order of the arguments to loadthread
+FRM bl_tdb     , 4t
+FRM bl_infile  , 4t
+FRM bl_bitmap  , 4t
+FRM bl_drw     , 4t
+FRM bl_pixsize , 4t
+FRM bl_colors  , 4t
+FRM bl_colpos  , 4t
+FRM bl_bitpos  , 4t
+FRM bl_lwidth  , 4t
+FRM bl_loadargs, 0t
+FRM            , 2t		;For alignment since bmf_SIZE is off by 2!
+FRM bl_header  , bmf_SIZE
+bl_SIZE=!$$$
+
+	.ENTRY	xwsbitmaploadbmp
+xwsbitmaploadbmp:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	SUBL	ESP, #bl_SIZE
+	MOVL	EAX, bl_infilea[EBP]
+	MOVL	bl_infile[EBP], EAX
+	PUSHL	EAX
+	PUSHL	#bmf_SIZE
+	PUSHL	#1
+	LEAL	EAX, bl_header[EBP]	;Read the bitmap header
+	PUSHL	EAX
+	CALL	fread#
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JS	error2			;If error
+	CMPW	bl_header+bmf_ftype.B[EBP], #'BM' ;Is the type right?
+	JNE	badfile			;No - fail!
+	CMPL	bl_header+bmf_hsize.B[EBP], #bmf_SIZE-bmf_hsize.B
+					;Is the header too small?
+	JB	badfile			;Yes - fail
+	MOVL	EAX, bl_win.B[EBP]	;No - get offset of the DRW
+	TESTL	EAX, EAX
+	JNE	2$.S
+	MOVL	EAX, xws_ScreenWIN#
+2$:	MOVL	EAX, win_basdrw.B[EAX]
+	MOVL	bl_drw.B[EBP], EAX
+	MOVL	EAX, bl_header+bmf_width.B[EBP] ;Get width of the bitmap in
+						;  pixels
+	MOVL	ECX, #256t		;Assume have up to 256 colors
+	MOVL	EDX, bl_header+bmf_bitcnt.B[EBP] ;Get pixel size
+	CMPL	EDX, #8t.B		;1 pixel per byte?
+	JE	10$.S			;Yes
+	CMPL	EDX, #1t.B		;No - 8 pixels per byte?
+	JE	4$.S			;Yes
+	CMPL	EDX, #4t.B		;No - 2 pixels per byte?
+	JE	6$.S			;Yes
+	CMPL	EDX, #24t.B		;No - 3 bytes per pixel?
+	JNE	badfile			;No - bad bitmap!
+	IMULL	EAX, #3t		;Yes - change to number of bytes
+	CLRL	ECX
+	JMP	10$.S
+
+;Here if have 8 pixels per byte
+
+4$:	ADDL	EAX, #7t.B
+	SHRL	EAX, #3t
+	MOVL	ECX, #2t		;Have 2 colors
+	JMP	10$.S
+
+;Here if have 2 pixels per byte
+
+6$:	INCL	EAX
+	SHRL	EAX, #1t
+	MOVL	ECX, #16t		;Have up to 16 colors
+10$:	ADDL	EAX, #3t		;Round up to an even number of longs
+	ANDL	EAX, #0FFFFFFFCh.B
+	MOVL	bl_lwidth.B[EBP], EAX	;Save actual line length
+	IMULL	EAX, bl_header+bmf_height.B[EBP] ;Get actual bitmap size
+	ADDL	EAX, bl_header+bmf_offbits.B[EBP] ;Plus offset in file
+
+;;;	CMPL	EAX, filesize		;Is the file big enough?
+;;;	JA	badfile			;No - bad bitmap!
+
+$$$$1::
+	CMPL	bl_header+bmf_clrused.B[EBP], #0.B
+	JE	12$.S
+	CMPL	ECX, bl_header+bmf_clrused.B[EBP]
+	JAE	12$.S
+	MOVL	ECX, bl_header+bmf_clrused.B[EBP]
+12$:	MOVL	bl_colors.B[EBP], ECX	;Store actual number of colors used
+
+;Determine the size of our BITMAP object and allocate its memory
+
+	MOVL	EAX, bl_header+bmf_width.B[EBP]
+	ADDL	EAX, EAX
+	IMULL	EAX, bl_header+bmf_height.B[EBP]
+	ADDL	EAX, #bm_bitmap.B
+	PUSHL	EAX
+	CALL	xwsMalloc#
+	TESTL	EAX, EAX
+	JE	error2
+	MOVL	bl_bitmap.B[EBP], EAX
+
+;Set up the BITMAP object header
+
+	MOVL	EDI, EAX
+	MOVL	[EDI], #'BM**'
+;;;;;	MOVL	bm_fnot.B[EDI], #0
+	MOVL	bm_status.B[EDI], #0
+	MOVL	bm_drw+drw_label[EDI], #'DRW#'
+	LEAL	EAX, bm_bitmap[EDI]
+	MOVL	bm_drw+drw_buffer[EDI], EAX
+	MOVL	EAX, bl_header+bmf_width[EBP]
+	MOVL	bm_drw+drw_width[EDI], EAX
+	MOVL	bm_drw+drw_pixelspan[EDI], EAX
+	ADDL	EAX, EAX
+	MOVL	bm_drw+drw_bytespan[EDI], EAX
+	MOVL	ECX, bl_header+bmf_height[EBP]
+	MOVL	bm_drw+drw_height[EDI], ECX
+	IMULL	ECX, EAX
+	MOVL	bm_drw+drw_bufsize.B[EDI], ECX
+	MOVL	bm_drw+drw_pixelsize.B[EDI], #2t
+	MOVL	bm_drw+drw_funcdsp[EDI], #xwsmemdsp#
+	MOVL	EAX, bl_header+bmf_hsize.B[EBP] ;Get offset in the file of the
+	ADDL	EAX, #bmf_hsize.B		;  color table
+	MOVL	bl_colpos.B[EBP], EAX
+	MOVL	EAX, bl_header+bmf_offbits.B[EBP]
+	MOVL	bl_bitpos.B[EBP], EAX
+	MOVZWL	EAX, bl_header+bmf_bitcnt.B[EBP]
+	MOVL	bl_pixsize.B[EBP], EAX
+	TESTL	bl_bits.B[EBP], #BLB$DEFER	;Should we defer loading?
+	JNE	20$.S				;Yes
+13$:	PUSHL	thdData#			;No
+	PUSHL	bl_infile.B[EBP]
+	PUSHL	EDI
+	PUSHL	bl_drw.B[EBP]
+	PUSHL	bl_pixsize.B[EBP]
+	PUSHL	bl_colors.B[EBP]
+	PUSHL	bl_colpos.B[EBP]
+	PUSHL	bl_bitpos.B[EBP]
+	PUSHL	bl_lwidth.B[EBP]
+	CALL	loadthread
+14$:	MOVL	ESP, EBP
+	POPL	EBP
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if want to defer loading
+
+20$:	MOVL	EAX, #0808080h
+	MOVL	EBX, bl_drw.B[EBP]
+	MOVL	EDX, drw_funcdsp[EBX]
+	CALLI	gfx_getcolor[EDX]
+	MOVL	ECX, EAX
+	SHLL	ECX, #16t
+	ORL	EAX, ECX
+	MOVL	ECX, bm_drw+drw_bufsize.B[EDI]
+	MOVL	EDX, ECX
+	SHRL	ECX, #2t
+	ADDL	EDI, #bm_bitmap
+	PUSHL	DS
+	POPL	ES
+	CLD
+
+	RSTOSL	[EDI]
+	TESTB	DL, #02h
+	JE	22$.S
+	RSTOSW	[EDI]
+22$:	MOVL	EAX, thdData#
+	MOVL	bl_tdb[EBP], EAX
+	CALL	xwsallocthread#		;Get a TDB offset to use
+	JC	13$			;Don't defer if no more threads
+	PUSHL	EAX			;Create the thread
+	PUSHL	#0F000h-tdb_SIZE
+	PUSHL	#0
+	PUSHL	#loadthread
+	LEAL	EAX, bl_loadargs.B[EBP]
+	PUSHL	EAX
+	PUSHL	#9t
+	CALL	thdCtlCreate#
+	TESTL	EAX, EAX
+	JS	14$.S
+	MOVL	EAX, bl_bitmap.B[EBP]
+	JMP	14$.S
+
+;Here with an error and errno has not been set
+
+error0:	NEGL	EAX
+	MOVL	errno#, EAX
+error2:	CLRL	EAX
+	JMP	14$.S
+
+;Here if have a bad BMP file
+
+badfile:MOVL	errno#, #-ER_BDFMT
+	JMP	error2.S
+.PAGE
+
+dl_tdb    =!48t
+dl_infile =!44t
+dl_bitmap =!40t
+dl_drw    =!36t
+dl_pixsize=!32t
+dl_colors =!28t
+dl_colpos =!24t
+dl_bitpos =!20t
+dl_lwidth =!16t
+
+$$$=!0
+FRM dl_pwidth  , 4t
+FRM dl_bitcnt  , 4t
+FRM dl_lbufr   , 4t
+FRM dl_bfrlines, 4t
+FRM dl_bfrsize , 4t
+FRM dl_linenum , 4t
+FRM dl_linebgn , 4t
+FRM dl_coltbl  , 1024t
+dl_SIZE=!$$$
+
+
+loadthread:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBP
+	MOVL	EBP, ESP
+	SUBL	ESP, #dl_SIZE
+
+	CLRL	EAX
+	MOVL	dl_lbufr[EBP], EAX
+	MOVL	dl_linebgn[EBP], #0x3FFFFFFF
+
+
+	MOVL	EDI, dl_bitmap[EBP]
+
+	MOVL	EAX, bm_drw+drw_width[EDI]
+	MOVL	dl_pwidth.B[EBP], EAX
+
+	MOVL	ECX, bm_drw+drw_height[EDI]
+	MOVL	dl_linenum[EBP], ECX
+	MOVL	EAX, #10000h		;See how many lines will fit in a
+	CLRL	EDX			;  64KB buffer
+	DIVL	dl_lwidth[EBP]
+	CMPL	EAX, ECX		;Is the image this big?
+	JBE	14$			;Yes
+	MOVL	EAX, ECX		;No
+14$:	MOVL	dl_bfrlines[EBP], EAX
+	IMULL	EAX, dl_lwidth[EBP]	;Get actual buffer size needed
+	MOVL	dl_bfrsize[EBP], EAX	;Plus an extra 4 bytes so we can be
+	ADDL	EAX, #4t		;  sloppy about reading the 3 byte
+	PUSHL	EAX			;  values if we have 24 bits per pixel!
+	CALL	xwsMalloc#		;Allocate the buffer
+	TESTL	EAX, EAX
+	JE	error2
+	MOVL	dl_lbufr.B[EBP], EAX
+
+;;;;;;qqqqqqq
+
+
+	ADDL	EDI, #bm_bitmap		;Point to first data byte to store
+	MOVL	ESI, dl_drw[EBP]	 ;Get offset of the color conversion
+	MOVL	ESI, drw_funcdsp[ESI]
+	MOVL	ESI, gfx_getcolor[ESI] ;  routine
+
+;Read the color table if we have one
+
+	CMPL	dl_colors[EBP], #0	;Do we have a color table?
+	JE	load24			;No - must be 24 bits per pixel
+	PUSHL	#0			;Yes - read the color table
+	PUSHL	dl_colpos[EBP]
+	PUSHL	dl_infile[EBP]
+	CALL	fseek#
+	ADDL	ESP, #12t
+	TESTL	EAX, EAX
+	JS	error2
+	MOVL	EAX, dl_colors[EBP]
+	SHLL	EAX, #2
+	PUSHL	dl_infile[EBP]		;Read the color table
+	PUSHL	EAX
+	PUSHL	#1
+	LEAL	EAX, dl_coltbl[EBP]
+	PUSHL	EAX
+$$$$3::
+	CALL	fread#
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JS	error2		;If error
+
+;Convert the color table entries to our internal format
+
+	LEAL	EBX, dl_coltbl[EBP]
+	MOVL	ECX, dl_colors.B[EBP]
+18$:	MOVL	EAX, [EBX]
+	CALLI	ESI
+	MOVL	[EBX], EAX
+	ADDL	EBX, #4t.B
+	LOOP	ECX, 18$
+	LEAL	ESI, dl_coltbl[EBP]
+	CMPL	dl_pixsize.B[EBP], #8	;Have 8 bits per pixel?
+	JE	load8			;Yes
+	CMPL	dl_pixsize.B[EBP], #4	;No - have 4 bits per pixel?
+	JE	load4			;Yes
+					;No - must be 1 bit per pixel - fall
+					;  int load1 on next page
+.PAGE
+;Load a bitmap with 1 bit per pixel (2 colors)
+
+load1:	CALL	getline
+	JC	done2
+4$:	MOVB	AL, [EBX]		;Get next byte
+	INCL	EBX
+	MOVL	dl_bitcnt.B[EBP], #8t
+6$:	ROLB	AL, #1t			;Get next bit
+	MOVB	DL, AL
+	ANDL	EDX, #01h.B
+	MOVL	EDX, [ESI+EDX*4]	;Get color value
+	MOVW	[EDI], DX		;Store it
+	ADDL	EDI, #2t.B
+	DECL	dl_bitcnt.B[EBP]	;More bits in this byte?
+	JE	10$.S			;No
+	LOOP	ECX, 6$			;Yes - continue if more in the line
+	JMP	12$.S			
+
+10$:	LOOP	ECX, 4$			;No more bits - get another byte if
+					;  more in the line
+12$:	CMPL	dl_linenum.B[EBP], #0.B
+	JG	load1.S
+	JMP	done.S
+.PAGE
+;Load a bitmap with 4 bits per pixel (16 colors)
+
+load4:	CALL	getline
+	JC	done2
+4$:	MOVB	AL, [EBX]		;Get next byte
+	INCL	EBX
+	MOVL	EDX, EAX
+	SHRL	EDX, #4t
+	ANDL	EDX, #0Fh.B
+	MOVL	EDX, [ESI+EDX*4]	;Get first color value
+	MOVW	[EDI], DX		;Store it
+	DECL	ECX
+	JE	6$.S
+	ANDL	EAX, #0Fh.B		;Get second color value
+	MOVL	EAX, [ESI+EAX*4]
+	MOVW	2.B[EDI], AX		;Store it
+	ADDL	EDI, #4t.B
+	LOOP	ECX, 4$			;Continue if more in the line
+6$:	CMPL	dl_linenum.B[EBP], #0.B
+	JG	load4.S
+	JMP	done.S
+.PAGE
+;Load a bitmap with 8 bits per pixel (256 colors)
+
+load8:	CALL	getline
+	JC	done2.S
+4$:	MOVZBL	EAX, [EBX]		;Get next byte
+	INCL	EBX
+	MOVL	EAX, [ESI+EAX*4]	;Get color value
+	MOVW	[EDI], AX		;Store it
+	ADDL	EDI, #2t.B
+	LOOP	ECX, 4$			;Continue if more in the line
+6$:	CMPL	dl_linenum.B[EBP], #0.B
+	JG	load8.S
+	JMP	done.S
+.PAGE
+;Load a bitmap with 24 bits per pixel
+
+load24:	CALL	getline
+	JC	done2.S
+4$:	MOVL	EAX, [EBX]		;Get next color value
+	ADDL	EBX, #3t.B
+	ANDL	EAX, #0FFFFFFh
+	CALLI	ESI			;Convert it to an internal value
+	MOVW	[EDI], AX		;Store it
+	ADDL	EDI, #2t.B
+	LOOP	ECX, 4$			;Continue if more in the line
+6$:	CMPL	dl_linenum.B[EBP], #0.B
+	JG	load24.S
+done:	MOVL	EDI, dl_bitmap.B[EBP]
+	ORB	bm_status.B[EDI], #BMS$DONE ;Indicate done loading bitmap
+
+.IF NE 0
+	CMPL	bm_fnot.B[EDI], #0.B	;Have any NOT objects?
+	JE	10$.S			;No
+	PUSHL	bm_fnot.B[EDI]		;Yes - do the final notifications
+	PUSHL	#EVENT_BMLOAD
+	MOVL	EAX, bm_drw+drw_height.B[EDI]
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	EDI
+	CALL	xwsgennotify#
+8$:	PUSHL	bm_fnot.B[EDI]		;Yes - give up the first one
+	CALL	xwsgivenotify#
+	CMPL	bm_fnot.B[EDI], #0.B	;Still have any NOT objects?
+	JNE	8$.S			;Yes
+.ENDC
+
+;Here with all notify objects given up
+
+10$:	MOVL	EAX, EDI
+done2:	CMPL	dl_lbufr.B[EBP], #0.B
+	JE	12$.S
+	PUSHL	EAX
+	PUSHL	dl_lbufr.B[EBP]
+	CALL	xwsFree#
+	POPL	EAX
+12$:	MOVL	EDX, thdData#		;Were we called in a seperate thread?
+	CMPL	EDX, dl_tdb.B[EBP]
+	JE	14$.S			;No
+	CALL	xwsfreethread#		;Yes - free up the TDB
+14$:	MOVL	ESP, EBP
+	POPL	EBP
+	POPL	ESI
+	POPL	EDI
+	RET	36t
+.PAGE
+;Subroutine to get next image line
+;	CALL	getline
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EBX} = Offset of start of image line
+;	  c{ECX} = Number of pixels in the line
+
+getline:DECL	dl_linenum[EBP]
+	MOVL	EBX, dl_linenum[EBP]
+	SUBL	EBX, dl_linebgn[EBP]
+	JL	4$.S
+	CMPL	EBX, dl_bfrlines[EBP]
+	JL	8$.S
+4$:	MOVL	EBX, dl_bitmap[EBP]	;Need to notify any windows?
+
+.IF NE 0
+	CMPL	bm_fnot[EBX], #0
+	JE	6$			;No
+	PUSHL	bm_fnot[EBX]
+	PUSHL	#EVENT_BMLOAD
+	MOVL	EAX, bm_drw+drw_height[EBX]
+	PUSHL	EAX
+	SUBL	EAX, dl_linenum[EBP]
+	PUSHL	EAX
+	PUSHL	EBX
+	CALL	xwsgennotify#
+.ENDC
+
+6$:	MOVL	EAX, dl_linenum[EBP]
+	CLRL	EDX			;Get position of first line in area
+	DIVL	dl_bfrlines[EBP]
+	IMULL	EAX, dl_bfrlines[EBP]
+	MOVL	dl_linebgn[EBP], EAX
+	IMULL	EAX, dl_lwidth[EBP]
+	ADDL	EAX, dl_bitpos[EBP]
+
+;;;	MOVL	readpos, EAX
+
+	PUSHL	#0
+	PUSHL	EAX
+	PUSHL	dl_infile[EBP]
+	CALL	fseek#
+	ADDL	ESP, #12t
+	TESTL	EAX, EAX
+	JS	10$
+	PUSHL	dl_infile[EBP]
+	PUSHL	dl_bfrsize[EBP]
+	PUSHL	#1
+	PUSHL	dl_lbufr[EBP]
+	CALL	fread#
+	ADDL	ESP, #16t
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EBX, dl_linenum[EBP]
+	SUBL	EBX, dl_linebgn[EBP]
+8$:	IMULL	EBX, dl_lwidth[EBP]
+	ADDL	EBX, dl_lbufr[EBP]
+	MOVL	ECX, dl_pwidth[EBP]
+	CLC
+	RET
+
+10$:	STC
+	RET
+.PAGE
+	.SBTTL	Data
+
+	.PSECT	_DATA_p
+
+	.MOD	4
+openparms:
+	.BYTE	PAR$GET|REP_HEXV, 4
+	.WORD	IOPAR_LENGTH
+filesize:
+	.LONG	0
+	.BYTE	0
+
+;;;	.MOD	4
+;;;posparms:
+;;;	.BYTE	PAR$SET|REP_HEXV, 4
+;;;	.WORD	IOPAR_ABSPOS
+;;;readpos:.LONG	0
+;;;	.BYTE	0
+
+	.END

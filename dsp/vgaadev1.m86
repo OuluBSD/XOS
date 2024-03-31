@@ -1,0 +1,573 @@
+	.TITLE	vgaadev1 - Loadable driver for basic VGA display
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!2t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	VGAADEV, MAJV, MINV, EDITNUM, LKETYPE_DEVICE
+
+;This driver supports a standard VGA in text mode only.  It includes the hooks
+;  to support an extension driver to provide graphics mode support for specific
+;  extended VGAs.  The VGA is operated in color rext modes only.  Monochrome 
+;  text modes are not supported.  Only the first 64KB of the 128KB text mode
+;  character/attribute buffer is used.  The upper 64KB is not accessable.
+;  Direct access to the VGA registers is not supported.  Direct access to the
+;  character/attribute buffer is supported.  Loadable character fonts are
+;  supported using BIOS or XOS calls only.  Fonts are always loaded to BOTH
+;  planes 2 and 3 in an attempt to make some of the funny Trident VGAs work
+;  right.
+
+;Each virtual screen associated with a display is given a 128KB virtual address
+;  space.  When the screen is the current screen, the bottom 64KB of this
+;  address is mapped to the character/attribute buffer.  The upper 64KB is
+;  mapped the same.  When the screen is not the current screen, the bottom
+;  64KB is mapped to the virtual character/attribute buffer and the upper 64KB
+;  is mapped to the virtual character generator buffer.  This allows the
+;  loading of user defined fonts when the screen is not the current screen,
+;  otherwise the upper 64KB is not really needed!  Each virtual screen also
+;  has a "page list" which is a 32 element array of longs.  Each element
+;  describes the state of a single display buffer page.
+
+	.EXPORT	xosvgaDsp
+
+	DATA
+
+	.SBTTL	vgadsp - VGA console device driver dispatch table
+
+;VGA console device driver dispatch table
+
+xosvgaDsp:
+	.LONG	knlRtnZero##	;tfx_transfer  =   0 - Transfer device
+	.LONG	knlRtnZero##	;tfx_opena     =   4 - Open additional
+	.LONG	xosconOpen1##	;tfx_open1     =   8 - Open first time
+	.LONG	ret002		;tfx_stop      =  12 - Stop output
+	.LONG	ret002		;tfx_clrout    =  16 - Clear output buffer
+	.LONG	xosconOutChr##	;tfx_outchr    =  20 - Output character
+	.LONG	xosconOutBlk##	;tfx_outblk    =  24 - Direct output block
+	.LONG	knlRtnZero##	;tfx_idle      =  28 - Set to idle state
+	.LONG	xosconResume##	;tfx_resume    =  32 - Resume output
+	.LONG	xosconDosSet##	;tfx_dosset    =  36 - Set up terminal for DOS
+	.LONG	xosconDosUpd##	;tfx_dosupd    =  40 - Update page 0 for DOS
+	.LONG	xosconDosUse##	;tfx_dosuse    =  44 - Use data on DOS page 0
+	.LONG	vgadspmode#	;tfx_dspmode   =  48 - Get or set display mode
+	.LONG	vgasstrans#	;tfx_sstrans   =  52 - Screen symbiont transfer
+	.LONG	vgassmaskwrt#	;tfx_ssmaskwrt =  56 - Screen symbiont masked
+				;			 write
+	.LONG	vgassmapbufr#	;tfx_ssmapbufr =  60 - Screen symbiont map
+				;			 screen buffer
+	.LONG	vgasspageflt#	;tfx_sspageflt =  64 - Display page page fault
+	.LONG	vgassstatus#	;tfx_ssstatus  =  68 - Report screen status to
+				;			 screen symbiont
+	.LONG	vgassutil#	;tfx_ssutil    =  72 - Screen symbiont utility
+				;			 functions
+	.LONG	vgadspcur#	;tfx_dspcur    =  76 - Display cursor on screen
+	.LONG	ret002		;tfx_setdtr    =  80 - Set or clear DTR output
+	.LONG	ret002		;tfx_setrts    =  84 - Set or clear RTS output
+	.LONG	ret002		;tfx_getdsb    =  88 - Get data set bits
+	.LONG	ret002		;tfx_finout    =  92 - Ensure output is finished
+	.LONG	ret002		;tfx_imodechng =  96 - Input mode change
+	.LONG	ret002		;tfx_omodechng = 100 - Output mode change
+	.LONG	xosconMapPhys##	;tfx_mapphys   = 104 - Map physical display
+	.LONG	vgaloadfont#	;tfx_loadfont  = 108 - Load font
+	.LONG	vgaselfont#	;tfx_selfont   = 112 - Select font table & mode
+	.LONG	vgaenbfunc	;tfx_enable    = 116 - Enable video
+	.LONG	vgadisable	;tfx_disable   = 120 - Disable video
+	.LONG	vgacurtype#	;tfx_curtype   = 124 - Get/set cursor type (INT
+				;			 10, function 01)
+	.LONG	vgacurpos#	;tfx_curpos    = 128 - Get/set cursor position
+				;			 (INT 10, function 02)
+	.LONG	vgadsppos#	;tfx_dsppos    = 132 - Set display position
+	.LONG	vgascroll#	;tfx_scroll    = 136 - Scroll window (INT 10,
+				;			 functions 06 and 07)
+	.LONG	vgagetatrchr#	;tfx_getatc    = 140 - Get attribute and char.
+				;			 (INT 10, function 08)
+	.LONG	vgasetatrchr#	;tfx_setatc    = 144 - Set attribute and char.
+				;			 (INT 10, function 09)
+	.LONG	vgasetchr#	;tfx_setchr    = 148 - Set character only (INT
+				;			 10, function 0A)
+	.LONG	xosconAttrib##	;tfx_attrib    = 152 - Get or set attributes
+;;;xosvgaGGetCurPos:
+	.LONG	knlIFnDev##	;tfx_ggetcurpos= 156 - Get graphics cursor
+;;;xosvgaGSetCurPos:		;			 postion
+	.LONG	knlIFnDev##	;tfx_gsetcurpos= 160 - Set graphics cursor
+;;;xosvgaGSetCurCol:		;			 positon
+	.LONG	knlIFnDev##	;tfx_gsetcurcol= 164 - Set graphics cursor
+;;;xosvgaGSetCurPat:		;			 colors
+	.LONG	knlIFnDev##	;tfx_gsetcurpat= 168 - Set graphics cursor
+;;;xosvgaSetGVF:		;			 pattern
+	.LONG	knlRtnZero##	;tfx_setgvf    = 172 - Set graphics vert. freq.
+;;;xosvgaGetGVF:
+	.LONG	knlRtnZero##	;tfx_getgvf    = 176 - Get graphics vert. freq.
+	.LONG	ret002		;tfx_serbreak  = 180
+	.LONG	iortbl		;tfx_iortbl    = 184 - Address of the IO
+				;			 register table
+.PAGE
+	.SBTTL	vgainit - VGA console driver initialization routine
+
+	ONCEDATA
+
+	.MOD	4
+vgainitblk:					;Characteristics description
+ CHARBGN  1, sysIoCharValues##			;  block for initialization
+ CHARENT  RESULT, STR , , 0, 0, knlGetDcNullS##, 0       , 0
+ CHAREND
+
+	ONCE
+
+vgainit:MOVL	EBX, #vgafonttbl#	;Set up our font tables
+
+	MOVL	EAX, knlFont8x8L##
+	MOVL	TF_8X8*8+0[EBX], EAX
+	MOVL	TF_9X8*8+0[EBX], EAX
+
+	MOVL	EAX, knlFont8x8H##
+	MOVL	TF_8X8*8+4[EBX], EAX
+	MOVL	TF_9X8*8+4[EBX], EAX
+
+	MOVL	EAX, knlFont8x14L##
+	MOVL	TF_8X14*8+0[EBX], EAX
+	MOVL	TF_9X14*8+0[EBX], EAX
+
+	MOVL	EAX, knlFont8x14H##
+	MOVL	TF_8X14*8+4[EBX], EAX
+	MOVL	TF_9X14*8+4[EBX], EAX
+
+	MOVL	EAX, knlFont8x16L##
+	MOVL	TF_8X16*8+0[EBX], EAX
+	MOVL	TF_9X16*8+0[EBX], EAX
+
+	MOVL	EAX, knlFont8x16H##
+	MOVL	TF_8X16*8+4[EBX], EAX
+	MOVL	TF_9X16*8+4[EBX], EAX
+
+	MOVL	EBX, #vgafontfix#
+	MOVL	EAX, knlFont9x8F##
+	MOVL	TF_9X8*8+0[EBX], EAX
+	MOVL	TF_9X8*8+4[EBX], EAX
+
+	MOVL	EAX, knlFont9x14F##
+	MOVL	TF_9X14*8+0[EBX], EAX
+	MOVL	TF_9X14*8+4[EBX], EAX
+
+	MOVL	EAX, knlFont9x16F##
+	MOVL	TF_9X16*8+0[EBX], EAX
+	MOVL	TF_9X16*8+4[EBX], EAX
+
+	PUSHL	#vgaaname
+	PUSHL	#vgaaaddunit
+	PUSHL	#knlTrmCcb##
+	CALL	sysIoDriverRegister##
+	TESTL	EAX, EAX
+	JS	6$
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #vgaintcode#
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+;Function to add console display unit
+;	long vgaaaddunit(
+;	    long  unit);	// Unit number + 256 * screen number (secondary
+;				//   unit number)
+;  Value returned is 0 if normal or a negative XOS error code if error
+
+;This version only supports a single console, which must be unit 0. The DHDB
+;  is now statically allocated in data.m86 in the resident kernel. This allows
+;  quite a bit more flexibility in the order that various LKEs are loaded since
+;  it is referenced by several LKEs in addition to the console LKEs. In
+;  partictular, this allows the mouse LKEs to be loaded either before or after
+;  the display LKEs. This is necessary since it is very hard to control the
+;  order in which things are loaded in a USB based system which is "legacy
+;  free".
+
+;Description block for adding unit
+
+	.MOD	4
+vgaaaublk:
+ CHARBGN  2, 0
+ CHARENT  UNIT   , DECV, , 4, 0, 0, retclc       , 0
+ CHARENT  SCREEN , DECV, , 4, 0, 0, vgaaauscreen , 0
+ CHARENT  TYPE   , TEXT, , 4, 0, 0, retclc       , 0
+ CHARENT  ADAPTER, TEXT, , 8, 0, 0, vgaaauadapter, 0
+ CHAREND
+
+adpttbl:.LONG	'MONO', 0
+	.LONG	'COLO', 'R'
+ADPTSZ=!{$-adpttbl}/8t
+
+$$$=!0
+FRM vau_adapter, 1t	;Adapter type
+FRM            , 3t
+vau_SIZE=!$$$
+
+vau_unit=!16t		;Unit number
+
+vgaaaddunit::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	vau_SIZE, 0		;Allocate our stack frame
+	CMPB	vau_unit+1[EBP], #0	;Was a screen specified?
+	JE	8$			;No - fail
+	CMPB	vau_unit+0[EBP], #0	;Is the unit number 0?
+	JNE	6$			;No - fail!
+	MOVB	vau_adapter[EBP], #DISP$COLOR ;Assume color adapter
+	CMPL	knlTda+tdaBuffer2##, #0
+	JE	8$
+	PUSHL	#0			;Fail if bad name
+	PUSHL	#vgaaaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JNS	12$			;If error
+	JMP	30$
+
+6$:	MOVL	EAX, #ER_VALUE
+	JMP	30$
+
+;Here if a required parameter is missing
+
+8$:	MOVL	EAX, #ER_CHARM
+	JMP	30$
+
+10$:	PUSHL	EAX
+	CALL	knlGiveXRes##
+	POPL	EAX
+	JMP	30$
+
+;Here with parameters processed
+
+12$:	CALL	knlGetXRes##		;Get the exec memory resource
+	MOVL	EDI, #knlConDhdb##	;Point the DHDB
+	CMPL	dhdb_devname[EDI], #0	;Has it been set up yet?
+	JNE	16$			;Yes
+	MOVL	EAX, #DISP_VGA
+	MOVB	AL, vau_adapter[EBP]	;Low order byte indicates color or LCD
+	MOVL	dhdb_disptype[EDI], EAX
+	MOVL	dhdb_bioreg[EDI], #P_EGABASE
+	MOVL	dhdb_ptaddr[EDI], #0xA0000
+	MOVL	dhdb_npages[EDI], #16t
+	MOVL	dhdb_typename[EDI], #'VGAA'
+	MOVL	dhdb_devname[EDI], #'TRM0'
+	PUSHL	#hwname			;Register our IO registers
+	MOVL	EAX, dhdb_bioreg[EDI]
+	PUSHL	EAX
+	ADDL	EAX, #0x15
+	PUSHL	EAX
+	CALL	sysIoRegPorts##
+	JC	10$
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#0x10000		;Allocate address space
+	PUSHL	EAX
+	CALL	sysMemGetXSpace##
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	dhdb_vtaddr[EDI], EBX	;Save virtual (linear) address
+	PUSHL	EBX
+	PUSHL	#16t
+	PUSHL	#MT_SYS
+	PUSHL	#0x6B
+	PUSHL	dhdb_ptaddr[EDI]
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages##	;Map the pages
+	TESTL	EAX, EAX
+	JS	10$			;If error
+16$:	MOVL	EAX, #{IBSIZE<16t}+IRSIZE
+	MOVB	DH, vau_unit+1[EBP]
+	MOVL	ECX, #tdb_vgaSIZE	;Get size for a TDB
+	CALL	xosconMakeTdb##		;Make the TDB
+	JC	10$			;If error
+	MOVL	EAX, dhdb_disptype[EDI]
+	MOVL	tdb_disptype[ESI], EAX
+	MOVL	tdb_bioreg[ESI], #P_EGABASE
+
+;;;;;	MOVL	EAX, dhdb_vgaddr[EDI]	;For now, just use the base mapping
+;;;;;	MOVL	tdb_vgaddr[ESI], EAX	;  for the graphics buffer
+
+;;;;;	MOVL	EAX, dhdb_gbfrsize[EDI]
+;;;;;	MOVL	tdb_gbfrsize[ESI], EAX
+
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#0x20000		;Allocate address space
+	PUSHL	EAX
+	CALL	sysMemGetXSpace##
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	MOVL	tdb_vtaddr[ESI], EBX	;Save virtual (linear) address
+	PUSHL	EBX
+	PUSHL	EBX
+	PUSHL	#16t
+	PUSHL	#MT_SYS
+	PUSHL	#0x6B
+	PUSHL	dhdb_ptaddr[EDI]
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages##	;Map the pages
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	ADDL	EBX, #0x10000		;Get address for character generator
+	PUSHL	EBX			;  buffer
+	PUSHL	#16t
+	PUSHL	#MT_SYS
+	PUSHL	#0x6B
+	PUSHL	dhdb_ptaddr[EDI]
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages##	;Map the pages
+	TESTL	EAX, EAX
+	JS	10$			;If error
+	CMPL	dhdb_curtdb[EDI], #0	;Have an active TDB now?
+	JNE	18$			;Yes
+	MOVL	dhdb_curtdb[EDI], ESI	;No - make this the active one
+	ORB	tdb_stsdsp[ESI], #TSD$ACTDSP
+18$:	PUSHL	EDI
+	MOVL	tdb_ddisp[ESI], #xosvgaDsp ;Store offset of console function
+					   ;  dispatch table
+	MOVL	tdb_dspchr[ESI], #vgachratr# ;Store offset of character output
+					     ;  routine
+
+;See if this is a PCI device and, if so, store the IO ports in might need
+
+	CMPB	tdb_snum[ESI], #1	;Only do this for the first screen
+	JNE	23$
+	MOVL	knlConDhdb#+dhdb_pcidata, #0
+	PUSHL	#knlConDhdb#+dhdb_pcidata
+	PUSHL	#3
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xospciFindByClass##
+	TESTL	EAX, EAX
+	JS	23$
+
+	MOVL	EDX, knlConDhdb#+dhdb_pcidata
+	TESTL	EDX, EDX
+	JE	6$			;If no PCI data is available
+	MOVL	EBX, #iortblx
+	ADDL	EDX, #pcib_addr0	;Point first address data
+	MOVL	ECX, #6
+20$:	TESTB	[EDX], #0x01		;IO area?
+	JE	22$			;No
+	MOVZWL	EAX, [EDX]		;Yes
+	ANDL	EAX, #0xFFFC		;Store base register number
+	MOVW	2[EBX], AX
+	MOVL	EAX, 4[EDX]		;Store size of block
+	MOVW	[EBX], AX
+	ADDL	EBX, #4
+22$:	ADDL	EDX, #8
+	LOOP	ECX, 20$
+	SUBL	EBX, #iortbl+4
+	MOVL	iortbl, EBX
+23$:	MOVL	EAX, #DM$NOCLEAR
+	TOFORK
+	CALL	vgadspmode#		;Set up parameters for default mode
+	FROMFORK
+	MOVL	EAX, #DM_SETBASE	;Set up the base parameters
+	CALL	xosconChkBiosMd##
+	POPL	EDI
+	MOVB	tdb_ifdsp[ESI], #0	;Indicate can not do queued output
+	CALL	knlGiveXRes##		;Give up the exec memory resource
+24$:	MOVL	EAX, tdb_irsize[ESI]	;Calculate input buffer stop level
+	CMPL	EAX, #1024t
+	JBE	28$
+	MOVL	EAX, #512t
+28$:	SHRL	EAX, #2
+	MOVL	tdb_irbsl[ESI], EAX
+	SHRL	EAX, #2			;Calculate input buffer panic level
+	MOVL	tdb_irbpl[ESI], EAX
+	CLRL	EAX
+30$:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function called for the "SCREEN" characteristic (we have already stored the
+;  value which was passed to us by the caller - we do this check here so the
+;  error bit will be set for the characteristic!)
+
+vgaaauscreen:
+	CMPL	EAX, #VDSPMAX+1		;Valid value?
+	JAE	knlBadCharV##		;No - fail
+retclc:	CLC
+ret002:	RET
+
+;Function called for the "ADAPTER" characteristic
+
+vgaaauadapter:
+	MOVL	EBX, #adpttbl
+	MOVL	ECX, #ADPTSZ
+	CALL	knlGetDcVal1##
+	JC	2$
+	MOVB	vau_adapter[EBP], AL
+2$:	RET
+.PAGE
+	.SBTTL	vgadisable - Subroutine to disable the screen
+
+;Subroutine to disable the screen
+;	c{EDI} = Offset of DHDB
+;	c{ESI} = Offset of TDB
+;	CALL	vgadisable
+
+vgadisable:
+	MOVB	AH, #20h		;Get value for bit
+	JMP	4$.S			;Continue
+
+	.SBTTL	vgaenbfunc - Subroutine to enable the screen
+
+;Subroutine to enable the screen
+;	c{EDI} = Offset of DHDB
+;	c{ESI} = Offset of TDB
+;	CALL	vgaenbfunc
+
+vgaenbfunc:
+	MOVB	AH, #0			;Get value for bit
+4$:	MOVL	EDX, tdb_bioreg[ESI]	;Point to sequencer index register
+	ADDL	EDX, #P_EGASEQINDX-P_EGABASE
+	INB	[DX]			;Save current index value
+	IOPAUSE
+	PUSHL	EAX
+	MOVB	AL, #0			;Set to address the reset register
+	OUTB	[DX]
+	IOPAUSE
+	INCL	EDX
+	INB	[DX]
+	IOPAUSE
+	ANDB	AL, #0FDh		;Do synchronous reset
+	OUTB	[DX]
+	MOVL	ECX, #2
+	CALL	knlSDelay##
+	ORB	AL, #02h
+	OUTB	[DX]
+	IOPAUSE
+	DECL	EDX			;Set to address the clocking mode
+	MOVB	AL, #1			;  register
+	OUTB	[DX]
+	IOPAUSE
+	INCL	EDX
+	INB	[DX]			;Get current value
+	IOPAUSE
+	ANDB	AL, #0DF		;Remove bit 5
+	ORB	AL, AH			;Put in the new value
+	OUTB	[DX]			;Output the new value
+	IOPAUSE
+	POPL	EAX			;Restore old index value
+	DECL	EDX
+	OUTB	[DX]
+	RET
+.PAGE
+	.SBTTL	Routines to handle accesses to display controller registers
+
+;We provide limited support for direct access to the VGA registers, mostly
+;  to support DOS programs that do limited direct access.  We allow all of
+;  the CRTC registers to be read and allow the CRTC registers which control
+;  cursor shape and position to be written.  All other VGA register accesses
+;  are quietly ignored.  Output does nothing and input always returns all 1's.
+
+	.SBTTL	vgavdinb - INB instruction to display controller
+
+;Here when have INB instruction to the display controller
+;	c{EDX} = IO port (between 3B0 and 3DF)
+
+vgavdinb:
+	CMPB	DL, #0D4h
+	JE	inreg3D4.S
+	CMPB	DL, #0D5h
+	JE	inreg3D5.S
+	MOVB	AL, #0FFh
+	CLC
+	RET
+
+;Here for INB instruction to the CRT controller index register (3D4) - we
+;  return the last value he gave us
+
+inreg3D4:
+	MOVB	AL, tdb_crtcregn[ESI]
+	CLC
+	RET
+
+;Here for INB instruction to the CRT controller index or data register (3D5)
+;  - We just read the register he wants
+
+inreg3D5:
+	DECL	EDX
+	MOVB	AL, tdb_crtcregn[ESI]
+	TOFORK
+	OUTB	[DX]
+	IOPAUSE
+	INCL	EDX
+	INB	[DX]
+	FROMFORK
+	CLC
+	RET
+.PAGE
+	.SBTTL	vgavdoutb - OUTB instruction to display controller
+
+;Here on OUTB instruction to display controller
+;	c{EDX} = IO port (between 3B0 and 3DF)
+
+vgavdoutb:
+	CMPB	DL, #0D4h
+	JE	outreg3D4.S
+	CMPB	DL, #0D5h
+	JE	outreg3D5.S
+	CLC
+	RET
+
+;Here for OUTB instruction to the CRT controller index register (3D4) - We
+;  just save his value to use when he accesses the data register
+
+outreg3D4:
+	ANDB	AL, #1Fh		;Make sure no junk
+	MOVB	tdb_crtcregn[ESI], AL	;Store value in our TDB
+	RET				;Thats all
+
+;Here for OUTB instruction to the CRT controller data register (3D5)
+
+outreg3D5:
+	RET
+.PAGE
+hwname:	 .LONG	'TRM0', 0
+vgaaname:.LONG	'VGAA', 0
+
+	DATA
+
+iortbl:	.LONG	0
+	.WORD	100, 0000
+	.WORD	30 , 03B0
+	.WORD	8  , 0CF8
+	.WORD	100, 5000
+iortblx:.BLKL	6		;Allow for 6 expansion entires (there are up
+				;  to 6 PCI address registers)
+
+	END

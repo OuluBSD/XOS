@@ -1,0 +1,118 @@
+	.TITLE	v86call
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD xosinc:\xmac\procarg.par
+	.INCLUD	graphic.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to call V86 code. The V86 code must terminate with an INT knl_DISMISS.
+;	long callv86(
+;	    REGS *regs,		// Pointer to a REGS structure containing the
+;				//   register values
+;	    V86A  stk);		// V86 mode address of V86 mode stack
+;	    V86A  start);	// V86 mode start address
+;  Value returne0d is 0 if normal or a negative XOS error code if error.
+
+v86c_regs =!12t
+v86c_stk  =!16t
+v86c_start=!20t
+
+v86call::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	pmESP, ESP		;Construct a return frame on the V86
+	MOVZWL	EDI, v86c_stk+0[ESP]	;  mode stack
+	MOVZWL	EAX, v86c_stk+2[ESP]
+	SHLL	EAX, #4
+	LEAL	EDI, -40t[EDI+EAX]
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, #v86stk
+	CLD
+	MOVL	ECX, #10t
+	RMOVSL	[EDI], [ESI]
+	MOVL	EDI, v86c_regs[ESP]	;Construct a call frame on our stack
+	MOVZWL	EAX, v86c_stk+2+0[ESP]
+	PUSHL	EAX			;SS
+	MOVZWL	EAX, v86c_stk+0+4[ESP]
+	SUBL	EAX, #40t
+	PUSHL	EAX			;SP
+	PUSHL	#0			;Data, count, vector number
+	PUSHL	#0x21200		;EFR
+	MOVZWL	EAX, v86c_start+2+16t[ESP]
+	PUSHL	EAX			;CS
+	MOVZWL	EAX, v86c_start+0+20t[ESP]
+	PUSHL	EAX			;IP
+	PUSHL	regs_DS[EDI]		;DS
+	PUSHL	regs_ES[EDI]		;ES
+	PUSHL	regs_FS[EDI]		;FS
+	PUSHL	regs_GS[EDI]		;GS
+	MOVL	EAX, regs_EAX[EDI]	;Load the V86 mode registers
+	MOVL	EBX, regs_EBX[EDI]
+	MOVL	ECX, regs_ECX[EDI]
+	MOVL	EDX, regs_EDX[EDI]
+	MOVL	EBP, regs_EBP[EDI]
+	MOVL	ESI, regs_ESI[EDI]
+	MOVL	EDI, regs_EDI[EDI]
+	INT	knl_DISMISS#		;Switch to V86 mode
+
+;Here on return from real mode
+
+v86rtn:	PUSHL	EDI
+	MOVL	EDI, v86c_regs+4[ESP]	;Store the V86 mode registers
+	MOVL	regs_EAX[EDI], EAX
+	MOVL	regs_EBX[EDI], EBX
+	MOVL	regs_ECX[EDI], ECX
+	MOVL	regs_EDX[EDI], EDX
+	MOVL	regs_EBP[EDI], EBP
+	MOVL	regs_ESI[EDI], ESI
+	POPL	regs_EDI[EDI]
+	CMPW	AX, #0x004F
+	JE	8$
+	CMPB	AL, #0x4F
+	JE	6$
+	MOVL	EAX, #0xFF00
+6$:	SHRL	EAX, #8
+	ORL	EAX, #0xFF000000
+	JMP	10$
+
+8$:	CLRL	EAX
+10$:	POPL	ESI
+	POPL	EDI
+	RET
+
+	.MOD	4
+v86stk:	.LONG	0, 0, GS_UDATA, GS_UDATA ;GS, FS, ES, DS
+	.LONG	v86rtn, GS_UCODE, 0x1200 ;EIP, CS, EFR
+	.WORD	0, 0			 ;Data count, vector number
+pmESP:	.LONG	0, GS_UDATA		 ;ESP, SS
+
+	.END
+

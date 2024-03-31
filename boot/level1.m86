@@ -1,0 +1,275 @@
+ 	.TITLE	level1 - XOS disk bootstrap level 1
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80386
+	.STK16
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xosrun.par
+	.INCLUD XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosboot.par
+
+	.SEG	boot_s  , DATA, READ, WRITE, 16BIT
+	.MSECT	level1_m, boot_s, ADDR=0x7C00
+	.PSECT	level1_p, level1_m
+
+;The following code is the level 1 XOS bootstrap for all file systems.  It is
+;  copied to the disk's boot block by mkboot.  It is loaded into memory at a
+;  physical address of 0x7C00 by the BIOS or by the MBR boot code.  It is
+;  entered at its first location using any combination of selector and offset
+;  that produces the correct physical address.  The CS:IP will normally be
+;  0:7C00 although the CS:IP will sometimes be 7C0:0 (this has been observed
+;  on some systems when booting from a CD).
+
+;This code loads the level 2 bootstrap from the reserved blocks following the
+;  boot block to address 0:7E00 and transfers control to address 0:8000.  The
+;  first block loaded from the reserved area contains parameters which specify
+;  the behavior of the bootstrap. The following blocks (as many as are needed)
+;  contain the level 2 bootstrap code.
+
+level1::JMP	begin
+	NOP
+	.ASCII	"XOS v4  "
+	.WORD	512t
+$=level1+db_backboot
+	.WORD	0xFFFF
+$=level1+db_32drive
+	.BYTE	0x80
+$=level1+db_32extsig
+	.BYTE	0x29
+$=level1+db_32sysid
+	.ASCII	"FAT32   "
+
+$=level1+db_btcode
+
+;Start of level 1 bootstrap
+
+	.START	begin
+
+rdaddr:	.LONG	0x7E00
+
+pbootblk::
+ploadblk=pbootblk+4
+retrycnt=pbootblk+8
+begin:	CLI
+	CLRW	AX
+	MOVW	SS, AX			;Put our stack in what should be a
+	MOVW	SP, #bootstk		;  safe place!
+	MOVW	ES, AX
+	MOVW	DS, AX
+	JMPF	0:0x7C00+{2$-level1}	;Adjust CS and IP so the CS value is 0
+					;  (Due to a bug in xmac, 0:2$ does
+					;  NOT work here!!)
+
+2$:	CLRL	EAX			;Assume not partitioned
+	TESTB	level1+db_drive, #0x40	;Right?
+	JE	4$			;Yes
+	CMPB	[SI], #80		;Is this a valid active entry?
+	JNE	fail			;No!
+	MOVL	EAX, 8[SI]		;Probably - get our block number
+	MOVZBL	EDX, level1+db_lvl2blk
+	MOVL	pbootblk, EAX
+	ADDL	EAX, EDX
+4$:	MOVL	ploadblk, EAX
+	TESTB	level1+db_drive, #0x80	;Floppy disk?
+	JNE	notflp			;No
+	LGSW	SI, 0x78		;Yes - copy the floppy parameter table
+	MOVW	BX, SI
+	MOVW	DI, #p0_flptbl
+	MOVW	0x78+0, DI
+	MOVW	0x78+2, DS
+	MOVW	CX, #16t
+	CLD
+	RMOVSB	[DI], GS:[SI]
+	MOVB	AL, level1+db_secptrk
+	MOVB	4[BX], AL
+	STI				;Allow interrupts now
+	MOVB	DL, #0			;Reset disks
+	MOVB	AH, #0
+	INT	0x13
+	JMP	noext			;Floppies don't use LBA extensions
+
+;Here if not a floppy
+
+notflp:	MOVB	AH, #0x41		;See if we have LBA extensions
+	MOVW	BX, #0x55AA
+	MOVB	DL, #0x80
+	INT	0x13
+	JC	noext			;No extensions if error
+	POPL	ESI			;Restore address of the partition
+	PUSHL	ESI			;  table entry
+	CMPW	BX, #0xAA55		;Or if magic value is wrong
+	JNE	noext
+	TESTB	CL, #0x01		;Must have basic extensions
+	JE	noext
+	MOVW	level1+db_secptrk, #0	;Set to 0 as a flag that we have the
+	JMP	rdlp1			;  extensions available
+
+;Here if don't have the INT 13 extensions available. This means we must use
+;  the old CHS INT 13 read functionl The partition tables on current generation
+;  disks (especially USB disks) often have incorrect CHS value. The values
+;  stored in the boot block are no better. Also, the values actually used by
+;  the BIOS with non-CHS disks (which includes virtually all disks likely to be
+;  seen today) generally are decided on arbitrarily by the BIOS. The best way
+;  to handle this mess (which we use here) appears to be to use the LBA values
+;  from the partition table and convert them to CHS values using the CHS
+;  parameters returned by the INT 13 function 8 BIOS function.  If we have a
+;  disk larger than about 8GB and the BIOS does not support  extended reads
+;  on it, any attempt to boot from a partition located above 8GB will fail.
+
+noext:
+	MOVW	AX, #0x0E00+'o'
+	CLRW	BX
+	INT	0x10
+
+	MOVB	DL, #0x80		;Get the disk's CHS parameters
+	MOVB	AH, #8
+	INT	0x13
+	JC	fail			;Can't do much if this fails!
+
+.IF NE 0
+	PUSHAW
+	PUSHW	DX
+	MOVW	AX, CX
+	CALL	puthex
+	POPW	AX
+	CALL	puthex
+	POPAW
+.ENDC
+
+;Get the CHS values we need (we don't use the number of cylinders) and update
+;  the values in the BPB
+
+	MOVB	AL, CL			;Store number of sectors
+	ANDW	AX, #0x3F
+	JE	fail			;Cannot be zero!
+	MOVW	level1+db_secptrk, AX
+	MOVB	AL, DH			;Store number of heads
+	MOVB	AH, #0
+	INCW	AX
+	MOVW	level1+db_heads, AX
+rdlp1:	MOVB	retrycnt, #5
+rdlp2:	CMPW	level1+db_secptrk, #0	;Can we do an extended read (LBA)?
+	JE	doext			;Yes
+	MOVL	EAX, ploadblk		;No - get the next block number
+	CLRL	EDX
+	MOVZWL	EBX, level1+db_secptrk	;Get the sector number
+	DIVL	EBX
+	INCW	DX
+	MOVB	CL, DL
+	CLRL	EDX			;Get the head number
+	MOVZWL	EBX, level1+db_heads
+	DIVL	EBX
+	MOVB	DH, DL
+	MOVB	CH, AL			;We now have the cylinder number in AX
+	SHLB	AH, #6
+	ORB	CL, AH			;We now have the argument registers set
+	MOVB	DL, level1+db_drive	;  up for INT 13 function 2
+	ANDB	DL, #0x8F
+	LESW	BX, rdaddr
+	MOVW	AX, #0x0201
+	INT	0x13
+	JMP	rddone
+
+;Here if can do an extended read - Construct an address packet on the stack.
+
+doext:	PUSHL	#0			;Disk block number (64 bits)
+	PUSHL	ploadblk
+	PUSHL	rdaddr			;Memory address (32 bits)
+	PUSHW	#1			;Block count
+	PUSHW	#0x10			;Size of this address packet
+	MOVB	DL, level1+db_drive
+	ANDB	DL, #0x8F
+	MOVB	AH, #0x42
+	MOVW	SI, SP
+	INT     0x13
+	POPAW				;Discard the address packet
+rddone:	JC	rderr			;If error
+	INCL	ploadblk		;OK - increment the block number
+	ADDW	rdaddr+2, #0x0020	;Increment the address
+	DECB	level1+db_lvl2num	;Need more?
+	JNE	rdlp1
+	JMP	level2#			;Finished - go to the level 2 code
+
+;Here if error reading the disk
+
+rderr:	MOVB	DL, level1+db_drive	;Reset the disk
+	ANDB	DL, #0x8F
+	MOVB	AH, #0
+	INT	0x13
+	DECB	retrycnt		;Should we try again?
+	JNE	rdlp2			;Yes
+fail:	CLD				;No - display our general purpose error
+	MOVW	SI, #level1+db_errmsg	;  message
+20$:	LODSB	[SI]			;Get character
+	CMPB	AL, #0			;End of message?
+	JE	24$			;Yes
+	MOVB	AH, #0x0E		;No - display character
+	CLRW	BX
+	INT	0x10
+	JMP	20$			;Continue
+
+24$:	MOVB	AH, #0			;Wait for a key
+	INT	0x16
+	MOVB	AL, #0xFE		;Reset everything
+	OUTB	0x64
+	JMP	$			;Should never get here!
+
+.IF NE 0
+;	c[AX] = Value to display
+
+puthex:	PUSHW	DS
+	MOVW	CX, #4
+30$:	ROLW	AX, #4
+	PUSHW	AX
+	PUSHW	CX
+	ANDB	AL, #0x0F
+	CMPB	AL, #9
+	JBE	32$
+	ADDB	AL, #'A'-'0'-10t
+32$:	ADDB	AL, #'0'
+	MOVB	AH, #0x0E		;Display character
+	CLRW	BX
+	INT	0x10
+	POPW	CX
+	POPW	AX
+	LOOP	CX, 30$
+	MOVW	AX, #0x0E00+' '		;Display space
+	CLRW	BX
+	INT	0x10
+	POPW	DS
+	RET
+.ENDC
+
+;Error message text (WARNING: Do not modifiy this - it is used by MKBOOT to
+;  determine that there is an XOS bootstrap on the disk!)
+
+$=level1+db_version
+	.BYTE	VERSION, EDITNUM
+	.ASCIZ	"? Boot error - press any key"{0Dh}{0Ah}
+
+;Store the boot block signature
+
+$=level1+db_bootsig
+	.WORD	0xAA55

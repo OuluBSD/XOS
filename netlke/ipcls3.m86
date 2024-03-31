@@ -1,0 +1,115 @@
+	.TITLE	enrtadevi - Interrupt prototype for ENRTADEV.XC
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD XOSINC:\xmac\xosxlke.par
+
+	CODE
+
+	.EXPORT	xosipChkSum
+	.EXPORT	xosipChkSumPH
+
+;Function to calculate the 1's complement IP checksum. This is written in
+;  assembler because there is no reasonable way to do 1's complement
+;  arithmetic in C.
+;	long xosipChkSum(
+;	    char *pnt,		// Address of first byte
+;	    long  cnt)		// Byte count
+;  Value returned is the 16-bit checksum value.
+
+cs_pnt=!8
+cs_cnt=!4
+
+xosipChkSum::
+	MOVL	EDX, cs_pnt[ESP]
+	CLRL	EAX
+	MOVL	ECX, cs_cnt[ESP]
+	SHRL	ECX, #2			;Get number of whole longs
+	JE	6$
+4$:	ADDL	EAX, [EDX]
+	ADCL	EAX, #0
+	ADDL	EDX, #4
+	LOOP	ECX, 4$
+	MOVL	ECX, EAX		;Merge halves
+	SHRL	ECX, #16t
+	ADDW	AX, CX	
+	ADCW	AX, #0
+6$:	TESTB	cs_cnt[ESP], #0x02	;Have a word left over?
+	JE	8$			;No
+	ADDW	AX, [EDX]		;Yes - add it in
+	ADCW	AX, #0
+	ADDL	EDX, #2
+8$:	TESTB	cs_cnt[ESP], #0x01	;Have a byte left over?
+	JE	10$			;No
+	MOVZBL	ECX, [EDX]		;Yes
+	ADDW	AX, CX
+	ADCW	AX, #0
+10$:	MOVZWL	EAX, AX
+	RET	8
+.PAGE
+;Function to calculate the 1's complement IP checksum for TCP and UDP. This
+;  includes the 12-byte pseudo-header.
+;	long XOSFNC xosipChkSumPH(
+;	    long  srcaddr,	// Source IP address
+;	    long  dstaddr,	//
+;	    long  protolen,
+;	    char *pnt,
+;	    long  cnt)
+;  Value returned is the 16-bit checksum value.
+
+csph_src =!20t
+csph_dst =!16t
+csph_plen=!12t
+csph_pnt =!8
+csph_cnt =!4
+
+xosipChkSumPH::
+	MOVL	EAX, csph_src[ESP]
+	ADDL	EAX, csph_dst[ESP]
+	ADCL	EAX, #0
+	ADDL	EAX, csph_plen[ESP]
+	ADCL	EAX, #0
+	MOVL	EDX, csph_pnt[ESP]
+	MOVL	ECX, csph_cnt[ESP]
+	SHRL	ECX, #2			;Get number of whole longs
+	JE	6$
+4$:	ADDL	EAX, [EDX]
+	ADCL	EAX, #0
+	ADDL	EDX, #4
+	LOOP	ECX, 4$
+	MOVL	ECX, EAX		;Merge halves
+	SHRL	ECX, #16t
+	ADDW	AX, CX	
+	ADCW	AX, #0
+6$:	TESTB	cs_cnt[ESP], #0x02	;Have a word left over?
+	JE	8$			;No
+	ADDW	AX, [EDX]		;Yes - add it in
+	ADCW	AX, #0
+	ADDL	EDX, #2
+8$:	TESTB	cs_cnt[ESP], #0x01	;Have a byte left over?
+	JE	10$			;No
+	MOVZBL	ECX, [EDX]		;Yes
+	ADDW	AX, CX
+	ADCW	AX, #0
+10$:	MOVZWL	EAX, AX
+	RET	20t

@@ -1,0 +1,693 @@
+	.TITLE	ioopen - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+;NOTE:
+
+;All IO is done within an "IO frame". This is basically just an association
+;  between a DCB (device) and a TDA (thread). Each device can support two IO
+;  frames: one for input and one for output. Some devices, which cannot do
+;  simultainious input and output, only support one IO frame, which is always
+;  the output frame. Only one device IO frame can be doing IO in a thread at
+;  a time. The address of this device's DCB is stored in tdaDcb. The offset
+;  of the address of the thread's TDA in the DCB (either dcb_inptda or
+;  dcb_outtda) is stored in tdaFrame. The address of the frame's TDA is
+;  stored in either dcb_inptda or dcb_outtda. Thus two threads can be doing
+;  IO for a device at the same time with one doing input and one doing output.
+;  A thread is part of an IO frame if tdaFrame is non-zero. In this case
+;  tdaDcb must contain the address of a valid DCB which points back to the
+;  TDA through dcb_outtda or dcb_inptda as incidated by tdaFrame. A device
+;  is part of an IO frame if dcb_inptda and/or dcb_outtda is non-zero. This
+;  non-zero value must be a valid TDA actual address.
+
+;Queued or asynchronous IO operations are implimented by creating an IO thread
+;  which does the IO while the user thread that iniated the operation continues
+;  to run without being directly associated with the device. Direct or blocking
+;  IO operations are executed in the user thread which iniated the operation.
+;  Most IO devices execute all operations in exec mode, thus signals are
+;  not granted during such an operation. Some devices (currently on TRM)
+;  wait by returning to user mode to retry the operation when the operation
+;  can be continued, thus allowing signals. A queued IO operation specify
+;  QFNC$WAIT will behave line a blocking operation but will allow signals
+;  while it is active at the cost of somewhat more overhead (the creation and
+;  destruction of an IO thread and the associated context switches). Generally
+;  this should be avoided except there signal are required and the operation
+;  may take significant time compared to the signal response required. A few
+;  devices (currently only the console display) which do not have to wait for
+;  a device do not support queued IO. In the case of the console display
+;  device CPU bound transfers to the display can be interrupted by signals.
+
+	CODE
+
+;File IO parameter table for non-disk devices
+
+	.LONG	NULLFILMAX
+knlNullFilParms::
+	.LONG	0
+	.LONG	0		;IOPAR_DIRHNDL     = 0101h
+	.LONG	knlIopNullN#	;IOPAR_SRCATTR     = 0102h
+	.LONG	knlIopNullN#	;IOPAR_FILEATTR    = 0103h
+	.LONG	knlIopNullN#	;IOPAR_DIROFS      = 0104h
+	.LONG	knlIopNullN#	;IOPAR_ABSPOS	   = 0105h
+	.LONG	knlIopNullN#	;IOPAR_RELPOS	   = 0106h
+	.LONG	knlIopNullN#	;IOPAR_EOFPOS	   = 0107h
+	.LONG	knlIopNullN#	;IOPAR_VBOF	   = 0108h
+	.LONG	knlIopNullN#	;IOPAR_LENGTH      = 0109h
+	.LONG	knlIopNullN#	;IOPAR_REQALLOC    = 010Ah
+	.LONG	knlIopNullN#	;IOPAR_RQRALLOC    = 010Bh
+	.LONG	knlIopNullN#	;IOPAR_GRPSIZE     = 010Ch
+	.LONG	knlIopNullN#	;IOPAR_ADATE       = 010Dh
+	.LONG	knlIopNullN#	;IOPAR_CDATE       = 010Eh
+	.LONG	knlIopNullN#	;IOPAR_MDATE       = 010Fh
+	.LONG	knlIopNullN#	;IOPAR_PROT        = 0110h
+	.LONG	knlIopNullT#	;IOPAR_OWNER       = 0111h
+	.LONG	knlIopNullT#	;                  = 0112h
+	.LONG	knlIopNullN#	;IOPAR_SETLOCK	   = 0113h
+	.LONG	knlIopNullN#	;IOPAR_CLRLOCK	   = 0114h
+	.LONG	0		;IOPAR_CLSTIME     = 0115h
+	.LONG	0		;IOPAR_CLSNAME     = 0116h
+	.LONG	0		;IOPAR_CLSMSG	   = 0117h
+	.LONG	knlIopNullN#	;IOPAR_SHRRETRY    = 0118h
+	.LONG	knlIopNullN#	;IOPAR_SHRDELAY    = 0119h
+NULLFILMAX=!{$-knlNullFilParms}/4
+
+.PAGE
+;There are 5 different svcIoQueue functions which open a device or file:
+;	QFNC_OPEN     - Opens a device/file and returns the handle.
+;	QFNC_DEVPARM  - Opens a device/file, processes device paramaters and
+;			  closes the device/file.
+;	QFNC_NEXTFILE - Same as QFNC_DEVPARM except that an open directory
+;			  is searched.
+;	QFNC_DELETE   - Opens a device/file and then deletes it.
+;	QFNC_RENAME   - Opens a device/file and then renames it.	
+
+;Here for the QFNC_DEVPARM (get device parameters) function. This is
+;  equivalent to an open followed immediatly by a close.
+;	CALL	devparmfunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal (operation started)
+;	  c{EAX} = 0
+
+devparmfunc::
+	MOVL	knlTda+tdaRoutine#, #devparm1
+	JMP	opncomn
+
+;Here for the QFNC_NEXTFILE (get next file) function. This is the same as
+;  QFNC_DEVPARM except that an open directory is searched.
+;	CALL	nextfilefunc
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal (operation started)
+;	  c{EAX} = 0
+;  Note that if this function is not valid for the device, the sd_nextfile
+;    entry in the device dispatch table MUST be NULL.
+
+nextfilefunc::
+	CALL	sysIoGetDcb#		;Get address of our DCB
+	TESTL	EAX, EAX
+	JS	2$
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	EAX, dcb_sdisp[EDI]
+	CMPL	sd_nextfile[EAX], #0	;Is this valid?
+	JE	4$			;No
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+	MOVL	knlTda+tdaRoutine#, #nextfile1
+	CALL	sysIoQueueThread#	;Start an IO thread if need to
+2$:	RET
+
+4$:	MOVL	EAX, #ER_IFDEV
+	RET
+
+;Here for the QNFC_OPEN (open) function
+;	CALL	openfunc
+;  Value returned contains the QSTS bits in the low 16 bits with the high 16
+;    bits 0 if normal or a negative XOS error code if error.
+
+openfunc::
+	MOVL	knlTda+tdaRoutine#, #open1
+	BTL	knlTda+tdaOption#, #XO%UNQNAME ;Want to create a unique name?
+	JNC	opncomn			;No - continue
+	MOVL	EDI, knlTda+tdaBuffer1#	;Yes - get address of name
+	CALL	getunqname#		;Get unique file name
+	JC	18$			;If error
+opncomn:MOVB	knlTda+tdaFrame#, #0
+	MOVB	knlTda+tdaFrame#, #0
+	MOVL	knlTda+tdaDcb#, #0
+
+	MOVL	EBX, #DH_FV		;Assume not forcing a handle
+	BTL	knlTda+tdaOption#, #XO%FHANDLE ;Want to force a handle?
+	JNC	6$			;No
+	MOVL	EBX, knlTda+tdaHandle#	;Yes - get the desired handle
+	BTSL	EBX, #31t		;Indicate forced handle
+6$:	PUSHL	EBX
+	CALL	gethandle#		;Allocate a device handle
+	TESTL	EAX, EAX
+	JS	18$			;If error
+	MOVL	knlTda+tdaHandle#, EAX	;Save the handle
+	TESTB	knlTda+tdaFunc#+1, #QFNC$DIO>8 ;Want to do this directly?
+	JE	12$			;No - start an IO thread
+	CALLI	knlTda+tdaRoutine#	;Yes - do it
+	MOVL	EDI, knlTda+tdaDcb#
+	TESTL	EDI, EDI
+	JE	10$
+	CLRL	EDX
+	MOVL	knlTda+tdaDcb#, EDX
+	MOVL	dcb_outtda[EDI], EDX
+	MOVB	knlTda+tdaFrame#, DL
+10$:	RET
+
+;Here if want to do this in an IO thread
+
+12$:	PUSHL	#sysIoFinishQueue#
+	CALL	sysIoBeginThread#
+	RET
+
+;Here if error before any resources are allocated
+
+18$:	MOVL	knlTda+tdaError#, EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+.PAGE
+;Here executing in the context of an IO thread if necessary for QFNC_OPEN
+
+$$$=!0
+FRM opn1_bufr, FILENAME_MAX+4
+opn1_SIZE=!$$$
+
+open1:	ENTER	opn1_SIZE, 0
+	LEAL	EAX, opn1_bufr[EBP]
+	PUSHL	EAX
+	CALL	doopen
+	TESTL	EAX, EAX
+	JS	14$			;If error (device is not open)
+	MOVL	knlTda+tdaAmount#, #1
+10$:	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	CLRL	EAX
+	LEAVE
+	RET
+
+14$:	MOVL	knlTda+tdaError#, EAX
+	JMP	10$
+
+;Here executing in an IO thread if necessary for QFNC_DEVPARM, QFNC_RENAME,
+;  and QFNC_DELETE
+
+$$$=!0
+FRM prm1_bufr, FILENAME_MAX+4
+prm1_SIZE=!$$$
+
+devparm1:
+	ENTER	prm1_SIZE, 0
+	LEAL	EAX, prm1_bufr[EBP]
+	PUSHL	EAX
+	CALL	doopen
+	TESTL	EAX, EAX
+	JS	14$			;If error
+	MOVL	EDX, knlTda+tdaDcb#	;Destroy the IO frame so we can close
+	CLRL	EAX			;  the handle
+	MOVL	dcb_outtda[EDX], EAX
+	MOVB	knlTda+tdaFrame#, AL
+	MOVL	knlTda+tdaParm#, EAX	;Don't process parameter again
+	CALL	close1#			;Close the handle
+	CMPL	knlTda+tdaError#, #0
+	JS	10$
+	MOVL	knlTda+tdaAmount#, #1
+	JMP	10$
+.PAGE
+;Here executing in an IO thread if necessary for QFNC_NEXTFILE
+
+$$$=!0
+FRM del1_bufr, FILENAME_MAX+4
+del1_SIZE=!$$$
+
+nextfile1:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	ECX, #tdaAmnt2Clr#	;Clear the open data values
+	MOVL	EDI, #knlTda+tdaBgnClr#
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	EDI, knlTda+tdaDcb#
+	ANDL	knlTda+tdaPVFileOptn#, #XFO$FILE|XFO$VERSION
+	MOVL	EAX, dcb_sdisp[EDI]
+	CALLI	sd_nextfile[EAX]
+	TESTL	EAX, EAX
+	JNS	10$
+4$:	MOVL	knlTda+tdaError#, EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+10$:	POPL	EBX
+	POPL	EDI
+	RET
+.PAGE
+;Function to open a device or file - Called by open, devparm, delete, and
+;  rename.
+;	long doopen(
+;	    char *bufr);	// Specification buffer
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return the address of the DCB is in tdaDcb and the handle is in
+;    tdaHandle.
+
+$$$=!0
+FRM dopn_retry, 1
+FRM           , 3
+dopn_SIZE=!$$$
+
+dopn_specbfr=!16t
+
+doopen:	PUSHL	EDI
+	PUSHL	EBX
+	ENTER	dopn_SIZE
+	MOVL	ECX, #tdaAmnt2Clr#	;Clear the open data values
+	MOVL	EDI, #knlTda+tdaBgnClr#
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVB	dopn_retry[EBP], #3	;Initialize the retry count
+4$:	PUSHL	#0			;Set up the device name part and
+	MOVL	EAX, ESP		;  get start of the file spec
+	PUSHL	knlTda+tdaBuffer1#
+	PUSHL	#'Z'
+	PUSHL	EAX
+	CALL	setdevname#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	doodn
+	PUSHL	dopn_specbfr[EBP]
+	PUSHL	EDX
+	CALL	setupname
+	TESTL	EAX, EAX
+	JS	doodn
+
+;Here with the expanded specification in our buffer - now find the device
+
+	PUSHL	#knlTda+tdaDevName#	;Address of device name
+	PUSHL	dopn_specbfr[EBP]
+	PUSHL	#1			;Return a DCB
+	CALL	sysIoFindDevByName#	;Find the device and get a DCB for it
+	TESTL	EAX, EAX
+	JS	34$
+	MOVL	EDI, knlTda+tdaDcb#
+	CMPL	dcb_label[EDI], #'DCB*'
+	JE	8$
+	CRASH	NDCB			;[Not a DCB]
+
+8$:	MOVL	EAX, knlTda+tdaHandle#
+	CMPL	knlPda+pdaHndlTbl#[EAX*8], #0x0FFF
+	JE	10$
+	CRASH	BHTE			;[Bad Handle Table Entry]
+
+10$:	MOVL	knlPda+pdaHndlTbl#[EAX*8], EDI
+	MOVL	EDX, knlTda+tdaOption#
+	ANDL	EDX, #0x0001FFFF	;Store command bits in the handle table
+	ORL	EDX, #XO$OPNCLS		;Indicate device being opened
+	MOVL	knlTda+tdaCmd#, EDX
+	ANDL	EDX, #0x001FFFFF
+	ANDL	knlPda+pdaHndlTbl#+4[EAX*8], #0xFFE00000
+	ORL	knlPda+pdaHndlTbl#+4[EAX*8], EDX
+	INCL	dcb_opencnt[EDI]
+	MOVL	EAX, knlTda+tdaAddr#	;Set up an output frame
+	MOVL	dcb_outtda[EDI], EAX
+	MOVB	knlTda+tdaFrame#, #dcb_outtda
+
+	MOVL	EAX, dcb_sdisp[EDI]	;Try to mount the device if need to
+	CMPL	sd_mount[EAX], #0
+	JE	18$
+	CALLI	sd_mount[EAX]
+	JNC	18$			;If OK
+	CMPL	EAX, #ER_MDCHG		;Media change error?
+	JNE	34$			;No - fail
+	DECL	dopn_retry[EBP]		;Yes - have we retried this enough?
+	JE	34$			;Yes - fail
+	MOVL	EDX, knlTda+tdaHandle#	;No - give up the handle
+	CLRL	EAX
+	MOVL	knlPda+pdaHndlTbl#+0[EDX*8], EAX
+	MOVL	knlPda+pdaHndlTbl#+4[EDX*8], EAX
+	MOVL	knlTda+tdaHandle#, EAX
+	MOVL	EDI, knlTda+tdaDcb#	;Give up the DCB
+	CALL	cleardcb#
+	CLRL	EAX
+	MOVL	knlTda+tdaDcb#, EAX
+	MOVB	knlTda+tdaFrame#, AL
+	JMP	4$			;Try again
+
+;Here if the mount worked
+
+18$:	CMPL	dcb_opencnt[EDI], #1	;Yes - first open?
+	JNE	20$			;No
+	MOVL	EAX, knlPda+pdaSesPda#	;Yes - store address of the PDA for the
+	MOVL	dcb_sespda[EDI], EAX	;  group process in the DCB
+	MOVB	dcb_sts2[EDI], #0	;Clear device dependent bits
+	MOVB	dcb_sts1[EDI], #0	;And clear the common device status bits
+20$:	CMPB	knlTda+tdaFunc#, #QFNC_RENAME ;Is this a rename function?
+	JE	dorename		;Yes - go handle that
+	CMPB	knlTda+tdaFunc#, #QFNC_DELETE ;Is this a delete function?
+	JE	dodelete		;Yes - go handle that
+	CLRL	EAX			;In case no open routine
+	MOVL	ECX, dcb_sdisp[EDI]	;No
+	CMPL	dcb_opencnt[EDI], #1	;First open?
+	JE	24$			;Yes
+	CMPL	sd_opena[ECX], #0
+	JE	doofin
+	CALLI	sd_opena[ECX]		;No
+	JMP	doofin
+
+;Here if first open
+
+24$:	CMPL	sd_open[ECX], #0
+	JE	doofin
+	PUSHL	dopn_specbfr[EBP]
+	CALLI	sd_open[ECX]
+doofin:	MOVL	EDX, knlTda+tdaHandle#	;No longer being opened
+	ANDL	knlPda+pdaHndlTbl#+4[EDX*8], #~{XO$NOQUE|XO$OPNCLS}
+	TESTL	EAX, EAX
+	JS	30$			;If error
+	MOVL	EAX, knlTda+tdaCloseSlb# ;Store address of possible close SLB
+	MOVL	dcb_clsslb[EDI], EAX	 ;  in the DCB
+	CLRL	EAX
+	MOVL	knlTda+tdaCloseSlb#, EAX
+doodn:	LEAVE
+	POPL	EBX
+	POPL	EDI
+	RET	4
+
+;Here if the sd_open or sd_opena function failed - Give up the DCB we just got
+;  and a possible close SLB.
+
+30$:	PUSHL	EAX
+	CMPL	knlTda+tdaCloseSlb#, #0
+	JE	32$
+	PUSHL	knlTda+tdaCloseSlb#
+	CALL	sysMemGiveXmb#
+32$:	CALL	cleardcb#
+	POPL	EAX
+
+;Here if error before we have a DCB - Just clear the handle table entry
+
+34$:	MOVL	EDX, knlTda+tdaHandle#
+	CLRL	ECX
+	MOVL	knlPda+pdaHndlTbl#+0[EDX*8], ECX
+	MOVL	knlPda+pdaHndlTbl#+4[EDX*8], ECX
+	MOVL	knlTda+tdaHandle#, ECX
+	JMP	doodn
+.PAGE
+;Here if doing a rename function - This does as much common set up as is
+;  possible considering range of device types that support rename operations.
+;  When get here the old name string (tdaBuffer1) has already been expanded
+;  and the device name is in tdaDevName and the path/name string is in
+;  dopn_specbufr. The new name string (tdaBuffer2) is expanded here with the
+;  following defaults:
+;	No device or path:  No expansion is done. The name is passed as given.
+;	Path but no device: The original device specified in the old name
+;	                    string is prepended and the resulting string is
+;                           expanded. If the final device name does not match
+;	                    the final old device name, an ER_DFDEV error is
+;	                    given.
+;	Device but no path: The string is expanded as given. If the final
+;	                    device name does not match the final old device
+;	                    name, an ER_DFDEV error is given.
+;A separate function is called here to allow allocating a buffer on the stack
+;  for just this function.
+
+dorename:
+	MOVL	EDX, dcb_sdisp[EDI]
+	CMPL	sd_rename[EDX], #0	;Does this device support rename?
+	JE	4$			;No
+	PUSHL	dopn_specbfr[EBP]	;Yes
+	CALL	rename2
+	JMP	doofin
+
+4$:	MOVL	EAX, #ER_IFDEV
+	JMP	doofin
+
+;Here if doing a delete function
+
+dodelete:
+	MOVL	EDX, dcb_sdisp[EDI]
+	CMPL	sd_delete[EDX], #0	;Does this device support delete?
+	JE	4$			;No
+	PUSHL	dopn_specbfr[EBP]	;Yes
+	CALLI	sd_delete[EDX]		;Call the driver for delete
+	JMP	doofin
+.PAGE
+;Function to do the work for rename
+;	long rename(
+;	    char *spec1)
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+;NOTE: This function does not save registers since it is only called from one
+;      place and we know it is safe to do this. It is a separate function so
+;      we only allocate the stack space for the name buffer when it is needed.
+
+$$$=!0
+FRM ren_spec2, FILENAME_MAX+4
+FRM ren_cnt  , 4
+ren_SIZE=!$$$
+
+ren_spec1=!8
+
+rename2:ENTER	ren_SIZE
+
+;First, determine if the new name is a simple file name (no device or path)
+;  which means to rename in the same directory. If it is simple, it is passed
+;  to the driver unmodified.
+
+	MOVL	EDX, knlTda+tdaBuffer2#
+	MOVL	ren_spec2+0[EBP], #1
+	LEAL	EBX, ren_spec2+1[EBP]
+	MOVL	ECX, #95t
+	IFFAULT	4$
+2$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	MOVB	[EBX], AL
+	INCL	EBX
+	CMPB	AL, #':'
+	JE	14$
+	CMPB	AL, #'\'
+	JE	10$
+	CMPB	AL, #0
+	JE	24$
+	LOOP	ECX, 2$
+	MOVL	EAX, #ER_BDSPC
+	JMP	rendn
+
+	FAULTHDR
+4$:	MOVL	EAX, #ER_ADRER
+	JMP	rendn
+
+;Here if a path was specified without a device for the new name - Use the
+;  device name from the old name string
+
+10$:	PUSHL	#0			;Set up the device name part from
+	MOVL	EAX, ESP		;  the old name
+	PUSHL	knlTda+tdaBuffer1#
+	PUSHL	#'Z'
+	PUSHL	EAX
+	CALL	setdevname#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	rendn
+	MOVL	EDX, knlTda+tdaBuffer2#
+	JMP	16$
+
+;Here if a device was specified for the new name - Use the complete new name
+;  string as given.
+
+14$:	PUSHL	#0			;Set up the device name part and
+	MOVL	EAX, ESP		;  get start of the file spec
+	PUSHL	knlTda+tdaBuffer2#
+	PUSHL	#'Z'
+	PUSHL	EAX
+	CALL	setdevname#
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	rendn
+16$:	INCB	ren_spec2+0[EBP]
+	LEAL	EAX, ren_spec2+1[EBP]
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	setupname
+	TESTL	EAX, EAX
+	JS	doodn
+	MOVL	EAX, dcb_name+0[EDI]	;Is the device the same?
+	CMPL	EAX, knlTda+tdaDevName#+0
+	JNE	18$			;No - fail
+	MOVL	EAX, dcb_name+4[EDI]
+	CMPL	EAX, knlTda+tdaDevName#+4
+	JNE	18$
+	MOVL	EAX, dcb_name+8[EDI]
+	CMPL	EAX, knlTda+tdaDevName#+8
+	JNE	18$
+	MOVL	EAX, dcb_name+12t[EDI]
+	CMPL	EAX, knlTda+tdaDevName#+12t
+	JE	20$
+18$:	MOVL	EAX, #ER_DFDEV
+	JMP	rendn
+
+;Here with a full path for the new name - We need to see if it is the same
+;  as the path for the old name.
+
+20$:	PUSHL	ren_spec1[EBP]		;Find the last \ in the old string
+	PUSHL	#'\'
+	CALL	sysLibStrRChr#
+	MOVL	ren_cnt[EBP], EAX
+
+	LEAL	EAX, ren_spec2+1[EBP]	;Find the last \ in the new string
+	PUSHL	EAX
+	PUSHL	#'\'
+	CALL	sysLibStrRChr#
+	CMPL	ren_cnt[EBP], EAX	;Same?
+	JNE	24$			;No - not same directory
+	TESTL	EAX, EAX		;Yes - error (must be ER_NTFND)?
+	JS	22$			;Yes - neither one has a path so the
+					;  paths are the same
+	PUSHL	ren_spec1[EBP]		;Same length, must compare them
+	LEAL	EAX, ren_spec2+1[EBP]
+	PUSHL	EAX
+	PUSHL	EAX
+	CALL	sysLibStrNICmp#
+	TESTL	EAX, EAX
+	JNE	24$			;If different
+
+;Here if the new path specified is the same as the old path - Just give the
+;  driver the file name.
+
+22$:	DECB	ren_spec2+0[EBP]
+	LEAL	EAX, ren_spec2+1[EBP]
+	PUSHL	EAX
+	ADDL	EAX, ren_cnt[EBP]
+	INCL	EAX
+	PUSHL	EAX
+	CALL	sysLibStrMov#
+
+;Here when ready to call the driver
+
+24$:	ANDL	knlTda+tdaOption#, #XO$FAILEX|XO$CRIT|XO$NOHOLD
+	PUSHL	ren_spec1[EBP]		;Discard all option bits not used here
+	LEAL	EAX, ren_spec2[EBP]
+	PUSHL	EAX
+	MOVL	EAX, dcb_sdisp[EDI]
+	CALLI	sd_rename[EAX]
+rendn:	LEAVE
+	RET	4
+.PAGE
+;Function to set up a name for opening a device/file
+;	long setupname(
+;	    char *bufr,
+;	    char *src);
+
+sun_bufr=!12t
+sun_src =!8
+
+setupname::
+	PUSHL	EDI
+	MOVL	EDI, sun_bufr[ESP]
+	MOVL	EDX, sun_src[ESP]
+	MOVL	ECX, #FILESPCSIZE-2
+4$:	IFFAULT	10$
+	MOVZBL	EAX, [EDX]		;Get character
+	INCL	EDX
+	CMPB	AL, #'/'		;Slash?
+	JNE	6$			;No
+	MOVB	AL, #'\'		;Yes - change to back-slash
+6$:	MOVB	[EDI], AL			;Store it in buffer
+	INCL	EDI
+	TESTB	AL, AL
+	JE	8$			;If finished
+	LOOP	ECX, 4$
+	MOVL	EAX, #ER_BDSPC		;If file specification is too long
+	JMP	sundn
+
+;Here with spec copied to our buffer - now expand any logical names
+
+8$:	PUSHL	#0
+	PUSHL	knlTda+tdaPda#
+	PUSHL	#knlTda+tdaDevName#	;Get address of device name
+	PUSHL	sun_bufr+12t[ESP]	;Point to spec buffer
+	PUSHL	knlTda+tdaCmd#
+	PUSHL	sun_bufr+20t[ESP]
+	PUSHL	#setupnm2
+	CALL	expandlogicalname#
+sundn:	POPL	EDI
+	RET	8
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	sundn
+.PAGE
+;Function called from logicalnameexpand for sysIoSetUpName with the expanded
+;  logical name definiton. This function simply copies the device name and
+;  file specification to our original buffers if necessary and returns so
+;  the caller of logicalnameexpand can continue at it's original stack level.
+;	long setupnm2
+;	    char  phyname[16],	// Physical device name (zero filled)
+;	    char *expspec,	// Pointer to expanded file specification
+;	    long  data);	// Data value (contains our original buffer
+;				//   address)
+
+;	c{EBX} = Address of physical device name
+;	c{EDX} = Address of extended file path and name
+;	CALL	doopn2
+;	C:set = Error
+;	  c{EAX} = Error
+;	C:clr = Normal
+;	  c{EDI} = Offset of DCB
+
+sun2_phyname=!12t
+sun2_expspec=!8
+sun2_data   =!4
+
+setupnm2:
+	CMPL	sun2_phyname[ESP], #knlTda+tdaDevName# ;Do we need to copy the
+						       ;  device name?
+	JE	4$			;No
+	MOVL	EDX, sun2_phyname[ESP]	;Yes
+	MOVL	EAX, [EDX]
+	MOVL	knlTda+tdaDevName#+0, EAX
+	MOVL	EAX, 4[EDX]
+	MOVL	knlTda+tdaDevName#+4, EAX
+	MOVL	EAX, 8[EDX]
+	MOVL	knlTda+tdaDevName#+8, EAX
+	MOVL	EAX, 12t[EDX]
+	MOVL	knlTda+tdaDevName#+12t, EAX
+4$:	MOVL	EAX, sun2_expspec[ESP] ;Do we need to copy the file spec?
+	CMPL	EAX, sun2_data[ESP]
+	JE	8$			;No
+	PUSHL	sun2_data[ESP]		;Yes
+	PUSHL	EAX
+	CALL	sysLibStrMov#
+8$:	CLRL	EAX
+	RET	12t
+
+	END

@@ -1,0 +1,175 @@
+	.TITLE	speedctlp4cls - Speed control class driver for Pentium 4 and M
+
+;*--------------------------------------------------------------------------*
+;* speedctlp4cls.m86
+;*
+;* Written by: John Goltz
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This class driver implements the SPEEDCTL class for the Intel Pentium 4,
+;  Xeon, and Pentium M processors. This is an empty class (no devices units
+;  are implmented) that provides control of the processor's speed. Several
+;  vectored functions are used for control from other kernel routnes and
+;  class characteristics are used to set operating parameters. This version
+;  changes the processor's speed using the IA32_CLOCK_MODULATION register
+;  which changes the clock duty cycle. A future version will probably also
+;  support changing the core voltage.
+
+;Note that here are several hooks built into the kernel for speed control.
+;  They do nothing useful unless this or another SPEEDCLS class driver is
+;  loaded. Only one SPEEDCTL class driver can be loaded at a time.
+
+;Speed control is generally invisible to most of the OS. Speed is reduced
+;  whenever the system has been idle (only the null process has run and no
+;  device as indicated activity) for the time period specified by the HOLD
+;  SPEEDCTL class characteristic value or an explicit time specified by a
+;  device driver. Speed is increased whenever a process other than the null
+;  process is scheduled to run or a device declares that it is active. When
+;  a device becomes active it calls xosspdHoldHigh with an argument specifying
+;  the hold time. In most cases this should be 0 to indicate the defult time
+;  set the the HOLD value. In unusual conditions, a non-zero value may be
+;  given to specify the hold time in milliseconds. xosspdSetHigh may be called
+;  and any level, including interrupt level. A device driver may also call
+;  xosspdSetHigh at interrupt level or in fork level context to insure that 
+;  it is executed at high speed. Before calling xosspdSetHigh the value of
+;  knlCurSpeed should be checked and xosspdSetHigh should only be called if
+;  the value is SPEED_LOW.
+
+;The low and high speed levels specified by the values of the LOW and HIGH
+;  SPEEDCTL class characteristics. The values are the percentage of the
+;  processor's full speed. For these processors, these values are rounded
+;  to one of the following values: 12.5%, 25%, 37.5%, 50%, 63.5%, 87.5%,
+;  and 100%.
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+	LKEHEAD	SPEEDCTLCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+	.EXPORT	xosspdSetIdle
+	.EXPORT	xosspdSetActive
+
+	INITSUB	speedinit
+
+speedinit:
+
+	CRASH	????			;NEED TO UPDATE ALL OF THIS!!!!
+
+	MOVL	EAX, #100t
+	MOVL	activespeed, EAX
+	MOVL	idlespeed, EAX
+	CLRL	EAX
+	MOVL	activeregval, EAX
+	MOVL	idleregval, EAX
+	MOVL	EDI, #speedchk		;Install the SPEEDCTL device class
+	CLRL	EBX			;No class functions
+	MOVL	EAX, #'SPEE'
+	MOVL	EDX, #'DCTL'
+	MOVL	ECX, #speeddctbl
+	MOVL	ESI, #speedccb
+	CALL	knlNewClass##
+	MOVL	knxSpdSetActive##, #xosspdSetActive
+	MOVL	knxSpdSetIdle##, #xosspdSetIdle
+	CLRL	EAX
+	CLRL	EDX
+	MOVL	ECX, #codetop
+	CLC
+	RET
+
+	CODE
+.PAGE
+;Class characteristics tables for the SPEEDCTL device class
+
+	.MOD	4
+speeddctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  ACTIVE, DECV, , 4, msgactive, knlGetSysVal##, setspeed, activespeed
+ CHARENT  IDLE  , DECV, , 4, msgidle  , knlGetSysVal##, setspeed, idlespeed
+ CHAREND
+
+msgactive:CHARINFO {Active processor speed (% of maximum)}
+msgidle:  CHARINFO {Idle processor speed (% of maximum)}
+msgbusy:  CHARINFO {Busy processor speed (% of maximum)}
+.PAGE
+;Device check function for SPEEDCLS class devices
+
+speedchk:
+	CLRL	EAX			;Always return 0
+	RET	8
+
+;Here to set a speed value
+
+setspeed:
+	MOVL	EDI, #speedtbl1
+	MOVL	ECX, #SPEEDNUM
+2$:	CMPL	EAX, [EDI]
+	JB	4$
+	ADDL	EDI, #4
+	LOOP	ECX, 2$
+4$:	MOVL	EAX, speedtbl2-speedtbl1[EDI]
+	MOVL	[EBX], EAX
+	MOVL	EAX, speedinx-speedtbl1[EDI]
+	MOVL	4[EBX], EAX
+	CLRL	EAX
+	RET
+.PAGE
+;Function to set processor speed to the idle rate
+
+xosspdSetIdle:
+	MOVL	EAX, idleregval
+	MOVL	ECX, #SPEED_IDLE
+	JMP	4$
+
+;Function to set processor speed to the active rate
+
+xosspdSetActive:
+	MOVL	EAX, activeregval
+	MOVL	ECX, #SPEED_ACTIVE
+4$:	MOVL	knlCurSpeed##, ECX
+	CLRL	EDX
+	MOVL	ECX, #0x19A
+	WRMSR
+	RET
+.PAGE
+	DATA
+
+speedccb:    .BLKB ccb_SIZE	;SPEEDCTL CCB
+idlespeed :  .LONG 0		;Idle speed (percentage)
+idleregval:  .LONG 0		;Register value for idle speed
+activespeed: .LONG 0		;Busy speed (percentage)
+activeregval:.LONG 0		;Register value for busy speed
+
+speedtbl1:   .LONG 19t , 31t , 44t , 56t , 69t , 81t , 93t
+SPEEDNUM=!{$-speedtbl1}/4
+speedtbl2:   .LONG 12t , 25t , 37t , 50t , 63t , 75t , 87t , 100t
+speedinx:    .LONG 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E, 0
+
+	LKEEND

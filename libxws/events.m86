@@ -1,0 +1,228 @@
+	.TITLE	events
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xostrm.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+;XWS events are simply calls to call-back functions specified for a window.
+;  When an event is triggered, the user specified event function for the
+;  window where the event occured is called if it is specified and if the
+;  bit in the window's user event mask bit corresponding to the event is
+;  set. The user call-back function returns a value of XWS_EVRTN_DONE (0),
+;  XWS_EVRTN_PASS (1), or XWS_EVRTN_SYS (2). If XWS_EVRTN_DONE is returned,
+;  no further action is taken. If XWS_EVRTN_PASS is returned, the event is
+;  passed to the parent window, if any. If XWS_EVRTN_SYS is returned, the
+;  system action for the event is immediately taken if the window's system
+;  event mask bit is set. If the bit is not set, no further action is taken.
+;  If a window does not have a call-back function or if the user event mask
+;  bit is not set XWS_EVRTN_SYS is assumed. If there is no parent window to
+;  pass the event to, the system action for the event is taken. The value
+;  returned by a system event call-back function is ignored. The system
+;  callback is always the last callback function called for an event.
+
+;A user event function is free to destroy or modify any XWS object with the
+;  restriction that it must return XWS_EVRTN_DONE if it destroys either the
+;  originating or delivering window or a parent of either of these windows.
+;  This means that XWS routines which call xwsdoevent must not reference any
+;  XWS objects using pointers obtained before the call to xwsdoevent. This
+;  mainly affects system event routines for window types which generate
+;  their own events in response to some other event (such as a button window
+;  generating a XWS_EVENT_WIN_BTN event when an XWS_EVENT_MOUSEBT event is
+;  reported).
+
+;Container windows have no system actions. (All actions are passed to the
+;  parent. Other window types use their system actions to implement the added
+;  functionality they provide. For example, edit windows have a system action
+;  for the keyboard KEYMAKE event which inserts the characters typed into
+;  the window's displayed text. Intercepting these events and passing them up
+;  the chain, thereby bypassing the default action, is generally not a useful
+;  thing to do, although in a few cases it makes sense (such as implementing
+;  special handling for specific characters typed to an edit window).
+
+	.PSECT	_TEXT_p
+
+;Internal function to process an event.
+;	void xwsdoevent(
+;	    XWSEDBLK *edblk);	// Address of event data block
+;This function uses the Pascal calling sequence
+
+;The event data block is a 24-byte or longer data block that contains values
+;  which describe the event. It has the following format:
+;  Offset Length   Description 
+;     0      4   Label: EBD#
+;     4      2   Total length of the data block (including all bytes)
+;     6      1   Event type
+;     7      1   Event sub-type
+;     8      4   Address of the WIN which originated the event
+;    12      4   Address of the WIN delivering the event
+;    16      4   First user argument
+;    20      4   Second user argument
+;    24      n   Event dependent data
+;The values in the data block must not be modified by the event routine. These
+;  values are only valid in the event routine. Pointers to the data block must
+;  not be saved globably.  All values from the data block that must be globably
+;  available must be copied to local memory. In general, an event routine can
+;  use the documented data block formats for the various event types. In a few
+;  cases, an event may provide a variable lenght block, in  which case the
+;  event routine must use the lengh value in the first 2 bytes to determine
+;  the amount of data available.
+
+;This function is used internally in XWS to originate events. The caller must
+;  allocate (usually on the stack) and set up the EDBLK except for the address
+;  of the delivring WIN and the two user arguments, which are filled in here.
+;  Once this function returns, this space can be freed or reused.
+
+doev_edblk=!12t
+
+	.ENTRY	xwsdoevent
+xwsdoevent:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, doev_edblk[ESP]
+	MOVL	EDI, edblk_orgwin[ESI]
+	MOVL	calledbywin, EDI
+
+
+2$:	CMPL	win_label[EDI], #'WIN#'
+	JE	4$
+	INT3
+
+
+4$:	CMPL	win_basevent[EDI], #0	;Does the window have an event function?
+	JE	6$			;No
+	MOVZBL	EAX, edblk_type[ESI]	;Yes - does he want this event?
+	BTL	win_basevmask[EDI], EAX
+	JNC	6$			;No
+	MOVL	edblk_dlvwin[ESI], EDI	;Yes - call the user's function
+	MOVL	EAX, win_basevarg1[EDI]
+	MOVL	edblk_arg1[ESI], EAX
+	MOVL	EAX, win_basevarg2[EDI]
+	MOVL	edblk_arg2[ESI], EAX
+
+;;; DEBUG START
+	PUSHL	ESP
+;;; DEBUG END
+
+	PUSHL	ESI
+	MOVL	EAX, win_basevent[EDI]
+	MOVL	userfunc, EAX
+
+	CALLI	win_basevent[EDI]
+
+;;; DEBUG START
+
+	POPL	EDX
+	CMPL	EDX, ESP
+	JE	49$
+	INT3
+49$:
+
+	CMPL	EAX, #XWS_EVRTN_DONE
+	JE	53$
+
+	CMPL	win_label[EDI], #'WIN#'
+	JE	5$
+	INT3
+5$:
+
+	MOVL	EDX, edblk_orgwin[ESI]
+	CMPL	win_label[EDX], #'WIN#'
+	JE	51$
+	INT3
+51$:
+
+	MOVL	EDX, edblk_dlvwin[ESI]
+	CMPL	win_label[EDX], #'WIN#'
+	JE	53$
+	INT3
+53$:
+
+;;; DEBUG END
+
+	TESTL	EAX, EAX		;Did he say "done"?
+	JE	14$			;Yes - that's all for this event
+	DECL	EAX			;No - did he say "pass"?
+	JNE	10$			;No - go do the default action
+
+;Here to pass the event to the parent window
+
+6$:	MOVL	EDI, win_basparent[EDI]
+	TESTL	EDI, EDI		;Is there a parent?
+	JNE	2$			;Yes
+
+;Here to do the system action if necessary
+
+10$::	MOVL	EDI, edblk_orgwin[ESI]
+
+	CMPL	win_label[EDI], #'WIN#'
+	JE	11$
+	INT3
+11$:
+
+	MOVL	edblk_dlvwin[ESI], EDI
+	MOVZBL	EDX, win_bastype[EDI]
+	MOVZBL	EAX, edblk_type[ESI]	;Does the system want this event?
+	BTL	evntmsk-4[EDX*4], EAX
+	JNC	14$			;No
+	PUSHL	ESI			;Yes
+
+	MOVL	EAX, evntdsp-4[EDX*4]
+	MOVL	sysfunc, EAX
+
+	CALLI	evntdsp-4[EDX*4]	;Dispatch on the window type
+
+;;;	CMPL	win_label[EDI], #'WIN#'
+;;;	JE	12$
+;;;	INT3
+;;;12$:
+
+;;;	TESTL	EAX, EAX		;Done?
+;;;	JNE	6$			;No
+
+14$:	POPL	ESI			;Yes
+	POPL	EDI
+	RET	4t
+
+	.PSECT	_DATA_p
+
+calledbywin::.LONG 0
+userfunc::.LONG 0
+sysfunc::.LONG 0
+
+evntmsk:.LONG	0			;XWS_WINTYPE_SIMPLE    = 1
+	.LONG	0			;XWS_WINTYPE_CONTAINER = 2
+	.LONG	XWS_EVMASK$MOUSEMV|XWS_EVMASK$MOUSEBT|XWS_EVMASK$KEYMAKE
+					;XWS_WINTYPE_LIST      = 3
+	.LONG	0			;XWS_WINTYPE_RESPONSE  = 4
+	.LONG	XWS_EVMASK$MOUSEMV|XWS_EVMASK$MOUSEBT|XWS_EVMASK$KEYMAKE
+					;XWS_WINTYPE_EDIT      = 5
+	.LONG	XWS_EVMASK$MOUSEMV|XWS_EVMASK$MOUSEBT|XWS_EVMASK$KEYMAKE
+					;XWS_WINTYPE_BUTTON    = 6
+	.LONG	0			;XWS_WINTYPE_CHECKBOX  = 7
+	.LONG	XWS_EVMASK$MOUSEBT	;XWS_WINTYPE_SCROLLBAR = 8
+	.LONG	0			;XWS_WINTYPE_DROPDOWN  = 9
+	.LONG	0			;XWS_WINTYPE_INCDEC    = 10
+
+evntdsp:.LONG	xwseventcontainer#	;XWS_WINTYPE_SIMPLE    = 1
+	.LONG	xwseventcontainer#	;XWS_WINTYPE_CONTAINER = 2
+	.LONG	xwseventlist#		;XWS_WINTYPE_LIST      = 3
+	.LONG	0			;XWS_WINTYPE_RESPONSE  = 4
+	.LONG	xwseventedit#		;XWS_WINTYPE_EDIT      = 5
+	.LONG	xwseventbutton#		;XWS_WINTYPE_BUTTON    = 6
+	.LONG	0			;XWS_WINTYPE_CHECKBOX  = 7
+	.LONG	xwseventscrollbar#	;XWS_WINTYPE_SCROLLBAR = 8
+	.LONG	0			;XWS_WINTYPE_SELECT    = 9
+	.LONG	0			;XWS_WINTYPE_VALUE     = 10
+
+	.END
+

@@ -1,0 +1,1070 @@
+	.TITLE	ffsdirect - FFS routines to search/modify directores
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD	XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosdos.par
+	.INCLUD	XOSINC:\xmac\xoslke.par
+	.INCLUD	XOSINC:\xmac\xosxlke.par
+
+	LKECONT
+
+;This module contains functions which search and/or modify a directory
+
+;NOTE: Each block on a disk (this includes fake FIBs) may be locked. This
+;      ensures exclusive access to that block. (The exact meaning of this
+;      varies depending on the type of block. This is enforced by convention
+;      only.) Locking of individual data blocks on the disk is used to when
+;      reading and writing the cache. Data blocks can be locked at any time
+;      except that if any blocks in a file are locked, no preceeding blocks
+;      in the file may be locked.
+;      FIBs are locked to serialize changes to a file or directory. A FIB
+;      must not be locked if any data blocks in the file are locked. If a FIB
+;      is locked any of it's immediate children's FIBs may be locked. No
+;      change may be made to a directory entry or to a FIB unless the FIB is
+;      locked. This says that if a file is locked and its directory is not
+;      locked, its directory entry CANNOT be locked (which means it cannot be
+;      modifed) unless the file is first unlocked. This creates some difficulty
+;      when renaming files which requires special treatment. (See the comments
+;      for ffsrename.)
+
+;Function to find a file or directory given a path starting at the root.
+;	long ffsfindondisk(
+;	    char *path,
+;	    ODB  *odb,
+;	    int   prefix)
+;  Value returned is 0 if the target file or directory was found (the target
+;    file or directory is open on the DCB and is not locked), 1 if the target
+;    file or directroy was not found (last directory searched is open on the
+;    DCB and is locked), or a negative XOS error code if error.
+;    The "not found" return is only given when the target is not found in the
+;    last directory searched. If any directory previous to the target is not
+;    found, an ER_DIRNF error is returned.
+;    On an error return the last directory searched will usually (but not
+;    always) be open on the DCB and will not be locked. The caller must check
+;    dcb_dkfilpnt to see if something is still open. When searching an open
+;    directory, that directory will always be open of the DCB on an error
+;    return. No files or directories are locked on return. (Note that when we
+;    have a file open that file's directory entry will never be moved by any
+;    other process. It might be modified, but that does not conern us here.
+
+;  On the not found return, the last directory searched must be returned locked
+;    to make sure no one else sneaks in and creates the file while we might be
+;    trying to create it.
+
+fod_odb=!20t
+
+ffsfindondisk::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	0, 0
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EDX, fod_odb[EBP]	;Get first character
+4$:	MOVL	EBX, odb_ppath[EDX]
+	MOVZBL	EAX, [EBX]
+	CMPB	AL, #0			;Is the string null?
+	JE	10$			;Yes - must want to open the root
+	CMPB	AL, #'\'		;No - leading \?
+	JNE	6$			;No - have path starting at the root
+	INCL	odb_ppath[EDX]		;Yes - discard the leading \ character
+	JMP	4$
+
+;Here if name is not null
+
+6$:	TESTL	knlTda+tdaOption#, #XO$ODFS ;Want to open directory?
+	JE	hvpath			;No
+	INCL	EBX			;Yes - see if have another '\'
+8$:	MOVZBL	EAX, [EBX]
+	INCL	EBX
+	CMPB	AL, #'\'
+	JE	hvpath			;Yes - not opening the root
+	CMPB	AL, #0
+	JNE	8$
+
+;Here to really open the root
+
+10$:	MOVL	ESI, dcb_dkucb[EDI]	;Get offset of UCB
+	TESTL	ESI, ESI
+	JE	opndc			;Fail if none
+	TESTB	knlTda+tdaSrcAttr##, #XA$DIRECT ;Want a directory?
+	JE	18$			;No - fail
+14$:	TESTL	knlTda+tdaOption##, #XO$CREATE ;Trying to create a directory?
+	JNE	28$			;Yes - fail
+	MOVL	EBX, ucb_rootpnt[ESI]	;No - get root FIB
+	MOVXWL	EAX, bfr_errcode[EBX]	;Have error on this buffer?
+	TESTL	EAX, EAX
+	JS	fodfin			;Yes
+	PUSHL	EBX
+	CALL	xosdskLockBufrW##	;No - lock the root FIB
+	INCW	bfr_usecnt[EBX]
+	BTL	bfr_block+4[EBX], #31t
+	JC	16$
+	CRASH	NFIB
+
+16$:	MOVL	dcb_dkbasefib[EDI], EBX
+	MOVL	dcb_dkcurfib[EDI], EBX
+	CLRL	EAX
+	MOVL	dcb_dkfilepos[EDI], EAX
+	JMP	fodfin
+
+18$:	MOVL	EAX, #ER_DIRNF
+fodfin:	MOVL	EBX, dcb_dkbasefib[EDI]	;Make sure nothing is locked
+20$:	TESTL	EBX, EBX
+	JE	foddone
+	MOVL	EDX, knlTda+tdaAddr##
+	CMPL	EDX, bfr_rmb+rmb_locktda[EBX]
+	JNE	foddone
+	PUSHL	EAX
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	POPL	EAX
+	MOVL	EBX, bfr_dirfiba[EBX]
+	JMP	20$
+
+foddone:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+28$:	MOVL	EAX, #ER_DIREX
+	JMP	fodfin
+
+opndc:	MOVL	EAX, #ER_MDCHG
+	JMP	fodfin
+.PAGE
+;Here if not opening the root
+
+hvpath:	MOVL	ESI, dcb_dkucb[EDI]	;Get address of the UCB
+	TESTL	ESI, ESI
+	JE	opndc
+	MOVL	EBX, ucb_rootpnt[ESI]	;Get buffer which contains root FIB
+	MOVXWL	EAX, bfr_errcode[EBX]	;Any error on this buffer?
+	TESTL	EAX, EAX
+	JS	fodfin			;Yes
+	PUSHL	EBX
+
+	CALL	xosdskLockBufrW##	;Lock the root directory FIB
+	INCW	bfr_usecnt[EBX]
+	TESTB	bfr_block+7[EBX], #0x80
+	JNE	4$
+	CRASH	NFIB
+
+4$:	MOVL	dcb_dkbasefib[EDI], EBX
+	MOVL	dcb_dkcurfib[EDI], EBX
+	MOVL	dcb_dkfilepos[EDI], #0
+
+;Here with next directory to search open and locked
+
+diropn:	MOVL	EBX, dcb_dkbasefib[EDI] ;Is this a directory?
+	TESTB	ff_attrib[EBX], #XA$DIRECT
+	JE	12$			;No - fail
+	PUSHL	fod_odb[EBP]		;Set up the next name to look for
+	CALL	ffscopyname
+	TESTL	EAX, EAX
+	JS	fodfin			;If error
+	JE	filset			;If stopped by end of the path string,
+					;  go find the final item
+	TESTL	knlTda+tdaOption##, #XO$ODFS ;Opening or creating a directory?
+	JE	10$			;No
+	MOVL	EBX, fod_odb[EBP]	;Yes - must scan ahead and see if this
+	MOVL	EBX, odb_ppath[EBX]
+6$:	MOVZBL	EAX, [EBX]		;  is the last directory
+	INCL	EBX
+	CMPB	AL, #0
+	JE	filset			;Yes - go open the last directory
+	CMPB	AL, #'\'		;End of directory?
+	JNE	6$			;No
+					;Yes - not last directory - continue
+
+;Here with a directory to search that is not the final directory - Wild-cards
+;  are not allowed in this name.
+
+10$:	PUSHL	fod_odb[EBP]
+	CALL	chkforwildcard
+	TESTL	EAX, EAX
+	JNE	dbdspc
+	PUSHL	fod_odb[EBP]		;  here
+	PUSHL	#XA$DIRECT		;Looking for directory only
+	PUSHL	#0			;OK if it exists
+	PUSHL	#0
+	CALL	ffsfindindir		;Search for next directory
+	TESTL	EAX, EAX
+	JE	diropn			;If found it
+	JS	fodfin			;If error
+12$:	MOVL	EAX, #ER_DIRNF		;If directory not found
+	JMP	fodfin
+
+;Here if bad name
+
+dbdspc:	MOVL	EAX, #ER_BDSPC		;Error = BaD file SPeCification
+	JMP	fodfin
+
+;Here if trying to create directory and it does not exist
+
+22$:	MOVL	EAX, #ER_FILNF		;Indicate not found
+	JMP	fodfin			;And return
+.PAGE
+;Here with name of final file or directory to find setup. The last directory
+;  to search is open on the DCB and is locked. Wild-cards are allowed here
+;  unless we might be creating a file or directory (XO$CREATE set).
+
+filset:	TESTL	knlTda+tdaOption##, #XO$CREATE
+	JE	2$
+	PUSHL	fod_odb[EBP]
+	CALL	chkforwildcard
+	TESTL	EAX, EAX
+	JNE	dbdspc
+2$:	PUSHL	fod_odb[EBP]
+	PUSHL	#0
+	CLRL	EAX
+	TESTL	knlTda+tdaOption##, #XO$FAILEX ;Fail if file exists?
+	JNE	6$			;Yes
+	TESTL	knlTda+tdaOption##, #XO$ODFS ;Trying to create a directory?
+	JE	8$			;No
+	TESTL	knlTda+tdaOption##, #XO$CREATE ;Maybe
+	JE	8$			;No
+6$:	INCL	EAX			;Yes
+8$:	PUSHL	EAX
+	PUSHL	#1
+	CALL	ffsfindindir		;Search for the file
+	TESTL	EAX, EAX
+	JLE	fodfin			;If error or found unlock everthing
+					;  before returning
+	JMP	foddone			;If not found, leave the directory
+					;  locked
+.PAGE
+;Function to find directory or file in a directory. When called the directory
+;  to be searched must be open and locked. The search starts from the current
+;  position in this directory. The name to be searched for is in odb_name. The
+;  odb_namelen value must be set.
+;	long ffsfindindir(
+;	    ODB *odb,		// Open data block (ODB)
+;	    int  attr,		// Attributes for search
+;	    int  failex,	// TRUE if should fail if target exists
+;	    int  prefix);	// Prefix for returned name
+;  Value returned is 0 if the target file or directory was found (the target
+;    file or directory is open on the DCB and is locked), 1 if the target
+;    file or directroy was not found (last directory searched is open on the
+;    DCB and is locked), or a negative XOS error code if error. On an error
+;    return the last directory searched will usually (but not always) be open
+;    on the DCB and will not be locked. The caller must check dcb_dkfilpnt to
+;    see if something is still open. When searching an open directory, that
+;    directory will always be open of the DCB on an error return. No files or
+;    directories are locked on return. (Note that when we have a file open
+;    that file's directory entry will never be moved by any other process.
+;    It might be modified, but that does not conern us here.
+
+fid_odb   =!24t
+fid_attrib=!20t
+fid_failex=!16t
+fid_prefix=!12t
+
+ffsfindindir::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	PUSHL	fid_odb[ESP]
+	PUSHL	fid_attrib+4[ESP]
+	PUSHL	fid_failex+8[ESP]
+	CALL	ffsfindinopndir
+	TESTL	EAX, EAX		;Error or not found?
+	JNE	10$			;Yes
+
+;Here if the target item was found - open it
+
+	PUSHL	fid_odb[ESP]
+	CALL	ffsreadfib#		;Set up the fake FIB for the file (This
+					;  returns with the file open on the
+					;  DCB and locked.)
+	TESTL	EAX, EAX		;Error?
+	JS	10$			;Yes
+	MOVL	EBX, dcb_dkbasefib[EDI]	;Unlock the directory
+	PUSHL	bfr_dirfiba[EBX]
+	CALL	xosdskRelsBufr##
+	CLRL	EAX
+10$:	POPL	EBX
+	POPL	EDI
+	RET	16t
+.PAGE
+;Function to find directory or file in an open directory. When called the
+;  directory to be searched must be open and locked. The search starts from
+;  the current position in this directory. The name to be searched for is in
+;  odb_name. The odb_namelen value must be set.
+;	long ffsfindinopndir(
+;	    ODB *odb,		// Open data block (ODB)
+;	    int  attr,		// Attributes for search
+;	    int  failex);	// TRUE if should fail if target exists
+;  Value returned is 0 if target item was found, 1 if not found, or a negative
+;    XOS error code if error.
+;  If 0 is returned, the directory or file found is open on the DCB and is
+;    locked. The last directory searched is still locked. The position in the
+;    directory of the base entry found is in odb_dirpos.
+;  If 1 is returned, the last directory searched is open on the DCB and is
+;    locked.
+;  On error returns, the directory is open on the DCB and is not locked and
+;    all buffers used have been given up. Note that if any directory other
+;    than the target is not found, an ER_DIRNF error is returned.
+
+;NOTE: Always Returning with the last directory open is necessary to allow
+;      this function to be called for the find file operation. It does not
+;      seem worth complicating it to sometimes close the directory when this
+;      can easily be done by the caller when necessary.
+
+;This search checks for the correct type of entry before checking the name
+;  of the entry. The FFS spec says there is a single name space for all types
+;  of entries so it would be a bit quicker to check the name first. If a
+;  name match of the wrong type was found it would be assumed that the name
+;  with the correct type did not exist. This way we must search the entire
+;  directory if there is a matching name with a different type. This allows
+;  use to better handle the illegal case where there are entries with the
+;  same name but different types which has been observed.
+
+$$$=!0
+FRM            , 1
+FRM fiod_retry , 1
+FRM fiod_chksum, 1
+FRM fiod_number, 1
+FRM fiod_dirbfr, 4
+FRM fiod_entpnt, 4
+FRM fiod_avail , 4
+FRM fiod_left  , 4
+FRM fiod_dnlen , 4		;Length of long name from directory
+fiod_SIZE=!$$$
+
+fiod_odb   =!28t
+fiod_attrib=!24t
+fiod_failex=!20t
+
+ffsfindinopndir::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	fiod_SIZE, 0
+	MOVL	fiod_dirbfr[EBP], #0
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EBX, dcb_dkbasefib[EDI]
+	TESTB	ff_attrib[EBX], #XA$DIRECT ;Is this a directory?
+	JNE	dosrch			;Yes
+	MOVL	EAX, #ER_NTDIR		;No - fail!
+	JMP	fioddn
+.PAGE
+;Here if really have a directory
+
+dosrch:	MOVB	fiod_retry[EBP], #5	;Initialize retry count
+	ANDL	dcb_dkfilepos[EDI],  #0xFFFFFFE0 ;Make sure really points to
+						 ;  start of a directory entry
+	MOVB	fiod_number[EBP], #0xFF	;Indicate not collecting long name
+
+;Here to read the next block in the directory
+
+nxdblk:	CALL	ffssetrdpos#		;Set position for read
+	TESTL	EAX, EAX
+	JS	12$
+	JE	notfound		;If at end of directory
+	MOVL	fiod_avail[EBP], EAX	;Save amount available
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'SCB='
+	PUSHL	ECX
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Get next block into a buffer
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	fiod_dirbfr[EBP], EBX
+	MOVL	ECX, dcb_dkfilepos[EDI]	;Get current offset in block
+	ANDL	ECX, #0x01E0
+	LEAL	EDX, bfr_data[EBX+ECX]
+	MOVL	fiod_entpnt[EBP], EDX
+	SHRL	ECX, #5			;Get number of entries left
+	NEGL	ECX
+	ADDL	ECX, #16t
+	MOVL	fiod_left[EBP], ECX
+nxdent:	MOVL	EDX, fiod_entpnt[EBP]
+	CMPB	[EDX], #0		;End of directory?
+	JE	notfound		;Yes - not found
+	CMPB	[EDX], #0xE5		;No - is this entry in use?
+	JNE	ckdent			;Yes - go check it
+	JMP	advent0			;No - continue searching
+
+;Here if the entry was not found - Return 1 with the directory open on the
+;  DCB and locked. All directory blocks have been given up.
+
+notfound:
+	MOVL	EAX, #1			;Return 1 to indicate not found
+	JMP	fioddn
+
+;Here if directory read error
+
+12$:	CMPL	EAX, #ER_MDCHG
+	JE	fioddn
+	MOVL	EAX, #ER_DRRER		;Get right error code
+	JMP	fioddn
+.PAGE
+;Here a with directory entry to check
+
+ckdent:	CMPW	de_attrib[EDX], #0x000F	;Is this an extended name entry?
+	JNE	notlong			;No
+
+;Here if have a long name entry
+
+	TESTB	[EDX], #0x80		;Has it been deleted?
+	JNE	advent0			;Yes
+	MOVL	ECX, fiod_odb[EBP]
+	TESTB	[EDX], #0x40		;No - is this the first chunk?
+	JE	4$			;No
+
+;Here if this is the first extended entry for a long name
+
+	MOVZBL	EAX, 13t[EDX]		;Save the checksum byte
+	MOVB	fiod_chksum[EBP], AL
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;Store the block number
+	MOVL	odb_dirfblk+0[ECX], EAX
+	MOVL	EAX, dcb_dkdskblk+4[EDI]
+	MOVL	odb_dirfblk+4[ECX], EAX
+	MOVZBL	EAX, [EDX]		;Get entry number
+	ANDL	EAX, #0x1F
+	CMPB	AL, #8			;Is it valid
+	JA	advent0			;No
+	CMPB	AL, #0			;Maybe
+	JE	advent0			;No
+	MOVB	fiod_number[EBP], AL	;Yes - store it
+	MOVB	odb_extnum[ECX], AL
+	JMP	6$			;Collect this name part
+
+;Here if not the first long name extended entry
+
+4$:	MOVZBL	EAX, 13t[EDX]		;Get the checksum byte
+	CMPB	fiod_chksum[EBP], AL	;Is it right?
+	JNE	advent0			;No
+	MOVZBL	EAX, [EDX]		;Get entry number
+	ANDL	EAX, #0x1F
+	CMPB	fiod_number[EBP], AL	;Is it right?
+	JNE	advent0			;No
+6$:	DECB	fiod_number[EBP]
+	JS	advent0
+	IMULL	EAX, #13t
+	LEAL	EAX, odb_dirname-13t[EAX+ECX]
+	PUSHL	EAX
+	ADDL	EDX, #xe_name0
+	PUSHL	EDX
+	PUSHL	#5
+	CALL	getlongpart
+	PUSHL	EAX
+	MOVL	EDX, fiod_entpnt[EBP]
+	ADDL	EDX, #xe_name1
+	PUSHL	EDX
+	PUSHL	#6
+	CALL	getlongpart
+	PUSHL	EAX
+	MOVL	EDX, fiod_entpnt[EBP]
+	ADDL	EDX, #xe_name2
+	PUSHL	EDX
+	PUSHL	#2
+	CALL	getlongpart
+	MOVL	EDX, fiod_entpnt[EBP]
+	TESTB	[EDX], #0x40		;First (really last) entry?
+	JE	advent2			;No
+	MOVB	[EAX], #0		;Yes - store final 0
+	SUBL	EAX, fiod_odb[EBP]	;Get length of the name
+	SUBL	EAX, #odb_dirname
+	MOVL	fiod_dnlen[EBP], EAX
+	JMP	advent2			;Continue
+.PAGE
+;Here if not a long name entry
+
+notlong:MOVL	EDX, fiod_entpnt[EBP]
+	CMPB	[EDX], #'.'		;Yes - is this entry . or ..?
+	JNE	2$			;No
+	CMPL	2[EDX], #'    '		;Maybe
+	JNE	2$			;No
+	CMPL	6[EDX], #'    '		;Maybe
+	JNE	2$			;No
+	CMPB	10t[EDX], #' '		;Maybe
+	JNE	2$			;No
+	CMPB	1[EDX], #' '		;Maybe - is it .?
+	JE	advent0			;Yes - always ignore it
+	CMPB	1[EDX], #'.'		;No - is it ..?
+	JE	advent0			;Yes - always ignore it
+2$:	MOVZBL	EAX, de_attrib[EDX]
+	ANDL	EAX, #0x3F
+	MOVZBL	ECX, fiod_attrib[EBP]	;Get our search attribute
+	TESTL	ECX, ECX		;Was it specified?
+	JE	4$			;No
+	TESTB	AL, #XA$LABEL		;Yes - is this a label?
+	JNE	advent0			;Yes - skip it
+	JMP	10$			;No - check the type
+
+;Here to use the user's search attributes
+
+4$:	MOVZBL	ECX, knlTda+tdaSrcAttr##
+	TESTB	AL, #XA$LABEL		;Is this a label?
+	JE	6$			;No
+	TESTB	CL, #XA$LABEL 		;Yes - do we want a label?
+	JE	advent0			;No - skip it
+	JMP	14$			;Yes - check the name
+
+6$:	TESTL	knlTda+tdaOption##, #XO$CREATE ;Trying to create something?
+	JNE	14$			;Yes - must look at all files
+	MOVB	CH, CL			;If this is a hidden or system file
+	NOTB	CH			;  see if we want that
+	ANDB	CH, #XA$HIDDEN|XA$SYSTEM
+	ANDB	CH, AL
+	JNE	advent0			;No - skip this one
+10$:	TESTB	AL, #XA$DIRECT		;Set the FILE bit if if it should
+	JNE	12$			;  be set
+	ORB	AL, #XA$FILE
+12$:	ANDB	AL, CL			;Yes - do we want this type
+	TESTB	AL, #XA$DIRECT|XA$FILE	;  (directory or file)?
+	JE	advent0			;No
+
+;Here with a normal directory entry we need to check (not . or ..)
+
+14$:	CMPB	fiod_number[EBP], #0	;Do we have a valid long name?
+	JNE	20$			;No
+	CLRL	EAX			;Maybe - calculate the checksum from
+	MOVL	ECX, #11t		;  the 8x3 format entry
+16$:	RORB	AL, #1t
+	ADDB	AL, [EDX]
+	INCL	EDX
+	LOOP	ECX, 16$
+	CMPB	fiod_chksum[EBP], AL	;Is the checksum right?
+	JNE	20$			;No - long name is not valid
+	PUSHL	EDI
+	MOVL	EDI, fiod_odb[EBP]	;Yes - see if there is a period in the
+	MOVB	odb_chksum[EDI], AL
+	MOVL	ECX, fiod_dnlen[EBP]
+	ADDL	EDI, #odb_dirname
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, #'.'
+	RNSCASB	[EDI]
+	MOVL	ECX, EDI
+	POPL	EDI
+	JE	24$			;If have a period
+	MOVW	[ECX], #'.'		;No period - add one
+	JMP	24$			;Yes
+
+;Here don't have a valid long name - Convert the 8x3 name to a simple string.
+;  If the short name is not valid (This will happen if a long name is corrupted
+;  on a file entry without a short name, which is any entry we created or
+;  modified.) just ignore the entry.
+
+20$:	MOVL	EAX, fiod_odb[EBP]
+	MOVB	odb_extnum[EAX], #0	;No extended name entries
+	MOVB	odb_chksum[EAX], #0	;And no checksum
+	ADDL	EAX, #odb_dirname
+	PUSHL	EAX
+	MOVL	EDX, fiod_entpnt[EBP]
+	PUSHL	EDX
+	PUSHL	#8
+	TESTB	de_bits[EDX], #ODBF$LCNAME
+	SETNE	AL
+	PUSHL	EAX
+	CALL	get8x3part		;Get the name part
+	TESTL	EAX, EAX
+	JE	advent0
+	MOVB	[EAX], #'.'		;Add a period
+	INCL	EAX
+	PUSHL	EAX
+	MOVL	EDX, fiod_entpnt[EBP]
+	TESTB	de_bits[EDX], #ODBF$LCEXT
+	SETNE	AL
+	ADDL	EDX, #8
+	PUSHL	EDX
+	PUSHL	#3
+	PUSHL	EAX
+	CALL	get8x3part		;Get the extension part
+	TESTL	EAX, EAX
+	JE	advent0
+
+;Here with the name to check
+
+24$:	PUSHL	#0			;Do mixed case compare
+	MOVL	EAX, fiod_odb[EBP]
+	ADDL	EAX, #odb_name
+	PUSHL	EAX
+	ADDL	EAX, #odb_dirname-odb_name
+	PUSHL	EAX
+	CALL	sysLibWildCmp8##	;Do wild-card compare
+	TESTL	EAX, EAX
+	JE	found			;If match
+advent0:MOVB	fiod_number[EBP], #0xFF	;Indicate not collecting long name
+advent2:ADDL	fiod_entpnt[EBP], #0x20	;Bump to next entry
+	ADDL	dcb_dkfilepos[EDI], #0x20
+	DECL	fiod_left[EBP]		;More to check?
+	JNE	nxdent			;Yes - continue with this block
+	PUSHL	fiod_dirbfr[EBP]
+	CALL	xosdskRelsBufr##	;No - release the buffer for this block
+	MOVL	fiod_dirbfr[EBP], #0
+	MOVL	EBX, dcb_dkbasefib[EDI] ;Restore address of the fake FIB
+	JMP	nxdblk			;Continue with the next block
+.PAGE
+;Here with the file or directory found - When get here the directory is open
+;  and locked and the directory page is locked.
+
+found:	CMPB	fiod_failex[EBP], #0	;Should we fail if the file exists?
+	JNE	10$			;Yes
+	MOVL	ECX, fiod_odb[EBP]	;No
+	MOVL	EAX, dcb_dkfilepos[EDI]	;Save position of the base directory
+	MOVL	odb_dirpos[ECX], EAX	;  entry
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;Save the block number
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	MOVL	odb_dirbblk+0[ECX], EAX
+	MOVL	odb_dirbblk+4[ECX], EDX
+	CMPB	fiod_number[EBP], #0	;Do we have a long name?
+	JE	6$			;Yes
+	MOVL	odb_dirfblk+0[ECX], EAX	;No - this is also the block for
+	MOVL	odb_dirfblk+4[ECX], EDX	;  the first directory entry
+6$:	CLRL	EAX
+fioddn:	MOVL	EBX, fiod_dirbfr[EBP]	;Release the directory block if we
+	TESTL	EBX, EBX		;  still have one
+	JE	8$
+	PUSHL	EAX
+	PUSHL	EBX
+	CALL	xosdskRelsBufr##
+	POPL	EAX
+8$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+;Here if should fail if the file exists
+
+10$:	MOVL	EAX, #ER_FILEX		;Assume it's a file
+	MOVL	EDX, fiod_entpnt[EBP]
+	TESTB	de_attrib[EDX], #XA$DIRECT ;Is it a directory?
+	JE	fioddn			;No
+	MOVL	EAX, #ER_DIREX		;Yes - return the right error
+	JMP	fioddn
+.PAGE
+;Function to get next name part (file name or extension) from an 8x3 directory
+;  entry. We are pretty liberal about what we accept and generally accept any
+;  non-control character except period as-is. We accept 0x05 and convert it to
+;  0xE5. If a character is an upper case letter, it is converted to lower case
+;  if the lower-case bit is set for the name part. Otherwise characters are
+;  accepted without change.
+;	char *get8x3part(
+;	    char *bpnt,		// Current entry buffer pointer
+;	    char *epnt,		// Address of directory entry part
+;	    long  cnt,		// Maximum length of entry part
+;	    long  lccase);	// Bit 0 set if should be lower case
+;  Value returned is a pointer to next character in the entry buffer if the
+;    8x3 part is valid or NULL if it is not valid.
+
+gsp_bpnt  =!16t
+gsp_epnt  =!12t
+gsp_cnt   =!8
+gsp_lccase=!4
+
+get8x3part:
+	MOVL	ECX, gsp_bpnt[ESP]
+	MOVL	EDX, gsp_epnt[ESP]
+2$:	MOVZBL	EAX, [EDX]		;Get name character
+	CMPB	AL, #0x0
+	CMPB	AL, #' '		;Valid?
+	JB	12$			;No
+	CMPB	AL, #'.'
+	JE	12$			;No
+	CMPB	AL, #0x7F
+	JE	12$
+	TESTB	gsp_lccase[ESP], #0x01	;Should this character be lower case?
+	JE	6$			;No
+	CMPB	AL, #'A'		;Yes - is it an upper case character?
+	JB	6$
+	CMPB	AL, #'Z'
+	JA	6$
+	ADDL	EAX, #'a'-'A'		;Yes - change to lower case
+6$:	MOVB	[ECX], AL		;Store in directory entry buffer
+	INCL	EDX
+	INCL	ECX
+	CMPB	AL, #' '		;Might this be the end?
+	JE	8$			;Yes
+	MOVL	gsp_bpnt[ESP], ECX	;No - remember to location
+8$:	DECL	gsp_cnt[ESP]
+	JNE	2$			;Continue if more to get
+	MOVL	EAX, gsp_bpnt[ESP]	;Get pointer to end of part
+	MOVB	[EAX], #0		;Store final null
+10$:	RET	16t
+
+;Here if name is not valid
+
+12$:	CLRL	EAX
+	JMP	10$
+.PAGE
+;Function to get characters from a long file name directory entry
+;	char *getlongpart(
+;	    char *bpnt,
+;	    char *epnt,
+;	    int   cnt);
+;  Value returned is the updated entry buffer pointer.
+
+glp_bpnt=!12t
+glp_epnt=!8
+glp_cnt =!4
+
+getlongpart:
+	MOVL	EAX, glp_bpnt[ESP]
+	MOVL	EDX, glp_epnt[ESP]
+4$:	MOVZWL	ECX, [EDX]
+	CMPL	ECX, #0xFFFF		;Past end?
+	JE	10$			;Yes
+	CMPB	CH, #0			;No - ASCII character?
+	JE	6$			;Yes
+	MOVL	ECX, #0xFF		;No
+6$:	MOVB	[EAX], CL
+	CMPB	CL, #0
+	JE	10$
+	ADDL	EDX, #2
+	INCL	EAX
+	DECL	glp_cnt[ESP]
+	JNE	4$
+10$:	RET	12t
+.PAGE
+;Function to check for wild-card characters in a name
+;	int chkforwildcard
+;	    ODB *odb);
+;  Value returned is non-0 if have any wild-card characters, 0 if none.
+
+cfwc_odb=!4
+
+chkforwildcard:
+	MOVL	EDX, cfwc_odb[ESP]
+	ADDL	EDX, #odb_name
+4$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	CMPB	AL, #0
+	JE	6$
+	CMPB	AL, #'?'
+	JE	6$
+	CMPB	AL, #'*'
+	JNE	4$
+6$:	RET	4
+.PAGE
+;Function to remove entry from a directory.  File to be removed must be
+;  open for exclusive write access and locked.  The directory must be open
+;  and locked.
+;	long ffsfromdir(
+;	    long extnum,	;Number of extended entries
+;	    long chksum,	;File name checksum value
+;	    long filecls;	;Low 16 bits of cluster number of first cluster
+;				;  allocated to the file
+;	    ui64 dirfblk,	;Block number for first directory entry
+;	    ui64 dirbblk,	;Block number for base directory entry
+;	    long pos);		;Position of entry in directory (bytes)
+
+;NOTE: This function assumes that there will be no more than 9 directory
+;      entries (base entry plus 8 extended name entries) for a file since
+;      we reject all files with names longer than 95 characters. Thus the
+;      entire entry can never cross more than one block boundry.
+
+$$$=!0
+FRM frmd_dirbfr, 4
+FRM frmd_cnt   , 4
+FRM frmd_left  , 4
+frmd_SIZE=!$$$
+
+frmd_extnum =!40t
+frmd_chksum =!36t
+frmd_filecls=!32t
+frmd_dirfblk=!24t
+frmd_dirbblk=!16t
+frmd_pos    =!12t
+
+ffsfromdir::
+	PUSHL	EDI
+	ENTER	frmd_SIZE
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EAX, frmd_dirfblk+0[EBP] ;Get the block for the first directory
+	MOVL	EDX, frmd_dirfblk+4[EBP] ;  entry for the file
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#'SCB='
+	PUSHL	#0			;Don't worry about read-ahead since this
+	LEAL	EAX, frmd_dirbfr[EBP]	;  block is probably in the cache
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Get the block into a buffer
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EDX, frmd_pos[EBP]	;Calculate address of our first entry
+	MOVZBL	EAX, frmd_extnum[EBP]
+	MOVL	frmd_cnt[EBP], EAX
+	SHLL	EAX, #5
+	SUBL	EDX, EAX
+	ANDL	EDX, #1F0
+	MOVL	EAX, #512t		;Get number of entries available in
+	SUBL	EAX, EDX		;  this block
+	SHRL	EAX, #5
+	MOVL	frmd_left[EBP], EAX
+	ADDL	EDX, frmd_dirbfr[EBP]
+	ADDL	EDX, #bfr_data
+
+;Here with a directory entry to remove - All of the checks here are for
+;  debugging!
+
+4$:	CMPW	xe_attrib[EDX], #0x000F	;Is this an extended name entry?
+	JNE	8$			;No
+	CMPL	frmd_cnt[EBP], #0	;Yes - should it be?
+	JE	6$			;No!
+	MOVZBL	EAX, [EDX]		;Yes - is the sequence number right?
+	ANDL	EAX, #0x3F
+	CMPL	EAX, frmd_cnt[EBP]
+	JNE	6$			;No!
+	MOVZBL	EAX, xe_chksum[EDX]	;Yes - is the checksum value right?
+	CMPB	AL, frmd_chksum[EBP]
+	JE	14$			;Yes - OK to remove it
+6$:	CRASH	IXDE			;[Invalid eXtended Directory Entry]
+
+;Here if not an extended directory entry
+
+8$:	CMPL	frmd_cnt[EBP], #0	;Should this be the base entry?
+	JNE	10$			;No
+	MOVL	EAX, frmd_filecls[EBP]	;Check low 16 bits of the first
+	CMPW	AX, de_pntr[EDX]	;  cluster number
+	JE	12$
+10$:	CRASH	IBDE			;[Invalid Base Directory Entry]
+
+12$:	ANDB	de_bits[EDX], #0xF8	;Make sure it's not "being renamed"
+	MOVB	de_renchr[EDX], #0
+14$:	MOVB	[EDX], #0xE5		;Mark entry as available
+	ADDL	EDX, #32t
+	DECL	frmd_cnt[EBP]		;Have another entry?
+	JS	16$			;No
+	DECL	frmd_left[EBP]		;Yes - more available in this block?
+	JNE	4$			;Yes
+	PUSHL	frmd_dirbfr[EBP]	;No - write out this block
+	CALL	xosdskWriteBufr##
+	TESTL	EAX, EAX
+	JS	frmddn
+	PUSHL	frmd_dirbfr[EBP]
+	CALL	xosdskRelsBufr##	;Give up the current buffer
+	MOVL	EAX, frmd_dirbblk+0[EBP] ;Get the block for the base directory
+	MOVL	EDX, frmd_dirbblk+4[EBP] ;  entry for the file
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+	PUSHL	#'SCB='
+	PUSHL	#0			;Don't try to do read-ahead since we
+	LEAL	EAX, frmd_dirbfr[EBP]	;  don't need the next block
+	PUSHL	EAX
+	CALL	xosdskFindBlock##	;Get the block into a buffer
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	EDX, frmd_dirbfr[EBP]
+	ADDL	EDX, #bfr_data
+	JMP	4$
+
+;Here with all directory entries removed - write out the last block
+
+16$:	PUSHL	frmd_dirbfr[EBP]	;Write out this block
+	CALL	xosdskWriteBufr##
+	TESTL	EAX, EAX
+	JS	frmddn
+	PUSHL	frmd_dirbfr[EBP]
+	CALL	xosdskRelsBufr##	;Give up the bufrer
+	CLRL	EAX
+frmddn:	LEAVE
+	POPL	EDI
+	RET	32t
+.PAGE
+;Function to copy name element - Also initializes ODB items.
+;	long ffscopyname(
+;	    char **ppath,	// Address of pointer to current position in 
+;				//   the path string
+;	    ODB   *odb);	// Address of the open data block (ODB)
+;  Value returned is stopper character (positive) or a negative XOS error
+;    code if error. The ppath pointer is updated to point to the stopper
+;    character.
+
+cn_odb  =!16t
+
+ffscopyname::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EBX, cn_odb[ESP]	;Get address of the ODB
+	MOVL	ESI, odb_ppath[EBX]
+	MOVB	odb_flags[EBX], #0
+	LEAL	EDI, odb_name[EBX]
+	MOVL	ECX, #FILENAME_MAX
+2$:	MOVZBL	EAX, [ESI]		;Get a character
+	CMPB	AL, #0			;End of name?
+	JE	10$			;Yes
+	INCL	ESI
+	CMPB	AL, #'\'		;Maybe
+	JE	10$			;Yes
+	CMPB	AL, #'.'		;Period?
+	JNE	4$			;No
+	ORB	odb_flags[EBX], #ODBF$PERIOD ;Yes - remember this
+4$:	MOVB	[EDI], AL		;No - store character
+	INCL	EDI
+	LOOP	ECX, 2$			;No - continue if have room for more
+	MOVL	EAX, #ER_BDSPC
+	JMP	cnmdn
+
+;Here with the name stored
+;	c{EAX} = Stopper character
+
+10$:	TESTB	odb_flags[EBX], #ODBF$PERIOD ;Did we see a period?
+	JNE	12$			;Yes
+	MOVB	[EDI], #'.'		;No - add one
+	INCL	EDI
+12$:	MOVB	[EDI], #0		;Store final null character
+	MOVL	odb_ppath[EBX], ESI	;Update his path pointer
+	SUBL	EDI, EBX		;Store name length
+	SUBL	EDI, #odb_name
+	MOVL	odb_namelen[EBX], EDI
+cnmdn:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to verify that a directory entry matches a FIB. This is indended
+;  for debugging only. It should not be called in a production system! 8x3
+;  names with an invalid format (such as embedded spaces) may cause a false
+;  error indication here!!
+;	void ffsverifydirent(
+;	    FIB  *fib,		// Address of file FIB
+;	    char *de);		// Address of 32-byte base directory entry
+;  Crashes system if entry does not match the FIB!
+
+;If the base entry has no extended entries, the name is compared to the file
+;  name in the FIB. If it has any extended entries, only the checksum of the
+;  base entry is checked. This is necessary since we DO NOT create any kind
+;  of matching 8x3 name when there are extended entires. It does not seem
+;  necessary to go to the trouble of checking the extended entries, which
+;  might required reading another directory block. Checking the checksum
+;  should catch almost all mismatches.
+
+$$$=!0
+FRM vde_bufr, 16t	;Name buffer
+vde_SIZE=!$$$
+
+vde_fib=!20t
+vde_de =!16t
+
+ffsverifydirent::
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	vde_SIZE
+	MOVL	EBX, vde_fib[EBP]
+	MOVL	EDX, vde_de[EBP]
+	CMPB	[EDX], #0		;Is this entry in use?
+	JE	2$			;No
+	CMPB	[EDX], #0xE5
+	JNE	4$			;Yes
+2$:	CRASH	DENI
+
+;Here if directory entry is in use
+
+4$:	MOVZBL	EAX, xe_attrib[EDX]	;Is this a base entry?
+	ANDL	EAX, #0x0F
+	CMPB	AL, #0x0F
+	JNE	6$			;Yes
+	CRASH	DENB
+
+;Here if this is a base directory entry
+
+6$:	MOVL	EAX, ff_dirpos[EBX]	;Is the directory possition right?
+	XORL	EAX, EDX		;  (This only checks 2 bits, but it
+	TESTL	EAX, #0x7F		;  will catch some common errors!)
+	JE	8$
+	CRASH	BDDP
+
+;Here if the entry position store in the FIB is probably OK
+
+8$:	CMPB	ff_extnum[EBX], #0	;Have any extended entries?
+	JE	14$			;No - check the name
+	CLRL	EAX			;Yes - calculate the checksum for
+	MOVL	ECX, #11t		;  8x3 format entry
+10$:	RORB	AL, #1
+	ADDB	AL, [EDX]
+	INCL	EDX
+	LOOP	ECX, 10$
+	CMPB	ff_chksum[EBX], AL	;Is the checksum right?
+	JE	40$			;Yes - finished
+	CRASH	BDDE
+
+;Here if do not have any extended directory entries - Check that the first
+;  entry block number and base entry block numbers are the same.
+
+14$:	MOVL	ECX, bfr_block+4[EBX]
+	MOVL	EAX, bfr_block+0[EBX]
+	ANDL	ECX, #0x07FFFFFF
+	MOVL	ESI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[ESI]
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	ECX, ucb_partnoff+4[ESI]
+	CMPL	EAX, ff_dirfblk+0[EBX]
+	JNE	16$
+	CMPL	ECX, ff_dirfblk+4[EBX]
+	JE	20$
+16$:	CRASH	BD1B			;[BaD 1st Block number]
+
+;Check that the name matches the directory entry
+
+20$:	LEAL	EBX, vde_bufr[EBP]	;Convert the name from the base
+	MOVL	ECX, #8			;  directory entry to a string
+22$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	CMPB	AL, #' '
+	JE	24$
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 22$
+24$:	MOVB	[EBX], #'.'
+	INCL	EBX
+	MOVL	EDX, vde_de[EBP]
+	ADDL	EDX, #8
+	MOVL	ECX, #3
+26$:	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	CMPB	AL, #' '
+	JE	28$
+	MOVB	[EBX], AL
+	INCL	EBX
+	LOOP	ECX, 26$
+28$:	MOVB	[EBX], #0
+	MOVL	EAX, vde_fib[EBP]	;Compare names
+	ADDL	EAX, #ff_name
+	PUSHL	EAX
+	LEAL	EAX, vde_bufr[EBP]
+	PUSHL	EAX
+	CALL	sysLibStrICmp##
+	TESTL	EAX, EAX
+	JE	40$
+	CRASH	BDDE
+
+40$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	RET	8
+
+	LKEEND

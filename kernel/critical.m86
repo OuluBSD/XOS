@@ -1,0 +1,329 @@
+	.TITLE	critical - User critical region scheduling routines
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+	CODE
+
+;This module implements the user critical region scheduling system calls.
+;  These calls are intended to be used with the following user mode code to
+;  implement an efficient critical region scheduling mechanism. This proceedure
+;  may be used within a process or between processes as long as all processes
+;  have access to the same shared user memory. If used between threads in a
+;  single process, the memory used may be private to the process.
+
+;This proceedure is intended for use for "reasonably long" (Exactly what this
+;  means needs further study!) critical regions. Short critical regions should
+;  be protected with simple spin locks.
+
+;Each critcal region must have a single CRITLCK structure that is available
+;  at the same address for all threads which will use the critical region.
+;  The CRITLCK structure contains 12 bytes used as follows:
+;	typedef struct
+;	{   char bits;		// Flag bits
+;	    char xxx[3];	// Fill
+;	    long head;		// TID of first thread waiting
+;	    long tail;		// TID of last thread waiting
+;	} CRITLCK;
+;  This structure should be long aligned.  Only the flag bits should be modified
+;  by a user process during operation. 
+
+
+;Each thread using a critical region must have a unique CRITLNK structure that
+;  is available at the same address for all threads which will use the critical
+;  region. A thread may use a single CRITLNK structure can be used to access
+;  any number of critical regions. (It is only accessed when the thread is
+;  waiting for a region and a thread can only be waiting for one region at
+;  any time.)
+
+;  after that.  The process ID fields MUST NOT BE modified by any user process.
+;  The CRITLNK structure is defined as follows:
+;	typedef struct
+;	{   CRITLNK *next;	// Address of next CRITLNK waiting
+;	    long     tid;
+;	    char     state;
+;           char     xxx1;	// Fill
+;	    char     vector;	// Timeout signal vector
+;	    char     xxx2;	// Fill
+;	    llong    timeout;	// Timeout value - 0 if no timeout. If a wait
+;				//   times out, bit 63 of this value is set.
+;	} CRITLNK;
+
+;WARNING: The operation of this call can be affected by other threads which
+;	  modify the CRITLCK and CRITLNK structures incorrectly!  Other than
+;         the provision for a time-out, there is no protection from deadlock
+;         conditions.  In partictular, there is no protection from a thread
+;         attempting to lock a critical region when it already has it locked.
+;         There is also no protection for the classic double critical region
+;         scernerio. There are no restrictions on locking multiple critical
+;         regions.  If the process which owns a critical region terminates
+;         without giving up the critical region, the critical section will
+;         NOT be released. If the memory containing the key is deallocated,
+;         any processe trying to access the key will incure a page fault error.
+
+;  The system is fully protected from damage by incorrect use of this call,
+;  except for incorrect operation of the partictular critical region affected.
+
+;  The design of these SVCs purposely trade off protection for speed!  They 
+;  are designed to be very fast in the usual case where where is no contention
+;  for the critical region.  System calls are only made when absolutely
+;  necesary when there is contention for the critical region or when a race
+;  occurs when giving up the region. 
+
+;  These SVCs are only intended to be used as indicated below. Any other use
+;  is NOT supported and may produce undefined results.
+
+;The following code begins a critical region without a timeout or signal:
+;	LKBTSL	key+lck_bits, #LCK%BUSY	;Is it busy now?
+;	JC	wait			;Yes - must wait
+;	CMPL	critlck+lck_head, #0	;Did someone sneak in to wait?
+;	JE	crit			;No
+;wait:	PUSHL	#critlck		;Wait for the region
+;	CALL	svcSchCritWait##
+;crit:
+
+;This can be created using the C inline function critBegin(CRITLCK *lck);
+
+;The following code ends a critical region:
+;	LKANDL	critlck+lck_bits, #LCK$BUSY
+;	CMPL	cirtlck+lck_head, #0	;Did someone sneak in?
+;	JE	done			;No - finished
+;wake:	PUSHL	#critlck		;Wake up someone who is waiting
+;	CALL	svcSchCritDone##
+;done:
+
+;This can be created using the C inline function critEnd(CRITLCK *lck).
+
+;To create a critical region allocate a CRITLCK structure in memory that is
+;  accessable at the same address to all threads what will lock the region and
+;  clear the structure to all 0s. Do not modify this structure after this
+;  except as described above. Only the LCK$BUSY bit should every be modified
+;  by user mode code.
+
+;To access a critical region allocate a CRITLNK structure in memory that is
+;  accessable at the same address to all threads what will lock the region.
+;  Set next to -1, tid to 0, and set timeout and vector as desired. The
+;  next and tid values should not be modified by user mode code after it is
+;  initialized. The timeout and vector values can be modified by the thread
+;  at any time it is running. The effect of changing these values from a
+;  different thread while the thread that owns the structure is waiting for
+;  the region is not defined.
+
+;This code uses the LCK$BUSY bit and the value of lck_head as a two phase
+;  interlock. The goal is to allow access to and exit from the critical
+;  region with mimimum code executed and especially without any system calls
+;  when there is no contention for the critical region. The atomic BTSL
+;  operation eliminates deadlocks when entering the region. When the region
+;  is in use, the SVC is called to wait until it is free. There is a posibility
+;  that the region will be in the process of being given up when entering a
+;  critical region if the region was just given up and someone was waiting for
+;  it. In this case LCK$BUSY will be cleared before lck_head is checked. In
+;  this case the region is really in use even though LCK$BUSY is not set and
+;  the SVC must be called to wait for the region. There is also a possible
+;  race if another two threads run and give up the critical region after
+;  the value of lck_head is checked. In this case an unnecessary call will
+;  be made to svcSchCritWait but no harm is done.
+
+;This code uses the CRITLNK structures to keep track of threads that are
+;  waiting for the region. There is no useful information there for the
+;  thread that owns the region.
+
+;*****************************************************************************
+;NOTE: The following code DOES NOT include multi-processor locks! It will need
+;      to be modified to support multiple processors!
+;*****************************************************************************
+
+;NOTE: This version DOES NOT support timeouts! In partictular, calling
+;      svcSchCritWait with a race value of other than 0 or 1 is undefined!
+;      While the action is well defined in this version, it may change in
+;      future versions of XOS.
+
+;Here for the svcSchCritWait system call - Wait for critical region.
+;  This function is normally called when the LCK$BUSY bit is set. It can
+;  also be called when LCK$BUSY is not set and lnk_head is not NULL, which
+;  means that we have snuck in between the clearing of LCK$BUSY and the
+;  calling of svcSchCritDone. In either case, it means the regions is not
+;  available and we must wait for it. It returns (with the LCK$BUSY bit set)
+;  when the  critical region is given to the caller or if it times out. The
+;  wait is interruptable by signals.
+
+;  Since this SVC waits by redoing the call, we need some way to determine
+;  when this is an initial call. The lnk_state value is used for this. It
+;  is 0 when the thread is not waiting for a region. It is set to 1 while
+;  waiting and to 2 when we have been given the region. It is set to 3 if
+;  the wait has timed out.
+
+;	long svcSchCritWait(
+;	    CRIT *crit);	// Critical region lock structure
+;  Value returned is always 0.
+
+psvcSchCritWait::
+	MOVL	EBX, knlTda+tdaArg1#	;Get address of the CRITLCK
+	IFFAULT	badcrit
+	CMPL	crit_label[EBX], #'CRIT'
+	JNE	badcrit
+	CMPB	knlTda+tdaCritState#, #1 ;Should we return now? (We have the
+					 ;  region.)
+	JA	10$			;Yes
+	JE	8$			;If just need to wait some more
+
+;Here to start waiting
+
+	CMPL	knlTda+tdaCritNext#, #-1 ;This should not be possible!
+	JNE	badcrit
+	INCL	knlTda+tdaCritNext#
+	MOVL	EDI, knlTda+tdaTid#	;Get his TID
+	IFFAULT	badcrit
+	MOVL	EAX, crit_tail[EBX]	;Get the tail of the list
+	TESTL	EAX, EAX		;Is the list empty?
+	JNE	4$			;No
+	IFFAULT	badcrit
+	CMPL	crit_head[EBX], #0	;Yes - make sure right
+	JNE	badcrit
+	IFFAULT	badcrit
+	MOVL	crit_head[EBX], EDI
+	JMP	6$
+
+;Here if the list is not empty - link him to the end
+
+4$:	PUSHL	EAX
+	CALL	gettda#
+	TESTL	EAX, EAX
+	JE	badcrit
+	CMPL	tdaCritNext#[EAX], #0
+	JNE	badcrit
+	MOVL	knlTda+tdaCritNext#, #0
+	MOVL	ECX, knlTda+tdaAddr#
+	MOVL	tdaCritNext[EAX], ECX
+	IFFAULT	badcrit
+6$:	MOVL	crit_tail[EBX], EDI
+	MOVB	knlTda+tdaCritState#, #1 ;Update the state
+8$:	TOFORK
+	PUSHL	knlTda+tdaAddr#		;Wait
+	PUSHL	#THDS_CRIT
+	CALL	sysSchRequeue#
+	FROMFORK
+	MOVL	EAX, #SVC$REDOREQ
+	RET
+
+;Here if we should just return because we have the region
+
+10$:	CMPL	knlTda+tdaCritNext#, #-1
+	JNE	badcrit
+	MOVB	knlTda+tdaCritState#, #0
+14$:	CLRL	EAX
+	RET
+
+;Here with a bad CRIT - Terminate the process! This is pretty drastic, but if
+;  this is messed up the process is probably toast anyway.
+
+	FAULTHDR
+badcrit:
+	PUSHL	#TC_BDCRIT<24t
+	PUSHL	knlPda+pdaTdaHead#
+	PUSHL	#0
+	CALL	sysSchTerminate#
+	JMP	14$
+.PAGE
+	.SBTTL	svcSchCritDone - SVC to release critical region
+
+;Here for the svcSchCritdone system call - Release critical region.  This
+;  function is called when the crit_head item is not NULL when releasing a
+;  critical region.  It wakes up the first process waiting for the critical
+;  region.
+;	svcSchCritDone(
+;	    CRIT *crit);
+;  Value returned is always 0.
+
+psvcSchCritDone::
+	MOVL	EBX, knlTda+tdaArg1#	;Get address of the CRIT structure
+	IFFAULT	badcrit
+	CMPL	crit_label[EBX], #'CRIT'
+	JNE	badcrit
+	IFFAULT	badcrit
+	TESTB	crit_bits[EBX], #CRIT$BUSY ;Does someone else own the region?
+					;This is possible but very unlikely.
+					;  It would require someone to sneak in
+					;  and get the region beteen clearing
+					;  the bit and testing crit_head and
+					;  then for someone else to try to get
+					;  the region and have to wait!
+	JNE	10$			;Yes - do nothing here!
+	IFFAULT	badcrit
+	MOVL	ESI, crit_head[EBX]	;Really have someone waiting?
+	TESTL	ESI, ESI
+	JE	badcrit			;No - should not be possible since we
+					;  should not be called unless this is
+					;  not NULL and no other thread should
+					;  be given  the region when it is not
+					;  NULL!
+
+;Here with a thread to give the region to
+
+	PUSHL	ESI			;Get the thread's TDA
+	CALL	gettda#
+	TESTL	EAX, EAX
+	JE	badcrit
+
+	MOVL	EDI, EAX
+
+	MOVL	ECX, tdaCritNext#[EDI]	;Remove this thread from the list
+	CMPL	ECX, #-1
+	JE	badcrit
+	TESTL	ECX, ECX		;End of the list?
+	JNE	4$			;No
+
+	IFFAULT	badcrit
+	CMPL	crit_tail[EBX], ESI
+	JNE	badcrit
+	IFFAULT	badcrit
+	MOVL	crit_head[EBX], #0
+	IFFAULT	badcrit
+	MOVL	crit_tail[EBX], #0
+	JMP	8$
+
+;Here if the list is not empty now
+
+4$:	MOVL	EAX, tdaTid#[ECX]
+	IFFAULT	badcrit
+	MOVL	crit_head[EBX], EAX
+
+;Here with the list updated - Give the region to the thread that was at the
+;  head of the list and wake it up.
+
+8$:	MOVL	tdaCritNext#[EDI], #-1
+	MOVB	tdaCritState#[EDI], #2
+	IFFAULT	badcrit
+	ORL	crit_bits[EBX], #CRIT$BUSY ;Indicate that the region is busy
+	TOFORK
+	PUSHL	EDI			;Wake him up
+	CALL	sysSchRunRequeue#
+	FROMFORK
+10$:	CLRL	EAX
+	RET
+
+	END

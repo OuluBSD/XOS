@@ -1,0 +1,298 @@
+	.TITLE	font2
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\bmf.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to display single character on the screen
+;	long dispchar(
+;	    WIN *win,		// Offset of WIN for window
+;	    FNT *fNT,		// Offset of FNT for font
+;	    int  chr,		// Character
+;	    int  xpos,		// X position of left edge of cell
+;	    int  ypos,		// Y position of baseline of cell
+;	    int  color);	// Color (internal format)
+;    Value returned is width of character displayed.
+
+;This function uses the Pascal calling sequence
+
+cd_win  =!40t
+cd_fnt  =!36t
+cd_chr  =!32t
+cd_xpos =!28t
+cd_ypos =!24t
+cd_color=!20t
+
+$$$=!0
+FRM cd_advx, 4t
+cd_SIZE=!$$$
+
+	.ENTRY	xwsdispchar
+xwsdispchar::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	cd_SIZE, 0
+	MOVL	ESI, cd_fnt[EBP]	;Get glyph bit-map for character
+	PUSHL	ESI
+	TESTL	ESI, ESI
+	JE	8$
+	PUSHL	cd_chr[EBP]
+	CALL	xwsfontgetglyph#
+	MOVL	EDI, gcb_ftglyph[EAX]
+	MOVL	EDX, ftg_left[EDI]	;Adjust position of the bitmap in the
+	ADDL	cd_xpos[EBP], EDX	;  character cell
+	MOVL	EDX, ftg_top[EDI]
+	SUBL	cd_ypos[EBP], EDX
+	MOVL	EAX, ftg_advance_x[EDI]	;Get advance width of the character
+	ADDL	EAX, #0xFFFF
+	SHRL	EAX, #16t
+	MOVL	cd_advx[EBP], EAX
+	CMPL	ftg_buffer[EDI], #0	;Is this an empty character?
+	JE	6$			;Yes
+	CMPB	xws_ScreenDRW#+drw_disable, #0 ;No - is the screen disabled?
+	JNE	6$			;Yes
+	MOVL	ECX, cd_win[EBP]	;No - get the clipping region
+	MOVL	EBX, win_bascliprgn[ECX]
+	CMPB	rgn_type[EBX], #RGNTYPE_NULL ;Null region?
+	JE	6$			;Yes
+	MOVL	EAX, cd_xpos[EBP]	;No - is the character outside of the
+	CMPL	EAX, rgn_right[EBX]	;  clipping region?
+	JG	4$			;Yes
+	ADDL	EAX, cd_advx[EBP]	;Maybe
+	CMPL	EAX, rgn_left[EBX]
+	JBE	4$			;Yes
+	MOVL	EAX, cd_ypos[EBP]	;Maybe
+	CMPL	EAX, rgn_bottom[EBX]
+	JG	4$			;Yes
+	ADDL	EAX, ftg_rows[EDI]	;Maybe
+	CMPL	EAX, rgn_top[EBX]
+	JBE	4$			;Yes
+	MOVL	EDX, win_basdrw[ECX]	;At least some of the character might
+	PUSHL	EDX			;  be in the clipping region - we need
+	PUSHL	EBX			;  to display it
+	PUSHL	win_basscnxpos[ECX]
+	PUSHL	win_basscnypos[ECX]
+	PUSHL	cd_xpos[EBP]
+	MOVL	EAX, cd_ypos[EBP]
+	PUSHL	EAX
+	PUSHL	ftg_buffer[EDI]
+	PUSHL	ftg_width[EDI]
+	PUSHL	ftg_rows[EDI]
+	PUSHL	ftg_pitch[EDI]
+	PUSHL	cd_color[EBP]
+	MOVL	EDX, drw_funcdsp[EDX]
+	CALLI	gfx_chardraw[EDX]
+4$:	MOVL	EAX, cd_advx[EBP]
+6$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	24t
+
+8$:	CLRL	EAX
+	JMP	6$
+.PAGE
+;Function to draw a character to a display buffer - this routine is used
+;  for memory context displays and for non-accelerated physical displays.
+;	void memchardraw(
+;	    DRW   *drw,		// Pointer to DRW for display
+;	    RGN   *rgn,		// Pointer to RGN for clipping region
+;	    int    xrgn,	// X position of clipping region
+;	    int    yrgn,	// Y position of clipping region
+;	    int    xpos,	// X position for character
+;	    int    ypos,	// Y position for character
+;	    uchar *bmbufr,	// Pointer to bitmap buffer
+;	    int    width,	// Width (pixels)
+;	    int    height,	// Height (pixels)
+;	    int    bmspan,	// Bitmap span (bytes)
+;	    int    fgcol,	// Forground color (internal format)
+;	    int    bgcol);	// Background color (internal format)
+
+;This function uses the Pascal calling sequence
+
+;The caller should have already determined that the character is not completely
+;  outside of the clipping region.  Also, the clipping region must be the final
+;  clipping region which does not extend past the edge of the window or screen.
+
+cw_drw   =!56t
+cw_rgn   =!52t
+cw_xrgn  =!48t
+cw_yrgn  =!44t
+cw_xpos  =!40t
+cw_ypos  =!36t
+cw_bmbufr=!32t
+cw_width =!28t
+cw_height=!24t
+cw_bmspan=!20t
+cw_color =!16t			;Color (internal format)
+
+$$$=!0
+FRM cw_dspbufr, 4t		;Pointer to display buffer
+FRM cw_dspspan, 4t		;Display buffer span (bytes)
+FRM cw_ytable , 4t		;Pointer to the ytable for the clipping region
+FRM cw_wcnt   , 4t		;Width count
+FRM cw_bcnt   , 4t
+FRM cw_scnt   , 4t
+cw_SIZE=!$$$
+
+	.ENTRY	xwsmemchardraw
+xwsmemchardraw::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	cw_SIZE, 0
+	MOVL	EDX, cw_rgn[EBP]
+	LEAL	EAX, rgn_ytable[EDX]
+	MOVL	cw_ytable[EBP], EAX
+	MOVL	EAX, rgn_top[EDX]	;Are we starting above the clipping
+	SUBL	EAX, cw_ypos[EBP]	;  region?
+	JL	4$			;No
+	SUBL	cw_height[EBP], EAX	;Yes - adjust height
+	JLE	cddone			;Nothing to do if completely above the
+					;  clipping region (The caller usually
+					;  should check for this but this makes
+					;  sure!)
+	ADDL	cw_ypos[EBP], EAX	;Adjust Y position
+	IMULL	EAX, cw_bmspan[EBP]	;Adjust the bitmap pointer
+	ADDL	cw_bmbufr[EBP], EAX
+	JMP	6$
+
+;Here if the clipping region starts above the top of the character cell
+
+4$:	NEGL	EAX
+	SHLL	EAX, #2			;Adjust the starting Y pointer value
+	ADDL	cw_ytable[EBP], EAX	;  in the clipping region
+6$:	MOVL	EAX, rgn_bottom[EDX]	;Calculate number of lines before
+	SUBL	EAX, cw_ypos[EBP]	;  bottom of clipping region
+	INCL	EAX
+	CMPL	cw_height[EBP], EAX	;Does it extend below clipping region?
+	JLE	8$			;No
+	MOVL	cw_height[EBP], EAX	;Yes - reduce the height
+8$:	MOVL	ECX, cw_drw[EBP]	;Get the initial display pixel pointer
+	MOVL	EAX, drw_bytespan[ECX]
+	MOVL	cw_dspspan[EBP], EAX
+	MOVL	EDI, cw_yrgn[EBP]
+	ADDL	EDI, cw_ypos[EBP]
+	IMULL	EDI, drw_pixelspan[ECX]
+	ADDL	EDI, cw_xrgn[EBP]
+	ADDL	EDI, cw_xpos[EBP]
+	ADDL	EDI, EDI
+	ADDL	EDI, drw_buffer[ECX]
+	MOVL	cw_dspbufr[EBP], EDI
+	MOVL	EAX, rgn_right[EDX]	;Calculate number of pixels before
+	SUBL	EAX, cw_xpos[EBP]	;  right side of clipping region
+	INCL	EAX
+	CMPL	cw_width[EBP], EAX	;Does it extend past clipping region?
+	JLE	10$			;No
+	MOVL	cw_width[EBP], EAX	;Yes - reduce the width
+10$:	CMPB	rgn_type[EDX], #RGNTYPE_SIMPLE ;Simple region?
+	JA	cwcmplx			;No
+.PAGE
+;Here if have a simple clipping region
+
+cwsmpl:	MOVL	ESI, cw_bmbufr[EBP]	;Get the bitmap pointer
+	MOVL	EDI, cw_dspbufr[EBP]	;Get the display pointer
+	MOVL	cw_bcnt[EBP], #1	;Initialize the bit count
+	MOVL	EAX, cw_width[EBP]	;Initialize the bitmap width count
+	MOVL	cw_wcnt[EBP], EAX
+	MOVL	EBX, cw_xpos[EBP]	;Get the X position
+
+;Here for next pixel of the row
+
+4$:	DECL	cw_bcnt[EBP]		;Need another byte?
+	JNE	6$			;No
+	MOVB	AL, [ESI]		;Yes - get it
+	INCL	ESI			;Bump glyph pointer
+	MOVB	cw_bcnt[EBP], #8	;Reset the bit count
+6$:	CMPL	EBX, rgn_left[EDX]	;To left of clipping region?
+	JL	12$			;Yes - skip this pixel
+	TESTB	AL, #0x80		;Foreground or background?
+	JE	12$			;Background - skip this pixel
+	MOVL	ECX, cw_color[EBP]	;Foreground - get foreground color
+	MOVW	[EDI], CX		;Display the pixel
+12$:	ADDL	EAX, EAX		;Advance to next bit
+	INCL	EBX			;Increment the X position
+	ADDL	EDI, #2t		;Increment the display pointer
+	DECL	cw_wcnt[EBP]		;More pixels for this line?
+	JNE	4$			;Yes - continue
+14$:	MOVL	EAX, cw_bmspan[EBP]	;No - advance to next bitmap line
+	ADDL	cw_bmbufr[EBP], EAX
+	INCL	cw_ypos[EBP]		;Increment the Y position
+	MOVL	EAX, cw_dspspan[EBP]	;Advance the display pointer
+	ADDL	cw_dspbufr[EBP], EAX
+	DECL	cw_height[EBP]		;More lines?
+	JNE	cwsmpl			;Yes - continue
+cddone:	LEAVE				;No - finished
+	POPL	ESI
+	POPL	EDI
+	RET	44t
+.PAGE
+;Here if have a complex clipping region
+
+cwcmplx:MOVL	ESI, cw_bmbufr[EBP]	;Get the bitmap pointer
+	MOVL	EDI, cw_dspbufr[EBP]	;Get the display pointer
+	MOVL	cw_bcnt[EBP], #1	;Initialize the bit count
+	MOVL	EAX, cw_width[EBP]	;Initialize the bitmap width count
+	MOVL	cw_wcnt[EBP], EAX
+	MOVL	EBX, cw_xpos[EBP]	;Get the X position
+
+;Here for next pixel of the row
+
+4$:	DECL	cw_bcnt[EBP]		;Need another byte?
+	JNE	6$			;No
+	MOVB	AL, [ESI]		;Yes - get it
+	INCL	ESI			;Bump glyph pointer
+	MOVB	cw_bcnt[EBP], #8	;Reset the bit count
+6$:	MOVL	ECX, cw_ytable[EBP]	;Point to segment table for the line
+	MOVL	ECX, [ECX]
+	TESTL	ECX, ECX		;Null line?
+	JE	18$			;Yes - skip this line
+	ADDL	ECX, EDX		;No
+	PUSHL	[ECX]			;Get the number of segments in line
+	POPL	cw_scnt[EBP]
+	ADDL	ECX, #4t
+8$:	CMPL	EBX, [ECX]		;Is pixel to left of this segment?
+	JL	16$			;Yes - don't display it
+	CMPL	EBX, 4[ECX]		;No - to the right of the segment?
+	JLE	10$			;No - display it
+	ADDL	ECX, #8t		;Yes - advance to next segment
+	DECL	cw_scnt[EBP]		;More segments?
+	JNE	8$			;Yes - continue
+	JMP	18$			;No - go on to next line
+
+;Here with a pixel to display
+
+10$:	TESTB	AL, #0x80		;Foreground or background?
+	JE	16$			;Background - skip the pixel
+	MOVL	ECX, cw_color[EBP]	;Foreground - get foreground color
+	MOVW	[EDI], CX		;Store the pixel
+16$:	ADDL	EAX, EAX		;Advance to next bit
+	INCL	EBX			;Increment the X position
+	ADDL	EDI, #2t		;Advance to next pixel
+	DECL	cw_wcnt[EBP]		;More pixels in this character line?
+	JNE	4$			;Yes - continue
+18$:	ADDL	cw_ytable[EBP], #4t	;No - advance the Y table pointer
+	MOVL	EAX, cw_bmspan[EBP]	;Advance to next bitmap line
+	ADDL	cw_bmbufr[EBP], EAX
+	INCL	cw_ypos[EBP]		;Increment the Y position
+	MOVL	EAX, cw_dspspan[EBP]	;Advance the display pointer to next
+	ADDL	cw_dspbufr[EBP], EAX	;  line
+	DECL	cw_height[EBP]		;More character rows?
+	JNE	cwcmplx			;Yes - continue
+	LEAVE				;No - finished
+	POPL	ESI
+	POPL	EDI
+	RET	44t
+
+	.END

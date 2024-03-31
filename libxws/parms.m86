@@ -1,0 +1,805 @@
+	.TITLE	parms
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Subroutine to process a parameter list
+;	c{EBX} = Offset of parameter list
+;	c{ECX} = Length of parameter list
+;	c{EDX} = Offset of default parameters
+;	c{ESI} = Offset of structure to receive values
+;	CALL	xwsProcParms
+;	c{EAX} = Error code (0 = normal)
+
+$$$=!0
+FRM pp_left, 4t
+pp_SIZE=!$$$
+
+	.ENTRY	xwsProcParms
+xwsProcParms::
+	PUSHL	EDI
+	ENTER	pp_SIZE, 0
+	MOVL	pp_left.B[EBP], ECX
+	PUSHL	ESI
+	MOVL	EDI, ESI		;Initialize the parameter structure
+	PUSHL	DS
+	POPL	ES
+	MOVL	ESI, EDX
+	CLD
+
+	INT3
+
+;;;;	MOVL	ECX, #wp_SIZE/4
+	RMOVSL	[EDI], [ESI]
+	POPL	ESI
+	TESTL	EBX, EBX		;Null list?
+	JE	2$.S			;Yes - finished
+loop:	SUBL	pp_left.B[EBP], #2t.B	;More to do?
+	JS	2$.S			;No - finished
+	MOVZWL	EDX, [EBX]		;Yes - get a header bytes
+	XCHGB	DL, DH
+	ADDL	EBX, #2t.B
+	MOVL	EAX, EDX
+	ANDL	EAX, #0Fh.B
+	SHRL	EDX, #4
+	CMPL	EDX, #MAXPARM
+	JAE	badparm.S
+	JMPIL	CS:sizedsp[EAX*4]
+
+badparm:MOVL	EAX, #ER_NAPER
+	JMP	4$.S
+
+2$:	CLRL	EAX
+4$:	LEAVE
+	POPL	EDI
+	RET
+
+	.MOD	4
+sizedsp:.LONG	valuezerop	; 0
+	.LONG	valueonep	; 1
+	.LONG	valuetwop	; 2
+	.LONG	valuethreep	; 3
+	.LONG	valuefour	; 4
+	.LONG	badparm		; 5
+	.LONG	badparm		; 6
+	.LONG	valuelong	; 7
+	.LONG	valuezerom	; 8
+	.LONG	valueonem	; 9
+	.LONG	valuetwom	; A
+	.LONG	valuethreem	; B
+	.LONG	valuefour	; C
+	.LONG	badparm		; D
+	.LONG	badparm		; E
+	.LONG	valuelong	; F
+
+valuezerop:
+	CLRL	EAX
+	JMP	8$.S
+
+valuezerom:
+	MOVL	EAX, #-1
+	JMP	8$.S
+
+valueonep:
+	MOVZBL	EAX, [EBX]
+	INCL	EBX
+	JMP	8$.S
+
+valueonem:
+	MOVB	AL, [EBX]
+	ORL	EAX, #0FFFFFF00h
+	INCL	EBX
+	JMP	8$.S
+
+valuetwop:
+	MOVZWL	EAX, [EBX]
+	XCHGB	AL, AH
+	ADDL	EBX, #2t.B
+	JMP	8$.S
+
+valuetwom:
+	MOVW	AX, [EBX]
+	XCHGB	AL, AH
+	ORL	EAX, #0FFFF0000h
+	ADDL	EBX, #2t.B
+	JMP	8$.S
+
+valuethreep:
+	MOVZBL	EAX, [EBX]
+	JMP	6$.S
+
+valuethreem:
+	MOVB	AL, [EBX]
+	MOVB	AH, #0FFh
+6$:	SHLL	EAX, #16t
+	MOVW	AX, 1.B[EBX]
+	XCHGB	AL, AH
+	ADDL	EBX, #3t
+	JMP	8$.S
+
+valuefour:
+	MOVL	EAX, [EBX]
+	XCHGB	AL, AH
+	RORL	EAX, #16t
+	XCHGB	AL, AH
+	ADDL	EBX, #4t
+8$:	JMPIL	CS:indxdsp[EDX*4]	;Dispatch on the parameter index
+
+;Here if have a long format parameter
+
+valuelong:
+	HLT
+.PAGE
+	.MOD	4
+indxdsp:.LONG	loop		;		= 0
+	.LONG	parstyle	;WP_STYLE       = 1  - Style number
+	.LONG	parbits1	;WP_BITS1       = 2  - Window bits 1
+	.LONG	parbits2	;WP_BITS2       = 3  - Window bits 2
+	.LONG	parbits3	;WP_BITS3       = 4  - Window bits 3
+	.LONG	parbits4	;WP_BITS4       = 5  - Window bits 4
+	.LONG	parzorder	;WP_ZORDER      = 6  - Z-order
+	.LONG	loop		;		= 7
+	.LONG	loop		;		= 8
+	.LONG	loop		;		= 9
+	.LONG	parbgcolorn	;WP_BGCOLORN    = 10 - Normal background color
+	.LONG	parbgcolora	;WP_BGCOLORA    = 11 - Alternate background
+				;			 color
+	.LONG	parhlcolorn	;WP_HILCOLORN   = 12 - Normal highlight color
+	.LONG	parhlcolora	;WP_HILCOLORA   = 13 - Alternate highlight
+				;			 color
+	.LONG	parshcolorn	;WP_SHDCOLORN   = 14 - Normal shadow color
+	.LONG	parshcolora	;WP_SHDCOLORA   = 15 - Alternate shadow color
+	.LONG	parbrdcolor	;WP_BRDCOLOR    = 16 - Border color
+	.LONG	parbrdwidtho	;WP_BRDWIDTHO   = 17 - Outer border width
+	.LONG	parbrdwidthc	;WP_BRDWIDTHC   = 18 - Center border width
+	.LONG	parbrdwidthi	;WP_BRDWIDTHI   = 19 - Inner border width
+	.LONG	parbrdbits	;WP_BRDBITS     = 20 - Border bits
+	.LONG	parradiusp	;WP_RADIUSP     = 21 - Corner radius (per-cent)
+	.LONG	parradiusa	;WP_RADIUSA     = 22 - Corner radius (absolute)
+	.LONG	parorient	;WP_ORIENT      = 23 - Orientation
+	.LONG	parpoffset	;WP_POFFSET     = 24 - Position offset for
+				;			 pressed button
+	.LONG	paractwindow	;WP_ACTWINDOW   = 25 - Activation window
+	.LONG	paractfunc	;WP_ACTFUNC     = 26 - Activation function
+	.LONG	parmaxvalue	;WP_MAXVALUE    = 27 - Maximum value
+	.LONG	parminvalue	;WP_MINVALUE    = 28 - Minimum value
+	.LONG	parinc1value	;WP_INC1VALUE   = 29 - First incr/decr value
+	.LONG	parinc2value	;WP_INC2VALUE   = 30 - Second incr/decr value
+	.LONG	parincsizes	;WP_INCSIZES    = 31 - Incr/decr button sizes
+	.LONG	parsbsize	;WP_SBSIZE      = 32 - Scroll bar sizes
+	.LONG	parsbbutsize	;WP_SBBUTSIZE   = 33 - Scroll bar button sizes
+	.LONG	parsbfgcolorn	;WP_SBFGCOLORN  = 34 - Scroll bar normal text
+				;			 color
+	.LONG	parsbfgcolora	;WP_SBFGCOLORA  = 35 - Scroll bar alternate
+				;			 text color
+	.LONG	parsbbgcolorn	;WP_SBBGCOLORN  = 36 - Scroll bar button normal
+				;			 background color
+	.LONG	parsbbgcolora	;WP_SBBGCOLORA  = 37 - Scroll bar button
+				;			 alternate background
+				;			 color
+	.LONG	parsbbarcolor	;WP_SBBARCOLOR  = 38 - Scroll bar bar
+				;			 background color
+	.LONG	parsbhlcolorn	;WP_SBHILCOLORN = 39 - Scroll bar normal
+				;			 highlight color
+	.LONG	parsbhlcolora	;WP_SBHILCOLORA = 40 - Scroll bar alternate
+				;			 highlight color
+	.LONG	parsbshcolorn	;WP_SBSHDCOLORN = 41 - Scroll bar normal shadow
+				;			 color
+	.LONG	parsbshcolora	;WP_SBSHDCOLORA = 42 - Scroll bar alternate
+				;			 shadow color
+	.LONG	parsbshdwidth	;WP_SBSHDWIDTH  = 43 - Scroll bar shading widths
+MAXPARM=!{$-indxdsp}/4
+
+	.PSECT	_TEXT_p
+.PAGE
+;Here for the WP_STYLE window parameter - Style number
+
+parstyle:
+	JMP	loop
+
+;Here for the WP_BITS1 window parameter - Window bits 1
+
+parbits1:
+	JMP	loop
+
+;Here for the WP_BITS2 window parameter - Window bits 2
+
+parbits2:
+	JMP	loop
+
+;Here for the WP_BITS3 window parameter - Window bits 3
+
+parbits3:
+	JMP	loop
+
+;Here for the WP_BITS4 window parameter - Window bits 4
+
+parbits4:
+	JMP	loop
+
+;Here for the WP_TEXTSIZE window parameter - Text size
+
+partextsize:
+	JMP	loop
+
+;Here for the WP_TEXTWIDTH window parameter - Text width
+
+partextwidth:
+	JMP	loop
+
+;Here for the WP_TEXTFONT window parameter - Text font
+
+partextfont:
+	JMP	loop
+
+;Here for the WP_TEXTATTR window parameter - Text attributes
+
+partextattr:
+	JMP	loop
+
+;Here for the WP_ZORDER window parameter - Z-order
+
+parzorder:
+	JMP	loop
+
+;Here for the WP_BGCOLORN window parameter - Normal background color
+
+parbgcolorn:
+	MOVL	wp_bgcoln.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BGCOLORA window parameter - Alternate background color
+
+parbgcolora:
+;;;;	MOVL	wp_bgcola.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_HLCOLORN window parameter - Normal highlight color
+
+parhlcolorn:
+	MOVL	wp_hlcoln.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_HLCOLORA window parameter - Alternate highlight color
+
+parhlcolora:
+;;;;	MOVL	wp_hlcola.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SHCOLORN window parameter - Normal shadow color
+
+parshcolorn:
+	MOVL	wp_shcoln.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SHCOLORA window parameter - Alternate shadow color
+
+parshcolora:
+;;;;	MOVL	wp_shcola.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BRDCOLOR window parameter - Border color
+
+parbrdcolor:
+	MOVL	wp_bdcol.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BRDWIDTHO window parameter - Outer border width
+
+parbrdwidtho:
+;;;;	MOVL	wp_bdwido.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BRDWIDTHC window parameter - Center border width
+
+parbrdwidthc:
+;;;;	MOVL	wp_bdwidc.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BRDWIDTHI window parameter - Inner border width
+
+parbrdwidthi:
+;;;;	MOVL	wp_bdwidi.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_BRDBITS window parameter - Border bits
+
+parbrdbits:
+	JMP	loop
+
+;Here for the WP_RADIUSP window parameter - Corner radius (per-cent)
+
+parradiusp:
+	JMP	loop
+
+;Here for the WP_RADIUSA window parameter - Corner radius (absolute)
+
+parradiusa:
+	JMP	loop
+
+;Here for the WP_ORIENT window parameter - Orientation
+
+parorient:
+	JMP	loop
+
+;Here for the WP_POFFSET window parameter - Position offset for pressed button
+
+parpoffset:
+;;;;	MOVL	wp_offset.B[ESI], EAX
+	JMP	loop
+
+;Here for the WP_ACTWINDOW window parameter - Activation window
+
+paractwindow:
+
+	JMP	loop
+
+;Here for the WP_ACTFUNC window parameter - Activation function
+
+paractfunc:
+
+	JMP	loop
+
+;Here for the WP_MAXVALUE window parameter - Maximum value
+
+parmaxvalue:
+	MOVB	wp_maxvalue[ESI], AL
+	JMP	loop
+
+;Here for the WP_MINVALUE window parameter - Minimum value
+
+parminvalue:
+	MOVB	wp_minvalue[ESI], AL
+	JMP	loop
+
+;Here for the WP_INC1VALUE window parameter - First incr/decr value
+
+parinc1value:
+	MOVB	wp_inc1value[ESI], AL
+	JMP	loop
+
+;Here for the WP_INC2VALUE window parameter - Second incr/decr value
+
+parinc2value:
+	MOVB	wp_inc2value[ESI], AL
+	JMP	loop
+
+;Here for the WP_INCSIZES window parameter - Incr/decr button sizes
+
+parincsizes:
+	MOVB	wp_inc1size.B[ESI], AL
+	MOVB	wp_inc2size[ESI], AH
+	JMP	loop
+
+;Here for the WP_SBSIZE window parameter - Scroll bar sizes
+
+parsbsize:
+	MOVL	wp_sbsize[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBBUTSIZE window parameter - Scroll bar button sizes
+
+parsbbutsize:
+	MOVL	wp_sbbtnsize[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBFGCOLORN window parameter - Scroll bar normal forground
+;  (text) color
+
+parsbfgcolorn:
+;;;;	MOVL	wp_sbtxcoln[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBFGCOLORA window parameter - Scroll bar alternate forground
+; (text) color
+
+parsbfgcolora:
+;;;;	MOVL	wp_sbtxcola[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBBGCOLORN window parameter - Scroll bar button normal background color
+
+parsbbgcolorn:
+;;;;;	MOVL	wp_sbbgcoln[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBBGCOLORA window parameter - Scroll bar button alternate background color
+
+parsbbgcolora:
+;;;;	MOVL	wp_sbbgcola[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBBARCOLOR window parameter - Scroll bar bar background color
+
+parsbbarcolor:
+	MOVL	wp_sbbarcol[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBHLCOLORN window parameter - Scroll bar normal highlight color
+
+parsbhlcolorn:
+	MOVL	wp_sbhlcoln[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBHILCOLORA window parameter - Scroll bar alternate highlight color
+
+parsbhlcolora:
+;;;;	MOVL	wp_sbhlcola[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBSHDCOLORN window parameter - Scroll bar normal shadow color
+
+parsbshcolorn:
+;;;;	MOVL	wp_sbshdcoln[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBSHDCOLORA window parameter - Scroll bar alternate shadow color
+
+parsbshcolora:
+;;;;	MOVL	wp_sbshcola[ESI], EAX
+	JMP	loop
+
+;Here for the WP_SBSHDWIDTH window parameter - Scroll bar shading widths
+
+parsbshdwidth:
+;;;;	MOVL	wp_sbshwid[ESI], EAX
+	JMP	loop
+.PAGE
+	.PSECT	_DATA_p
+
+.IF NE 0
+	.ENTRY	xws_WinParContainerDefault
+xws_WinParContainerDefault::
+	.LONG	wp_SIZE
+	.LONG	100t	;WP_ZORDER      - Z-order value
+	.LONG	0x808080;WP_BGCOLORN    - Normal background color
+	.LONG	0xFFFFFF;WP_BGCOLORA    - Alternate background color
+	.LONG	0x0000FF;WP_BRDCOLOR    - Border color
+	.LONG	0xA0A0A0;WP_HILCOLORN   - Normal highlight color
+	.LONG	0x606060;WP_HILCOLORA   - Alternate highlight color
+	.LONG	0x606060;WP_SHDCOLORN   - Nornal shading color
+	.LONG	0xA0A0A0;WP_SHDCOLORA   - Alternate shading color
+	.LONG	4t	;WP_BRDWIDTHO   - Outer border width
+	.LONG	0t	;WP_BRDWIDTHC   - Center border width
+	.LONG	0t	;WP_BRDWIDTHI   - Inner border width
+	.LONG	0	;WP_BITS1       - Window bits 1
+	.LONG	WB2$MOVEABLE
+			;WP_BITS2       - Window bits 2
+	.LONG	WB3$LINEO|WB3$RECESSI
+			;WP_BITS3       - Window bits 3
+	.LONG	0	;WP_BITS4       - Window bits 4
+	.LONG	0	;WP_XRADIUS     - X radius
+	.LONG	0	;WP_YRADIUS     - Y radius
+	.LONG	2t	;WP_POFFSET     - Pressed button offset
+	.LONG	0	;WP_ORIENT      - Orientation
+	.WORD	0	;WP_FORMAT      - Format
+	.WORD	100t	;WP_INC1SIZE    - Increment 1 button size
+	.WORD	100t	;WP_INC2SIZE    - Increment 2 button size
+	.WORD	1	;WP_DIGITS      - Number of digits
+	.LONG	0	;WP_MAXVALUE    - Maximum value
+	.LONG	0	;WP_MINVALUE    - Minimum value
+	.LONG	0	;WP_INC1VALUE   - Increment 1 value
+	.LONG	0	;WP_INC2VALUE   - INcrement 2 value
+	.LONG	0	;WP_CURSOR      - Cursor for window
+	.LONG	16t	;WP_SBXSIZE     - Scroll bar X size
+	.LONG	16t	;WP_SBYSIZE     - Scroll bar Y size
+	.LONG	50t	;WP_SBXBUTSIZE  - Scroll bar X button size
+	.LONG	50t	;WP_SBYBUTSIZE  - Scroll bar Y button size
+	.LONG	0t	;WP_SBSHDWIDTH  - Scroll bar shading width
+	.LONG	0	;WP_SBFGCOLORN  - Scroll bar normal text color
+	.LONG	0	;WP_SBFGCOLORA  - Scroll bar alternate text color
+	.LONG	0	;WP_SBBGCOLORN  - Scroll bar normal background color
+	.LONG	0	;WP_SBBGCOLORA  - Scroll bar alternate background color
+	.LONG	0	;WP_SBBARCOLOR  - Scroll bar bar color
+	.LONG	0	;WP_SBHILCOLORN - Scroll bar normal highlight color
+	.LONG	0	;WP_SBHILCOLORA - Scroll bar alternate highlight color
+	.LONG	0	;WP_SBSHDCOLORN - Scroll bar normal shadow color
+	.LONG	0	;WP_SBSHDCOLORA - Scroll bar alternate shadow color
+	.LONG	0	;WP_ACTFUNC     - Activation function
+	.LONG	0	;WP_ACTWINDOW   - Activation window
+	.LONG	0	;WP_TITLESIZE   - Title bar size
+	.LONG	0	;WP_TITLEBITS   - Title bar bits
+	.LONG	0	;WP_TITLEtEXT   - Title bar text
+	.LONG	0	;WP_BGBITMAPN   - Normal background bitmap
+	.LONG	0	;WP_BGBITMAPA   - Alternate background bitmap
+	.LONG	0	;WP_BRDBITMAP   - Border bitmap
+	.LONG	0	;wp_draw        - Address of draw function
+	.LONG	0	;wp_evarg1      - First event argument
+	.LONG	0	;wp_evarg2      - Second event argument
+.PAGE
+	.ENTRY	xws_WinParListDefault
+xws_WinParListDefault::
+	.LONG	wp_SIZE
+	.LONG	100t	;WP_ZORDER      - Z-order value
+	.LONG	0F0F0F0h;WP_BGCOLORN    - Normal background color
+	.LONG	00000F0h;WP_BGCOLORA    - Alternate background color
+	.LONG	00000FFh;WP_BRDCOLOR    - Border color
+	.LONG	0A0A0A0h;WP_HILCOLORN   - Normal highlight color
+	.LONG	0606060h;WP_HILCOLORA   - Alternate highlight color
+	.LONG	0606060h;WP_SHDCOLORN   - Nornal shading color
+	.LONG	0A0A0A0h;WP_SHDCOLORA   - Alternate shading color
+	.LONG	4t	;WP_BRDWIDTHO   - Outer border width
+	.LONG	0	;WP_BRDWIDTHC   - Center border width
+	.LONG	0	;WP_BRDWIDTHI   - Inner border width
+	.LONG	0	;WP_BITS1       - Window bits 1
+	.LONG	WB2$MOVEABLE
+			;WP_BITS2       - Window bits 2
+	.LONG	WB3$LINEO|WB3$RECESSI
+			;WP_BITS3       - Window bits 3
+	.LONG	0	;WP_BITS4       - Window bits 4
+	.LONG	0	;WP_XRADIUS     - X radius
+	.LONG	0	;WP_YRADIUS     - Y radius
+	.LONG	0	;WP_POFFSET     - Pressed button offset
+	.LONG	0	;WP_ORIENT      - Orientation
+	.WORD	0	;WP_FORMAT      - Format
+	.WORD	100t	;WP_INC1SIZE    - Increment 1 button size
+	.WORD	100t	;WP_INC2SIZE    - Increment 2 button size
+	.WORD	1	;WP_DIGITS      - Number of digits
+	.LONG	0	;WP_MAXVALUE    - Maximum value
+	.LONG	0	;WP_MINVALUE    - Minimum value
+	.LONG	0	;WP_INC1VALUE   - Increment 1 value
+	.LONG	0	;WP_INC2VALUE   - INcrement 2 value
+	.LONG	0	;WP_CURSOR      - Cursor for window
+	.LONG	16t	;WP_SBXSIZE     - Scroll bar X size
+	.LONG	16t	;WP_SBYSIZE     - Scroll bar Y size
+	.LONG	50t	;WP_SBXBUTSIZE  - Scroll bar X button size
+	.LONG	50t	;WP_SBYBUTSIZE  - Scroll bar Y button size
+	.LONG	0t	;WP_SBSHDWIDTH  - Scroll bar shading width
+	.LONG	0	;WP_SBFGCOLORN  - Scroll bar normal text color
+	.LONG	0	;WP_SBFGCOLORA  - Scroll bar alternate text color
+	.LONG	0	;WP_SBBGCOLORN  - Scroll bar normal background color
+	.LONG	0	;WP_SBBGCOLORA  - Scroll bar alternate background color
+	.LONG	0	;WP_SBBARCOLOR  - Scroll bar bar color
+	.LONG	0	;WP_SBHILCOLORN - Scroll bar normal highlight color
+	.LONG	0	;WP_SBHILCOLORA - Scroll bar alternate highlight color
+	.LONG	0	;WP_SBSHDCOLORN - Scroll bar normal shadow color
+	.LONG	0	;WP_SBSHDCOLORA - Scroll bar alternate shadow color
+	.LONG	0	;WP_ACTFUNC     - Activation function
+	.LONG	0	;WP_ACTWINDOW   - Activation window
+	.LONG	0	;WP_TITLESIZE   - Title bar size
+	.LONG	0	;WP_TITLEBITS   - Title bar bits
+	.LONG	0	;WP_TITLEtEXT   - Title bar text
+	.LONG	0	;WP_BGBITMAPN   - Normal background bitmap
+	.LONG	0	;WP_BGBITMAPA   - Alternate background bitmap
+	.LONG	0	;WP_BRDBITMAP   - Border bitmap
+	.LONG	0	;wp_draw        - Address of draw function
+	.LONG	0	;wp_evarg1      - First event argument
+	.LONG	0	;wp_evarg2      - Second event argument
+.PAGE
+	.ENTRY	xws_WinParEditDefault
+xws_WinParEditDefault::
+	.LONG	wp_SIZE
+	.LONG	100t	;WP_ZORDER      - Z-order value
+	.LONG	0F0F0F0h;WP_BGCOLORN    - Normal background color
+	.LONG	00000F0h;WP_BGCOLORA    - Alternate background color
+	.LONG	00000FFh;WP_BRDCOLOR    - Border color
+	.LONG	0A0A0A0h;WP_HILCOLORN   - Normal highlight color
+	.LONG	0606060h;WP_HILCOLORA   - Alternate highlight color
+	.LONG	0606060h;WP_SHDCOLORN   - Nornal shading color
+	.LONG	0A0A0A0h;WP_SHDCOLORA   - Alternate shading color
+	.LONG	4t	;WP_BRDWIDTHO   - Outer border width
+	.LONG	0	;WP_BRDWIDTHC   - Center border width
+	.LONG	0	;WP_BRDWIDTHI   - Inner border width
+	.LONG	0	;WP_BITS1       - Window bits 1
+	.LONG	WB2$MOVEABLE
+			;WP_BITS2       - Window bits 2
+	.LONG	WB3$LINEO|WB3$RECESSO
+			;WP_BITS3       - Window bits 3
+	.LONG	0	;WP_BITS4       - Window bits 4
+	.LONG	0	;WP_XRADIUS     - X radius
+	.LONG	0	;WP_YRADIUS     - Y radius
+	.LONG	0	;WP_POFFSET     - Pressed button offset
+	.LONG	0	;WP_ORIENT      - Orientation
+	.WORD	0	;WP_FORMAT      - Format
+	.WORD	100t	;WP_INC1SIZE    - Increment 1 button size
+	.WORD	100t	;WP_INC2SIZE    - Increment 2 button size
+	.WORD	1	;WP_DIGITS      - Number of digits
+	.LONG	0	;WP_MAXVALUE    - Maximum value
+	.LONG	0	;WP_MINVALUE    - Minimum value
+	.LONG	0	;WP_INC1VALUE   - Increment 1 value
+	.LONG	0	;WP_INC2VALUE   - INcrement 2 value
+	.LONG	0	;WP_CURSOR      - Cursor for window
+	.LONG	16t	;WP_SBXSIZE     - Scroll bar X size
+	.LONG	16t	;WP_SBYSIZE     - Scroll bar Y size
+	.LONG	50t	;WP_SBXBUTSIZE  - Scroll bar X button size
+	.LONG	50t	;WP_SBYBUTSIZE  - Scroll bar Y button size
+	.LONG	0t	;WP_SBSHDWIDTH  - Scroll bar shading width
+	.LONG	0	;WP_SBFGCOLORN  - Scroll bar normal text color
+	.LONG	0	;WP_SBFGCOLORA  - Scroll bar alternate text color
+	.LONG	0	;WP_SBBGCOLORN  - Scroll bar normal background color
+	.LONG	0	;WP_SBBGCOLORA  - Scroll bar alternate background color
+	.LONG	0	;WP_SBBARCOLOR  - Scroll bar bar color
+	.LONG	0	;WP_SBHILCOLORN - Scroll bar normal highlight color
+	.LONG	0	;WP_SBHILCOLORA - Scroll bar alternate highlight color
+	.LONG	0	;WP_SBSHDCOLORN - Scroll bar normal shadow color
+	.LONG	0	;WP_SBSHDCOLORA - Scroll bar alternate shadow color
+	.LONG	0	;WP_ACTFUNC     - Activation function
+	.LONG	0	;WP_ACTWINDOW   - Activation window
+	.LONG	0	;WP_TITLESIZE   - Title bar size
+	.LONG	0	;WP_TITLEBITS   - Title bar bits
+	.LONG	0	;WP_TITLEtEXT   - Title bar text
+	.LONG	0	;WP_BGBITMAPN   - Normal background bitmap
+	.LONG	0	;WP_BGBITMAPA   - Alternate background bitmap
+	.LONG	0	;WP_BRDBITMAP   - Border bitmap
+	.LONG	0	;wp_draw        - Address of draw function
+	.LONG	0	;wp_evarg1      - First event argument
+	.LONG	0	;wp_evarg2      - Second event argument
+.PAGE
+	.ENTRY	xws_WinParButtonDefault
+xws_WinParButtonDefault::
+	.LONG	wp_SIZE
+	.LONG	100t	;WP_ZORDER      - Z-order value
+	.LONG	0A0A0A0h;WP_BGCOLORN    - Normal background color
+	.LONG	0808080h;WP_BGCOLORA    - Alternate background color
+	.LONG	00000FFh;WP_BRDCOLOR    - Border color
+	.LONG	0D0D0D0h;WP_HILCOLORN   - Normal highlight color
+	.LONG	0606060h;WP_HILCOLORA   - Alternate highlight color
+	.LONG	0606060h;WP_SHDCOLORN   - Nornal shading color
+	.LONG	0A0A0A0h;WP_SHDCOLORA   - Alternate shading color
+	.LONG	4t	;WP_BRDWIDTHO   - Outer border width
+	.LONG	0t	;WP_BRDWIDTHC   - Center border width
+	.LONG	0t	;WP_BRDWIDTHI   - Inner border width
+	.LONG	0	;WP_BITS1       - Window bits 1
+	.LONG	0	;WP_BITS2       - Window bits 2
+	.LONG	WB3$LINEO|WB3$RECESSI
+			;WP_BITS3       - Window bits 3
+	.LONG	0	;WP_BITS4       - Window bits 4
+	.LONG	0	;WP_XRADIUS     - X radius
+	.LONG	0	;WP_YRADIUS     - Y radius
+	.LONG	2t	;WP_POFFSET     - Pressed button offset
+	.LONG	0	;WP_ORIENT      - Orientation
+	.WORD	0	;WP_FORMAT      - Format
+	.WORD	100t	;WP_INC1SIZE    - Increment 1 button size
+	.WORD	100t	;WP_INC2SIZE    - Increment 2 button size
+	.WORD	1	;WP_DIGITS      - Number of digits
+	.LONG	0	;WP_MAXVALUE    - Maximum value
+	.LONG	0	;WP_MINVALUE    - Minimum value
+	.LONG	0	;WP_INC1VALUE   - Increment 1 value
+	.LONG	0	;WP_INC2VALUE   - INcrement 2 value
+	.LONG	0	;WP_CURSOR      - Cursor for window
+	.LONG	16t	;WP_SBXSIZE     - Scroll bar X size
+	.LONG	16t	;WP_SBYSIZE     - Scroll bar Y size
+	.LONG	50t	;WP_SBXBUTSIZE  - Scroll bar X button size
+	.LONG	50t	;WP_SBYBUTSIZE  - Scroll bar Y button size
+	.LONG	0t	;WP_SBSHDWIDTH  - Scroll bar shading width
+	.LONG	0	;WP_SBFGCOLORN  - Scroll bar normal text color
+	.LONG	0	;WP_SBFGCOLORA  - Scroll bar alternate text color
+	.LONG	0	;WP_SBBGCOLORN  - Scroll bar normal background color
+	.LONG	0	;WP_SBBGCOLORA  - Scroll bar alternate background color
+	.LONG	0	;WP_SBBARCOLOR  - Scroll bar bar color
+	.LONG	0	;WP_SBHILCOLORN - Scroll bar normal highlight color
+	.LONG	0	;WP_SBHILCOLORA - Scroll bar alternate highlight color
+	.LONG	0	;WP_SBSHDCOLORN - Scroll bar normal shadow color
+	.LONG	0	;WP_SBSHDCOLORA - Scroll bar alternate shadow color
+	.LONG	0	;WP_ACTFUNC     - Activation function
+	.LONG	0	;WP_ACTWINDOW   - Activation window
+	.LONG	0	;WP_TITLESIZE   - Title bar size
+	.LONG	0	;WP_TITLEBITS   - Title bar bits
+	.LONG	0	;WP_TITLEtEXT   - Title bar text
+	.LONG	0	;WP_BGBITMAPN   - Normal background bitmap
+	.LONG	0	;WP_BGBITMAPA   - Alternate background bitmap
+	.LONG	0	;WP_BRDBITMAP   - Border bitmap
+	.LONG	0	;wp_draw        - Address of draw function
+	.LONG	0	;wp_evarg1      - First event argument
+	.LONG	0	;wp_evarg2      - Second event argument
+
+	.ENTRY	xws_WinParContainerPlain
+xws_WinParContainerPlain::
+	.LONG	wp_SIZE
+	.LONG	100t	;wp_zorder      - Z-order value
+	.LONG	0808080h;wp_bgcolorn    - Normal background color
+	.LONG	0FFFFFFh;wp_bgcolora    - Alternate background color
+	.LONG	00000FFh;wp_brdcolor    - Border color
+	.LONG	0A0A0A0h;wp_hilcolorn   - Normal highlight color
+	.LONG	0606060h;wp_hilcolora   - Alternate highlight color
+	.LONG	0606060h;wp_shdcolorn   - Nornal shading color
+	.LONG	0A0A0A0h;wp_shdcolora   - Alternate shading color
+	.LONG	0	;wp_brdwidtho   - Outer border width
+	.LONG	0	;wp_brdwidthc   - Center border width
+	.LONG	0	;wp_brdwidthi   - Inner border width
+	.LONG	0	;wp_bits1       - Window bits 1
+	.LONG	0	;wp_bits2       - Window bits 2
+	.LONG	0	;wp_bits3       - Window bits 3
+	.LONG	0	;wp_bits4       - Window bits 4
+	.LONG	0	;wp_xradius     - X radius
+	.LONG	0	;wp_yradius     - Y radius
+	.LONG	2t	;wp_poffset     - Pressed button offset
+	.LONG	0	;wp_orient      - Orientation
+	.WORD	0	;wp_format      - Format
+	.WORD	100t	;wp_inc1size    - Increment 1 button size
+	.WORD	100t	;wp_inc2size    - Increment 2 button size
+	.WORD	1	;wp_digits      - Number of digits
+	.LONG	0	;wp_maxvalue    - Maximum value
+	.LONG	0	;wp_minvalue    - Minimum value
+	.LONG	0	;wp_inc1value   - Increment 1 value
+	.LONG	0	;wp_inc2value   - INcrement 2 value
+	.LONG	0	;wp_cursor      - Cursor for window
+	.LONG	16t	;wp_sbxsize     - Scroll bar X size
+	.LONG	16t	;wp_sbysize     - Scroll bar Y size
+	.LONG	50t	;wp_sbxbutsize  - Scroll bar X button size
+	.LONG	50t	;wp_sbybutsize  - Scroll bar Y button size
+	.LONG	0t	;wp_sbshdwidth  - Scroll bar shading width
+	.LONG	0	;wp_sbfgcolorn  - Scroll bar normal text color
+	.LONG	0	;wp_sbfgcolora  - Scroll bar alternate text color
+	.LONG	0	;wp_sbbgcolorn  - Scroll bar normal background color
+	.LONG	0	;wp_sbbgcolora  - Scroll bar alternate background color
+	.LONG	0	;wp_sbbarcolor  - Scroll bar bar color
+	.LONG	0	;wp_sbhilcolorn - Scroll bar normal highlight color
+	.LONG	0	;wp_sbhilcolora - Scroll bar alternate highlight color
+	.LONG	0	;wp_sbshdcolorn - Scroll bar normal shadow color
+	.LONG	0	;wp_sbshdcolora - Scroll bar alternate shadow color
+	.LONG	0	;wp_actfunc     - Activation function
+	.LONG	0	;wp_actwindow   - Activation window
+	.LONG	0	;wp_titlesize   - Title bar size
+	.LONG	0	;wp_titlebits   - Title bar bits
+	.LONG	0	;wp_titletext   - Title bar text
+	.LONG	0	;wp_bgbitmapn   - Normal background bitmap
+	.LONG	0	;wp_bgbitmapa   - Alternate background bitmap
+	.LONG	0	;wp_brdbitmap   - Border bitmap
+	.LONG	0	;wp_draw        - Address of draw function
+	.LONG	0	;wp_evarg1      - First event argument
+	.LONG	0	;wp_evarg2      - Second event argument
+.PAGE
+	.ENTRY	xws_TxtParContainerDefault
+xws_TxtParContainerDefault::
+	.LONG	tp_SIZE
+	.LONG	0	;tp_right       - Right edge (returned)
+	.LONG	0	;tp_bottom      - Bottom edge (returned)
+
+	.WORD	6000t	;tp_height      - Height
+	.WORD	0	;tp_width       - Width
+	.WORD	1t	;tp_fontnum     - Font number
+	.WORD	0	;tp_attr        - Attributes
+	.LONG	COLOR_TRANS
+			;tp_bgcolor     - Background color
+	.LONG	0x000000;tp_nrmcolor    - Normal text color
+	.LONG	0xC0C0C0;tp_altcolor    - Alternate text color
+
+	.LONG	0x0000A0;tp_bghlcolor   - Background highlight color
+	.LONG	0xFFFFFF;tp_hlcolor     - Text highlight color
+	.LONG	0x000000;tp_caretcolor  - Caret color
+	.LONG	0	;tp_leftmargin  - Left margin
+	.LONG	0	;tp_rightmargin - Right margin
+	.LONG	1t	;tp_topmargin   - Top margin
+	.LONG	1t	;tp_btmmargin   - Bottom margin
+	.LONG	2t	;tp_lspace      - Line spacing
+	.LONG	5t	;tp_pspace      - Paragraph spacing
+
+	.ENTRY	xws_TxtParButtonDefault
+xws_TxtParButtonDefault::
+	.LONG	tp_SIZE
+	.LONG	0	;tp_right       - Right edge (returned)
+	.LONG	0	;tp_bottom      - Bottom edge (returned)
+	.WORD	7500t	;tp_height      - Height
+	.WORD	0	;tp_width       - Width
+	.WORD	1t	;tp_fontnum     - Font number
+	.WORD	TA$HORCEN|TA$VERCEN
+			;tp_attr        - Attributes
+	.LONG	COLOR_TRANS
+			;tp_bgcolor     - Background color
+	.LONG	0x000000;tp_nrmcolor    - Normal text color
+	.LONG	0xC0C0C0;tp_altcolor    - Alternate text color
+
+	.LONG	0x0000A0;tp_bghlcolor   - Background highlight color
+	.LONG	0xFFFFFF;tp_hlcolor     - Text highlight color
+	.LONG	0x000000;tp_caretcolor  - Caret color
+	.LONG	0	;tp_leftmargin  - Left margin
+	.LONG	0	;tp_rightmargin - Right margin
+	.LONG	0	;tp_topmargin   - Top margin
+	.LONG	0	;tp_btmmargin   - Bottom margin
+	.LONG	1t	;tp_lspace      - Line spacing
+	.LONG	0	;tp_pspace      - Paragraph spacing
+.ENDC
+
+	.END

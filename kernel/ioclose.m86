@@ -1,0 +1,293 @@
+	.TITLE	ioclose- Routines associated with closing devices
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;Function to close all devices for a process - Called when terminating the
+;  base thread for a process. There must be no active devices for the process.
+;	void closeall(void);
+
+;NOTE: This is called in the base thread after all threads other than the base
+;      thread have been terminated, so there is no posibility of races with
+;      other threads.
+
+closeall::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, #1
+2$:	MOVL	EDI, knlPda+pdaHndlTbl#[ESI*8]
+	TESTL	EDI, EDI		;Really a DCB?
+	JS	4$			;Yes
+
+	MOVL	knlPda+pdaHndlTbl#[ESI*8], #0 ;No - Either it was just allocated
+	JMP	8$			      ;  or is being transfered. In
+					      ;  either case we can just discard
+					      ;  it!
+;Here with address of a real DCB
+
+4$:	MOVL	knlTda+tdaDcb#, EDI
+	MOVL	EAX, knlPda+pdaHndlTbl#+4[ESI*8]
+	TESTL	EAX, #XO$NOQUE|XO$OPNCLS ;Currently opening or closing the
+	JE	6$			 ;  device?
+	CRASH	DVIA			;[DeVice Is Active]
+
+6$:	MOVL	knlTda+tdaCmd#, EAX
+	MOVL	knlTda+tdaHandle#, ESI
+	CLRL	EAX
+	MOVL	knlTda+tdaQab#, EAX
+	MOVW	knlTda+tdaStatus#, AX
+	MOVL	knlTda+tdaError#, EAX
+	MOVL	knlTda+tdaOption#, EAX
+	MOVL	knlTda+tdaParm#, EAX
+	MOVW	knlTda+tdaFunc#, #QFNC$DIO|QFNC_CLOSE
+	PUSHL	ESI
+	CALL	closefnc2		;Close the device (Does NOT respect
+	POPL	ESI			;  standard registers!)
+8$:	INCL	ESI			;Advance to next handle slot
+	CMPL	ESI, knlPda+pdaHndlNum#
+	JBE	2$
+
+;Here with all handle table devices closed - Now close any held devices. We
+;  do this by unholding the held devices and placing them in the handle
+;  table and continuing to close devices.
+
+;;;;; THIS NEEDS TO LOOP AND GET ***ALL*** HELD DEVICES!!!!!
+
+	CMPL	knlPda+pdaHdlbList#, #0
+	JE	14$
+	PUSHL	ESI
+	PUSHL	#knlPda+pdaHdlbList#
+	CALL	sysIoUnholdDevProc#
+	CMPL	dcb_opencnt[EDI], #0	;Is the open count right?
+	JE	12$
+	CRASH	BDOC			;[Bad Device Open Count]
+
+12$:	INCL	dcb_opencnt[EDI]
+	MOVL	ECX, pdaHndlTbl#	;Get offset of the handle table
+	ADDL	ECX, #32t
+	MOVL	knlPda+pdaHndlTbl#+8+0, EDI
+	MOVL	knlPda+pdaHndlTbl#+8+4, #0
+	TOFORK
+	MOVL	ESI, #2
+	JMP	2$
+
+;Here with all held devices freed up
+
+knlFixPath2::
+14$:	CALL	knlRtnZero#		;Give up all paths
+	CLRL	EAX
+16$:	POPL	ESI
+	POPL	EDI
+	RET
+
+.PAGE
+;Routine for the svcIoQueue close function (QFNC_CLOSE)
+;	CALL	closefunc
+
+;The close function may be queued or direct for all devices, however queued
+;  calls are only useful to allow signals during the close operation. Queued
+;  closes do not wait for any active operation to complete but immediately
+;  cancel or abort any active operations for the handle and then immediately
+;  close the handle. If the device is open on more than one handle only IO
+;  operations for this handle are canceled or aborted. IO operations for
+;  other handles are not affected. This includes any active IO operation for
+;  a different handle. Direct close calls are valid if queued operations for
+;  the handle are active. In this case, all IO operations for the handle,
+;  including any needed to cancel current operations, are done in the user
+;  thread and are not interruptable. 
+
+;  Assuming that the handle is valid, this call ALWAYS completely frees up the
+;  handle, even when errors are reported. Errors are possible when IO is needed
+;  to close the device, for example, to update a file's directory entry
+;  when closing a file. 
+
+;  Note that a device driver MUST NOT do IO when closing a handle unless there
+;  are no other handles open on the device. When closing the last handle a
+;  device driver may set up an IO frame and do IO. In this case there will
+;  never be an IO frame set up when the sd_close routine is called.
+
+closefunc::
+	CALL	sysIoGetDcb#		;Get address of our DCB
+	TESTL	EAX, EAX
+	JS	4$
+closefnc2:
+	TESTB	knlTda+tdaFunc#+1, #QFNC$DIO>8 ;Want to do this directly?
+	JNE	close1			;Yes - do that
+	MOVL	knlTda+tdaRoutine#, #close1 ;No - start an IO thread
+	PUSHL	#sysIoFinishQueue#
+	CALL	sysIoBeginThread#
+4$:	RET
+
+;Here in an IO thread if that is necessary
+
+close1:	MOVL	EDI, knlTda+tdaDcb#
+	TOFORK
+6$:	MOVL	ECX, knlTda+tdaHandle#
+	BTSL	knlPda+pdaHndlTbl#+4[ECX*8], #XO%NOQUE ;Disable queueing, was
+						       ;  it already disabled?
+	JC	12$			;Yes - just wait
+	CMPL	dcb_outthrd[EDI], #0	;Is output active?
+	JE	10$			;No
+	PUSHL	#{CAN$ALL<8}+dcb_outthrd ;Yes - cancel it
+	PUSHL	ECX
+	PUSHL	EDI
+	PUSHL	knlTda+tdaQab#
+	CALL	sysIoCancel#
+	TESTL	EAX, EAX
+	JNE	12$			;If must wait
+	MOVL	ECX, knlTda+tdaHandle#
+	MOVL	EDI, knlPda+pdaHndlTbl#+0[ECX*8]
+
+;Here with output idle
+
+10$:	CMPL	dcb_inpthrd[EDI], #0	;Is input active
+	JE	16$			;No
+	PUSHL	#{CAN$ALL<8}+dcb_inpthrd ;Yes - cancel it
+	PUSHL	ECX
+	PUSHL	EDI
+	PUSHL	knlTda+tdaQab#
+	CALL	sysIoCancel#
+	TESTL	EAX, EAX
+	JE	16$			;If finished
+
+;Here need to wait when canceling IO
+
+12$:	SHRL	EDI, #6			;Use the address of the DCB divided
+	PUSHL	EDI			;  by 64 as the wait index
+	CALL	sysSchSetWaitIndex#
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#THDS_DW2
+	CALL	sysSchRequeue#
+	PUSHFL
+	CALLF	knlSchedule#
+	JMP	6$			;Go check again
+
+;Here with input and output idle
+
+16$:	FROMFORK
+	MOVB	knlTda+tdaFrame, #dcb_outthrd ;Set up an output frame in case
+	MOVL	EAX, knlTda+tdaAddr#	      ;  in case the device needs it
+	MOVL	dcb_outthrd[EDI], EAX
+					;Fall into closeidle on next page
+.PAGE
+;Function to close an idle handle. The device may be active on a different
+;  handle if it is open on an other handle(s).
+
+closeidle::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	EAX, dcb_sdisp[EDI]	;Dispatch to the device driver for
+	CMPL	sd_close[EAX], #0	;  close if necessary
+	JE	2$
+	CALLI	sd_close[EAX]
+2$:	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	EDX, knlTda+tdaHandle#	;Get handle
+	LEAL	EDX, knlPda+pdaHndlTbl#[EDX*8]
+	ADDL	EDX, knlPda+pdaHndlTbl#
+	CLRL	EAX
+	CMPL	[EDX], EDI		;Make sure handle table is right!
+	JE	4$
+	CRASH	BHTE			;[Bad Handle Table Entry]
+
+4$:	MOVL	[EDX], EAX		;Clear handle table entry
+	MOVL	4[EDX], EAX
+	MOVL	dcb_outthrd[EDI], EAX	;Destroy the IO frame (if any)
+	MOVL	dcb_inpthrd[EDI], EAX
+	MOVB	knlTda+tdaFrame#, AL
+	CMPL	dcb_opencnt[EDI], #0	;Device must be open!
+	JNE	10$
+	CRASH	BDOC			;[Bad Device Open Count]
+
+10$:	CMPL	dcb_clsslb[EDI], #0	;Need a close signal?
+	JE	14$			;No
+
+;Here if need a close signal. The XMB pointed to by dcb_clsslb is set up
+;  to be used as an SLB when calling sysIoReqSignal. The item count and the
+;  4 data items are stored in the correct locations. The vector is stored in
+;  slb_vector. The PID is stored in the slb_gdata item.
+
+	TOFORK
+
+	MOVL	ESI, dcb_clsslb[EDI]	;Get the address of the SLB
+	MOVL	dcb_clsslb[EDI], #0
+	PUSHL	ESI			;Address of the SLB
+	PUSHL	#0x80000000		;Indicates that last value is address
+					;  of an SLB
+	PUSHL	slb_gdata[ESI]		;PID
+	PUSHL	#0			;No grant data
+	PUSHL	#0			;No grant function
+	PUSHL	slb_vector[ESI]		;Vector number
+	CALL	sysSchReqSignal#	;Request the signal
+	ADDL	ESP, #24t		;Fix up the stack
+	FROMFORK
+14$:	CALL	knlClearDcb		;Give up the DCB
+	TOFORK
+	MOVL	EAX, knlTda+tdaDcb#	;Wake up anyone waiting for this close
+	SHRL	EAX, #6			;  without a QAB
+	PUSHL	EAX
+	CALL	sysSchEndWaitAll#
+	FROMFORK
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	MOVL	knlTda+tdaDcb#, #0	;No longer have a DCB
+	MOVB	knlTda+tdaFrame, #0
+	CLRL	EAX
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+	.SBTTL	knlClearDcb - Subroutine to give up a DCB
+
+;Subroutine to give up a DCB
+;	c{EDI} = Offset of DCB
+;	CALL	knlClearDcb
+
+knlClearDcb::
+	CMPL	dcb_clsslb[EDI], #0	;Still have a close SLB?
+	JE	4$			;No
+	PUSHL	dcb_clsslb[EDI]		;Yes - give it up
+	MOVL	dcb_clsslb[EDI], #0
+	CALL	sysMemGiveXmb#
+4$:	DECL	dcb_opencnt[EDI]	;Reduce the open count
+	CMPL	dcb_opencnt[EDI], #0	;Someone still have the device open?
+	JNE	10$			;Yes
+	CMPL	dcb_hdlb[EDI], #0	;No - is it being held?
+	JNE	10$			;Yes
+	CLRL	EAX
+	MOVL	dcb_sespda[EDI], EAX	;No - its free now
+	MOVL	dcb_outthrd[EDI], EAX
+	MOVL	dcb_inpthrd[EDI], EAX
+	MOVL	EDX, dcb_sdisp[EDI]	;Dispatch to clear DCB routine for the
+	JMPIL	sd_cleardcb[EDX]	;  device
+
+10$:	RET
+
+	END

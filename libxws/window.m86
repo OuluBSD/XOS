@@ -1,0 +1,2028 @@
+	.TITLE	window
+
+	.PROC	80386
+	.INCLUD xosinc:\xmac\clibx.par
+	.INCLUD	xosinc:\xmac\stdio.par
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD xosinc:\xmac\xostime.par
+	.INCLUD xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\xosthreads.par
+	.INCLUD xosinc:\xmac\xosxws.par
+	.INCLUD xosinc:\xmac\xosxxws.par
+	.INCLUD	xosinc:\xmac\xosgdp.par
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to clear a window - this calls xwsWinDestroy for each child window
+;	void xwsWinClear(WIN *win);
+
+;This function uses the Pascal calling sequence
+
+wc_win=!12t
+
+	.ENTRY	xwsWinClear
+xwsWinClear::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, wc_win[ESP]
+	MOVL	ESI, win_basfchild[EDI] ;Get first child
+4$:	TESTL	ESI, ESI		;More?
+	JE	12$			;No - finished
+	TESTB	win_basconfig[EDI], #WCB$SCRLABLE ;Can window have scroll bars?
+	JE	6$			;No
+	CMPL	ESI, win_sclversb[EDI]
+	JE	8$
+	CMPL	ESI, win_sclhorsb[EDI]
+	JE	8$
+6$:	PUSHL	win_bassibling[ESI]	;Yes - destroy the child window
+	PUSHL	ESI
+	CALL	xwsWinDestroy
+	POPL	ESI
+	JMP	4$			;Continue
+
+8$:	MOVL	ESI, win_bassibling[ESI]
+	JMP	4$
+
+;Here with all child windows destroyed (except for scroll bars)
+
+12$:	MOVL	EAX, win_bastbhead[EDI] ;Get the first TB
+	TESTL	EAX, EAX
+	JE	16$
+	MOVL	win_bastbhead[EDI], #0
+	MOVL	win_bastbtail[EDI], #0
+	CMPB	win_bastype[EDI], #XWS_WINTYPE_LIST
+	JNE	14$
+	MOVL	win_listtopitem[EDI], #0
+14$:	PUSHL	EDI
+	PUSHL	EAX
+	CALL	xwstextgivetb#		;Give it up
+	TESTL	EAX, EAX		;Have another?
+	JNE	14$			;Yes - continue
+16$:	LEAL	EAX, win_basibhead[EDI]
+	CMPL	[EAX], #0
+	JE	18$
+	PUSHL	EDI
+	PUSHL	EAX
+	CALL	xwsbitmapgiveib#
+	JMP	16$
+
+18$:	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Function to destroy a window
+;	void xwsWinDestroy(WIN *win);
+;@@@ BROKEN - Specifically with "Odd" # of children...
+;@@@
+
+wd_win=!20t
+
+$$$=!0
+FRM wd_edblk, edblk_SIZE
+wd_SIZE=!$$$
+
+	.ENTRY	xwsWinDestroy
+xwsWinDestroy::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	wd_SIZE
+	MOVL	EDI, wd_win[EBP]
+	CMPB	win_bastravlist[EDI], #0xFF ;Is this window in a traveral list?
+	JE	1$			;No
+	PUSHL	EDI			;Yes - take it out
+	PUSHL	#0
+	PUSHL	#0
+	CALL	xwsWinSetTraversal#
+1$:	CMPL	xwscursorgrabwin#, EDI	;Has this window grabbed the cursor?
+	JNE	2$			;No
+	MOVL	xwscursorgrabwin#, #0	;Yes - but not any longer
+2$:	CMPL	xwsmodalwin#, #0	;Have any modal windows?
+	JE	4$			;No
+	CALL	xwsclearmodal#		;Yes - clear modal state
+4$:	CMPL	xwsfocuswin#, EDI	;Does this window have input focus?
+	JNE	8$			;No
+	MOVL	xwsfocuswin#, #0	;Yes - but not any longer
+8$:
+	CMPL	win_basbgbmn[EDI], #0
+	JE	83$
+	PUSHL	win_basbgbmn[EDI]
+	CALL	xwsBitmapDestroy#
+	MOVL	win_basbgbmn[EDI], #0
+83$:	CMPL	win_basbgbma[EDI], #0
+	JE	85$
+	PUSHL	win_basbgbma[EDI]
+	CALL	xwsBitmapDestroy#
+	MOVL	win_basbgbma[EDI], #0
+85$:	CMPL	win_bastype[EDI], #XWS_WINTYPE_SIMPLE ;Can this window have
+	JE	87$				      ;  scroll bars?
+	CMPL	win_bastype[EDI], #XWS_WINTYPE_EDIT
+	JA	87$
+	MOVL	win_sclversb[EDI], #0	;Yes - clear the pointers so we will
+	MOVL	win_sclhorsb[EDI], #0	;  destroy them (they are also linked
+					;  as child windows)
+87$:	PUSHL	EDI			;Clear the window
+	CALL	xwsWinClear		;Generate a DESTROY event
+	MOVW	wd_edblk+edblk_length[EBP], #edblk_SIZE
+	MOVB	wd_edblk+edblk_type[EBP], #XWS_EVENT_DESTROY
+	MOVB	wd_edblk+edblk_subtype[EBP], #0
+	MOVL	wd_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, wd_edblk[EBP]
+	PUSHL	EAX
+	CALL	xwsdoevent#
+
+	MOVL	ESI, win_basparent[EDI]	;Do we have a parent? (xwsunlinkchild
+	TESTL	ESI, ESI		;  expects ESI set!! -- NO MORE!!!)
+	JNE	10$			;Yes
+	CMPL	EDI, xws_ScreenWIN#	;No - is this the screen's base window?
+	JE	34$			;Yes - ignore this!!!
+	PUSHL	win_basdrw[EDI]		;No - give up the DRW
+	CALL	xwsFree#
+	JMP	12$
+
+;Here if this window has a parent
+
+10$:	PUSHL	EDI
+	CALL	xwsunlinkchild#
+
+;Here with this WIN removed from its parent's child list or if there is no
+;  parent
+
+12$:	CMPL	win_basdrawnext[EDI], #-1 ;Is this window in the redraw
+					  ;  list?
+	JE	20$			;No - go on
+	MOVL	EBX, #xwsdrawhead#
+14$:	CMPL	EDI, [EBX]
+	JE	16$
+	MOVL	EBX, [EBX]
+	ADDL	EBX, #win_basdrawnext
+	JMP	14$
+
+16$:	MOVL	EAX, win_basdrawnext[EDI]
+	MOVL	[EBX], EAX
+	CMPL	EDI, xwsdrawtail#
+	JNE	20$
+	SUBL	EBX, #win_basdrawnext
+	CMPL	EBX, #xwsdrawhead#-win_basdrawnext
+	JNE	18$
+	CLRL	EBX
+18$:	MOVL	xwsdrawtail#, EBX
+
+;Now give up all of this window's regions
+
+20$:	PUSHL	win_basbasergn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basuserrgn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basmaskrgn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	win_bascliprgn[EDI]
+	CALL	xwsRgnDestroy#
+	CMPL	win_basdrawrgn[EDI], #0
+	JE	22$
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+22$:	CMPL	win_bassavcliprgn[EDI], #0
+	JE	23$
+	PUSHL	win_bassavcliprgn[EDI]
+	CALL	xwsRgnDestroy#
+23$:	CMPL	win_basdrwmaskrgn[EDI], #0
+	JE	24$
+	PUSHL	win_basdrwmaskrgn[EDI]
+	CALL	xwsRgnDestroy#
+
+;Now remask any sibling windows which we overlap
+
+24$:	MOVL	ESI, win_basparent[EDI] ;Have a parent window?
+	TESTL	ESI, ESI
+	JE	32$			;No
+	XCHGL	EDI, ESI
+
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow
+	PUSHL	EAX
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#		;Give up the old mask region
+	MOVL	EDI, win_basfchild[EDI]
+	MOVL	EBX, win_bassibling[ESI] ;Stopper
+
+;New:	Check if parent believes there are any children...
+
+	TESTL	EDI, EDI
+	JNE	30$
+
+;Parent claims it has no children... Hmmm...
+
+	XCHGL	EDI, ESI
+	JMP	32$
+30$:	CALL	checksiblings		;Remask any sibling windows which
+					;  we overlapped
+	MOVL	EDI, ESI
+32$:	PUSHL	EDI			;Give up the WIN
+	CALL	xwsFree#
+34$:	CALL	xwsupdatecursor#
+	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+;Subroutine to remask any sibling windows which is overlapped by the
+;  window being destroyed
+;	c{EDI} = Offset of WIN for first sibling window to check
+;	c{ESI} = Offset of WIN for window being destroyed
+;	c{EBX} = Stopper value (0 or offset of first WIN not to check)
+;	CALL	checksiblings
+
+;This subroutine is called recursively to handle nested child windows
+
+checksiblings:
+	CMPL	EDI, EBX
+	JE	10$
+	MOVL	EAX, win_basscnxpos[EDI] ;Get left edge of sibling window
+	MOVL	EDX, EAX		;Get right edge of sibling window
+	ADDL	EDX, win_baswidth[EDI]
+	MOVL	ECX, win_basscnxpos[ESI]
+	CMPL	EDX, ECX		;Is sibling window left of this window?
+	JLE	6$			;Yes - no overlap here
+	ADDL	ECX, win_baswidth[ESI]
+	CMPL	ECX, EAX		;Is sibling window right of this window?
+	JLE	6$			;Yes - no overlap here
+	MOVL	EAX, win_basscnypos[EDI] ;Get top edge of sibling window
+	MOVL	EDX, EAX		;Get bottom edge of sibling window
+	ADDL	EDX, win_basheight[EDI]
+	MOVL	ECX, win_basscnypos[ESI]
+	CMPL	EDX, ECX		;Is sibling window above this window?
+	JLE	6$			;Yes - no overlap
+	ADDL	ECX, win_basheight[ESI] ;Is sibling window below this window?
+	CMPL	ECX, EAX
+	JLE	6$			;Yes - no overlap
+	PUSHL	EBX
+
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow		;No - have overlap - remask the sibling
+	PUSHL	EAX			;  window
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#
+	CMPL	win_basfchild[EDI], #0	;Does this window have any children?
+	JE	4$			;No
+	PUSHL	EDI			;Yes - check them too
+	MOVL	EDI, win_basfchild[EDI]
+	CLRL	EBX
+	CALL	checksiblings
+	POPL	EDI
+4$:	POPL	EBX
+6$:	MOVL	EDI, win_bassibling[EDI]
+	JMP	checksiblings
+
+10$:	RET
+.PAGE
+;Function to remask a sibling window if necessary when creating a new window
+;	c{EDI} = Offset of WIN for window to remask
+;	c{ESI} = Offset of WIN for window being created
+
+nrms_nwin=!16t
+nrms_swin=!12t
+
+xwsnewremasksibling::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, nrms_nwin[ESP]
+	MOVL	EDI, nrms_swin[ESP]
+	MOVL	EAX, win_basscnxpos[EDI] ;Get left edge of sibling window
+	MOVL	EDX, EAX		;Get right edge of sibling window
+	ADDL	EDX, win_baswidth[EDI]
+	MOVL	ECX, win_basscnxpos[ESI] ;Is sibling window now left of this
+	CMPL	EDX, ECX		 ;  window?
+	JLE	10$			;Yes - no overlap here
+	ADDL	ECX, win_baswidth[ESI]	;Is sibling window now right of this
+	CMPL	ECX, EAX		 ;  window?
+	JLE	10$			;Yes - no overlap here
+	MOVL	EAX, win_basscnypos[EDI] ;Get top edge of sibling window
+	MOVL	EDX, EAX		;Get bottom edge of sibling window
+	ADDL	EDX, win_basheight[EDI]
+	MOVL	ECX, win_basscnypos[ESI] ;Is sibling window now above this
+	CMPL	EDX, ECX		 ;  window?
+	JLE	10$			;Yes - no overlap
+	ADDL	ECX, win_basheight[ESI] ;Is sibling window now below this
+	CMPL	ECX, EAX		;  window?
+	JLE	10$			;Yes - no overlap
+
+	CHECKRGN win_basbasergn[EDI]
+
+	PUSHL	EDI
+	PUSHL	#1
+	CALL	xwsremaskwindow		;Have overlap - remask the sibling
+	PUSHL	EAX			;  window
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#
+	CMPL	win_basfchild[EDI], #0
+	JE	10$
+	MOVL	EDI, win_basfchild[EDI]
+4$:	PUSHL	ESI
+	PUSHL	EDI
+	CALL	xwsnewremasksibling
+	MOVL	EDI, win_bassibling[EDI]
+	TESTL	EDI, EDI
+	JNE	4$
+10$:	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Function to set scale factor for a window
+;	xwsWinSetScale(
+;	    WIN *win,
+;	    long xsfd,
+;	    long ysfd);
+
+wss_win =!12t
+wss_xsfd=!8t
+wss_ysfd=!4t
+
+	.ENTRY	xwsWinSetScale
+xwsWinSetScale::
+	MOVL	EBX, wss_win[ESP]
+	MOVL	EAX, wss_xsfd[ESP]
+	MOVL	win_basxsfd[EBX], EAX
+	SHRL	EAX, #1
+	MOVL	win_basxsfr[EBX], EAX
+	MOVL	EAX, wss_ysfd[ESP]
+	MOVL	win_basysfd[EBX], EAX
+	SHRL	EAX, #1
+	MOVL	win_basysfr[EBX], EAX
+	RET	12t
+.PAGE
+;Transversal lists control the transfer of input focus between windows as a
+;  result of typing certail keyboard characters. The CR, HT, and RHT (reverse
+;  horizontal tab) characters can be used for transversal. Each can be enabled
+;  seperately with bits in wp_bits2. A transversal list is a singly linked ring
+;  which contains a base window (which does not participate in transversal) and
+;  one or more member windows. The list is ordered by index value. When a CR
+;  or HT character is typed (if enabled) focus is moved to the next member
+;  window in the list. When the RHT character is typed (if enabled) focus is
+;  moved to the previous member window in the list. Focus is never passed to
+;  the base window. Also, the base window cannot be a member of a different
+;  transversal list. In most cases, the members of a transveral list will all
+;  be child windows of the same parent window, which will be the base window
+;  of the list but this is not necessary. The most common extension to this
+;  configuration is to allow transveral to child windows of a different
+;  parent window. If a window is already the member of a list and is added to
+;  a different list, it is automatically removed from the preious list first.
+;  If the base window of a list is destroyed, all member windows are removed
+;  from the list (efffectively, the list is destroyed).
+
+;Using a singly linked list is a tradeoff between space and speed. This
+;  requires running the entire list when removing a window or when transversing
+;  backwards. Since the lists are generally fairly short, this should not be
+;  prohibitive. It also makes inserts and deletes otherwise somewhat faster.
+
+;The base window uses win_bastrvsnext to point to the first member window in
+;  the list (the member window with the lowest index value). The win_bastrvsinx
+;  value is 0 for the base window. Each member window uses win_bastrvsnext to
+;  point to the next member window (a window with the same or larger index
+;  value). The win_bastrvsinx value for a member window can be any non-zero
+;  value.
+
+;If multiple member windows have the same index value, they are ordered in
+;  the list by the order in which they are inserted.
+
+;Function to add or remove a window from a transversal list
+;	long xwsWinSetTransversal(
+;	    WIN *win,		// Address of WIN
+;	    WIN *base,		// Address of WIN for base window
+;	    int  inx);		// Index value (0 removes window from list)
+
+wst_win =!16t
+wst_base=!12t
+wst_inx =!8t
+
+	.ENTRY	xwsWinSetTransversal
+xwsWinSetTransversal::
+	PUSHL	wst_win[ESP]
+	CALL	xwsWinClrTransversal
+	MOVL	ECX, wst_win[ESP]
+	MOVL	EAX, wst_inx[ESP]
+	CMPW	AX, #0
+	JE	4$
+	MOVW	win_bastrvsinx[ECX], AX
+	MOVL	EBX, wst_base[ESP]	;Are we creating a new list?
+	TESTL	EBX, EBX
+	JNE	8$			;No
+	MOVL	win_bastrvsnext[EBX], ECX
+	MOVW	win_bastrvsinx[EBX], #0
+	MOVL	win_bastrvsnext[ECX], EBX
+4$:	RET	12t
+
+;Here if not creating a new list
+
+8$:	MOVL	EDX, win_bastrvsnext[EBX] ;Get next member
+	CMPL	EDX, wst_base[ESP]	;At end?
+	JE	10$			;Yes
+	CMPW	AX, win_bastrvsinx[EDX]	;No - does the new one go here?
+	JB	10$			;Yes
+	MOVL	EBX, EDX		;No - advance to next
+	JMP	8$
+
+;With with position in ring for the new member
+
+10$:	MOVL	win_bastrvsnext[ECX], EDX
+	MOVL	win_bastrvsnext[EBX], ECX
+	POPL	EDI
+	RET	12t
+.PAGE
+;Function to remove a window from a transversal list. If this is called for
+;  a list's base window, it removes all windows from the list.
+;	void xwsWinClrTransversal(
+;	    WIN *win);
+
+wct_win=!4t
+
+	.ENTRY	xwsWinClrTransversal
+xwsWinClrTransversal::
+	MOVL	EBX, wct_win[ESP]
+	CMPL	win_bastrvsnext[EBX], #0 ;Is it in a list now?
+	JE	20$			;No - nothing needed here
+	CMPW	win_bastrvsinx[EBX], #0 ;Yes - is it the base for a list?
+	JNE	10$			;No
+
+;Here with the base window for a list - Remove all windows from the list.
+
+4$:	MOVL	EDX, win_bastrvsnext[EBX]
+	MOVL	win_bastrvsnext[EBX], #0
+	MOVW	win_bastrvsinx[EBX], #0
+	CMPL	EDX, wct_win[ESP]
+	JE	20$
+	MOVL	EBX, EDX
+	JMP	4$
+
+;Here with a member window - Just remove it.
+
+10$:	MOVL	EDX, win_bastrvsnext[EBX]
+	CMPL	EDX, wct_win[ESP]
+	JE	14$
+	MOVL	EBX, EDX
+	JMP	10$
+
+;Here with the previous window in the list
+
+14$:	CMPW	win_bastrvsinx[EBX], #0 ;Was this the first member?
+	JNE	16$			;No
+	CMPL	win_bastrvsnext[EDX], EBX ;Yes - was it also the last member?
+	JNE	16$			;No
+	MOVL	win_bastrvsnext[EBX], #0 ;Yes - the list is empty now
+16$:	MOVL	EAX, win_bastrvsnext[EDX]
+	MOVL	win_bastrvsnext[EBX], EAX
+	MOVL	win_bastrvsnext[EDX], #0
+	MOVW	win_bastrvsinx[EDX], #0
+20$:	RET	4t
+.PAGE
+;Function to copy a rectangular area
+;	void xwsWinCopyRect(
+;	    WIN *srcwin,	// Offset of WIN for source window
+;	    long srcx,		// X coordinate for upper left corner of
+;				//   source area
+;	    long srcy,		// Y coordinate for upper left corner of
+;				//   source area
+;	    long srcwidth,	// Width of source area
+;	    long srcheight,	// Height of source area
+;	    WIN *dstwin,	// Offset of WIN for destination window
+;	    long dstx,		// X coordinate for upper left corner of
+;				//   destination area
+;	    long dsty,		// Y coordinate for upper left corner of
+;				//   destination area
+;	    long dstwidth,	// Width of destination area
+;	    long dstheight)	// Height of destination area
+
+;This function uses the Pascal calling sequence
+
+;NOTE:	For this version, source and destination areas must have the same
+;	size!
+
+	.ENTRY	xwsWinCopyRect
+xwsWinCopyRect::
+
+	RET	40t
+.PAGE
+;Function to scroll a region
+;	void xwsWinScrollRgn(
+;	    WIN *win,		// Offset of WIN for window
+;	    RGN *rgn,		// Offset of RGN for region (NULL means entire
+;				//   window)
+;	    long xdist,		// X distance to scroll
+;	    long ydist);	// Y distance to scroll
+
+;This function uses the Pascal calling sequence
+
+;The area that is uncovered is invalidated.  This function does NOT use the
+;  clipping region.  Any clipping of the region to be scrolled must be done
+;  by the caller.  It does NOT move any child windows!
+
+sr_win  =!28t
+sr_rgn  =!24t
+sr_xdist=!20t
+sr_ydist=!16t
+
+$$$=!0
+FRM sr_maskrgn, 4t		;Offset of RGN for effect mask region (this
+				;  the intersection of the window's mask and
+				;  client regions)
+FRM sr_srcrgn1, 4t		;Offset of RGN for masked source region
+FRM sr_srcrgn2, 4t		;Offset of RGN for final source region (this
+				;  is sr_srcrgn1 minus whatever would not be
+				;  visible after being moved)
+FRM sr_movrgn , 4t		;Offset of RGN for region to move (this is
+				;  the intersection of sr_srcrgn1 and
+				;  sr_srcrgn2)
+FRM sr_dstrgn1, 4t		;Offset of RGN for masked source region offset
+				;  to the destination position
+FRM sr_dstrgn2, 4t		;Offset of RGN for masked destination region
+FRM sr_invrgn , 4t		;Offset of RGN for region to invalidate
+sr_SIZE=!$$$
+
+	.ENTRY	xwsWinScrollRgn
+xwsWinScrollRgn::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	sr_SIZE, 0
+	MOVL	EDI, sr_win[EBP]	;Get offset of the WIN
+	PUSHL	win_basmaskrgn[EDI]
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnIntersect#
+	MOVL	sr_maskrgn[EBP], EAX
+	CMPL	sr_rgn[EBP], #0		;Was a region specified?
+	JE	4$			;No
+	PUSHL	sr_rgn[EBP]		;Yes - get its intersection with
+	PUSHL	sr_maskrgn[EBP]		;  our mask region
+	CALL	xwsRgnIntersect#
+	JMP	6$
+
+;Here if no region specified - use the window's mask region
+
+4$:	PUSHL	sr_maskrgn[EBP]
+	CALL	xwsRgnDuplicate#
+6$:	MOVL	sr_srcrgn1[EBP], EAX	;Save the masked source region
+	CMPL	win_basdrawrgn[EDI], #0 ;Have a draw region now?
+	JE	8$			;No - go on
+	PUSHL	EAX			;Yes - exclude the draw region from
+	PUSHL	win_basdrawrgn[EDI]	;  the region we will scroll
+	CALL	xwsRgnDiff#
+	XCHGL	EAX, sr_srcrgn1[EBP]
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#
+	MOVL	EAX, sr_srcrgn1[EBP]
+8$:	PUSHL	EAX			;Get a copy of the masked region offset
+	PUSHL	sr_xdist[EBP]		;  to the destination position
+	PUSHL	sr_ydist[EBP]
+	CALL	xwsRgnDupOffset#
+	MOVL	sr_dstrgn1[EBP], EAX
+	PUSHL	EAX			;Get the intersection of the offset
+	PUSHL	sr_maskrgn[EBP]		;  Region and the window's mask region
+	CALL	xwsRgnIntersect#
+	MOVL	sr_dstrgn2[EBP], EAX	;This is the region we are moving to
+	PUSHL	sr_maskrgn[EBP]
+	CALL	xwsRgnDestroy#
+	PUSHL	sr_dstrgn2[EBP]		;Now get a copy of this region offset
+	MOVL	EAX, sr_xdist[EBP]	;  back to the original position!
+	NEGL	EAX
+	PUSHL	EAX
+	MOVL	EAX, sr_ydist[EBP]
+	NEGL	EAX
+	PUSHL	EAX
+	CALL	xwsRgnDupOffset#
+	MOVL	sr_srcrgn2[EBP], EAX
+	PUSHL	EAX			;Get intersection of this region and the
+	PUSHL	sr_srcrgn1[EBP]		;  masked original region
+	CALL	xwsRgnIntersect#
+	MOVL	sr_movrgn[EBP], EAX	;Finally, this gives us the region to
+					;  actually move!
+	PUSHL	sr_srcrgn1[EBP]		;Also, subtract the moved region from
+	PUSHL	sr_dstrgn2[EBP]		;  the original masked region
+	CALL	xwsRgnDiff#
+	MOVL	sr_invrgn[EBP], EAX	;This is the region to invalidiate
+	PUSHL	sr_srcrgn1[EBP]
+	CALL	xwsRgnDestroy#
+	PUSHL	sr_srcrgn2[EBP]
+	CALL	xwsRgnDestroy#
+	PUSHL	sr_dstrgn1[EBP]
+	CALL	xwsRgnDestroy#
+	PUSHL	sr_dstrgn2[EBP]
+	CALL	xwsRgnDestroy#
+	MOVL	ECX, win_basdrw[EDI]	;Move the region
+	PUSHL	ECX
+	PUSHL	ECX
+	PUSHL	sr_movrgn[EBP]
+	MOVL	EAX, win_basscnxpos[EDI]
+	PUSHL	EAX
+	MOVL	EDX, win_basscnypos[EDI]
+	PUSHL	EDX
+	ADDL	EAX, sr_xdist[EBP]	;;;; OFF BY ONE ???
+	PUSHL	EAX
+	ADDL	EDX, sr_ydist[EBP]
+	PUSHL	EDX
+	MOVL	EAX, drw_funcdsp[ECX]
+	CALLI	gfx_rgncopysame[EAX]
+	PUSHL	sr_movrgn[EBP]
+	CALL	xwsRgnDestroy#
+	PUSHL	EDI			;Invalidate the uncovered part
+	PUSHL	sr_invrgn[EBP]
+	CALL	xwsWinInvalidateRgn#
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Function to store user pointer for a window
+;	void xwsWinSettUser(WIN *win, void *user);
+
+;This function uses the Pascal calling sequence
+
+pu_win =!8t
+pu_user=!4t
+
+	.ENTRY	xwsWinSetUser
+xwsWinSetUser::
+	MOVL	EBX, pu_win[ESP]
+	MOVL	EAX, pu_user[ESP]
+	MOVL	win_basusrpntr[EBX], EAX
+	RET	8t
+
+;Function to get user pointer for a window
+;	void *xwsWinGetUser(WIN *win);
+
+;This function uses the Pascal calling sequence
+
+gu_win=!4t
+
+	.ENTRY	xwsWinGetUser
+xwsWinGetUser::
+	MOVL	EBX, gu_win[ESP]
+	MOVL	EAX, win_basusrpntr[EBX]
+	RET	4t
+.PAGE
+;Function to get bounding box for a window
+;	WIN  *win;
+;	RECT *rect;
+;	void xwsWinGetBndBox(win, rect);
+
+;This function uses the Pascal calling sequence
+
+gbb_win =!8t
+gbb_rect=!4t
+
+	.ENTRY	xwsWinGetBndBox
+xwsWinGetBndBox::
+	MOVL	EBX, gbb_win[ESP]
+	MOVL	ECX, gbb_rect[ESP]
+	MOVL	EAX, win_basscnxpos[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	rect_xpos[ECX], EAX
+	MOVL	EAX, win_basscnypos[EBX]
+	IMULL	EAX, win_basysfd[EBX]
+	MOVL	rect_ypos[ECX], EAX
+	MOVL	EAX, win_baswidth[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	rect_width[ECX], EAX
+	MOVL	EAX, win_basheight[EBX]
+	IMULL	EAX, win_basysfd[EBX]
+	MOVL	rect_height[ECX], EAX
+	RET	8t
+
+;Function to get size of client area of a window
+;	WIN  *win;
+;	RECT *rect;
+;	void xwsWinGetClient(win, rect);
+
+;This function uses the Pascal calling sequence
+
+gc_win =!8t
+gc_rect=!4t
+
+	.ENTRY	xwsWinGetClient
+xwsWinGetClient::
+	MOVL	EBX, gc_win[ESP]
+	MOVL	ECX, gc_rect[ESP]
+	MOVL	EAX, win_basclntwidth[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	rect_width[ECX], EAX
+	MOVL	EAX, win_basclntheight[EBX]
+	IMULL	EAX, win_basysfd[EBX]
+	MOVL	rect_height[ECX], EAX
+	CLRL	EAX
+	MOVL	rect_xpos[ECX], EAX
+	MOVL	rect_ypos[ECX], EAX
+	RET	8t
+
+;Function to get inset values for a window
+;	WIN    *win;
+;	INSETS *insets;
+;	void xwsWinGetInsets(win, insets);
+
+;This function uses the Pascal calling sequence
+
+gi_win   =!8t
+gi_insets=!4t
+
+	.ENTRY	xwsWinGetInsets
+xwsWinGetInsets::
+	MOVL	EBX, gi_win[ESP]
+	MOVL	ECX, gi_insets[ESP]
+	MOVZWL	EAX, win_baslbwidth[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	ins_left[ECX], EAX
+	MOVZWL	EAX, win_basrbwidth[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	ins_right[ECX], EAX
+	MOVZWL	EAX, win_bastbheight[EBX]
+	IMULL	EAX, win_basysfd[EBX]
+	MOVL	ins_top[ECX], EAX
+	MOVZWL	EAX, win_basbbheight[EBX]
+	IMULL	win_basysfd[EBX]
+	MOVL	ins_bottom[ECX], EAX
+	RET	8t
+.PAGE
+;Function to get address of the buffer for the window's DRW
+;	uchar *xwsWinGetBuffer(
+;	    WIN *win);
+
+;This function uses the Pascal calling sequence
+
+;This function is intended mainly to allow access to the buffer for a memory
+;  context window heiarchy, however it can be used with any window.  The
+;  results are not fully defined for other than memory contexts!
+
+gb_win=!4t
+
+	.ENTRY	xwsWinGetBuffer
+xwsWinGetBuffer::
+	MOVL	EAX, gb_win[ESP]
+	MOVL	EAX, win_basdrw[EAX]
+	MOVL	EAX, drw_buffer[EAX]
+	RET	4t
+.PAGE
+;Function to set a window's origin (absolute coordinates)
+;	void xwsWinSetOriginAbs(
+;	    WIN *win,
+;	    long xorg,
+;	    long yorg);
+
+;This function uses the Pascal calling sequence
+
+soa_win =!12t
+soa_xorg=!8
+soa_yorg=!4
+
+	.ENTRY	xwsWinSetOriginAbs
+xwsWinSetOriginAbs::
+	MOVL	EBX, soa_win[ESP]
+	MOVL	EAX, soa_xorg[ESP]
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	MOVL	win_basxorg[EBX], EAX
+	MOVL	EAX, soa_yorg[ESP]
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	MOVL	win_basyorg[EBX], EAX
+	RET	12t
+
+;Function to set a window's origin (coordinates relative to current origin)
+;	void xwsWinSetOriginRel(
+;	    WIN *win,
+;	    long xorg,
+;	    long yorg);
+
+;This function uses the Pascal calling sequence
+
+sol_win =!12t
+sol_xorg=!8
+sol_yorg=!4
+
+	.ENTRY	xwsWinSetOriginRel
+xwsWinSetOriginRel::
+	MOVL	EBX, sol_win[ESP]
+	MOVL	EAX, sol_xorg[ESP]
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	SUBL	win_basxorg[EBX], EAX
+	MOVL	EAX, sol_yorg[ESP]
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	SUBL	win_basyorg[EBX], EAX
+	RET	12t
+
+;Function to get a window's origin
+;	void xwsWinGetOrigin(
+;	    WIN  *win,
+;	    long *data);	// Pointer to 2 element long array to receive
+;				//   the returned data
+
+;This function uses the Pascal calling sequence
+
+go_win =!8t
+go_data=!4t
+
+	.ENTRY	xwsWinGetOrigin
+xwsWinGetOrigin::
+	MOVL	EBX, go_win[ESP]
+	MOVL	ECX, go_data[ESP]
+	MOVL	EAX, win_basxorg[EBX]
+	IMULL	EAX, win_basxsfd[EBX]
+	MOVL	[ECX], EAX
+	IMULL	EAX, win_basysfd[EBX]
+	MOVL	EAX, win_basyorg[EBX]
+	MOVL	4[ECX], EAX
+	RET	8t
+.PAGE
+;Function to set the selected item in a window
+;	void xwsWinSetSelItem(
+;	    WIN *win,
+;	    long item);
+
+;This function uses the Pascal calling sequence
+
+ssi_win =!12t
+ssi_item=!8
+
+	.ENTRY	xwsWinSetSelItem
+xwsWinSetSelItem::
+	PUSHL	EBX
+	MOVL	EBX, ssi_win[ESP]	;Get the WIN
+	MOVL	EAX, ssi_item[ESP]	;Get the desired item number
+	PUSHL	EBX
+	PUSHL	EAX
+	MOVZBL	EDX, win_bastype[EBX]	;Dispatch on the window type
+	CALLI	seldsp-4[EDX*4]
+retpop8:POPL	EBX
+	RET	8
+
+	.PSECT	_DATA_p
+
+seldsp:	.LONG	retpop8			;XWS_WINTYPE_SIMPLE    = 1
+	.LONG	retpop8			;XWS_WINTYPE_CONTAINER = 2
+	.LONG	xwsWinListSetSelItem#	;XWS_WINTYPE_LIST      = 3
+	.LONG	retpop8			;XWS_WINTYPE_RESPONSE  = 4
+	.LONG	retpop8			;XWS_WINTYPE_EDIT      = 5
+	.LONG	retpop8			;XWS_WINTYPE_BUTTON    = 6
+	.LONG	retpop8			;XWS_WINTYPE_CHECKBOX  = 7
+	.LONG	retpop8			;XWS_WINTYPE_SCROLLBAR = 8
+	.LONG	retpop8			;XWS_WINTYPE_SELECT    = 9
+	.LONG	retpop8			;XWS_WINTYPE_VALUE     = 10
+
+	.PSECT	_TEXT_p
+.PAGE
+;Function to get the currently selected item in a window
+;	long xwsWinGetSelItem(
+;	    WIN *win);
+;  Value returned is the index of the currently selected item.
+
+;This function uses the Pascal calling sequence
+
+gsi_win =!8
+
+	.ENTRY	xwsWinGetSelItem
+xwsWinGetSelItem::
+	PUSHL	EBX
+	MOVL	EBX, gsi_win[ESP]	;Get the WIN
+	PUSHL	EBX
+	MOVZBL	EDX, win_bastype[EBX]	;Dispatch on the window type
+	CALLI	getdsp-4[EDX*4]
+	POPL	EBX
+	RET	4
+
+getzero:CLRL	EAX
+	POPL	EBX
+	RET	4
+
+	.PSECT	_DATA_p
+
+getdsp:	.LONG	getzero			;XWS_WINTYPE_SIMPLE    = 1
+	.LONG	getzero			;XWS_WINTYPE_CONTAINER = 2
+	.LONG	xwsWinListGetSelItem#	;XWS_WINTYPE_LIST      = 3
+	.LONG	getzero			;XWS_WINTYPE_RESPONSE  = 4
+	.LONG	getzero			;XWS_WINTYPE_EDIT      = 5
+	.LONG	getzero			;XWS_WINTYPE_BUTTON    = 6
+	.LONG	getzero			;XWS_WINTYPE_CHECKBOX  = 7
+	.LONG	getzero			;XWS_WINTYPE_SCROLLBAR = 8
+	.LONG	getzero			;XWS_WINTYPE_DROPDOWN  = 9
+	.LONG	getzero			;XWS_WINTYPE_INCDEC    = 10
+
+	.PSECT	_TEXT_p
+.PAGE
+;Function to reduce the clipping region of a window. The region specified is
+;  ANDed with current clipping region of the window. The resulting region
+;  becomes the new clipping retion. The previous clipping region is returned.
+;  This region can be used as an argument to xwsWinChangeClipRgn to restore
+;  the original clipping region provided the size of the window has not been
+;  changed. Otherwise it must eventually be given up by calling xwsRgnDestroy.
+;  The specified region is given up by this function and must not be referenced
+;  after this function is called. If it needs to be retained, it must be
+;  duplicated before this function is called.
+
+;	RGN *xwsWinReduceClipRgn(
+;	    WIN *win,
+;	    RGN *rgn);
+
+rcrgn_win=!12t
+rcrgn_rgn=!8
+
+	.ENTRY	xwsWinReduceClipRgn
+xwsWinReduceClipRgn::
+	PUSHL	EDI
+	MOVL	EDI, ccrgn_win[ESP]
+	MOVL	EAX, ccrgn_rgn[ESP]
+
+	XCHGL	EAX, win_basuserrgn[EDI]
+	PUSHL	EAX			;Save current user region to return
+	PUSHL	win_basuserrgn[EDI]	;Get the intersection of the new user
+	PUSHL	win_bascliprgn[EDI]	;  region and the current clipping
+	CALL	xwsRgnIntersect#	;  region
+	XCHGL	EAX, win_bascliprgn[EDI] ;Store the new clip region
+	PUSHL	EAX			;Get rid of the old clip region
+	CALL	xwsRgnDestroy#
+	POPL	EAX			;Get the previous user region to
+	POPL	EDI			;  return
+	RET	8
+.PAGE
+;Function to change the clipping region of a window. The region specified is
+;  ANDed with the client region of the window. The resulting region becomes the
+;  new clipping region. The previous clipping region is returned. This region
+;  can be used as an argument to this function to restore the original clipping
+;  region provided the size of the window has not been changed. (The region
+;  that is returned only includes the area within the current client area.)
+;  Otherwise it must eventually be given up by calling xwsRgnDestroy. The
+;  specified region is given up by this function and must not be referenced
+;  after this function is called. If it needs to be retained, it must be
+;  duplicated before this function is called.
+
+;	RGN *xwsWinChangeClipRgn(
+;	    WIN *win,
+;	    RGN *rgn);
+
+ccrgn_win=!12t
+ccrgn_rgn=!8t
+
+	.ENTRY	xwsWinChangeClipRgn
+xwsWinChangeClipRgn::
+	PUSHL	EDI
+	MOVL	EDI, ccrgn_win[ESP]
+
+	MOVL	EAX, ccrgn_rgn[ESP]
+	PUSHL	win_basuserrgn[EDI]	;Save current user region to return
+	MOVL	win_basuserrgn[EDI], EAX
+	PUSHL	EAX
+	MOVL	EAX, win_basdrwmaskrgn[EDI] ;Do we have a draw mode mask region?
+	TESTL	EAX, EAX
+	JNE	4$			;Yes - use it
+	MOVL	EAX, win_basmaskrgn[EDI] ;No - use the normal mask region
+4$:	PUSHL	EAX
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+	PUSHL	EAX			;Reduce it to include just the client
+	PUSHL	win_basclientrgn[EDI]	;  region
+	CALL	xwsRgnIntersect#
+	XCHGL	EAX, win_bascliprgn[EDI]
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#		;Destroy the old clipping region
+	CALL	xwsRgnDestroy#		;Destroy the temporary region we used
+	POPL	EAX			;Get the previous user region to
+	POPL	EDI			;  return
+	RET	8
+.PAGE
+;Function to make part of a window transparent. All points within the normal
+;  window boundries that are not within the region specified here will be
+;  transparent.  Note that this region clips the window's border as well as
+;  the client area, so this works best if the window does not have a border.
+;	long xwsWinSetTransparent(
+;	    WIN *win,
+;	    RGN *rgn);
+
+sttp_win=!20t
+sttp_rgn=!16t
+
+	.ENTRY	xwsWinSetTransparent
+xwsWinSetTransparent:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0, 0
+	MOVL	EDI, sttp_win[EBP]
+	PUSHL	#0			;Create a rectangular region that
+	PUSHL	#0			;  covers the entire window (Can't
+	PUSHL	win_baswidth[EDI]	;  use win_basbasergn here since it
+	PUSHL	win_basheight[EDI]	;  may have been modified previously
+	CALL	xwsrgncreaterectns#	;  by this function!)
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	sttp_rgn[EBP]
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	win_basbasergn[EDI]
+	CALL	xwsRgnDestroy#
+	CALL	xwsRgnDuplicate#
+	MOVL	win_basbasergn[EDI], EAX
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnDestroy#
+	POPL	win_basclientrgn[EDI]
+	CALL	xwsRgnDestroy#		;Destroy the rectangular region we
+					;  created here
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #0			;Remask this window
+	CALL	remaskwindow
+	PUSHL	EAX
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#		;Free up the old mask region
+4$:	MOVL	ESI, EDI
+	MOVL	EDI, win_basfchild[ESI]
+	TESTL	EDI, EDI
+	JE	8$
+	PUSHL	EDI
+	CALL	xwsremaskallchilds
+8$:	MOVL	EDI, win_basparent[ESI] ;Remask the parent window
+
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow
+	PUSHL	EAX
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#		;Free up the old mask region
+
+;Now we find and remask all windows whose covering might be changed because
+;  this window is modifed.
+;	c{EDI} = Offset of WIN for parent window
+;	c{ESI} = Offset of WIN for window being moved
+
+	MOVL	EDI, win_basfchild[EDI]
+	CMPL	EDI, ESI
+	JE	14$
+10$:	PUSHL	ESI
+	PUSHL	EDI
+	CALL	xwsnewremasksibling
+	MOVL	EDI, win_bassibling[EDI]
+	CMPL	EDI, ESI
+	JNE	10$
+
+;Here with the parent and all necessary sibling windows remasked
+
+14$:	CLRL	EAX
+	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;;;.IF NE 0
+;Function to move and resize a window
+;	void xwsWinMove(win, xpos, ypos, width, height);
+;	    WIN *win,
+;	    long xpos,
+;	    long ypos,
+;	    long width,
+;	    long height);
+
+;This function uses the Pascal calling sequence
+
+;The goal of this routine is to move a window and all of its child windows
+;  on the screen with an absolute minimum of drawing and with as few
+;  region operations as possible.  We copy (BITBLT) all of the window and
+;  its children that is currently visible.  Unfortunately, this is somewhat
+;  complex!  Normally, child windows are excluded from their parent's mask
+;  region.  This means that if the window has children, we must generate a
+;  new move source region from scratch, without excluding this window's child
+;  windows.  We do that here and save it in the WIN for use by the remask
+;  routine, which does the actual copy operation.  We will also need a move
+;  destination region with is the mask for the window in its new location
+;  without its children excluded.  This is generated by the remask routine.
+;  This is relatively easy, since we can do this without any extra region
+;  operations as we regenerate the window's final mask.  The whole thing is
+;  futher complicated by the problem of having to move more than one window
+;  at a time.  We handle this by checking for additional pending moves each
+;  time we move a window in the remask routine and exclude any area we copied
+;  to from the source areas for the additional windows to move.
+
+$$$=!0
+FRM mw_oldxpos   , 4t
+FRM mw_oldypos   , 4t
+FRM mw_oldwidth  , 4t
+FRM mw_oldheight , 4t
+FRM mw_oldmaskrgn, 4t
+FRM              , 2t
+FRM mw_resize    , 1t
+FRM mw_moving    , 1t
+FRM mw_rightrgn  , 4t
+FRM mw_bottomrgn , 4t
+FRM mw_edblk     , edblk_SIZE
+mw_SIZE=!$$$
+
+mws_win   =!28t
+mws_xpos  =!24t
+mws_ypos  =!20t
+mws_width =!16t
+mws_height=!12t
+
+	.ENTRY	xwsWinMove
+xwsWinMove::
+	PUSHL	EBX
+	ENTER	mw_SIZE
+	MOVL	EBX, mws_win[EBP]
+	PUSHL	EBX
+	MOVL	EAX, mws_xpos[EBP]
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	PUSHL	EAX
+	MOVL	EAX, mws_ypos[EBP]
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	PUSHL	EAX
+	MOVL	EAX, mws_width[EBP]
+	ADDL	EAX, win_basxsfr[EBX]
+	CLQ
+	IDIVL	win_basxsfd[EBX]
+	PUSHL	EAX
+	MOVL	EAX, mws_height[EBP]
+	ADDL	EAX, win_basysfr[EBX]
+	CLQ
+	IDIVL	win_basysfd[EBX]
+	PUSHL	EAX
+	CALL	xwswinmovens
+	LEAVE
+	POPL	EBX
+	RET	20t
+
+
+mw_win   =!36t
+mw_xpos  =!32t
+mw_ypos  =!28t
+mw_width =!24t
+mw_height=!20t
+
+	.ENTRY	xwswinmovens
+xwswinmovens::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	mw_SIZE
+	CLRL	EAX
+	MOVL	mw_rightrgn[EBP], EAX
+	MOVL	mw_bottomrgn[EBP], EAX
+	MOVL	EDI, mw_win[EBP]
+	MOVL	EDX, win_basparent[EDI]
+	MOVL	EAX, mw_width[EBP]
+	CMPL	EAX, #0			;Is it the right offset?
+	JG	1$			;No
+	TESTL	EDX, EDX		;Yes - calculate actual width
+	JE	1$
+	ADDL	EAX, win_basclntwidth[EDX]
+	SUBL	EAX, win_basxpos[EDI]
+	MOVZWL	ECX, win_baslbwidth[EDX]
+	ADDL	EAX, ECX
+	MOVL	mw_width[EBP], EAX
+1$:	MOVL	EAX, mw_height[EBP]
+	CMPL	EAX, #0			;Is it the bottom offset?
+	JG	15$			;No
+	TESTL	EDX, EDX		;Yes - calculate actual height
+	JE	15$
+	ADDL	EAX, win_basclntheight[EDX]
+	SUBL	EAX, win_basypos[EDI]
+	MOVZWL	ECX, win_bastbheight[EDX]
+	ADDL	EAX, ECX
+	MOVL	mw_height[EBP], EAX
+15$:	MOVZWL	EAX, win_baslbwidth[EDI]
+	ADDW	AX, win_basrbwidth[EDI]
+	ADDL	EAX, #2t
+	CMPL	EAX, mw_width[EBP]
+	JLE	2$
+	MOVL	mw_width[EBP], EAX
+2$:	MOVZWL	EAX, win_bastbheight[EDI]
+	ADDW	AX, win_basbbheight[EDI]
+	ADDL	EAX, #2t
+	CMPL	EAX, mw_height[EBP]
+	JLE	4$
+	MOVL	mw_height[EBP], EAX
+4$:	TESTL	EDX, EDX
+	JE	5$
+	MOVZWL	EAX, win_baslbwidth[EDX]
+	ADDL	mw_xpos[EBP], EAX
+	MOVZWL	EAX, win_bastbheight[EDX]
+	ADDL	mw_ypos[EBP], EAX
+5$:	MOVL	EAX, win_basscnxpos[EDI] ;Save the current window position
+	MOVL	mw_oldxpos[EBP], EAX
+	MOVL	EAX, win_basscnypos[EDI]
+	MOVL	mw_oldypos[EBP], EAX
+	MOVL	EAX, win_baswidth[EDI]	;Save the current window size
+	MOVL	mw_oldwidth[EBP], EAX
+	MOVL	EDX, win_basheight[EDI]
+	MOVL	mw_oldheight[EBP], EDX
+	MOVB	mw_resize[EBP], #0	;Assume not changing the size
+	CMPL	EAX, mw_width[EBP]
+	JNE	6$
+	CMPL	EDX, mw_height[EBP]
+	JE	8$
+6$:	MOVB	mw_resize[EBP], #1
+8$:	MOVL	ECX, win_basdrw[EDI]	
+	MOVB	mw_moving[EBP], #0	;Assume not moving the window
+	MOVL	EAX, mw_xpos[EBP]	;Really moving it?
+	MOVL	EDX, mw_ypos[EBP]
+	SUBL	EAX, win_basxpos[EDI]
+	JNE	10$			;Yes
+	CMPL	EDX, win_basypos[EDI]	;Maybe
+	JNE	10$			;Yes
+	CMPB	mw_resize[EBP], #0	;No - changing the window size?
+	JNE	nomove			;Yes - go on
+	JMP	movedone		;No - nothing to do here
+
+;Here if moving the window
+
+10$:	SUBL	EDX, win_basypos[EDI]	;Get difference in position
+	MOVB	mw_moving[EBP], #1
+	MOVL	ESI, win_basfchild[EDI]
+	TESTL	ESI, ESI
+	JE	14$			;If no children
+	CALL	updatechildpos		;Scan through the child windows and
+					;  update their positions
+14$:	MOVL	EAX, mw_xpos[EBP]	;Update the window position
+	MOVL	win_basxpos[EDI], EAX
+	MOVL	EDX, mw_ypos[EBP]
+	MOVL	win_basypos[EDI], EDX
+	MOVL	EBX, win_basparent[EDI]
+	TESTL	EBX, EBX
+	JE	16$
+	ADDL	EAX, win_basscnxpos[EBX]
+	ADDL	EDX, win_basscnypos[EBX]
+16$:	MOVL	win_basscnxpos[EDI], EAX
+	MOVL	win_basscnypos[EDI], EDX
+	IMULL	EDX, drw_pixelspan[ECX] ;Update the window buffer offset
+	ADDL	EDX, EAX
+	IMULL	EDX, drw_pixelsize[ECX]
+	ADDL	EDX, drw_buffer[ECX]
+	MOVL	win_basoffset[EDI], EDX
+					;Fall into code on next page
+.PAGE
+;Branch to here if not moving the window
+
+nomove:	CMPB	mw_resize[EBP], #0	;Are we changing the window size?
+	JE	nosize			;No
+	MOVL	EAX, mw_width[EBP]	;Yes - update the window size
+	MOVL	win_baswidth[EDI], EAX
+	MOVZWL	ECX, win_baslbwidth[EDI]
+	ADDW	CX, win_basrbwidth[EDI]
+	SUBL	EAX, ECX
+	MOVL	win_basclntwidth[EDI], EAX
+	MOVL	EAX, mw_height[EBP]
+	MOVL	win_basheight[EDI], EAX
+	MOVZWL	ECX, win_bastbheight[EDI]
+	ADDW	CX, win_basbbheight[EDI]
+	SUBL	EAX, ECX
+	MOVL	win_basclntheight[EDI], EAX
+	PUSHL	win_basbasergn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	win_baswidth[EDI]
+	PUSHL	win_basheight[EDI]
+	CALL	xwsrgncreaterectns#
+	MOVL	win_basbasergn[EDI], EAX
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnDestroy#
+	MOVZWL	EAX, win_baslbwidth[EDI] ;Create the client region
+	PUSHL	EAX
+	MOVZWL	EAX, win_bastbheight[EDI]
+	PUSHL	EAX
+	PUSHL	win_basclntwidth[EDI]
+	PUSHL	win_basclntheight[EDI]
+	CALL	xwsrgncreaterectns#
+	MOVL	win_basclientrgn[EDI], EAX
+	MOVL	EAX, mw_width[EBP]	;Changing the width?
+	SUBL	EAX, mw_oldwidth[EBP]
+	JE	6$			;No
+	JG	2$
+	CLRL	EAX
+2$:	MOVL	EDX, win_baswidth[EDI]   ;Yes - generate a region for the
+	MOVZWL	ECX, win_basrbwidth[EDI] ;  right border
+	SUBL	EDX, ECX
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	#0
+	ADDL	EAX, ECX
+	PUSHL	EAX
+	PUSHL	win_basheight[EDI]
+	CALL	xwsrgncreaterectns#
+	MOVL	EDX, win_basscnxpos[EDI]
+	ADDL	EDX, win_baswidth[EDI]
+	SUBL	EDX, mw_oldxpos[EBP]
+	SUBL	EDX, mw_oldwidth[EBP]
+	JNE	3$
+	PUSHL	EAX
+	PUSHL	EAX
+	CALL	xwsRgnDuplicate#
+	MOVL	mw_rightrgn[EBP], EAX
+	POPL	EAX
+3$:	CMPL	win_basdrawrgn[EDI], #0
+	JNE	4$
+	MOVL	win_basdrawrgn[EDI], EAX
+	JMP	6$
+
+4$:	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnUnion#
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+	POPL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+6$:	MOVL	EAX, mw_height[EBP]	;Changing the height?
+	SUBL	EAX, mw_oldheight[EBP]
+	JE	nosize			;No
+	JG	8$
+	CLRL	EAX
+8$:	PUSHL	#0
+	MOVL	EDX, win_basheight[EDI]   ;Yes - generate a region for the
+	MOVZWL	ECX, win_basbbheight[EDI] ;  bottom border
+	SUBL	EDX, ECX
+	SUBL	EDX, EAX
+	PUSHL	EDX
+	PUSHL	win_baswidth[EDI]
+	ADDL	EAX, ECX
+	PUSHL	EAX
+	CALL	xwsrgncreaterectns#
+	MOVL	EDX, win_basscnypos[EDI]
+	ADDL	EDX, win_basheight[EDI]
+	SUBL	EDX, mw_oldypos[EBP]
+	SUBL	EDX, mw_oldheight[EBP]
+	JNE	9$
+	PUSHL	EAX
+	PUSHL	EAX
+	CALL	xwsRgnDuplicate#
+	MOVL	mw_bottomrgn[EBP], EAX
+	POPL	EAX
+9$:	CMPL	win_basdrawrgn[EDI], #0
+	JNE	10$
+	MOVL	win_basdrawrgn[EDI], EAX
+	JMP	nosize
+
+10$:	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnUnion#
+	PUSHL	EAX
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+	POPL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+.PAGE
+;Branch to here if not changing the window size
+
+nosize:
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow		;Remask this window
+	MOVL	mw_oldmaskrgn[EBP], EAX ;Save the original mask region for now
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CMPL	mw_rightrgn[EBP], #0
+	JE	102$
+	PUSHL	mw_oldmaskrgn[EBP]
+	PUSHL	mw_rightrgn[EBP]
+	CALL	xwsRgnDiff#
+	PUSHL	EAX
+	PUSHL	mw_oldmaskrgn[EBP]
+	CALL	xwsRgnDestroy#
+	POPL	mw_oldmaskrgn[EBP]
+	PUSHL	mw_rightrgn[EBP]
+	CALL	xwsRgnDestroy#
+
+102$:	CMPL	mw_bottomrgn[EBP], #0
+	JE	104$
+	PUSHL	mw_oldmaskrgn[EBP]
+	PUSHL	mw_bottomrgn[EBP]
+	CALL	xwsRgnDiff#
+	PUSHL	EAX
+	PUSHL	mw_oldmaskrgn[EBP]
+	CALL	xwsRgnDestroy#
+	POPL	mw_oldmaskrgn[EBP]
+	PUSHL	mw_bottomrgn[EBP]
+	CALL	xwsRgnDestroy#
+
+104$:	CMPB	mw_moving[EBP], #0	;Are we moving the window?
+	JE	4$			;No
+	MOVL	ESI, win_basfchild[EDI] ;Yes - get first child window
+	TESTL	ESI, ESI
+	JE	4$
+
+;Here if moving the window and have at least one child window - scan through
+;  the child windows and include their mask regions in the saved mask region
+
+	CALL	includechilds
+
+;Now remask all of this window's children
+
+4$:	MOVL	ESI, EDI
+	MOVL	EDI, win_basfchild[ESI]
+	TESTL	EDI, EDI
+	JE	8$
+	PUSHL	EDI
+	CALL	xwsremaskallchilds
+8$:	MOVL	EDI, win_basparent[ESI] ;Remask the parent window
+
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow
+	PUSHL	EAX			;Give up the old mask region
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#
+
+;Now we find and remask all windows whose covering might be changed because
+;  this window is modifed. This is all windows that were overlapped by this
+;  window at its previous position plus all windows that will be overlapped
+;  by this window at its new position
+;	c{EDI} = Offset of WIN for parent window
+;	c{ESI} = Offset of WIN for window being moved
+
+	MOVL	EDI, win_basfchild[EDI]
+	CMPL	EDI, ESI
+	JE	10$
+	CALL	remasksibling
+
+;Here with the parent and all necessary sibling windows remasked. Now we
+;  move this window if that is necessary.
+
+10$:	MOVL	EDI, ESI
+	CMPB	mw_moving[EBP], #0	;Are we moving the window?
+	JE	20$			;No
+	PUSHL	win_basmaskrgn[EDI]	;Yes
+	CALL	xwsRgnDuplicate#
+	MOVL	ESI, EAX
+	CMPL	win_basfchild[EDI], #0 ;Have any children?
+	JE	16$
+	MOVL	EBX, EDI
+	PUSHL	EDI
+	MOVL	EDI, win_basfchild[EDI] ;Get first child
+	CALL	mergechilds
+	POPL	EDI
+16$:	PUSHL	ESI		 	;Get intersection of the old and new
+	PUSHL	mw_oldmaskrgn[EBP]	;  mask regions
+	CALL	xwsRgnIntersect#
+
+	CHECKRGN EAX
+
+	PUSHL	EAX			;Stack this for call to xwsRgnDestroy
+	MOVL	ECX, win_basdrw[EDI]
+	PUSHL	ECX			;Source DRW
+	PUSHL	ECX			;Destination DRW
+	PUSHL	EAX			;RGN
+	PUSHL	mw_oldxpos[EBP]		;Source X position
+	PUSHL	mw_oldypos[EBP]		;Source Y position
+	PUSHL	win_basscnxpos[EDI]	;Destination X position
+	PUSHL	win_basscnypos[EDI]	;Destination Y position
+	MOVL	EAX, drw_funcdsp[ECX]
+	CALLI	gfx_rgncopysame[EAX]	;Copy the region
+	CALL	xwsRgnDestroy#		;Give up the intersection we generated
+	PUSHL	ESI			;  here
+	CALL	xwsRgnDestroy#
+
+	MOVL	EDX, win_basdrw[EDI]
+	MOVL	EDX, drw_funcdsp[EDX]
+	CALLI	gfx_waitidle[EDX]
+20$:	CMPB	mw_resize[EBP], #0
+	JE	22$
+	MOVW	mw_edblk+edblk_length[EBP], #edblk_SIZE
+	MOVB	mw_edblk+edblk_type[EBP], #XWS_EVENT_RESIZE
+	MOVB	mw_edblk+edblk_subtype[EBP], #0
+	MOVL	mw_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mw_edblk[EBP]
+	PUSHL	EAX
+	CALL	xwsdoevent#
+22$:	CMPB	mw_moving[EBP], #0
+	JE	24$
+	MOVW	mw_edblk+edblk_length[EBP], #edblk_SIZE
+	MOVB	mw_edblk+edblk_type[EBP], #XWS_EVENT_MOVE
+	MOVB	mw_edblk+edblk_subtype[EBP], #0
+	MOVL	mw_edblk+edblk_orgwin[EBP], EDI
+	LEAL	EAX, mw_edblk[EBP]
+	PUSHL	EAX
+	CALL	xwsdoevent#
+24$:	PUSHL	mw_oldmaskrgn[EBP]	;Give up the saved mask region
+	CALL	xwsRgnDestroy#
+
+	PUSHL	EDI
+	CALL	xwsdodraw#		;Draw the window we just moved
+
+	MOVL	EDI, win_basfchild[EDI]
+	TESTL	EDI, EDI
+	JE	movedone
+26$:
+	PUSHL	EDI
+	CALL	xwsdodraw#
+
+	MOVL	EDI, win_bassibling[EDI]
+	TESTL	EDI, EDI
+	JNE	26$
+movedone:
+	MOVL	EDI, mw_win[EBP]
+	CMPL	EDI, xwscurwin#
+	JE	28$
+	MOVL	EDX, xws_ScreenDRW#+drw_funcdsp
+	CALLI	gfx_shwcursor[EDX]
+28$:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	20t
+.PAGE
+updatechildpos:
+	ADDL	win_basscnxpos[ESI], EAX
+	ADDL	win_basscnypos[ESI], EDX
+	MOVL	EBX, win_basscnypos[ESI]
+	IMULL	EBX, drw_pixelspan[ECX] ;Update the window buffer offset
+	ADDL	EBX, win_basscnxpos[ESI]
+	IMULL	EBX, drw_pixelsize[ECX]
+	ADDL	EBX, drw_buffer[ECX]
+	MOVL	win_basoffset[ESI], EBX
+	CMPL	win_basfchild[ESI], #0
+	JE	4$
+	PUSHL	ESI
+	MOVL	ESI, win_basfchild[ESI]
+	CALL	updatechildpos
+	POPL	ESI
+4$:	MOVL	ESI, win_bassibling[ESI]
+	TESTL	ESI, ESI
+	JNE	updatechildpos
+	RET
+.PAGE
+
+rmac_win=!8
+
+xwsremaskallchilds::
+	PUSHL	EDI
+	MOVL	EDI, rmac_win[ESP]
+
+2$:	CHECKRGN win_basbasergn[EDI]
+
+	PUSHL	EDI
+	PUSHL	#1
+	CALL	xwsremaskwindow
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#
+	CMPL	win_basfchild[EDI], #0
+	JE	8$
+	PUSHL	win_basfchild[EDI]
+	CALL	xwsremaskallchilds
+8$:	MOVL	EDI, win_bassibling[EDI]
+	TESTL	EDI, EDI
+	JNE	2$
+	POPL	EDI
+	RET	4
+.PAGE
+
+includechilds:
+	MOVL	EAX, win_basscnxpos[ESI]
+	SUBL	EAX, win_basscnxpos[EDI]
+	MOVL	EDX, win_basscnypos[ESI]
+	SUBL	EDX, win_basscnypos[EDI]
+	PUSHL	win_basmaskrgn[ESI]
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	xwsRgnDupOffset#
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	mw_oldmaskrgn[EBP]
+	CALL	xwsRgnUnion#
+	PUSHL	EAX
+	PUSHL	mw_oldmaskrgn[EBP]
+	CALL	xwsRgnDestroy#
+	POPL	mw_oldmaskrgn[EBP]
+	CALL	xwsRgnDestroy#
+	CMPL	win_basfchild[ESI], #0
+	JE	4$
+	PUSHL	ESI
+	MOVL	ESI, win_basfchild[ESI]
+	CALL	includechilds
+	POPL	ESI
+4$:	MOVL	ESI, win_bassibling[ESI]
+	TESTL	ESI, ESI
+	JNE	includechilds
+	RET
+.PAGE
+remasksibling:
+	MOVL	EAX, win_basscnxpos[EDI] ;Get left edge of sibling window
+	MOVL	EDX, EAX		;Get right edge of sibling window
+	ADDL	EDX, win_baswidth[EDI]
+	MOVL	ECX, win_basscnxpos[ESI]
+	CMPL	EDX, ECX		;Is sibling window now left of this
+					;  window?
+	JLE	8$			;Yes - no overlap here
+	ADDL	ECX, win_baswidth[ESI]
+	CMPL	ECX, EAX		;Is sibling window now right of this
+					;  window?
+	JLE	8$			;Yes - no overlap here
+	MOVL	EAX, win_basscnypos[EDI] ;Get top edge of sibling window
+	MOVL	EDX, EAX		;Get bottom edge of sibling window
+	ADDL	EDX, win_basheight[EDI]
+	MOVL	ECX, win_basscnypos[ESI]
+	CMPL	EDX, ECX		;Is sibling window now above this
+					;  window?
+	JLE	6$			;Yes - no overlap
+	ADDL	ECX, win_basheight[ESI] ;Is sibling window now below this
+	CMPL	ECX, EAX		;  window?
+	JG	10$			;No - have overlap
+
+;Here if the original position does not overlap the sibling window - now see
+;  if it overlaps the new position
+
+6$:	MOVL	EAX, win_basscnxpos[EDI] ;Get left edge of sibling window
+	MOVL	EDX, EAX		;Get right edge of sibling window
+	ADDL	EDX, win_baswidth[EDI]
+8$:	MOVL	ECX, mw_oldxpos[EBP]
+	CMPL	EDX, ECX		;Is sibling window now left of this
+					;  window?
+	JLE	12$			;Yes - no overlap
+	ADDL	ECX, mw_oldwidth[EBP]
+	CMPL	ECX, EAX		;Is sibling window now right of this
+					;  window?
+	JLE	12$			;Yes - no overlap
+	MOVL	EAX, win_basscnypos[EDI] ;Get top edge of sibling window
+	MOVL	EDX, EAX		;Get bottom edge of sibling window
+	ADDL	EDX, win_basheight[EDI]
+	MOVL	ECX, mw_oldypos[EBP]	;Is sibling window now above this
+	CMPL	EDX, ECX		;  window?
+	JLE	12$			;Yes - no overlap
+	ADDL	ECX, mw_oldheight[EBP]	;Is sibling window now below this
+	CMPL	ECX, EAX		;  window?
+	JLE	12$
+10$:
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVB	AL, #1
+	CALL	remaskwindow		;Have overlap - remask the sibling
+	PUSHL	EAX			;  window
+
+	CHECKRGN EAX
+	CHECKRGN win_basbasergn[EDI]
+
+	CALL	xwsRgnDestroy#
+	CMPL	win_basfchild[EDI], #0
+	JE	12$
+	PUSHL	EDI
+	MOVL	EDI, win_basfchild[EDI]
+	CALL	remasksibling
+	POPL	EDI
+12$:	MOVL	EDI, win_bassibling[EDI]
+	CMPL	EDI, ESI
+	JE	14$
+	TESTL	EDI, EDI
+	JNE	remasksibling
+14$:	RET
+.PAGE
+;	c{EBX} = Offset of WIN for window being moved
+;	c{EDI} = Offset of WIN for first child window
+;	CALL	mergechilds
+
+mergechilds:
+	MOVL	EAX, win_basscnxpos[EDI]
+	SUBL	EAX, win_basscnxpos[EBX]
+	MOVL	EDX, win_basscnypos[EDI]
+	SUBL	EDX, win_basscnypos[EBX]
+	PUSHL	EBX
+	PUSHL	win_basmaskrgn[EDI]
+	PUSHL	EAX
+	PUSHL	EDX
+	CALL	xwsRgnDupOffset#
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	ESI
+	CALL	xwsRgnUnion#
+	PUSHL	ESI
+	MOVL	ESI, EAX
+	CALL	xwsRgnDestroy#
+	CALL	xwsRgnDestroy#
+	POPL	EBX
+	CMPL	win_basfchild[EDI], #0
+	JE	4$
+	PUSHL	EDI
+	MOVL	EDI, win_basfchild[EDI]
+	CALL	mergechilds
+	POPL	EDI
+4$:	MOVL	EDI, win_bassibling[EDI]
+	TESTL	EDI, EDI
+	JNE	mergechilds
+	RET
+.PAGE
+
+
+nrmw_win =!20t
+nrmw_draw=!16t
+
+xwsremaskwindow::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, nrmw_win[ESP]
+	MOVL	EAX, nrmw_draw[ESP]
+	CALL	remaskwindow
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+
+
+;Suboutine to remask a window
+;	c{EDI} = Offset of WIN for window
+;	C(AL)  = 1 if should queue draw request, 0 if not
+;	CALL	remaskwindow
+;	c{EAX} = Address of RGN for original mask region
+
+$$$=!0
+FRM rmw_draw      , 4t
+FRM rmw_oldmaskrgn, 4t
+FRM rmw_saveebx   , 4t
+rmw_SIZE=!$$$
+
+remaskwindow:
+	PUSHL	ESI
+	ENTER	rmw_SIZE, 0
+
+	CHECKRGN win_basmaskrgn[EDI]
+	CHECKRGN win_basbasergn[EDI]
+
+	MOVL	rmw_draw[EBP], EAX	;Save draw argument
+	MOVL	EAX, win_basmaskrgn[EDI] ;Save the current mask region
+	MOVL	rmw_oldmaskrgn[EBP], EAX
+
+;First we create an initial mask region which is the intersection of the
+;  base region for this window and the client regions (relative to this
+;  window) of the ancestor windows of this window, up to and including the
+;  base window for the display context.
+
+	PUSHL	win_basbasergn[EDI]	;Start out with a copy of the window's
+	CALL	xwsRgnDuplicate#	;  base region
+	MOVL	ESI, EAX
+	MOVL	EBX, EDI
+4$:	MOVL	EBX, win_basparent[EBX] ;Have another ancestor window?
+	TESTL	EBX, EBX
+	JE	6$			;No - finished with this part
+	PUSHL	EBX
+	PUSHL	win_basclientrgn[EBX]
+	MOVL	EAX, win_basscnxpos[EBX]   ;Yes - create a region for its
+	SUBL	EAX, win_basscnxpos[EDI]   ;  window
+	PUSHL	EAX
+	MOVL	EAX, win_basscnypos[EBX]
+	SUBL	EAX, win_basscnypos[EDI]
+	PUSHL	EAX
+	CALL	xwsRgnDupOffset
+
+	CHECKRGN EAX
+	CHECKRGN ESI
+
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	ESI
+	CALL	xwsRgnIntersect#	;Get the intersection
+
+	CHECKRGN EAX
+
+	PUSHL	ESI
+	MOVL	ESI, EAX
+$$2399:
+	CALL	xwsRgnDestroy#		;Give up the regions we are finished
+	CALL	xwsRgnDestroy#		;  with
+	POPL	EBX			;Restore offset of ancestor window
+	JMP	4$			;Continue
+
+;Here with the initial mask region created
+
+6$:	MOVL	win_basmaskrgn[EDI], ESI
+
+;Now we must check all windows that can possibly overlap this window.  This
+;  includes all sibling windows with a higher z-order value, all siblings of
+;  this windows parent with a higher z-order value than the parent, and so on
+;  up to the root window.  Fortunately, for most real screens, this is not
+;  really very many windows!
+;	c{EDI} = Offset of WIN for this window
+
+	MOVL	EBX, EDI
+
+8$:	MOVL	ESI, win_bassibling[EBX] ;Get next sibling window
+	TESTL	ESI, ESI
+	JE	14$			;If no higher z-order siblings
+10$:	MOVL	EAX, win_basscnxpos[EDI] ;Get left edge of first window
+	MOVL	EDX, EAX		;Get right edge of first window
+	ADDL	EDX, win_baswidth[EDI]
+	MOVL	ECX, win_basscnxpos[ESI]
+	CMPL	EDX, ECX		;Is 1st window to left of 2nd window?
+	JLE	12$			;Yes - no overlap
+	ADDL	ECX, win_baswidth[ESI] ;Is 2nd window to left of 1st window?
+	CMPL	ECX, EAX		;Yes - no overlap
+	JLE	12$	
+	MOVL	EAX, win_basscnypos[EDI] ;Get top edge of first window
+	MOVL	EDX, EAX		;Get bottom edge of first window
+	ADDL	EDX, win_basheight[EDI]
+	MOVL	ECX, win_basscnypos[ESI]
+	CMPL	EDX, ECX		;Is 1st window above 2nd window?
+	JLE	12$			;Yes - no overlap
+	ADDL	ECX, win_basheight[ESI] ;Is 2nd window above 1st window?
+	CMPL	ECX, EAX
+	JLE	12$			;Yes - no overlap
+	MOVL	rmw_saveebx[EBP], EBX
+	PUSHL	win_basbasergn[ESI]	 ;Get the base region for the
+	MOVL	EAX, win_basscnxpos[ESI] ;  overlapping window relative
+	SUBL	EAX, win_basscnxpos[EDI] ;  to this window
+	PUSHL	EAX
+	MOVL	EAX, win_basscnypos[ESI]
+	SUBL	EAX, win_basscnypos[EDI]
+	PUSHL	EAX
+	CALL	xwsRgnDupOffset#
+	PUSHL	EAX
+	PUSHL	win_basmaskrgn[EDI]	;Subtract its base region from our
+	PUSHL	EAX			;  mask region
+	CALL	xwsRgnDiff#
+
+	CHECKRGN EAX
+
+	PUSHL	win_basmaskrgn[EDI]
+	MOVL	win_basmaskrgn[EDI], EAX ;Update our mask region
+	CMPB	rgn_type[EAX], #RGNTYPE_NULL ;Is the mask region null now?
+	JE	16$			;Yes
+$$2459:
+	CALL	xwsRgnDestroy#		;Give up the old mask region
+	CALL	xwsRgnDestroy#		;Also give up the offset region
+	MOVL	EBX, rmw_saveebx[EBP]
+12$:	MOVL	ESI, win_bassibling[ESI] ;No - advance to next sibling window
+	TESTL	ESI, ESI
+	JNE	10$			;Continue if another sibling
+
+;Here if no more siblings of this window - advance to its parent
+
+14$:	MOVL	EBX, win_basparent[EBX]
+	TESTL	EBX, EBX
+	JNE	8$
+	JMP	18$
+
+;Here if we have a null mask region - in this case there is no reason to
+;  do any more here
+
+$$2477:
+16$:	CALL	xwsRgnDestroy#		;Give up the old mask region
+	CALL	xwsRgnDestroy#		;Also give up the offset region
+	JMP	32$			;Go finish up
+
+;Here with all higher level sibling windows handled - now handle any child
+;  windows
+
+18$:	MOVL	ESI, win_basfchild[EDI]	;Get first child
+	TESTL	ESI, ESI
+	JE	32$			;If no children
+
+;Construct a base region for the child window relative to this window.  We
+;  ensure that this region does not extend outside of our client region so
+;  it will not affect our border.
+
+20$:	PUSHL	win_basbasergn[ESI]	;Get the base region for the child
+	PUSHL	win_basxpos[ESI]	;  window relative to this window
+	PUSHL	win_basypos[ESI]
+	CALL	xwsRgnDupOffset#
+	PUSHL	EAX
+
+	PUSHL	EAX
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnIntersect#	;Mask it to our client region
+	PUSHL	EAX
+
+	PUSHL	win_basmaskrgn[EDI]
+	PUSHL	EAX
+	CALL	xwsRgnDiff#
+
+	CHECKRGN EAX
+
+	PUSHL	win_basmaskrgn[EDI]
+	MOVL	win_basmaskrgn[EDI], EAX
+
+	CALL	xwsRgnDestroy#
+	CALL	xwsRgnDestroy#
+	CALL	xwsRgnDestroy#
+30$:	MOVL	ESI, win_bassibling[ESI] ;Advance ot next sibling window
+	TESTL	ESI, ESI
+	JNE	20$
+
+;Here with the window's mask region recalculated - now update the clipping
+;  region
+
+32$:	LEAL	ESI, win_bascliprgn[EDI]
+	CMPL	win_bassavcliprgn[EDI], #0
+	JE	34$
+	ADDL	ESI, #win_bassavcliprgn-win_bascliprgn
+34$:	PUSHL	[ESI]
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basuserrgn[EDI]
+	PUSHL	win_basclientrgn[EDI]
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+	PUSHL	EAX
+	PUSHL	win_basmaskrgn[EDI]
+	CALL	xwsRgnIntersect#
+	MOVL	[ESI], EAX
+	CALL	xwsRgnDestroy#		;Give up the temporary region (its
+					;  already on the stack)
+
+;Now set the draw region to be the difference between the new and old
+;  mask regions
+
+$$2537:	MOVL	EAX, rmw_oldmaskrgn[EBP]
+
+	CHECKRGN EAX
+	CHECKRGN win_basmaskrgn[EDI]
+
+	PUSHL	win_basmaskrgn[EDI]
+	PUSHL	EAX
+	CALL	xwsRgnDiff#
+
+	CHECKRGN EAX
+
+	CMPL	win_basdrawrgn[EDI], #0 ;Do we already have a draw region?
+	JE	36$			;No
+	MOVL	ESI, EAX		;Yes
+$$2551:	PUSHL	win_basdrawrgn[EDI]	;Get its intersection with our new
+	PUSHL	win_basmaskrgn[EDI]	;  mask region
+	CALL	xwsRgnIntersect#
+	PUSHL	EAX
+	PUSHL	ESI
+	PUSHL	EAX			;Now get the union of the old and new
+	CALL	xwsRgnUnion#		;  draw regions
+
+	CHECKRGN EAX
+
+	XCHGL	EAX, [ESP]
+	PUSHL	EAX
+	CALL	xwsRgnDestroy#
+	PUSHL	win_basdrawrgn[EDI]
+	CALL	xwsRgnDestroy#
+	PUSHL	ESI
+	CALL	xwsRgnDestroy#
+	POPL	EAX
+36$:	CMPB	rgn_type[EAX], #RGNTYPE_NULL ;Is the draw region null?
+	JNE	38$			;No
+	PUSHL	EAX			;Yes - give it up
+	CALL	xwsRgnDestroy#
+	CLRL	EAX
+	MOVL	win_basdrawrgn[EDI], EAX
+	MOVL	EAX, rmw_oldmaskrgn[EBP]
+	LEAVE
+	POPL	ESI
+	RET
+
+;Here if draw region is not null
+
+38$:	MOVL	win_basdrawrgn[EDI], EAX
+	CMPB	rmw_draw[EBP], #0	;Want to queue a draw request?
+	JE	40$			;No
+	CALL	xwsreqdraw#		;Yes
+40$:	MOVL	EAX, rmw_oldmaskrgn[EBP]
+	LEAVE
+	POPL	ESI
+	RET
+.PAGE
+;;;.ENDC
+	.PSECT	_DATA_p
+
+savergn::.LONG	0
+
+	.END

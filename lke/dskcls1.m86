@@ -1,0 +1,3068 @@
+	.TITLE	dskcls1 - Disk class driver, part 1
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDISK.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXDISK.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSLKE.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXLKE.PAR
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!3t
+
+;1.0.1 - 5-Jan-95
+;	Fixed problem with setting up buffer list for write when number of
+;	buffers limited by controllers ability to handle memory fragments.
+;1.0.3 - 8-Jun-97
+;	Added support for EZ-Drive boot blocks; changed to allow 7 bit head
+;	number in partition table.
+
+	LKEHEAD	DSKCLS, MAJV, MINV, EDITNUM, LKETYPE_CLASS
+
+$$DSKWRITE=!0		;Set non-zero for write only debug posting
+$$DSKDEBUG=!0		;Set non-zero for general debug posting
+
+	.EXPORT	xosdskClearDcb
+	.EXPORT	xosdskCcb
+	.EXPORT	xosdskDosName
+	.EXPORT	xosdskDp0Parms
+	.EXPORT	xosdskDpParms
+	.EXPORT	xosdskForceDsk
+	.EXPORT	xosdskGtBaseDev
+	.EXPORT	xosdskGetBits
+	.EXPORT	xosdskGetDcb
+	.EXPORT	xosdskGetDiskRes
+	.EXPORT xosdskGetRemove
+	.EXPORT	xosdskGiveDiskRes
+	.EXPORT	xosdskGtK1Byte
+	.EXPORT	xosdskGtK2Byte
+	.EXPORT	xosdskGtK4Byte
+	.EXPORT	xosdskGtU1Byte
+	.EXPORT	xosdskGtU2Byte
+	.EXPORT	xosdskGtU4Byte
+	.EXPORT	xosdskGtU8Byte
+	.EXPORT	xosdskGtU16Byte
+	.EXPORT	xosdskGtUStr
+	.EXPORT	xosdskIoDskParms
+	.EXPORT	xosdskMakeFscb
+	.EXPORT	xosdskMakeHashTbl
+	.EXPORT	xosdskMakeKcb
+	.EXPORT	xosdskMakeUcb
+	.EXPORT	xosdskMount
+	.EXPORT	xosdskMsgAvail
+	.EXPORT	xosdskMsgBaseDev
+	.EXPORT	xosdskMsgBlockIn
+	.EXPORT	xosdskMsgBlockOut
+	.EXPORT	xosdskMsgCCylns
+	.EXPORT	xosdskMsgCBlkSz
+	.EXPORT xosdskMsgCBlocks
+	.EXPORT	xosdskMsgCHeads
+	.EXPORT	xosdskMsgCSects
+	.EXPORT	xosdskMsgClsSz
+	.EXPORT	xosdskMsgClsters
+	.EXPORT	xosdskMsgConDsp
+	.EXPORT xosdskMsgDiskID
+	.EXPORT	xosdskMsgDataDen
+	.EXPORT	xosdskMsgDosName
+	.EXPORT	xosdskMsgDupFat
+	.EXPORT xosdskMsgFatSize
+	.EXPORT	xosdskMsgFSType
+	.EXPORT	xosdskMsgFatMode
+	.EXPORT	xosdskMsgHIdFErr
+	.EXPORT	xosdskMsgHRNFErr
+	.EXPORT	xosdskMsgHSeekErr
+	.EXPORT	xosdskMsgIBlkSz
+	.EXPORT xosdskMsgIBlocks
+	.EXPORT	xosdskMsgICylns
+	.EXPORT	xosdskMsgIHeads
+	.EXPORT xosdskMsgISects
+	.EXPORT	xosdskMsgLbaMode
+	.EXPORT	xosdskMsgLUn
+	.EXPORT	xosdskMsgMSensor
+	.EXPORT xosdskMsgNumFats
+	.EXPORT	xosdskMsgPartOff
+	.EXPORT	xosdskMsgPartn
+	.EXPORT	xosdskMsgProtect
+	.EXPORT	xosdskMsgPrtnType
+	.EXPORT xosdskMsgReady
+	.EXPORT	xosdskMsgRemove
+	.EXPORT	xosdskMsgReserved
+	.EXPORT	xosdskMsgRootBlk
+	.EXPORT	xosdskMsgRootProt
+	.EXPORT	xosdskMsgRootSize
+	.EXPORT	xosdskMsgShrDelay
+	.EXPORT	xosdskMsgShrFail
+	.EXPORT	xosdskMsgShrRetry
+	.EXPORT	xosdskMsgTIdFErr
+	.EXPORT	xosdskMsgTRNFErr
+	.EXPORT	xosdskMsgTSeekErr
+	.EXPORT	xosdskMsgTrkDen
+	.EXPORT	xosdskMsgUnexpInt
+	.EXPORT	xosdskMsgVolLabel
+	.EXPORT	xosdskMsgVolCDT
+	.EXPORT	xosdskMsgVolEDT
+	.EXPORT	xosdskMsgVolMDT
+	.EXPORT	xosdskMsgVolName
+	.EXPORT	xosdskMsgVolXDT
+	.EXPORT	xosdskMsgWPcCyln
+	.EXPORT	xosdskOpnPioPos
+	.EXPORT	xosdskRead
+	.EXPORT	xosdskSetBits
+	.EXPORT	xosdskSetDosName
+	.EXPORT	xosdskSetProtect
+	.EXPORT	xosdskSetRAMax
+	.EXPORT	xosdskSetWTMax
+	.EXPORT	xosdskSrchUnit
+	.EXPORT	xosdskStK4Byte
+	.EXPORT	xosdskStU1Byte
+	.EXPORT	xosdskStU2Byte
+	.EXPORT	xosdskStU4Byte
+	.EXPORT	xosdskStU8Byte
+	.EXPORT	xosdskTransfer
+	.EXPORT	xosdskUnitDesp
+	.EXPORT	xosdskUnitName
+	.EXPORT	xosdskUnitType
+	.EXPORT	xosdskUnlinkKcb
+	.EXPORT	xosdskVfyChg
+	.EXPORT	xosdskVolName
+.IF NE $$DSKWRITE
+	.EXPORT	xosdskwrpnt, xosdskwring, xosdskwrend
+.ENDC
+
+	.ALMEX
+
+	CODE
+
+;SVC dispatch table for disk class devices
+
+	.MOD	4
+dskdsp::.LONG	xosdskMount	;sd_mount    =  0 - Mount
+	.LONG	xosdskClearDcb	;sd_cleardcb =  4 - Clear DCB
+	.LONG	knlRtnZero##	;sd_opena    =  8 - Open additional
+	.LONG	dskopen		;sd_open     = 12 - Open device/file
+	.LONG	knlIFnDevP1##	;sd_findfile = 16 - Device parameters
+	.LONG	knlIFnDevP1##	;sd_delete   = 20 - Delete file
+	.LONG	knlIFnDevP1##	;sd_rename   = 24 - Rename file
+	.LONG	dskinpblk	;sd_inblock  = 28 - Input block
+	.LONG	dskoutblk	;sd_outblock = 32 - Output block
+	.LONG	knlRtnMOne##	;sd_getiosts = 36 - Get input/output status
+	.LONG	dskspecial	;sd_special  = 40 - Special device function
+	.LONG	dskclose	;sd_close    = 44 - Close file
+	.LONG	0		;sd_label    = 48 - Device label functions
+	.LONG	knlNullQio##	;sd_commit   = 52 - Commit data to disk
+	.LONG	dskinfo		;sd_devinfo  = 56 - Return device info
+	.LONG	xosdskVfyChg	;sd_vfychg   = 60 - Verify changed disk
+				;                     table
+
+;Class function dispatch table for disk class devices
+
+	.LONG	CLSFMX
+dskcls::.LONG	dskaddunit	;CF_ADDUNIT =  8 - Add unit
+	.LONG	dskunitinfo	;CF_PUNITS  =  9 - Get information about
+				;		     physical units
+	.LONG	knlIFnDev	;CF_AUNITS  = 10 - Get information about active
+				;		     units (files)
+CLSFMX=!{$-dskcls}/4
+.PAGE
+;Class characteristics tables for the DISK device class
+
+	.MOD	4
+diskdctbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  NUMBER , DECV ,  , 4        , msgnumber , knlGetSysVal##, 0             , dskdcbnum
+ CHARENT  MAXIMUM, DECV ,  , 4        , msgmaximum, knlGetSysVal##, knlSetSysVal##, dskdcbmax
+ CHARENT  LIMIT  , DECV ,  , 4        , msglimit  , knlGetSysVal##, knlSetSysVal##, dskdcblmt
+ CHARENT  NUMDBUF, DECV ,  , 4        , msgnumdbuf, knlGetSysVal##, setnumdbuf    , numdbuf
+ CHARENT  NUMSBUF, DECV ,  , 4        , msgnumsbuf, knlGetSysVal##, setnumsbuf    , numsbuf
+ CHARENT  DCSINFO, DATAS, H, dcsi_SIZE, msgdcsinfo, dcsinfo#      , 0             , 0
+ CHAREND
+
+msgnumber: CHARINFO  {Number of in use disk devices}
+msgmaximum:CHARINFO  {Maximum number of in use disk devices}
+msglimit:  CHARINFO  {Maximum number of disk devices allowed}
+msgnumdbuf:CHARINFO  {Number of disk data buffers}
+msgnumsbuf:CHARINFO  {Number of disk system buffers}
+msgdcsinfo:CHARINFO  {Disk cache information}
+msgdosnm:  CHARINFO  {DOS name (drive letter) for unit}
+.PAGE
+;Device parameter table for raw disk IO operations
+
+	.LONG	PARMMAX
+dskioparms::
+	.LONG	dskiogenparms	 ;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	dskiofilparms	 ;IOPAR_FILxxx = 01xx - File IO parameters
+	.LONG	knlNullTrmParms##;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+	.LONG	xosdskIoDskParms ;IOPAR_DSKxxx = 03xx - Disk IO parameters
+PARMMAX=!{$-dskioparms}/4
+
+	.LONG	PARMGENMAX	;Size of table
+dskiogenparms:
+	.LONG	0		;		   = 0000h
+	.LONG	knlIopFileOptn##;IOPAR_FILEOPTN    = 0001h
+	.LONG	knlIopFileSpec##;IOPAR_FILESPEC    = 0002h
+	.LONG	knlIopDevSts##	;IOPAR_DEVSTS      = 0003h
+	.LONG	knlIopUnitNum##	;IOPAR_UNITNUM     = 0004h
+	.LONG	knlIopGlbId##	;IOPAR_GLBID       = 0005h
+	.LONG	0		;IOPAR_DELAY       = 0006h
+	.LONG	knlIopNullN##	;IOPAR_TIMEOUT     = 0007h
+	.LONG	knlIopIoSts##	;IOPAR_INPSTS	   = 0008h
+	.LONG	knlIopIoSts##	;IOPAR_OUTSTS	   = 0009h
+	.LONG	knlIopInpQLmt##	;IOPAR_INPQLMT	   = 000Ah
+	.LONG	knlIopOutQLmt##	;IOPAR_OUTQLMT	   = 000Bh
+	.LONG	0		;IOPAR_SIVECT1     = 000Ch
+	.LONG	0		;IOPAR_SIVECT2     = 000Dh
+	.LONG	0		;IOPAR_SIDATA      = 000Eh
+	.LONG	knlIopNumOpen##	;IOPAR_NUMOPEN     = 000Fh
+	.LONG	0		;IOPAR_BUFRLMT	   = 0010h
+PARMGENMAX=!{$-dskiogenparms}/4
+
+;File IO parameter table for non-file structured disks
+
+	.LONG	PARMFILMAX
+dskiofilparms:
+	.LONG	0
+	.LONG	0		;IOPAR_DIRHNDL     = 0101h
+	.LONG	knlIopNullN##	;IOPAR_SRCATTR     = 0102h
+	.LONG	knlIopNullN##	;IOPAR_FILEATTR    = 0103h
+	.LONG	knlIopNullN##	;IOPAR_DIROFS      = 0104h
+	.LONG	dskiopabspos	;IOPAR_ABSPOS	   = 0105h
+	.LONG	dskioprelpos	;IOPAR_RELPOS	   = 0106h
+	.LONG	0		;IOPAR_EOFPOS	   = 0107h
+	.LONG	0		;		   = 0108h
+	.LONG	knlIopNullN##	;IOPAR_LENGTH      = 0109h
+	.LONG	knlIopNullN##	;IOPAR_REQALLOC    = 010Ah
+	.LONG	knlIopNullN##	;IOPAR_RQRALLOC    = 010Bh
+	.LONG	knlIopNullN##	;IOPAR_GRPSIZE     = 010Ch
+	.LONG	knlIopNullN##	;IOPAR_ADATE       = 010Dh
+	.LONG	knlIopNullN##	;IOPAR_CDATE       = 010Eh
+	.LONG	knlIopNullN##	;IOPAR_MDATE       = 010Fh
+	.LONG	knlIopNullN##	;IOPAR_PROT        = 0110h
+	.LONG	knlIopNullT##	;IOPAR_OWNNAME     = 0111h
+	.LONG	knlIopNullT##	;IOPAR_GRPNAME     = 0112h
+	.LONG	knlIopNullN##	;IOPAR_SETLOCK	   = 0113h
+	.LONG	knlIopNullN##	;IOPAR_CLRLOCK	   = 0114h
+	.LONG	0		;IOPAR_CLSTIME     = 0115h
+	.LONG	0		;IOPAR_CLSNAME     = 0116h
+	.LONG	0		;IOPAR_CLSMSG	   = 0117h
+	.LONG	knlIopNullN##	;IOPAR_SHRRETRY    = 0118h
+	.LONG	knlIopNullN##	;IOPAR_SHRDELAY    = 0119h
+PARMFILMAX=!{$-dskiofilparms}/4
+
+;Disk IO parameter table for non-file structured disks
+
+	.LONG	PARMDSKMAX
+xosdskIoDskParms:
+	.LONG	0
+	.LONG	dskiopfstype	;IOPAR_DSKFSTYPE   = 0301h
+	.LONG	dskiopsectsize	;IOPAR_DSKSECTSIZE = 0302h
+	.LONG	dskiopclssize	;IOPAR_DSKCLSSIZE  = 0303h
+	.LONG	dskiopttlspace	;IOPAR_DSKTTLSPACE = 0304h
+	.LONG	dskiopavlspace	;IOPAR_DSKAVLSPACE = 0305h
+	.LONG	dskiopnumhead	;IOPAR_DSKNUMHEAD  = 0306h
+	.LONG	dskiopnumsect	;IOPAR_DSKNUMSECT  = 0307h
+	.LONG	dskiopnumcyln	;IOPAR_DSKNUMCYLN  = 0308h
+	.LONG	dskiopdskblk	;IOPAR_DSKBLOCK    = 0309h
+
+PARMDSKMAX=!{$-xosdskIoDskParms}/4
+
+	.LONG	1
+xosdskDpParms::
+	.LONG	xosdskDp0Parms
+
+	.LONG	DPPARMMAX
+xosdskDp0Parms:
+	.LONG	knlIoparClass##	;IOPAR_CLASS      = 8000h  - Device class
+	.LONG	0		;		  = 8001h  - Reserved
+	.LONG	xosdskUnitName	;IOPAR_DKUNITNAME = 8002h  - Disk physical name
+	.LONG	xosdskDosName	;IOPAR_DKDOSNAME  = 8003h  - Disk DOS name
+	.LONG	xosdskVolName	;IOPAR_DKVOLNAME  = 8004h  - DIsk volume name
+DPPARMMAX=!{$-xosdskDpParms}/4
+.PAGE
+	.SBTTL	Initialization routine
+
+	INITSUB	initdsk
+
+initdsk::
+	PUSHL	#xosdskCcb		;Install the DISK class
+	CALL	sysIoNewClass##
+	TESTL	EAX, EAX
+	JS	10$
+	CALL	initbufr#
+	JC	10$
+	MOVL	knlFixPath1##, #pathfunc#
+	MOVL	knxLogGiveAllPaths##, #giveallpaths#
+	MOVL	EAX, #adddevpath#
+	SUBL	EAX, #knlFixPath3##+5
+	MOVL	knlFixPath3##+1, EAX
+
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #xcodetop#
+	CLRL	EAX
+10$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+;Function to create a disk UCB
+;	long xosdskMakeUcb
+;	    long  letter,	// Letter for device name
+;	    long  unit,		// Unit numbers
+;	    KCB  *kcb,		// Address of KCB
+;	    long  size,		// Size of the UCB to create
+;	    long  hashsz,	// Hash table size code
+;	    UCB **pucb};	// Address of location to receive address of
+;				//   the UCB
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+mkucb_letter=!32t
+mkucb_unit  =!28t
+mkucb_kcb   =!24t
+mkucb_size  =!20t
+mkucb_ppucb =!16t
+
+xosdskMakeUcb:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	0
+	PUSHL	mkucb_size[EBP]
+	MOVL	EDI, mkucb_ppucb[EBP]
+	PUSHL	EDI
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	20$
+	MOVL	EDI, [EDI]		;Get address of the UCB
+	PUSHL	EDI
+	PUSHL	#0
+	MOVL	EAX, mkucb_size[EBP]
+	SHRL	EAX, #2
+	PUSHL	EAX
+	CALL	sysLibMemSetLong##	;Zero the new UCB
+	MOVL	ucb_label[EDI], #'UCB*'
+	MOVL	EAX, mkucb_letter[EBP]
+	MOVB	ucb_name[EDI], AL	;Store first letter
+	MOVL	ucb_dsp[EDI], #DS$PHYS|DS$NOABORT|DS$LCLDISK|DS$QIN|DS$QOUT
+	MOVL	EAX, mkucb_unit[EBP]
+	MOVB	ucb_punit[EDI], AL	;Store unit numbers
+	MOVB	ucb_sunit[EDI], AH
+	MOVZBL	EAX, AL
+	LEAL	EBX, ucb_name+1[EDI]	;Also put primary unit number in the
+	CALL	knlPutDecNmbr##		;  name as text
+	MOVZBL	EAX, ucb_sunit[EDI]	;Need partition number?
+	TESTL	EAX, EAX
+	JE	10$			;No
+	MOVB	[EBX], #'P'		;Yes
+	INCL	EBX
+	CALL	knlPutDecNmbr##
+	JMP	12$
+
+10$:	MOVL	ucb_baseucb[EDI], EDI
+12$:	MOVL	ucb_sdisp[EDI], #dskdsp ;Assume not file structured
+	LEAL	EAX, ucb_cdrmb[EDI]	;Store the pointer to the cache device
+	MOVL	ucb_pcdrmb[EDI], EAX	;  RMB
+	MOVL	EBX, mkucb_kcb[EBP]	;Get address of the KCB
+	MOVL	ucb_kcb[EDI], EBX
+	MOVL	EAX, kcb_disp[EBX]	;Store UCB's copy of the function
+	MOVL	ucb_disp[EDI], EAX	;  dispatch table pointer
+	MOVL	EAX, kcb_ioreg1[EBX]	;Also store IO register numbers
+	MOVL	ucb_ioreg1[EDI], EAX
+	MOVL	EAX, kcb_ioreg2[EBX]
+	MOVL	ucb_ioreg2[EDI], EAX
+	MOVW	AX, ucb_punit[EDI]
+	LEAL	ECX, kcb_fucb[EBX]	;Find place to link in this UCB
+14$:	MOVL	EDX, [ECX]		;Get next UCB
+	TESTL	EDX, EDX
+	JE	18$			;If no more
+	CMPB	AL, ucb_punit[EDX]	;Check primary unit number
+	JB	18$			;If less, it goes here
+	JA	16$			;If greater, advance to next
+	CMPB	AH, ucb_sunit[EDX]	;Same, check secondary unit number
+	JB	18$			;If less, it goes here
+16$:	LEAL	ECX, ucb_next[EDX]	;Advance to next UCB
+	JMP	14$
+
+18$:	MOVL	[ECX], EDI
+	MOVL	ucb_next[EDI], EDX
+	INCL	ucbcount		;Increase number of UCBs
+	INCL	kcb_ucbcnt[EBX]
+	MOVL	ucb_pblksz[EDI], #1	;Store default physical block size
+	MOVL	ucb_fsname+0[EDI], #'NotM'
+	MOVL	ucb_fsname+4[EDI], #'ntd'
+	MOVL	ucb_shrdelay[EDI], #3t
+	MOVL	EBX, mkucb_ppucb[EBP]
+	MOVL	[EBX], EDI
+	CLRL	EAX
+20$:	LEAVE
+	POPL	ESI	
+	POPL	EDI
+	RET	20t
+
+;Here if error after UCB is allocated
+
+22$:	PUSHL	EAX
+	PUSHL	EDI			;Give up the UCB
+	CALL	sysMemGiveXmb##
+	POPL	EAX
+	JMP	20$
+.PAGE
+;Function to create a disk hash table (must have exec memory resource if
+;  DTHS$STATIC is set)
+;	long xosdskMakeHashTbl(
+;	    UCB *ucb,		// Address of device's UCB
+;	    long szx);		// Size index value
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return, ucb_hashtbl and ucb_hashmsk have been set.
+
+mht_ucb=!12t
+mht_szx=!8
+
+xosdskMakeHashTbl::
+	PUSHL	EDI
+	MOVL	EDI, mht_ucb[ESP]
+	MOVL	EAX, mht_szx[ESP]	;Get size wanted
+	MOVL	EAX, hsztbl-4[EAX*4]
+	LEAL	EDX, -1[EAX]
+	MOVL	ucb_hashmsk[EDI], EDX
+	SHLL	EAX, #2			;Get bytes needed
+	PUSHL	EAX
+	LEAL	EAX, ucb_hashtbl[EDI]
+	PUSHL	EAX
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	10$
+	MOVL	ECX, ucb_hashmsk[EDI]	;Get number of longs to zero
+	INCL	ECX
+	MOVL	EDI, ucb_hashtbl[EDI]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+10$:	POPL	EDI
+	RET	8
+
+	.MOD	4
+hsztbl:	.LONG	0x100	;DHTS_256 = 1
+	.LONG	0x400	;DHTS_1K  = 2
+	.LONG	0x1000	;DHTS_4K  = 3
+	.LONG	0x2000	;DHTS_8K  = 4
+	.LONG	0x4000	;DHTS_16K = 5
+.PAGE
+;Function to create disk KCB - must be called with the exec memory resource
+;	c(AL)  = Value for kcb_bits
+;	c{ECX} = Size of KCB to make
+;	c{EBX} = Offset of controller dispatch table
+;	c{EDX} = Type name
+;	CALL	xosdskMakeKcb
+;	C:set = Error
+;	C:clr = Normal
+;	  c{EDI} = Address of KCB just created
+
+;	long xosdskMakeKcb(
+;	    long  bits,		// Value for kcb_bits
+;	    long  size,		// Size of the KCB
+;	    long  disp,		// Address of the controller dispatch table
+;	    txt4  typename,	// Type name
+;	    KCB **lhead,	// Address of the local KCB list head pointer
+;	    KCB **pkcb);	// Address of pointer to receive KCB address
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+mkkcb_bits =!28t
+mkkcb_size =!24t
+mkkcb_disp =!20t
+mkkcb_tpnm =!16t
+mkkcb_lhead=!12t
+mkkcb_pkcb =!8
+
+xosdskMakeKcb:
+	PUSHL	EDI
+	MOVL	EDI, mkkcb_pkcb[ESP]
+	PUSHL	mkkcb_size[ESP]		;Get an XMB for the KCB
+	PUSHL	EDI
+	CALL	sysMemGetXmb##
+	TESTL	EAX, EAX
+	JS	4$
+	MOVL	EDI, [EDI]
+	PUSHL	EDI			;Clear the KCB
+	PUSHL	#0
+	MOVL	EAX, mkkcb_size+8[ESP]
+	SHRL	EAX, #2
+	PUSHL	EAX
+	CALL	sysLibMemSetLong##
+	MOVL	kcb_label[EDI], #'KCB*'
+	MOVL	EAX, mkkcb_bits[ESP]
+	MOVB	kcb_bits[EDI], AL	;Store bits in the KCB
+	MOVL	EAX, mkkcb_disp[ESP]	;Store offset of dispatch table
+	MOVL	kcb_disp[EDI], EAX
+	MOVL	EAX, mkkcb_tpnm[ESP]	;Store type name in the KCB
+	MOVL	kcb_type[EDI], EAX
+	MOVL	kcb_fnext[EDI], #-1	;Initialize fork list link
+	MOVL	kcb_fucb[EDI], #0
+	MOVL	EAX, firstkcb		;Link into master KCB chain
+	MOVL	kcb_next[EDI], EAX
+	MOVL	firstkcb, EDI
+	MOVL	EDX, mkkcb_lhead[ESP]	;Link into local KCB chain
+	MOVL	EAX, [EDX]
+	MOVL	kcb_nexts[EDI], EAX
+	MOVL	[EDX], EDI
+	CLRL	EAX			;Finished
+4$:	POPL	EDI
+	RET	24t
+.PAGE
+;Function to unlink a KCB
+;	void xosdskUnlinkKcb(
+;	    KCB  *kcb,		// Address of KCB
+;	    KCB **head);	// Address of pointer to first KCB for
+;				//   controller type
+
+ulk_kcb =!8
+ulk_head=!4
+
+xosdskUnlinkKcb::
+	MOVL	ECX, ulk_kcb[ESP]
+	MOVL	EDX, ulk_head[ESP]
+2$:	CMPL	[EDX], ECX
+	JE	8$
+	MOVL	EDX, [EDX]
+	TESTL	EDX, EDX
+	JE	4$
+	ADDL	EDX, #kcb_nexts
+	JMP	2$
+
+4$:	CRASH	KNFL			;[KCB Not Found in Local list]
+
+;Here with location of the KCB in the local list
+
+8$:	MOVL	EAX, kcb_nexts[ECX]	;Remove it from the local list
+	MOVL	[EDX], EAX
+	MOVL	kcb_nexts[ECX], #-1
+	MOVL	EDX, #firstkcb		;Point to global first KCB pointer
+10$:	CMPL	[EDX], ECX
+	JE	16$
+	MOVL	EDX, [EDX]
+	TESTL	EDX, EDX
+	JE	12$
+	ADDL	EDX, #kcb_next
+	JMP	10$
+
+12$:	CRASH	KNFG			;[KCB Not Found in Global list]
+
+;Here with location of the KCB in the global list
+
+16$:	MOVL	EAX, kcb_next[ECX]	;Remove it from the global list
+	MOVL	[EDX], EAX
+	MOVL	kcb_next[ECX], #-1
+	RET	8
+.PAGE
+	.SBTTL	xosdskMakeFscb - Subroutine to create disk FSCB
+
+;Subroutine to create disk FSCB
+;	c{EBX} = Offset of file system check routine
+;	CALL	xosdskMakeFscb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EDI} = Offset of FSCB
+
+xosdskMakeFscb:
+	MOVL	ECX, #fscb_SIZE		;Get space for the FSCB
+	CALL	knlGetXMem##
+	JC	4$			;If error
+	MOVL	EAX, lastfscb		;Link into list of FSCBs
+	TESTL	EAX, EAX
+	JNE	2$
+	MOVL	EAX, #firstfscb
+2$:	MOVL	[EAX], EDI
+	MOVL	lastfscb, EDI
+	MOVL	fscb_chk[EDI], EBX
+4$:	RET
+.PAGE
+	.SBTTL	setnumdbuf - Number of disk data buffers
+
+;Here to set the NUMDBUF class characteristic - Number of disk data buffers
+
+setnumdbuf:
+	SUBL	EAX, xosdskDataCbdb#+cbdb_total
+	JBE	4$
+	PUSHL	EAX			;Get number of data buffers wanted
+	PUSHL	#'DCB='			;Get label for the buffers
+	PUSHL	#xosdskDataCbdb#
+	CALL	addcbufrs#		;Create the data buffer
+	BTL	EAX, #31t
+	RET				;Thats all
+
+4$:	CLRL	EAX
+	RET
+
+	.SBTTL	setnumsbuf - Number of disk system buffers
+
+;Here to set the NUMSBUF class characteristic - Number of disk system buffers
+
+setnumsbuf:
+	SUBL	EAX, xosdskSysCbdb#+cbdb_total
+	JBE	4$
+	PUSHL	EAX			;Get number of data buffers wanted
+	PUSHL	#'SCB='			;Get label for the buffers
+	PUSHL	#xosdskSysCbdb#
+	CALL	addcbufrs#		;Create the data buffer	
+	BTL	EAX, #31t
+	RET				;Thats all
+.PAGE
+	.SBTTL	dskaddunit - Disk class add unit function
+
+;Here for the add unit class function (CL_ADDUNIT) for the disk class - This
+;  function is called as an svcIoQueue function routine.
+;	CALL	dskaddunit
+;	c{EAX} = 0
+
+;Description block for adduparms:
+
+	.MOD	4
+dskaublk:
+ CHARBGN  2, 0
+ CHARENT  UNIT , DECV, , 1, 0, 0, dauunit , 0
+ CHARENT  TYPE , TEXT, , 4, 0, 0, dauctype, 0
+ CHAREND
+
+$$$=!0
+FRM dau_unit  , 4		;Unit number
+FRM dau_type  , 8		;Controller type name
+dau_SIZE=!$$$
+
+dskaddunit::
+	ENTER	dau_SIZE, 0		;Set up and initialize our stack frame
+	MOVL	dau_unit[EBP], #-1
+	MOVL	dau_type[EBP], #-1
+	PUSHL	#1			;Ignore bad names
+	PUSHL	#dskaublk
+	CALL	sysIoCharValues##
+	TESTL	EAX, EAX
+	JS	dauerr
+
+;Here with all parameters processed - make sure we got everything we need
+
+	MOVL	EAX, dau_unit[EBP]
+	ORL	EAX, dau_type[EBP]
+	INCL	EAX
+	JNE	16$
+10$:	MOVL	EAX, #ER_CHARM
+	JMP	dauerr
+
+;Here with all needed parameters found - See if the unit is already defined.
+
+16$:	MOVL	EBX, firstkcb		;Point to first disk KCB
+	TESTL	EBX, EBX
+	JE	28$			;If no KCBs at all
+	MOVL	EDX, dau_unit[EBP]	;Get unit number
+18$:	MOVL	EAX, dau_type[EBP]
+	CMPL	EAX, kcb_type[EBX]	;For this type controller?
+	JNE	26$			;No
+	TESTB	kcb_bits[EBX], #KB$ERROR ;Maybe - can we use it?
+	JNE	30$			;No - fail
+20$:	MOVL	ESI, kcb_fucb[EBX]	;Yes - get first UCB
+	TESTL	ESI, ESI
+	JE	26$			;If no UCBs for controller
+22$:	CMPB	ucb_punit[ESI], DL	;Same unit number?
+	JE	32$			;Yes - fail
+24$:	MOVL	ESI, ucb_next[ESI]	;No - advance to next UCB
+	TESTL	ESI, ESI
+	JNE	22$
+26$:	MOVL	EBX, kcb_next[EBX]	;No more UCBs, advance to next KCB
+	TESTL	EBX, EBX
+	JNE	18$			;Continue if another KCB
+
+;Here if the new unit does not exist - create it
+
+28$:	LEAL	EAX, dau_type[EBP]	;Type name
+	PUSHL	EAX
+	PUSHL	#xosdskCcb		;Address of the disk CCB
+	PUSHL	dau_unit[EBP]		;Unit number
+	CALL	sysIoDriverAddUnit##
+	TESTL	EAX, EAX
+	JS	dauerr
+	MOVL	knlTda+tdaAmount##, EAX
+daudone:LEAVE
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	MOVL	knlTda+tdaDcb##, EAX
+	RET
+
+;Here if bad controller
+
+30$:	MOVL	EAX, #ER_DEVER
+dauerr:	MOVL	knlTda+tdaError##, EAX
+	JMP	daudone
+
+;Here if unit already defined (same unit number)
+
+32$:	MOVL	EAX, #ER_DUADF
+	JMP	dauerr
+.PAGE
+;Subroutine called by adduchar when "UNIT" characteristics found
+
+dauunit:CMPL	EAX, #99t
+	JA	knlBadCharV##
+	MOVL	dau_unit[EBP], EAX
+	CLRL	EAX
+	RET
+
+;Subroutine called by adduchar when "TYPE" characteristics found
+
+dauctype:
+	MOVL	dau_type+0[EBP], EAX
+	MOVL	dau_type+4[EBP], EDX
+	CLRL	EAX
+	RET
+.PAGE
+	.SBTTL	dskunitinfo - Disk class get phyical unit information function
+
+;Here for the get physical unit information class function (CL_PUNITS) for the
+;  disk class
+;	CALL	dskunitinfo
+;	c{EAX} = 0
+;  A zero count (tdaCount) requests that the number of units only be returned
+;    in qab_amount.  A non-zero count indicates that a buffer is available for
+;    that many unit names (8 characters each, null padded).
+
+dskunitinfo:
+	MOVL	EAX, ucbcount		;Get number of units
+	CMPL	knlTda+tdaCount##, #0	;Want number of units only?
+	JNE	2$			;No
+	MOVL	EAX, ucbcount		;Yes - get number of names available
+	MOVL	knlTda+tdaAmount##, EAX
+	JMP	18$
+
+;Here to give him the names
+
+2$:	CMPL	knlTda+tdaCount##, EAX	;Is the buffer big enough?
+	JA	20$			;No - fail
+	MOVL	EDI, knlTda+tdaBuffer2## ;Yes - get buffer address
+	MOVL	EDX, firstkcb		;Yes - point to first KCB
+4$:	TESTL	EDX, EDX
+	JE	18$			;Finished if no more KCBs
+	MOVL	EBX, kcb_fucb[EDX]	;Get first UCB for controller
+6$:	TESTL	EBX, EBX
+	JE	10$			;If no more units
+	MOVL	EAX, ucb_name+0[EBX]
+	IFFAULT	24$
+	STOSL	[EDI]
+	MOVL	EAX, ucb_name+4[EBX]
+	IFFAULT	24$
+	STOSL	[EDI]
+	INCL	knlTda+tdaAmount##
+	MOVL	EBX, ucb_next[EBX]	;Get next UCB
+	JMP	6$
+
+;Here if no more UCBs on the KCB
+
+10$:	MOVL	EDX, kcb_next[EDX]	;Get next KCB
+	TESTL	EDX, EDX
+	JNE	4$			;Continue if another
+18$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+;Here if count is too small
+
+20$:	MOVL	EAX, #ER_ICDEV
+22$:	MOVL	knlTda+tdaError##, EAX
+	JMP	18$
+
+	FAULTHDR
+24$:	MOVL	EAX, #ER_ADRER
+	JMP	22$
+.PAGE
+dskinfo:PUSHL	#physiostr
+	CALL	sysIoInfoSimple##
+	RET
+
+physiostr: .ASCIZ  "Physical IO"
+.PAGE
+;Device check routine for disks
+;	long dskdevchk(
+;	    char  name[16],	// Device name (16 bytes, 0 filled)
+;	    char *path);	// Path specification (buffer must be at
+;				//   least FILESPCSIZE + 1 bytes long)
+;  Value returned is 0 if no match, 1 if found a match, if need to restart
+;    search, or a negative XOS error code if error.
+;  This function may modify the device name and/or the path specification.
+;    When this is done, the value returned should be 1. Currently this is
+;    only done by the SPLCLS class driver. Only 3 restarts are allowed as a
+;    simple way to prevent infinite loops. Normally only 1 restart should
+;    ever be requested for any search.
+;  If the requested partition is not found and the base unit is found and
+;    is not mounted, the base unit is mounted to see if that will create
+;    the partition.
+
+$$$=!0
+FRM devc_base , 4
+FRM devc_fltr , 1
+FRM           , 1
+FRM devc_sunit, 1
+FRM devc_punit, 1
+devc_SIZE=!$$$
+
+devc_name  =!28t
+devc_path  =!24t
+devc_rtndcb=!20t
+
+dskdevchk::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	devc_SIZE, 0
+	MOVL	EBX, devc_name[EBP]
+	MOVZBL	EAX, [EBX]		;Get first letter of name and clear AH
+	CMPB	1[EBX], #0		;Single character name?
+	JNE	dsksr2			;No
+
+;Here if have a single character name - we must check to see if it a DOS disk
+;  letter
+
+;;;; DO THIS REAL SOON!!!!
+
+	JMP	notdisk
+.PAGE
+;Here if didn't find a match on the DOS disk name
+
+dsksr2:	CMPB	AL, #'D'		;Is it D (all but floppy disk)?
+	JE	4$			;Yes
+	CMPB	AL, #'F'		;No - is it F (floppy disk)?
+	JNE	notdisk			;No - can't be a disk name
+4$:	MOVB	devc_fltr[EBP], AL	;Save first letter
+	INCL	EBX
+	MOVL	ECX, #15t
+	CALL	getnumber		;Get number from the name
+	JC	notdisk
+	MOVB	devc_punit[EBP], DL
+	MOVB	devc_sunit[EBP], #0
+	CMPB	AL, #0			;Partition number specified?
+	JE	dsksr4			;No
+	CMPB	AL, #'P'		;Maybe - must have a P next
+	JNE	notdisk			;Not a P, thus not a disk name
+	CALL	getnumber
+	JC	notdisk
+	CMPB	AL, #0			;End of name?
+	JNE	notdisk			;No - not a disk name
+	MOVB	devc_sunit[EBP], DL
+dsksr4:	MOVL	EDX, firstkcb
+8$:	ORL	EDX, EDX
+	JE	dsksrns
+	MOVL	ESI, kcb_fucb[EDX]	;Get first UCB
+10$:	ORL	ESI, ESI
+	JE	14$
+	MOVB	AL, devc_fltr[EBP]	;Check first letter
+	CMPB	ucb_name+0[ESI], AL
+	JNE	12$
+	MOVL	EAX, devc_punit[EBP]	;Check primary unit number
+	CMPB	ucb_punit[ESI], AL
+	JE	16$
+12$:	MOVL	ESI, ucb_next[ESI]
+	JMP	10$
+
+14$:	MOVL	EDX, kcb_next[EDX]
+	JMP	8$
+
+;Here with match on the primary unit number
+
+16$:	CMPB	AH, #0			;Want the primary unit?
+	JE	20$			;Yes - found it
+	MOVL	devc_base[EBP], ESI	;No - remember address of base UCB
+18$:	MOVL	ESI, ucb_next[ESI]
+	ORL	ESI, ESI
+	JE	chkbmnt			;No more - see if mounting the base
+					;  unit might help
+	CMPB	ucb_punit[ESI], AL	;Same primary unit?
+	JNE	chkbmnt			;No
+	CMPB	ucb_sunit[ESI], AH	;Yes - this one?
+	JNE	18$			;No
+20$:	CMPL	ucb_devchar[ESI], #0	;Is it completely set up?
+	JE	dsksrns			;No - say not there!
+
+;Here found the disk unit we want
+
+dsksr6:	MOVL	EBX, devc_name[EBP]
+	MOVL	EAX, ucb_name+0[ESI]	;Get unit name (we know disk names
+	MOVL	EDX, ucb_name+4[ESI]	;  cannot be longer than 6 characters)
+	MOVL	[EBX], EAX
+	MOVL	4[EBX], EDX
+	PUSHL	#0			;Get a disk DCB
+	MOVL	EAX, ESP
+	PUSHL	devc_name[EBP]
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xosdskGetDcb
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	dsksrdn			;If error
+dsksr8:	MOVL	EAX, ucb_sdisp[ESI]
+	MOVL	dcb_sdisp[EDI], EAX
+	MOVL	EAX, ucb_dsp[ESI]	;Assume normal disk description bits
+	TESTB	knlTda+tdaQSts1##, #XF1$SPOOL ;Right?
+	JE	24$			;Yes
+	MOVL	EAX, #DS$SPOOL|DS$NOABORT|DS$LCLDISK|DS$MLTUSER|DS$QOUT
+					;No - get the spooled bits (Setting
+24$:	MOVL	dcb_dsp[EDI], EAX	;  DS$MLTUSER here is not really right,
+					;  but it does not do any harm!)
+	MOVL	dcb_opencnt[EDI], #0	;Clear open count in the DCB
+	MOVL	EAX, #1
+	CMPL	devc_rtndcb[EBP], #0
+	JE	dsksrdn
+	MOVL	knlTda+tdaDcb##, EDI
+	JMP	dsksrdn
+
+;Here if not a disk
+
+notdisk:CLRL	EAX
+dsksrdn:LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+;Here if have a disk name and the disk was not found
+
+dsksrns:MOVL	EAX, #ER_NSDEV
+	JMP	dsksrdn
+.PAGE
+;Here if partition does not exist and the base unit does exist - If the base
+;  unit is not mounted we attempt to mount it. This may create the partition
+;  we want.
+
+chkbmnt:MOVL	ESI, devc_base[EBP]
+	TESTB	ucb_sts1[ESI], #U1$MOUNT ;Is the base unit mounted?
+	JNE	dsksrns			;Yes - the partition we want is
+					;  definately not there!
+	PUSHL	#0			;No - try to mount the base unit
+	MOVL	EAX, ESP
+	PUSHL	devc_name[EBP]
+	PUSHL	ESI
+	PUSHL	EAX
+	CALL	xosdskGetDcb		;Get a disk DCB
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	dsksrdn			;If error
+	MOVL	EAX, ucb_sdisp[ESI]	;OK
+	MOVL	dcb_sdisp[EDI], EAX
+	MOVL	EAX, ucb_dsp[ESI]
+	MOVL	dcb_dsp[EDI], EAX
+	MOVL	knlTda+tdaDcb##, EDI
+	MOVL	dcb_opencnt[EDI], #0	;Clear open count in the DCB
+	MOVB	knlTda+tdaFrame##, #dcb_outtda ;Set up output queue
+	MOVL	EAX, knlTda+tdaAddr#
+	MOVL	dcb_outtda[EDI], EAX
+	MOVL	dcb_inptda[EDI], #0
+	CALL	xosdskMount		;Mount the base disk unit if we can
+	TESTL	EAX, EAX
+	JNS	4$			;If this worked
+	CMPL	EAX, #ER_MDCHG		;Error - was it "media changed"?
+	JNE	10$			;No - go fail
+	CALL	xosdskMount		;Yes - try this again!
+	TESTL	EAX, EAX
+	JS	10$			;Fail this time for all errors
+4$:	TESTB	ucb_sts1[ESI], #U1$MOUNT ;OK - did we really mount it?
+	JE	10$			;No - say our partition is not there
+	MOVL	EAX, ucb_punit[ESI]	;Yes - now search to see if the
+	MOVL	EDX, ESI		;  partition we want is there now
+6$:	MOVL	EDX, ucb_next[EDX]
+	TESTL	EDX, EDX
+	JE	10$
+	CMPB	ucb_punit[EDX], AL
+	JNE	10$
+	CMPB	ucb_sunit[EDX], AH
+	JNE	6$
+	DECL	ucb_dcbcnt[ESI]		;Found it - now make this our unit
+	INCL	ucb_dcbcnt[EDX]
+	MOVL	ESI, EDX
+	MOVL	dcb_dkucb[EDI], ESI
+	MOVL	EAX, ucb_name+0[ESI]
+	MOVL	EDX, ucb_name+4[ESI]
+	MOVL	dcb_name+0[EDI], EAX
+	MOVL	dcb_name+4[EDI], EDX
+	MOVL	EBX, devc_name[EBP]
+	MOVL	[EBX], EAX
+	MOVL	4[EBX], EDX
+	JMP	dsksr8
+
+;Here if either we cannot mount the base unit or we mounted it and the partition
+;  we want did not appear!  In this case we must give up the DCB we have been
+;  using and indicate failure.  This will happen if there is an error mounting
+;  the base unit or if a partition is specified that does not exist on the
+;  drive.
+
+10$:	CALL	xosdskClearDcb		;Give up the DCB
+	MOVL	knlTda+tdaDcb##, #0
+	JMP	dsksrns
+.PAGE
+;Subroutine to get number from the current position in the disk name
+;	c{EBX} = Pointer to name
+;	CALL	getnumber
+;	C:set = Not a number
+;	C:clr = Have number
+;	  c(AL)  = Stopper character
+;	  c{EDX} = Number
+
+getnumber:
+	MOVB	AL, [EBX]
+	CMPB	AL, #'0'
+	JB	36$
+	CMPB	AL, #'9'
+	JA	36$
+	CLRL	EDX
+32$:	MOVB	AL, [EBX]
+	INCL	EBX
+	CMPB	AL, #'0'
+	JB	38$
+	CMPB	AL, #'9'
+	JA	38$
+	ANDL	EAX, #0x0F
+	IMULL	EDX, #10t
+	ADDL	EDX, EAX
+	JMP	32$
+
+36$:	STC
+	RET
+
+38$:	CLC
+	RET
+.PAGE
+	.SBTTL	xosdskSrchUnit - Subroutine to search for disk unit
+
+;Subroutine to search for disk unit given unit number and first letter of
+;  unit name
+;	c(AL) = First character of device name
+;	c(AH) = Unit number
+;	CALL	xosdskSrchUnit
+;	Z:set = Unit found
+;	Z:clr = Unit not found
+
+xosdskSrchUnit:
+	MOVL	EBX, firstkcb		;Point to first disk KCB
+2$:	TESTL	EBX, EBX
+	JE	8$
+	MOVL	EDX, kcb_fucb[EBX]	;Point to first UCB for KCB
+	TESTL	EDX, EDX
+	JE	6$
+	CMPB	ucb_name+0[EDX], AL	;Check first letter of disk name
+	JNE	6$
+4$:	CMPB	ucb_punit[EDX], AH	;Check unit number
+	JE	10$			;Found it - return with Z set
+	MOVL	EDX, ucb_next[EDX]	;Advance to next UCB for KCB
+	TESTL	EDX, EDX
+	JNE	4$			;Continue if more UCBs for KCB
+6$:	MOVL	EBX, kcb_next[EBX]	;Advance to next KCB in system
+	JMP	2$
+
+8$:	TESTL	ESP, ESP
+10$:	RET
+.PAGE
+	.SBTTL	xosdskMount - Mount disk
+
+;Here for the mount disk entry (sd_mount) - This routine is called for all
+;  disk file systems.
+;	long xosdskMount(void);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+
+xosdskMount:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	dcb_label[EDI], #'DCB*'
+	JE	2$
+	CRASH	NDCB
+
+2$:	MOVB	knlTda+tdaFrame##, #dcb_outtda ;Set up output queue
+	MOVL	EAX, knlTda+tdaAddr#
+	MOVL	dcb_outtda[EDI], EAX
+	MOVL	dcb_inptda[EDI], #0
+	TESTL	knlTda+tdaOption##, #XO$NOMOUNT ;Want to suppress mounting
+						;  the disk?
+	JE	4$			;No
+	CLRL	EAX
+	TESTL	knlTda+tdaOption##, #XO$PHYS|XO$RAW ;Yes - can we do this?
+	JNE	mntdn			;Yes - do nothing here
+4$:	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ESI, ESI
+	JNE	6$
+	MOVL	EAX, #ER_MDCHG
+mntdn:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+
+;Here to really mount the disk if we can
+
+6$:	CMPL	ucb_label[ESI], #'UCB*'
+	JE	8$
+	CRASH	NUCB
+
+8$:	CALL	xosdskGetDiskRes
+	TESTL	EAX, EAX
+	JS	mntdn
+
+	TESTB	ucb_sts1[ESI], #U1$MOUNT ;Is this disk mounted now?
+	JE	dskntmn			;No - go mount it
+	ANDB	dcb_sts2[EDI], #~D2$DCHG ;Yes
+	MOVL	EBX, ucb_disp[ESI]	;See if media is write protected
+	CALLI	ks_chkwp[EBX]
+	TESTL	EAX, EAX
+	JS	mntdn			;If error
+
+	MOVL	EBX, ucb_disp[ESI]	;OK - see if disk has been changed
+	CALLI	ks_senchg[EBX]
+	TESTL	EAX, EAX
+	JG	dskver			;If might have been changed
+	CMPL	EAX, #ER_MDCHG		;Was it changed?
+	JE	dskchgd			;Yes
+dskvdon:PUSHL	EAX
+	CALL	xosdskGiveDiskRes	;Wake up anyone who is waiting
+	POPL	EAX
+	JMP	mntdn
+
+;Here if disk might have been changed (Must be a floppy without a media
+;  sensor!)
+
+dskver:	CMPL	ucb_dcbcnt[ESI], #1	;Is anyone else using this disk?
+	JBE	dskchgd			;No - say it was changed
+	MOVL	EAX, dcb_sdisp[EDI]	;Yes - must check it if we can
+	CALLI	sd_vfychg[EAX]
+	CMPL	EAX, #ER_MDCHG
+	JNS	dskvdon			;If not changed
+
+;Here if the disk has been changed
+
+dskchgd:PUSHL	ESI			;Unmount the unit
+	PUSHL	#1
+	CALL	xosdskUnmount#
+	MOVL	EAX, #ER_MDCHG
+	JMP	dskvdon
+
+;Here if disk is not mounted
+
+dskntmn:MOVL	EBX, ucb_disp[ESI]	;Call the drive's check change routine
+	CALLI	ks_chkchg[EBX]		;  to clear possible media change
+	TESTL	EAX, EAX
+	JNS	18$			;  indication
+	CMPL	EAX, #ER_MDCHG
+	JNE	dskvdon			;If error other than media changed
+
+;;;;; CAN GET HERE WITH ESI = 0 !!!!!!
+
+18$:	ANDB	dcb_sts2[EDI], #~D2$DCHG
+	ANDB	ucb_sts2[ESI], #~{U2$DCHG|U2$MCHG}
+	MOVL	EBX, ucb_disp[ESI]	;See if media is write protected
+	CALLI	ks_chkwp[EBX]
+	TESTL	EAX, EAX
+	JS	dskvdon
+	MOVL	EAX, ucb_disp[ESI]	;Check for type of media
+	CALLI	ks_media[EAX]
+	TESTL	EAX, EAX
+	JNS	22$			;If OK
+	TESTL	knlTda+tdaCmd##, #XO$PHYS|XO$RAW ;Error - non-file request?
+	JNE	30$			;Yes - go on
+	JMP	dskvdon			;No - fail
+
+;Here with media type determined - now we must see if we can determine the
+;  file system type
+
+22$:	JNE	30$			;If disk cannot contain a file structure
+
+;Do the first file system scan - this checks in order for each file system
+
+	MOVL	EBX, firstfscb		;Get first file structure data block
+	TESTL	EBX, EBX
+	JE	30$			;If no file systems at all!
+24$:	CALLI	fscb_chk[EBX]		;See if disk contains this file
+	TESTL	EAX, EAX		;  structure
+	JNE	dskvdon			;Finished if not 0
+	MOVL	EBX, fscb_next[EBX]	;Not this one - advance to next
+	TESTL	EBX, EBX		;Continue if more file systems
+	JNE	24$
+
+;If we get here, this disk does not contain a file system that we know about
+
+30$:	MOVL	EAX, #dskdsp
+	MOVL	dcb_sdisp[EDI], EAX
+	MOVL	ucb_sdisp[ESI], EAX
+	MOVL	EAX, ucb_dsp[ESI]
+	ANDL	EAX, #DS$REMOVE
+	ORL	EAX, #DS$PHYS|DS$NOABORT|DS$LCLDISK|DS$QIN|DS$QOUT
+	MOVL	dcb_dsp[EDI], EAX
+	MOVL	ucb_dsp[ESI], EAX
+	ORB	ucb_sts1[ESI], #U1$MOUNT ;Indicate mounted
+	ANDB	ucb_sts2[ESI], #~U2$REQUNMNT
+FSTYPE01::
+	MOVB	ucb_fstype[ESI], #FS_NONE ;Indicate no file system
+	MOVB	ucb_fatmode[ESI], #0
+	MOVL	ucb_fsname+0[ESI], #'None'
+	CLRL	EAX
+	MOVL	ucb_fsname+4[ESI], EAX
+	JMP	dskvdon
+.PAGE
+;Here for the check for the verify disk entry (dd_chkchg) - This routine is
+;  called for non-file structured disks when we need to determine if the disk
+;  has been changed because the disk does not have a media sensor. (Currently
+;  this should only be called for floppy disks since all other supported disk
+;  have reliable media sensors.) - Since we know nothing about the structure
+;  of such disks, we cannot do much about determining if it has been changed.
+;  Thus we always flush the disk's cache but say it was not changed. This has
+;  the effect of passing responsibility for detecting changed disks to the
+;  user program doing direct IO.
+;	long xosdskVfyChg(void);
+;  Value returned is 0 if the disk was not changed or an XOS error code if
+;    error (ER_MDCHG is disk was changed).
+
+xosdskVfyChg:
+	CALL	xosdskFlush#		;Clear out the cache
+	CLRL	EAX
+	RET
+.PAGE
+;Function to get disk resource - The disk resource is used to make allocation
+;  of disk space single threaded.  It is also used to interlock mounting and
+;  dismounting of disks. IMPORTANT: There must be NO disk data or FAT blocks
+;  locked when when this function is called. Locked FIBs are OK. Code executed
+;  with this resource must NEVER attempt to lock a FIB except with a "fail"
+;  call. It may freely lock data blocks.
+;	long xosdskGetDisRes(void);
+;  Value returned is always 0.
+
+xosdskGetDiskRes:
+	MOVL	EAX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_dkucb[EAX]
+	ADDL	EAX, #ucb_resrmb
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource#
+	RET
+
+;Function to give up a disk resource
+;	long xosdskGiveDiskRes(void);
+;  Value returned is always 0.
+
+xosdskGiveDiskRes:
+	MOVL	EAX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_dkucb[EAX]
+	ADDL	EAX, #ucb_resrmb
+	PUSHL	EAX
+	CALL	sysSchGiveResource#
+	RET
+.PAGE
+;Function to create a disk DCB
+;	long xosdskGetDcb(
+;	    char name[16],	// Device name (16 bytes, 0 filled)
+;	    UCB *ucb,		// Address of UCB
+;	    DCB *pdcb);		// Address of pointer to receive address of DCB
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal returm the address of the DCB created is stored in pdcb.
+
+dgdcb_name=!16t
+dgdcb_ucb =!12t
+dgdcb_pdcb=!8
+
+xosdskGetDcb:
+	PUSHL	EDI
+	MOVL	EAX, dskdcbnum
+	CMPL	EAX, dskdcblmt
+	JAE	10$
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	dgdcb_name+4[ESP]
+	PUSHL	ucb_dsp[ESI]		;Get value for dcb_dsp
+	PUSHL	#-dcb_dkINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	6$
+	PUSHL	EDI
+	PUSHL	#xosdskCcb
+	CALL	sysIoLinkDcb##
+	INCL	dskdcbnum
+	MOVL	EAX, dskdcbnum
+	CMPL	EAX, dskdcbmax
+	JB	2$
+	MOVL	dskdcbmax, EAX
+2$:	MOVL	dcb_sdisp[EDI], #dskdsp
+	CLRL	EAX
+	DECL	EAX
+	MOVL	dcb_fnext[EDI], EAX
+	MOVL	EDX, dgdcb_ucb[ESP]
+	MOVL	dcb_dkucb[EDI], EDX	;Store UCB offset in the DCB
+	MOVL	EAX, ucb_kcb[EDX]
+	MOVL	EAX, kcb_type[EAX]	;And store controller type name
+	MOVL	dcb_typename[EDI], EAX
+	MOVL	EAX, ucb_devchar[EDX]	;Store offset of device characteristics
+	MOVL	dcb_devchar[EDI], EAX	;  table
+	INCL	ucb_dcbcnt[EDX]		;Increment DCB count for the UCB
+	MOVL	EDX, dgdcb_pdcb[ESP]
+	MOVL	[EDX], EDI
+	CLRL	EAX
+6$:	POPL	EDI
+	RET	12t
+
+;Here if no disk DCB is available
+
+10$:	MOVL	EAX, #ER_TMDVC		;Error = Too Many DVices open for class
+	JMP	6$
+.PAGE
+	.SBTTL	Subroutines for QFNC_DEVCHAR function
+
+;Subroutine to get 1 byte value from the UCB
+
+xosdskGtU1Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZBL	EAX, [ESI+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get 2 byte value from the UCB
+
+xosdskGtU2Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZWL	EAX, [ESI+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get 4 byte value from the UCB
+
+xosdskGtU4Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+6$:	MOVL	EAX, [ESI+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get 8 byte value from the UCB
+
+xosdskGtU8Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, [ESI+EBX]
+	MOVL	EDX, 4[ESI+EBX]
+	RET
+
+;Subroutine to get 16 byte value from the UCB
+
+xosdskGtU16Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	LEAL	EAX, [ESI+EBX]
+	RET
+
+;Subroutine to get string value from the UCB
+
+xosdskGtUStr:
+	MOVL	EDI, knlTda+tdaDcb##
+	ADDL	EDX, dcb_dkucb[EDI]
+	JMP	knlGetSysStr##
+	
+;Subroutine to get 1 byte value from the KCB
+
+xosdskGtK1Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	MOVZBL	EAX, [ESI+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get 2 byte value from the KCB
+
+xosdskGtK2Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	MOVZWL	EAX, [ESI+EBX]
+	CLRL	EDX
+	RET
+
+;Subroutine to get 4 byte value from the KCB
+
+xosdskGtK4Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	JMP	6$
+
+;Here to get the value of the BASEDEV characteristic
+
+xosdskGtBaseDev::
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EDX, ucb_baseucb[ESI]
+	ADDL	EDX, #ucb_name
+	JMP	knlGetSysStr##
+
+;Here to get the value of the UNITTYPE characteristic
+
+xosdskUnitType:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZBL	EAX, ucb_unittype[ESI]
+	MOVL	EAX, unittypetbl[EAX*4]
+	CLRL	EDX
+	RET
+
+;Here to get the value of the UNITDESP characteristic
+
+xosdskUnitDesp:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZBL	EAX, ucb_bits[ESI]
+	SHRL	EAX, #6
+	MOVL	EAX, unitdesptbl[EAX*4]
+	CLRL	EDX
+	RET
+
+;Here to get the value of the REMOVE characteristic
+
+xosdskGetRemove:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ucb_dsp[ESI], #DS$REMOVE
+	JMP	8$
+
+;Here to get the value of a bit in ucb_bits
+
+xosdskGetBits:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTB	ucb_bits[ESI], BL	;Right
+8$:	MOVL	EAX, #'No'		;Assume not set
+	JE	10$			;Yes
+	MOVL	EAX, #'Yes'		;No - its set
+10$:	CLRL	EDX
+	RET
+
+	.MOD	4
+unittypetbl:
+	.LONG	'Hard'		;DT_HARD =  0 - Hard disk
+	.LONG	'DD3'		;DT_DD3  =  1 - 3.5" double density floppy
+	.LONG	'HD3'		;DT_HD3  =  2 - 3.5" high density floppy
+	.LONG	'DD5'		;DT_DD5  =  3 - 5.25" double density floppy
+	.LONG	'HD5'		;DT_HD5  =  4 - 5.25" high density floppy
+	.LONG	'DD8'		;DT_DD8  =  5 - 8" double density floppy
+	.LONG	'????'		;        =  6
+	.LONG	'????'		;        =  7
+	.LONG	'????'		;        =  8
+	.LONG	'????'		;        =  9
+	.LONG	'UHD3'		;        = 10
+	.LONG	'????'		;        = 11
+	.LONG	'????'		;        = 12
+	.LONG	'????'		;        = 13
+	.LONG	'????'		;        = 14
+	.LONG	'Mem'		;DT_MEM  = 15 - Memory disk
+	.LONG	'Cdrm'		;DT_CDRM = 16 - CD-ROM
+	.LONG	'Worm'		;DT_WORM = 17 - WORM
+	.LONG	'Optd'		;DT_OPTD = 18 - Optical disk
+
+unitdesptbl:
+	.LONG	'F'		;00
+	.LONG	'F'		;40
+	.LONG	'R'		;80
+	.LONG	'RS'		;C0
+.PAGE
+;Here to set the value of the PROTECT characteristic
+
+xosdskSetProtect:
+	BTL	knlPda+pdaActPriv##, #PP%SYSADMIN ;Can we do this?
+	JNC	knlPrivFail##		;No - fail!
+					;Yes - fall into dskSetBits
+
+;Here to set the value of a characteristic which sets or clears a bit in
+;  ucb_bits
+
+xosdskSetBits:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	CALL	knlGetYesNo##		;See what he said
+	JC	4$
+	JE	2$
+	NOTB	BL			;He said "NO"
+	ANDB	ucb_bits[ESI], BL
+	RET
+
+2$:	ORB	ucb_bits[ESI], BL	;He said "YES"
+4$:	RET
+
+;Here to set the value of a characteristic which has a 1 byte value in the
+;  UCB
+
+xosdskStU1Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVB	[ESI+EBX], AL
+	RET
+
+;Here to set the value of a characteristic which has a 2 byte value in the
+;  UCB
+
+xosdskStU2Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVW	[ESI+EBX], AX
+	RET
+
+;Here to set the value of a characteristic which has a 4 byte value in the
+;  UCB
+
+xosdskStU4Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+8$:	MOVL	[ESI+EBX], EAX
+	RET
+
+;Here to set the value of a characteristic which has an 8 byte value in the
+;  UCB
+
+xosdskStU8Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+10$:	MOVL	4[ESI+EBX], EDX
+	JMP	8$
+
+;Here to set the value of a characteristic which has a 4 byte value in the
+;  KCB
+
+xosdskStK4Byte:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	ESI, ucb_kcb[ESI]
+	JMP	8$
+
+;Here to set the value of the WTMAX characteristic
+
+xosdskSetWTMax:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	ORL	EAX, EAX		;Is it 0?
+	JNE	14$			;No
+	INCL	EAX			;Yes - make it 1
+14$:	CMPL	ucb_dthlimit[ESI], #0	;Do we have a limit?
+	JE	16$			;No
+	CMPL	EAX, ucb_dthlimit[ESI]	;Yes - is the value too big?
+	JB	16$			;No
+	MOVL	EAX, ucb_dthlimit[ESI]	;Yes - use the limit value
+16$:	MOVL	ucb_wtmax[ESI], EAX	;Store new value
+	CLC
+	RET
+
+;Here to set the value of the RAMAX characteristic
+
+xosdskSetRAMax:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	ucb_dthlimit[ESI], #0	;Do we have a limit?
+	JE	18$			;No
+	CMPL	EAX, ucb_dthlimit[ESI]	;Yes - is the value too big?
+	JB	18$			;No
+	MOVL	EAX, ucb_dthlimit[ESI]	;Yes - use the limit value
+18$:	MOVL	ucb_ramax[ESI], EAX	;Store new value
+	CLC
+	RET
+.PAGE
+	.SBTTL	xosdskSetDosName - Set value of the DOSNAME characteristic
+
+;Here to set the value of the DOSNAME characteristic - This characteristic
+;  specifies the DOS drive letter for the drive or partition.  Setting this
+;  value for a partition also changes the value of the corresponding DOSNAMEn
+;  characteristic for the base physical unit.
+
+xosdskSetDosName:
+
+	MOVL	EAX, #ER_CHARN
+	STC
+	RET
+
+	CRASH	???
+
+.IF NE 0
+
+	TESTL	EAX, #0FFFFFF00h	;Have a single letter?
+	JNE	knlBadCharV##		;No - fail
+	MOVL	ESI, dcb_dkucb[EDI]	;Yes - get offset of UCB
+	CMPB	ucb_partnx[ESI], #0	;Is this a base physical unit?
+	JNE	6$			;No
+4$:	MOVL	ucb_dosname[ESI], EAX	;Yes - just store the drive letter
+	RET
+
+;Here for a partition.  In this case its harder, since we have to change the
+;  corresponding DOSNAMEn characteristic for the base physical unit.
+
+6$:	PUSHL	EAX
+	MOVZBL	EAX, ucb_sunit[ESI]	;Get secondary unit number
+	MOVL	ECX, ucb_baseucb[ESI]	;Get address of base UCB
+	MOVL	EDX, EAX		;Construct characteristic name
+	SHLL	EDX, #24t
+	ADDL	EDX, #'AME0'
+	MOVL	EBX, #'DOSN'
+	CALL	finddosnm		;Set up the DOSNAMEn characteristic
+	JC	10$
+	POPL	EAX
+	LEAL	EBX, dct_dosnmname[ESI]
+	CALL	setdosnm
+	CALL	donedosnm
+	CLC
+	RET
+
+;Here if error
+
+10$:	POPL	ECX
+	RET
+.PAGE
+	.SBTTL	xosdskGetHdDosNm - Get head routine for DOSNAME* device characteristics
+
+;Get head routine for DOSNAME* device characteristics
+;	CALL	xosdskGetHdDosNm
+;	Z:set = No blocks
+;	Z:clr = Have at least one block
+;	  c{ESI} = Offset of first block
+
+xosdskGetHdDosNm:
+	MOVL	ESI, dcb_dkucb[EDI]	;Get offset of UCB
+	MOVL	ESI, ucb_dosnmdct[ESI]	;Get offset of first block
+	TESTL	ESI, ESI
+	RET
+
+	.SBTTL	xosdskFindDosNm - Find element routine for DOSNAME* device characteristics
+
+;Find element routine for DOSNAME* device characteristics.  If the
+;  characteristic name is of the form DOSNAMEn and is not found, an entry
+;  is created with a null value.
+;	c{EBX,EDX} = Characteristic name
+;	c{EDI}     = Offset of DCB
+;	CALL	xosdskFindDosNm
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  Z:clr = No match
+;	  Z:set = Match found
+;	    c{ESI} = Offset of block
+
+xosdskFindDosNm:
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	EAX, dcb_dkucb[EDI]	;Get offset of UCB
+	ORL	EAX, EAX		;Just to be safe!
+	JE	6$
+	CMPB	ucb_partnx[EAX], #0	;Is this a physical unit?
+	JNE	6$			;No - say bad characteristic name
+	CMPL	EBX, #'DOSN'		;Yes - does it start with "DOSNAME"?
+	JNE	6$			;No
+	MOVL	EAX, EDX		;Maybe
+	ANDL	EAX, #0FFFFFF
+	CMPL	EAX, #'AME'
+	JNE	6$			;No
+	MOVL	EAX, EDX
+	SHRL	EAX, #24t
+	CMPB	AL, #'1'		;Is last character a digit?
+	JB	6$			;No
+	CMPB	AL, #'9'		;Maybe
+	JA	6$			;No
+	ANDL	EAX, #0Fh		;Yes - get value of digit
+	MOVL	ECX, dcb_dkucb[EDI]
+finddosnm:
+	PUSHL	EBX
+	PUSHL	EDX
+	ADDL	ECX, #ucb_dosnmdct
+2$:	MOVL	ESI, [ECX]
+	TESTL	ESI, ESI
+	JE	8$
+	CMPL	dct_dosnmpart[ESI], EAX ;This partition?
+	JE	10$			;Yes - found it
+	JA	8$			;If past where it goes
+	LEAL	ECX, dct_lnknext[ESI]	;Advance to next block
+	JMP	2$
+
+;Here if name does not match any of our blocks
+
+6$:	TESTL	ESP, ESP		;Clear C and Z
+	RET
+
+;Here if need to insert a new block
+
+8$:	CALL	knlGetQel##		;Get a queue element
+	JC	10$			;If error
+	MOVL	dct_dosnmpart[ESI], EAX ;Store partition (secondary unit)
+					;  number
+	MOVL	dct_name+0[ESI], EBX	;Store name
+	MOVL	dct_name+4[ESI], EDX
+	MOVB	[ESI], #REP_TEXT
+	MOVB	dct_flags[ESI], #DCTF$LNKELMT
+	MOVW	dct_length[ESI], #16t
+	MOVL	dct_getsub[ESI], #knlDcGetLong##
+	MOVL	dct_setsub[ESI], #setdosnm
+	MOVL	dct_lnkdone[ESI], #donedosnm
+	MOVL	dct_infopnt[ESI], #msgdosnm
+	LEAL	EBX, dct_dosnmname[ESI]
+	MOVL	dct_data[ESI], EBX	;Store offset of the value
+	CLRL	EAX
+	MOVL	[EBX], EAX		;Clear the value
+	MOVL	4t[EBX], EAX
+	MOVL	8t[EBX], EAX
+	MOVL	12t[EBX], EAX
+	MOVL	EAX, [ECX]		;Link block into our list
+	MOVL	[ECX], ESI
+	MOVL	dct_lnknext[ESI], EAX
+	MOVL	dct_dosnmprev[ESI], ECX
+	TESTL	EAX, EAX		;Have a next block?
+	JE	10$			;No
+	LEAL	EDX, dct_lnknext[ESI]
+	MOVL	dct_dosnmprev[EAX], EDX
+	CLRL	EAX			;Set Z
+10$:	POPL	EDX
+	POPL	EBX
+	RET
+.PAGE
+;Subroutine called when done using an element block.  If the element has a
+;  null value, the block is discarded, otherwise nothing is done here.
+;	c{ESI} = Offset of block
+;	CALL	donedosnm
+;  FS and EDX are preserved
+
+donedosnm:
+	CMPB	dct_dosnmname[ESI], #0	;Have a null value?
+	JNE	12$			;No - nothing needed here
+	MOVL	EBX, dct_dosnmprev[ESI] ;Yes - unlink this block
+	MOVL	EAX, dct_lnknext[ESI]
+	MOVL	[EBX], EAX
+	TESTL	EAX, EAX
+	JE	4$
+	MOVL	dct_dosnmprev[EAX], EBX
+4$:	JMP	knlGiveQel##		;Give up the memory block
+
+	.SBTTL	setdosnm - Set value of a DOSNAME* device characteristic
+
+;Here to set the value of a DOSNAME* device characteristic
+;	c{EAX} = New value
+;	c{EBX} = Offset of value
+;	c{ESI} = Offset of device characterists block
+;	c{EDI} = Offset of DCB
+;	CALL	setdosnm
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+setdosnm:
+	TESTL	EAX, #0FFFFFF00h	;Have more than 1 letter?
+	JNE	knlBadCharV##
+	MOVL	[EBX], EAX
+	MOVB	CH, dct_dosnmpart[ESI]	;Get secondary unit number
+	MOVL	EDX, dcb_dkucb[EDI]	;Get offset of UCB
+	MOVB	CL, ucb_punit[EDX]	;Get primary unit number
+6$:	ORL	EDX, EDX
+	JE	12$			;If no more
+	CMPB	ucb_punit[EDX], CL	;Same primary unit?
+	JNE	10$			;No
+	CMPB	ucb_sunit[EDX], CH	;Yes - desired secondary unit?
+	JE	8$
+	MOVL	EDX, ucb_next[EDX]	;No - advance to next UCB
+	JMP	6$			;Continue
+
+8$:	MOVL	ucb_dosname[EDX], EAX	;Yes - store new DOS name
+10$:	CLD
+12$:	RET
+
+.ENDC
+.PAGE
+	.SBTTL	xosdskForceDsk - Force physcial or raw disk IO
+
+;Here to force physical or raw disk IO after already setup for file IO
+
+xosdskForceDsk:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ESI, ESI
+	JE	20$
+	MOVL	dcb_sdisp[EDI], #dskdsp	;Change the dispatch address
+	MOVL	EAX, ucb_dsp[ESI]
+	ANDL	EAX, #DS$REMOVE
+	ORL	EAX, #DS$PHYS|DS$NOABORT|DS$LCLDISK|DS$QIN|DS$QOUT
+	MOVL	dcb_dsp[EDI], EAX	;And the device description bits
+	JMP	2$
+
+	.SBTTL	dskopen - Open device
+
+;Here for the open device entry
+;	c{EDX} = Address of processed file specification
+;	c{EDI} = Offset of disk DCB
+
+;NOTE:  Several of the open option bits have a different meaning for a
+;  raw/physical disk device than they have for a file structured device:
+;	XO$EXWRITE -> Open disk unit for exclusive access, fail if any other
+;		      current access to the unit
+;	XO$EXREAD  -> Open disk unit for exclusive access, fail if currently
+;		      open for exclusive access
+;	XO$FAILEX  -> If XO$XWRITE or XO$XREAD set, do not allow any additional
+;		      access until device is closed, ignored otherwise
+
+;	long dskopen(
+;	    char *spec);
+
+dskopen::
+	PUSHL	EDI
+	PUSHL	ESI
+	CMPL	knlTda+tdaParm##, #0	;Yes - have any device parameters?
+	JE	1$			;No
+	PUSHL	#dskioparms		;Yes - process parameters
+	PUSHL	#xosdskDpParms
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	dskodn
+1$:	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	TESTL	ESI, ESI
+	JE	20$
+2$:	TESTB	ucb_sts3[ESI], #U3$XALL ;Is access disallowed?
+	JNE	6$			;Yes - fail
+	MOVL	EAX, knlTda+tdaCmd##	;No - get open option bits
+	TESTL	EAX, #XO$PHYS|XO$RAW	;Raw or physical mode access?
+	JE	24$			;No - fail
+	BTL	EAX, #XO%EXWRITE	;Yes - want completely exclusive access?
+	JNC	4$			;No
+	CMPL	ucb_dcbcnt[ESI], #1	;Yes - is device in use at all now?
+	JA	6$			;Yes - fail
+4$:	BTL	EAX, #XO%EXREAD		;Want simple exclusive access?
+	JNC	8$			;No
+	CMPL	ucb_xdcb[ESI], #0	;Yes - already exclusive?
+6$:
+	JNE	30$
+
+;;;;;	JNE	knlRtnBusy##		;Yes - fail
+
+8$:	TESTB	AL, #XO$OUT		;Does he want to do output?
+	JE	10$			;No - go on
+	INCL	ucb_wrdcb[ESI]		;Yes - increment write count
+10$:	TESTB	AL, #XO$IN		;Does he want to do input?
+	JE	14$			;No
+	INCL	ucb_rddcb[ESI]		;Yes - increment read count
+14$:	CMPL	dcb_opencnt[EDI], #1	;First open?
+	JNE	16$			;No - nothing else needed here
+	CLRL	EAX			;Yes
+	MOVL	dcb_dkfilepos[EDI], EAX	;Reset position
+16$:	TESTL	knlTda+tdaCmd##, #XO$EXWRITE|XO$EXREAD ;Want exclusive access?
+	JE	18$			;No
+	MOVL	ucb_xdcb[ESI], EDI	;Yes
+	BTL	knlTda+tdaCmd##, #XO%FAILEX ;Want to disallow all others?
+	JE	10$			;No
+	ORB	ucb_sts3[ESI], #U3$XALL ;Yes
+18$:	CLRL	EAX
+
+;Here when finished
+
+dskodn:	POPL	ESI
+	POPL	EDI
+	RET	4
+
+20$:	MOVL	EAX, #ER_MDCHG
+	JMP	dskodn
+
+;Here if not physical or raw IO - return "not a file structured device" error
+
+24$:	MOVL	EAX, #ER_NTFIL
+	JMP	dskodn
+
+30$:	MOVL	EAX, #ER_BUSY
+	JMP	dskodn
+.PAGE
+;Here for the sd_qinpblk entry - Input block
+
+dskinpblk:
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	4$			;No
+	PUSHL	#dskioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	10$
+4$:	MOVL	ECX, knlTda+tdaCount##	;Get count
+	JREGZ	ECX, 6$
+	PUSHL	knlTda+tdaBuffer1## 	;Address of buffer
+	PUSHL	ECX
+	PUSHL	#dskdadr		;Address of disk address calculate
+					;  function
+	CALL	xosdskRead		;Do the transfer
+	TESTL	EAX, EAX
+	JS	10$			;If error
+6$:	CLRL	EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	RET
+
+;Here if error
+
+10$:	MOVL	knlTda+tdaError##, EAX	;Say nothing output for now!
+	JMP	6$
+.PAGE
+;Here for the sd_qoutblk entry - output block
+
+$$$=!0
+FRM wr_done  , 4	;Amount transfered
+FRM wr_aamnt , 4	;Amount available at current position in file
+FRM wr_head  , 4	;Address of first buffer in list
+FRM wr_prevp , 4	;Pointer to list pointer
+FRM wr_blocks, 4	;Total number of blocks to output each time
+FRM wr_actual, 4	;Actual amount output each time (does not include parts
+wr_SIZE=!$$$		;  of first or last block not filled by user)
+
+dskoutblk:
+	ENTER	wr_SIZE
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	6$			;No
+	PUSHL	#dskioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JS	dwrterr
+6$:	CMPL	knlTda+tdaCount##, #0	;Null write?
+	JE	dwrtdone		;Yes - finished
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_csecsz[ESI]	;Is the position a multiple of the
+	DECL	EAX			;  sector size?
+	TESTL	dcb_dkfilepos[EDI], EAX
+	JNE	8$			;No - fail
+	TESTL	knlTda+tdaCount##, EAX	;Yes - Is the count a multiple of the
+					;  sector size?
+	JNE	10$			;Yes - go on
+	TESTB	ucb_sts1[ESI], #U1$WPROT ;Is the disk write protected?
+	JNE	12$			;Yes - fail
+	TESTL	knlTda+tdaCmd##, #XO$RAW ;Raw IO?
+	JE	diskwrite		;No - continue
+	MOVL	EAX, #ER_NIYT		;Yes - not supported in this version!!
+	JMP	dwrterr
+
+;Here if invalid position
+
+8$:	MOVL	EAX, #ER_BDPOS
+	JMP	dwrterr
+
+;Here if invalid count
+
+10$:	MOVL	EAX, #ER_ICDEV
+	JMP	dwrterr
+
+;Here if disk is write protected
+
+12$:	MOVL	EAX, #ER_WPRER
+	JMP	dwrterr
+.PAGE
+;Here when ready to start writing to the disk
+
+diskwrite:
+	MOVL	wr_done[EBP], #0	;Initialize amount written
+dwrtlp1:MOVL	EAX, dcb_dkfilepos[EDI]	;Get disk address
+	MOVZBL	ECX, ucb_blockshft[ESI]
+	SHRL	EAX, CL
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], #0
+	LEAL	EAX, wr_head[EBP]
+	MOVL	wr_prevp[EBP], EAX
+	MOVL	wr_blocks[EBP], #0
+	MOVL	EAX, xosdskDataCbdb#+cbdb_numavail
+	ADDL	EAX, xosdskDataCbdb#+cbdb_numfree
+	SHRL	EAX, #1			;Get 1/2 of available buffers
+	JE	dwrtnba			;If none available (We don't use the
+					;  last one!)
+	CMPL	EAX, ucb_wtmax[ESI]	;Is this more than we can use?
+	JBE	8$			;No
+	MOVL	EAX, ucb_wtmax[ESI]	;Yes - just use maximum
+8$:	MOVL	EDX, knlTda+tdaCount##	;Get number of blocks we want to write
+	MOVZBL	ECX, ucb_blockshft[ESI]
+	SHRL	EDX, CL
+	CMPL	EAX, EDX
+	JBE	10$
+	MOVL	EAX, EDX
+10$:	MOVL	wr_aamnt[EBP], EAX	;Store number of blocks available now
+dwrtlp2:PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'DCB='
+	PUSHL	EAX
+	CALL	xosdskSrchForBlock#	;Find buffer but don't read block
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	dwrtef			;If error
+	MOVL	EDX, wr_prevp[EBP]
+	MOVL	[EDX], EBX
+	LEAL	EDX, bfr_nextxfr[EBX]
+	MOVL	wr_prevp[EBP], EDX
+	INCL	wr_blocks[EBP]
+	ORB	bfr_status[EBX], #BS$FULL ;Make sure block is marked as full
+	MOVL	ECX, ucb_csecsz[ESI]	;Get the sector size
+	MOVL	ESI, knlTda+tdaBuffer1## ;Get address of his buffer
+	ADDL	knlTda+tdaBuffer1##, ECX ;Bump position for next time around
+	SUBL	knlTda+tdaCount##, ECX	;Reduce amount to go
+	ADDL	wr_done[EBP], ECX	;And increase amount done
+	ADDL	dcb_dkfilepos[EDI], ECX	;Get position for next write
+	DECL	wr_aamnt[EBP]
+	LEAL	EDI, bfr_data[EBX]
+	PUSHL	DS
+	POPL	ES
+	CLD
+	SHRL	ECX, #2			;Get number of longs to copy
+	IFFAULT	dwrtae
+	RMOVSL	[EDI], [ESI]
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]
+	CMPL	wr_aamnt[EBP], #0	;More available here?
+	JLE	dwrtst			;No - stop now
+	ADDL	dcb_dkdskblk+0[EDI], #1	;Yes - bump block on disk
+	ADCL	dcb_dkdskblk+4[EDI], #0
+	MOVL	EAX, xosdskDataCbdb+cbdb_numavail
+	ADDL	EAX, xosdskDataCbdb+cbdb_numfree
+	CMPL	EAX, #10t		;Yes - at least 10 buffers available?
+	JGE	dwrtlp2			;Yes - continue
+
+;Here if have stopped filling buffers, either because we have run out of data,
+;  have reached the write transfer limit, or have encountered a locked buffer.
+
+dwrtst:	MOVL	EAX, wr_prevp[EBP]	;Clear the last pointer
+	MOVL	[EAX], #0
+	MOVL	EBX, wr_head[EBP]	;Get address of first buffer
+	MOVL	EAX, bfr_block+0[EBX]	;Set disk block for first buffer in
+	MOVL	EDX, bfr_block+4[EBX]	;  list
+	SUBL	EAX, ucb_partnoff+0[ESI]
+	SBBL	EDX, ucb_partnoff+4[ESI]
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], EDX
+
+;Start of debug code - make sure buffer list is OK
+
+	MOVL	EAX, EBX
+12$:	CMPL	EAX, #-1
+	JNE	14$
+	CRASH	BDBL			;[BaD Buffer List]
+
+14$:	TESTL	EAX, EAX
+	JE	16$
+	MOVL	EAX, bfr_nextxfr[EAX]
+	JMP	12$
+
+;End of debug code
+
+16$:	MOVL	EAX, wr_blocks[EBP]	;Get total amount to output
+	MOVZBL	ECX, ucb_blockshft[ESI]
+	SHLL	EAX, #9t
+	PUSHL	#kf_writlist		;Function
+	PUSHL	EBX			;Address of first buffer
+	PUSHL	EAX			;Amount to transfer
+	CALL	xosdskTransfer		;Do the transfer
+	TESTL	EAX, EAX
+	JS	dwrtef			;If error
+	MOVL	EBX, wr_head[EBP]
+22$:	PUSHL	bfr_nextxfr[EBX]	;Release the buffers we have just
+	PUSHL	EBX			;  output
+	CALL	xosdskRelsBufr#
+	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	22$
+	CMPL	knlTda+tdaCount##, #0	;Do we want more?
+	JLE	28$			;No - finished here
+	TESTB	knlTda+tdaQSts1##, #XF1$ABTOUT ;Has this operation been aborted?
+	JE	dwrtlp1			;No - go write another part
+	JMP	writab			;Yes - fail
+
+;Here when finished
+
+28$:	CLRL	EAX			;Indicate no error
+	MOVL	ECX, wr_done[EBP]	;Get count
+	ADDL	knlTda+tdaAmount##, ECX
+dwrtdone:
+	LEAVE
+	CLRL	EAX
+	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	RET
+
+;Here if no cache buffer is available (very unlikely!)
+
+dwrtnba:MOVL	EAX, #ER_NODCB
+	CMPL	wr_head[EBP], #0	;Have allocated any buffers?
+	JE	dwrterr			;No
+
+;Here if error after at least one buffer has been filled - in this case we
+;  mark all of the buffers we have filled as empty (this is conservative:
+;  we do not want to try to write anything additional to the disk since we
+;  know there is a problem)
+
+dwrtef:	PUSHL	EAX
+	MOVL	EBX, wr_head[EBP]
+30$:	PUSHL	bfr_nextxfr[EBX]
+	PUSHL	EBX
+	CMPL	bfr_errcode[EBX], #0
+	JNS	32$
+	CALL	xosdskGiveBufr#
+	JMP	34$
+
+32$:	CALL	xosdskRelsBufr#
+34$:	POPL	EBX
+	TESTL	EBX, EBX
+	JNE	30$
+	POPL	EAX
+dwrterr:MOVL	knlTda+tdaError##, EAX
+	JMP	dwrtdone
+
+	FAULTHDR
+dwrtae:	MOVL	knlTda+tdaError##, #ER_ADRER
+	JMP	dwrtdone
+.PAGE
+;Here for the clear DCB entry
+
+xosdskClearDcb:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]	;Get offset of UCB
+	TESTL	ESI, ESI		;Do we have one?
+	JE	6$			;No
+	CMPL	ucb_dcbcnt[ESI], #1	;Is this the only DCB for the UCB?
+	JG	4$			;If disk is still in use by others
+	JE	2$
+	CRASH	BDUC			;[BaD UCB Count]
+
+2$:	TESTB	ucb_sts1[ESI], #U1$MOUNT ;Is the disk mounted now?
+	JE	4$			;No
+	TESTL	ucb_dsp[ESI], #DS$REMOVE ;Yes - is it removable?
+	JE	4$			;No
+	TESTB	ucb_bits[ESI], #UB$MEDIAC ;Does the unit have a media change
+					  ;  sensor?
+	JNE	4$			;Yes
+	TESTB	ucb_sts2[ESI], #U2$FRCMOUNT ;No - was the mount forced?
+	JNE	4$			;Yes
+	CMPB	ucb_fstype[ESI], #0	;No - does it contain a file system?
+	JG	4$			;Yes
+	CMPB	ucb_numpartn[ESI], #0	;No - does it contain partitions?
+	JNE	4$			;Yes
+	PUSHL	ESI			;No - unmount it but keep it around
+	PUSHL	#0			;  (This causes the next access to
+	CALL	xosdskUnmount#		;  reverify the disk.)
+4$:	DECL	ucb_dcbcnt[ESI]
+6$:	DECL	dskdcbnum
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+	.SBTTL	xosdskUnitName - Disk IO parameter for open - get unit name
+
+;Here for the IOPAR_DKUNITNAME IO parameter for open - get unit name
+
+	DPARMHDR  GET, STR
+xosdskUnitName:
+	PUSHL	#ucb_name
+	JMP	20$
+
+	.SBTTL	xosdskDosName - Disk IO parameter for open - get or set DOS name
+
+;Here for the IOPAR_DKDOSNAME IO parameter for open - get or set DOS name
+
+	DPARMHDR  BOTH, STR
+xosdskDosName:
+	PUSHL	#ucb_dosname
+	JMP	4$
+
+	.SBTTL	xosdskVolName - Disk IO parameter for open - get or set volume name
+
+;Here for the IOPAR_DKVOLNAME IO parameter for open - get or set volume name
+
+	DPARMHDR  BOTH, STR
+xosdskVolName:
+	PUSHL	#ucb_volname
+4$:	TESTB	AH, #PAR$SET		;Want to change name?
+	JE	20$			;No
+	PUSHL	EAX
+	PUSHL	ECX
+	PUSHL	ES
+	PUSHL	EBX
+	PUSHL	#0
+	PUSHL	#0
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, EBX
+	PUSHL	ES
+	POPL	GS
+	LEAL	EDI, 8[ESP]
+	PUSHL	SS
+	POPL	ES
+	MOVL	EBX, #8
+8$:	DECL	ECX			;More bytes?
+	JS	16$			;No
+	IFFAULT	10$
+	LODSB	[ESI]			;Maybe - get name byte
+	CMPB	AL, #0
+	JE	16$
+	DECL	EBX			;Room for more?
+	JS	12$			;No - fail
+	STOSB	[EDI]			;Yes - store byte
+	JMP	8$			;Continue
+
+	FAULTHDR
+10$:	MOVL	EAX, #ER_ADRER
+	JMP	14$
+
+12$:	MOVL	EAX, #ER_PARMV
+14$:	POPL	ESI
+	POPL	EDI
+	ADDL	ESP, #28t
+	STC
+	RET
+
+;Here at end of given name
+
+16$:	POPL	ESI
+	POPL	EDI
+	MOVL	ECX, 8[ESP]
+	POPL	[ESI+ECX]		;Store new name
+	POPL	4[ESI+ECX]	
+	POPL	EBX
+	POPL	ES
+	POPL	ECX
+	POPL	EAX
+20$:	TESTB	AH, #PAR$GET		;Want to get the value?
+	JE	30$			;No
+	PUSHL	ESI
+	PUSHL	EDI
+	ADDL	ESI, 8[ESP]		;Yes - get offset of name to return
+	MOVL	EDI, EBX
+	MOVL	EBX, #8
+22$:	DECL	ECX			;Room for more?
+	JS	34$			;No - fail
+	LODSB	[ESI]			;Get byte
+	CMPB	AL, #0
+	JE	24$
+	IFFAULT	32$
+	STOSB	[EDI]			;Give it to him
+	DECL	EBX			;More there?
+	JNE	22$			;Yes - continue
+24$:	DECL	ECX			;Need a null?
+	JS	26$			;No
+	MOVB	AL, #0			;Yes
+	IFFAULT	32$
+	STOSB	[EDI]
+26$:	MOVL	EAX, #8			;Calculate length of name
+	SUBL	EAX, EBX
+	IFFAULT	32$
+	MOVW	[EDX], AX		;Give him the length
+	POPL	ESI
+	POPL	EDI
+30$:	POPL	EAX			;Fix up the stack
+	RET				;Finished
+
+	FAULTHDR
+32$:	MOVL	EAX, #ER_ADRER
+	JMP	14$
+
+34$:	MOVL	EAX, #ER_PARMS
+36$:	POPL	ESI
+	POPL	EDI
+	POPL	ECX
+	STC
+ret006:	RET
+.PAGE
+;Here for the IOPAR_ABSPOS, IOPAR_RELPOS, or IOPAR_EOFPOS parameter for
+;  open - Position for IO
+
+	DPARMHDR  BOTH, DECV
+xosdskOpnPioPos:
+	TESTB	AH, #PAR$GET		;Want to get value?
+	JE	ret006			;No
+	MOVL	EAX, dcb_dkfilepos[EDI]	;Yes - get value
+	JMP	knlAddParm4##		;Give it to the user
+.PAGE
+	.SBTTL	dskiopabspos - Disk IO parameter - set or get absolute position
+
+;Here for the IOPAR_ABSPOS parameter for a disk transfer - set or get absolute
+;  IO position
+
+	DPARMHDR  BOTH, DECV
+dskiopabspos::
+	TESTB	AH, #PAR$SET		;Want to change value?
+	JE	4$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get value for position
+	JC	6$
+2$:	MOVL	dcb_dkfilepos[EDI], EAX	;Store value
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No
+	MOVL	EAX, dcb_dkfilepos[EDI]	;Yes - get value
+	JMP	knlStrParm4##		;Give it to him
+
+6$:	POPL	ECX			;Fix up the stack
+8$:	RET
+
+	.SBTTL	dskioprelpos - Disk IO parameter - set or get relative position
+
+;Here for the IOPAR_RELPOS parameter for a disk transfer - set or get relative
+;  IO position
+
+	DPARMHDR  BOTH, DECV
+dskioprelpos::
+	TESTB	AH, #PAR$SET		;Want to change value?
+	JE	4$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm##		;Get value for position
+	JC	6$
+	ADDL	EAX, dcb_dkfilepos[EDI]	;Make it relative
+	JNO	4$
+	POPL	EAX			;Report value error if overflow
+	JMP	knlBadParmV##
+.PAGE
+;Here for the IOPAR_FSTYPE parameter - File system type
+
+	DPARMHDR  GET, DECV
+dskiopfstype::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVZBL	EAX, ucb_prtntype[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_SECTSIZE parameter - Sector size
+
+	DPARMHDR  GET, DECV
+dskiopsectsize::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_csecsz[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_CLSSIZE parameter - Cluster size
+
+	DPARMHDR  GET, DECV
+dskiopclssize::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_clussize[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_TTLSPACE parameter - Total space
+
+	DPARMHDR  GET, DECV
+dskiopttlspace::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_total[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_AVLSPACE parameter  - Available space
+
+	DPARMHDR  GET, DECV
+dskiopavlspace::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_avail[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_NUMHEAD parameter - Number of heads
+
+	DPARMHDR  GET, DECV
+dskiopnumhead::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_cheads[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_NUMSECT parameter - Number of sectors
+
+	DPARMHDR  GET, DECV
+dskiopnumsect::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_csects[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_NUMCYLN parameter - Number of cylinders
+
+	DPARMHDR  GET, DECV
+dskiopnumcyln::
+	MOVL	ESI, dcb_dkucb[EDI]
+	MOVL	EAX, ucb_ccylns[ESI]
+	JMP	knlStrParm4##
+
+;Here for the IOPAR_DSKBLOCK parameter for getting the number of the last disk
+;  block accessed.
+
+	DPARMHDR  GET, DECV
+dskiopdskblk:
+	CMPL	dcb_dkbasefib[EDI], #0	;Have a file open?
+	JE	knlBadParmI##		;No - say bad parameter
+	TESTB	AH, #PAR$GET		;Yes - want to get the value?
+	JE	12$			;No
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;Get current phycial disk block
+	MOVL	EDX, dcb_dkdskblk+4[EDI]
+	SUBL	EAX, #1
+	SBBL	EDX, #0
+	JMP	knlStrParm8##
+
+12$:	RET
+.PAGE
+	.SBTTL	dskspecial - Special device function for disks
+
+;Here for the QFNC_special queued IO function for disks - Do special device
+;  functions
+;  QAB fields used:
+;	qab_option:	Low 8 bits contain sub-function, high 24 bits may be
+;			  used to modify sub-function
+;	qab_count:	May be used to pass single 32 bit argument value
+;	qab_buffer1:	Pointer to argument buffer
+;  Contents of qab_amount depends on function
+
+dskspecial:
+	MOVZBL	EAX, knlTda+tdaOption##	;Get sub-function
+	CMPL	EAX, #DSKSFMAX		;Legal sub-function?
+	JAE	knlIFnDev#		;No
+	MOVL	ESI, dcb_dkucb[EDI]	;Yes - get offset of our UCB
+	JMPIL	dsksfdsp[EAX*4]		;Dispatch on the subfunction
+
+;Dispatch table for special device functions for disks
+
+	.MOD	4
+dsksfdsp:
+	.LONG	knlIFnDev##	;	     = 0. - Illegal
+	.LONG	knlIFnDev##	;DS_SETDS    = 1. - Set disk state
+	.LONG	dsfdsmnt	;DS_DISMOUNT = 2. - Dismount disk
+	.LONG	dsfmount	;DS_MOUNT    = 3. - Mount disk
+	.LONG	dsfformat	;DS_FORMAT   = 4. - Format disk
+DSKSFMAX=!{$-dsksfdsp}/4
+
+	CODE
+.PAGE
+	.SBTTL	DS_DISMOUNT - Special device function: Dismount disk
+
+;Here for the DS_DISMOUNT special device function - Dismount disk - This
+;  provides a way for a user mode program to call the xosdskUnmount function.
+;  See this function for a description of what this does.
+
+dsfdsmnt:			       ;Is device open for raw or
+	TESTL	knlTda+tdaCmd##, #XO$RAW|XO$PHYS ;  physical IO?
+	JE	10$			;No - say illegal function
+2$:	TESTB	ucb_sts1[ESI], #U1$MOUNT ;Yes - is disk mounted now?
+	JE	8$			;No - nothing needed here
+	CALL	xosdskGetDiskRes
+	TESTL	EAX, EAX
+	JS	12$
+	PUSHL	ESI
+	MOVZBL	EAX, knlTda+tdaOption##+2
+	ANDL	EAX, #0x03
+	PUSHL	EAX
+	CALL	xosdskUnmount#
+	CALL	xosdskGiveDiskRes
+4$:	MOVL	knlTda+tdaAmount##, #1	;Return 1
+8$:	ORB	knlTda+tdaStatus##+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+10$:	MOVL	EAX, #ER_IFDEV
+12$:	MOVL	knlTda+tdaError##, EAX
+	JMP	8$
+
+	.SBTTL	DS_MOUNT - Special device function: Mount disk
+
+;Here for the DS_MOUNT special device function - Mount disk
+
+dsfmount:					 ;Is device open for raw or
+	TESTL	knlTda+tdaCmd##, #XO$RAW|XO$PHYS ;  physical IO?
+	JE	10$			;No - say illegal function
+	TESTB	ucb_sts1[ESI], #U1$MOUNT ;Yes - is disk mounted now?
+	JNE	8$			;Yes - nothing needed here
+	CALL	xosdskMount		;No - mount the disk now
+	TESTL	EAX, EAX
+	JNS	4$			;OK - return 1
+	JMP	12$			;If error
+.PAGE
+;Here for the DS_FORMAT special device function - Format disk
+
+dsfformat:
+	MOVL	EAX, #ER_NIYT
+	RET
+.PAGE
+;Here for the CLOSE QIO function
+
+dskclose:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	knlTda+tdaParm##, #0	;Have any device parameters?
+	JE	12$			;No
+	PUSHL	#dskioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms##
+	PUSHL	#0
+	CALL	sysIoProcDevParam##
+	TESTL	EAX, EAX
+	JNS	12$
+	MOVL	knlTda+tdaError##, EAX
+12$:	MOVL	ESI, dcb_dkucb[EDI]	;Get UCB offset
+	TESTL	ESI, ESI
+	JE	20$
+	CMPL	ucb_xdcb[ESI], EDI	;Do we have it single access?
+	JNE	20$			;No
+	CLRL	EAX			;Yes
+	MOVL	ucb_xdcb[ESI], EAX	;Not any more
+	ANDB	ucb_sts3[ESI], #{~U3$XALL}&0FFh
+20$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+;Subroutine to finish pending output before closing file
+;	c{EDI} = Offset of DCB
+;	CALL	xosdskFinOut
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+;	long xosdskFinOut(void);
+
+.IF NE 0
+
+xosdskFinOut:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb##
+	CMPL	dcb_dkpbfr[EDI], #0	;Have an output buffer pending?
+	JE	10$			;No
+	MOVL	EBX, dcb_dkpbfr[EDI]	;Yes
+	MOVL	dcb_dkpbfr[EDI], #0	;Output it now
+	PUSHL	EBX
+	CALL	xosdskLockBufrW#
+	TESTB	bfr_status[EBX], #BS$FULL ;Is the buffer still full?
+	JE	4$			;No - must have had a write error!
+	PUSHL	EBX
+	CALL	xosdskWriteBufr#
+	TESTL	EAX, EAX
+	JNS	6$
+	PUSHL	EAX
+2$:	PUSHL	EBX
+	CALL	xosdskGiveBufr#
+	POPL	EAX
+	JMP	10$
+
+;Here if pending buffer is now empty - the only way this can happen is if
+;  someone else has tried to write the buffer and the write failed!
+
+4$:	PUSHL	#ER_DEVER		;Report this as a device error
+	JMP	2$
+
+6$:	PUSHL	EBX
+	CALL	xosdskRelsBufr#
+	CLRL	EAX
+10$:	POPL	EBX
+	POPL	EDI
+	RET
+.ENDC
+.PAGE
+	.SBTTL	dskidle - Subroutine to make a disk unit idle
+
+.IF NE 0
+
+;Subroutine to make a disk unit idle - all queued transfer requests are
+;  terminated with an error, if the controller is active with a request for
+;  the unit, the unit is marked as "stopped" and the fork is suppended until
+;  the request is complete
+;	c{EAX} = Error code to use
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of UCB
+;	CALL	dskidle
+
+dskidle::
+	PUSHL	EDI			;Save DCB offset
+	PUSHL	EAX			;Save error code to use
+	MOVL	EBX, ucb_kcb[ESI]	;Get offset of KCB
+	LEAL	EDX, kcb_reqhead[EBX]	;Point to transfer reqeust head pointer
+2$:	MOVL	EDI, [EDX]		;Get next transfer request
+	TESTL	EDI, EDI
+	JE	6$			;If no more
+	CMPL	dcb_dkucb[EDI], ESI	;Is it for this unit?
+	JNE	4$			;No
+	MOVL	EAX, dcb_dkreqnext[EDI] ;Yes - remove it from the list
+	MOVL	[EDX], EAX
+	MOVL	EAX, [ESP]		;Tell extended fork that IO is
+	PUSHL	EDX			;  complete
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	sysIoResumeOutput##
+	POPL	EDX
+	JMP	2$
+
+4$:	LEAL	EDX, dcb_dkreqnext[EDI]
+	JMP	2$
+
+6$:	CMPL	kcb_reqhead[EBX], #0	;Is the list empty now?
+	JNE	8$			;No
+	CLRL	EAX			;Yes - clear tail pointer
+	MOVL	kcb_reqtail[EBX], EAX
+8$:	TOFORK
+	MOVL	EBX, ucb_kcb[ESI]
+	MOVL	EAX, kcb_curdcb[EBX]	;Is the controller busy now?
+	TESTL	EAX, EAX
+	JE	10$			;No - finished here
+	CMPL	dcb_dkucb[EAX], ESI	;Yes - for this unit?
+	JNE	10$			;No - finished
+	ORB	ucb_sts3[ESI], #U3$STOPPED ;Yes - indicate being stopped
+	MOVL	EAX, knlTda+tdaAddr#
+	MOVL	ucb_stoptda[ESI], EAX
+	MOVL	EDI, 4[ESP]		;Restore DCB offset so we can wait
+	PUSHL	#-1
+	PUSHL	#-1
+	PUSHL	#THDS_DW2
+	CALL	sysIoWait##		;Wait until its finished
+	ANDB	ucb_sts3[ESI], #~U3$STOPPED
+	JMP	8$			;Loop back to make sure
+
+;Here when finished
+
+10$:	FROMFORK
+	POPL	EAX			;Restore error code
+	POPL	EDI			;Restore DCB offset
+	RET
+.ENDC
+.PAGE
+;Function to read data from the disk
+;	c{ECX} = Number of bytes to read
+;	c{EBX} = Buffer address
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Offset of subroutine to calculate disk address of next
+;		   block to read
+;	CALL	xosdskRead
+;	c{ECX} = Amount transfered
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = 0
+
+;	long xosdskRead(
+;	    char *bufr,		 // Address of buffer
+;	    int   cnt,		 // Amount to transfer
+;	    long (*func)(void)); // Address of function to calculate disk
+;				 //   block number
+;  Value returned is 0 if normal or a negative error code if error. In all
+;    cases, the amount transferred has been added to tdaAmount.
+
+$$$=!0
+FRM rd_avail, 4t	;Amount available on disk at current position
+FRM rd_amnt , 4t	;Amount left
+rd_SIZE=!$$$
+
+rd_bufr=!28t
+rd_cnt =!24t
+rd_func=!20t
+
+xosdskRead:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	ENTER	rd_SIZE			;Setup a stack frame
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ESI, dcb_dkucb[EDI]	;Get address of our UCB
+	BTL	knlTda+tdaCmd##, #XO%RAW ;Raw IO?
+	JNC	rdnotraw		;No
+	CALL	setupraw		;Yes - do common setup
+	JC	rddone			;If error
+	PUSHL	#kf_readraw		;Function
+	PUSHL	rd_bufr[EBP]		;Address of buffer
+	PUSHL	rd_cnt[EBP]		;Amount to transfer
+	CALL	xosdskTransfer		;Do the transfer
+	JMP	rddone
+.PAGE
+;Here if not raw IO
+
+rdnotraw:				;Call subroutine to calculate disk
+	CALLI	rd_func[EBP]		;  address
+	TESTL	EAX, EAX
+	JS	rddone			;If error
+	JNE	6$			;If not end of file
+	CMPL	knlTda+tdaAmount##, #0	;EOF - did we get anything at all?
+	JNE	rdgood			;Yes - return with it
+	MOVL	EAX, #ER_EOF		;No - report EOF error
+	JMP	rddone
+
+;Here if not at end of file
+
+6$:	MOVL	rd_avail[EBP], EAX	;Save amount available on disk
+	CMPL	EAX, rd_cnt[EBP]	;Is more available than we want?
+	JBE	8$			;No
+	MOVL	EAX, rd_cnt[EBP]	;Yes - only take what we want
+8$:	MOVL	rd_amnt[EBP], EAX	;Store amount for this time
+10$:	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#'DCB='
+	PUSHL	rd_avail[EBP]		;Read ahead as much as we can even if
+	PUSHL	EAX			;  it's more than we want now
+	CALL	xosdskFindBlock#	;Find the block
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	rddone			;If error
+	MOVL	ECX, #0x200		;Get amount to transfer from this block
+	MOVL	EDX, dcb_dkfilepos[EDI]
+	ANDL	EDX, #0x1FF
+	SUBL	ECX, EDX
+	CMPL	ECX, rd_amnt[EBP]	;More than we have or want?
+	JBE	14$			;No
+	MOVL	ECX, rd_amnt[EBP]	;Yes - just use what we have or want
+14$:	ADDL	dcb_dkfilepos[EDI], ECX	;Bump position
+	SUBL	rd_cnt[EBP], ECX	;Reduce amount to go
+	SUBL	rd_amnt[EBP], ECX
+	SUBL	rd_avail[EBP], ECX
+	ADDL	knlTda+tdaAmount##, ECX	;And increase amount done
+	ADDL	dcb_dkdskblk+0[EDI], #1	;Bump disk block
+	ADCL	dcb_dkdskblk+4[EDI], #0
+	PUSHL	EDI			;Yes
+	PUSHL	ESI
+	LEAL	ESI, bfr_data[EBX+EDX]	;Point to start of data
+	MOVL	EDI, rd_bufr[EBP]
+	ADDL	rd_bufr[EBP], ECX
+	CLD
+	CMPL	ECX, #4			;Have fewer than 4 bytes to copy?
+	JB	16$			;Yes
+	MOVL	EAX, ECX		;No - first copy enough bytes to long
+	MOVL	ECX, EDI		;  align the destination
+	NEGL	ECX
+	ANDL	ECX, #0x03
+	SUBL	EAX, ECX
+	IFFAULT	30$
+	RMOVSB	[EDI], [ESI]
+	MOVL	ECX, EAX		;Next copy as many longs as we can
+	SHRL	ECX, #2
+	IFFAULT	30$
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, EAX		;Finally, copy any bytes left over
+	ANDL	ECX, #0x03
+	IFFAULT	30$
+16$:	RMOVSB	[EDI], [ESI]
+	POPL	ESI
+	POPL	EDI
+	CMPW	bfr_errcode[EBX], #0	;Error on transfer?
+	JNE	20$			;Yes
+	PUSHL	EBX
+	CALL	xosdskRelsBufr#		;Give up the buffer
+	CLRL	EBX
+	CMPL	rd_amnt[EBP], #0	;More available here?
+	JNE	10$			;Yes - continue
+	CMPL	rd_cnt[EBP], #0		;No - do we want more?
+	JE	rdgood			;No - finished
+	TESTB	knlTda+tdaQSts1##, #XF1$ABTOUT ;Has this operation been aborted?
+	JE	rdnotraw		;No - go read another part
+writab:	MOVL	EAX, #ER_ABORT		;Yes - get error code
+	JMP	rddone
+
+20$:	MOVXWL	EAX, bfr_errcode[EBX]	;Yes - get error code
+22$:	PUSHL	EAX
+	PUSHL	EBX
+	CALL	xosdskGiveBufr#		;Give up the buffer
+	POPL	EAX
+	JMP	rddone
+
+;Here when finished
+
+rdgood:	CLRL	EAX
+rddone:	LEAVE
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	12t
+
+	FAULTHDR
+30$:	POPL	ESI
+	POPL	EDI
+	MOVL	EAX, #ER_ADRER
+	JMP	22$
+.PAGE
+;Subroutine to set up for raw disk IO
+;	c{EDI} = Offset of DCB
+;	c{EBP] = Frame pointer
+;	CALL	setupraw
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c(AL)  = Value of first byte in buffer
+;	  c{EBX} = Buffer address
+;	  c{ECX} = Buffer size
+
+setupraw:
+	MOVL	EBX, rd_bufr[EBP]	;Get buffer address
+	MOVL	ECX, rd_cnt[EBP]	;Get amount to transfer
+	MOVL	EAX, dcb_dkfilepos[EDI]	;Use the position directly
+	MOVL	dcb_dkdskblk+0[EDI], EAX
+	MOVL	dcb_dkdskblk+4[EDI], #0	;FIX THIS FOR 64-BIT!!!
+	MOVL	EAX, EBX		;Calculate top of buffer
+	ADDL	EAX, ECX
+	DECL	EAX
+	XORL	EAX, EBX		;Is buffer in more than one page?
+	TESTL	EAX, #0xFFFFF000
+	JNE	knlRtnAdrEr##		;Yes - fail
+	RET				;OK
+.PAGE
+;Function to calculate disk block given position in file
+;	long dskdadr(void);
+;  Value returned is the amount available at this position (always 0x7FFFFFFF).
+
+;  The disk block value calculated from dcb_dkfilepos is stored in dcb_dkdskblk.
+
+dskdadr::
+	MOVL	ECX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_dkfilepos+0[ECX] ;Since this is direct IO, the position
+	MOVL	EDX, dcb_dkfilepos+4[ECX] ;  on disk is the same as the position
+	SHRDL	EAX, EDX, #9		  ;  in the "file"
+	SHRL	EDX, #9
+	MOVL	dcb_dkdskblk+0[ECX], EAX ;Store block on disk
+	MOVL	dcb_dkdskblk+4[ECX], EDX
+	MOVL	EAX, #0x7FFFFFFF	;Always say maximum possible is
+					;  available (????)
+	RET
+.PAGE
+;Function to do immediate disk transfer -  Must be called from  main program
+;  level raised to fork level. It returns at the same fork level after IO is
+;  complete. 
+;	long xosdskTransfer(
+;	    long   func,
+;	    uchar *bufr,
+;	    long   cnt);
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    total amount transferred is returned in tdaDevAmnt. The fork level is
+;    unchanged.
+
+trns_func =!20t
+trns_bufr =!16t
+trns_cnt  =!12t
+
+xosdskTransfer:
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	knlTda+tdaRtnValue0##, #0
+	MOVL	EDI, knlTda+tdaDcb##
+	MOVL	ECX, dcb_dkucb[EDI]
+	TESTL	ECX, ECX
+	JE	14$
+	TESTB	ucb_sts3[ECX], #U3$STOPPED ;Has this unit been stopped?
+	JNE	10$			;Yes
+	MOVL	EBX, ucb_kcb[ECX]	;No - get offset of the KCB
+	LEAL	EAX, kcb_rmb[EBX]	;Get the controller resource
+	PUSHL	EAX
+	PUSHL	#RMBB$LOCKED
+	CALL	sysSchGetResource#
+	TESTL	EAX, EAX
+	JS	6$
+	TESTB	dcb_sts2[EDI], #D2$DCHG ;Has the disk been changed?
+	JNE	10$			;Yes - fail
+	MOVL	kcb_curdcb[EBX], EDI	;No - we own the controller now
+	MOVL	kcb_amount[EBX], #0
+	MOVL	EAX, trns_func[ESP]
+	PUSHL	trns_bufr[ESP]
+	PUSHL	trns_cnt+4[ESP]
+	ADDL	EAX, kcb_disp[EBX]	;Dispatch on the function
+	CALLI	[EAX]
+	MOVL	ECX, kcb_amount[EBX]	;Get amount transfered
+	ADDL	knlTda+tdaDevAmnt##, ECX
+	TESTB	dcb_sts2[EDI], #D2$DCHG ;Has the disk been changed?
+	JE	4$			;No
+	MOVL	EAX, #ER_MDCHG
+4$:	MOVB	kcb_itimer[EBX], #0	;Make sure interrupt timer is not active
+	MOVL	kcb_curdcb[EBX], #0	;We no longer own the controller
+	PUSHL	EAX
+	LEAL	EAX, kcb_rmb[EBX]	;Give up the controller resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource#
+	POPL	EAX
+6$:	POPL	EBX
+	POPL	EDI
+	RET	12t
+
+;Here if disk has been marked as stopped
+
+10$:	LEAL	EAX, kcb_rmb[EBX]	;Get the controller resource
+	PUSHL	EAX
+	CALL	sysSchGiveResource#
+12$:	MOVL	EAX, #ER_BUSY
+	JMP	6$
+
+14$:	MOVL	EAX, #ER_MDCHG
+	JMP	6$
+
+.PAGE
+.IF NE $$DSKWRITE
+
+dskpostwrite::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVL	EBX, xosdskwrpnt
+	CMPL	EBX, #xosdskwrend
+	JAE	4$
+	MOVL	EAX, dcb_dkdskblk+0[EDI]
+	MOVL	[EBX], EAX
+	MOVL	EAX, dcb_dkfilepos[EDI]
+	MOVL	4[EBX], EAX
+	MOVW	8[EBX], CX
+	MOVL	EAX, xosdskwrcnt
+	MOVW	10t[EBX], AX
+	CLRL	EAX
+	TESTB	CH, #0x80
+	JNE	3$
+	MOVL	EAX, [ESP]
+	MOVL	EAX, [EAX]
+3$:	MOVL	12t[EBX], EAX
+	ADDL	xosdskwrpnt, #16t
+4$:	POPL	EBX
+	POPL	EAX
+	RET
+.ENDC
+
+.IF NE $$DSKDEBUG
+
+dskpostbgn::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVL	EBX, dskrpnt		;Get ring pointer
+	ADDL	EBX, #16t		;Bump pointer
+	CMPL	EBX, #dskrend		;Past end of ring
+	JB	6$			;No
+	MOVL	EBX, #dskring		;Yes - reset pointer
+6$:	MOVL	dskrpnt, EBX
+	MOVW	[EBX], DI		;Store DCB offset
+	MOVL	EAX, dcb_dkdskblk+0[EDI] ;Store disk block
+	MOVL	4[EBX], EAX
+;;;;;;;	MOVB	AL, dcb_dkfunc[EDI]	;Store function
+	MOVB	AL, #0xFF
+	MOVB	7[EBX], AL
+	CALL	gettime#		;Store time
+	MOVL	8[EBX], EAX
+	CLRL	EAX
+	MOVL	12t[EBX], EAX
+	POPL	EBX
+	POPL	EAX
+	RET
+
+dskpostend::
+	PUSHL	EAX
+	PUSHL	EBX
+	MOVL	EBX, dskrpnt
+	CALL	gettime#
+	SUBL	EAX, 8[EBX]
+	MOVL	12t[EBX], EAX
+	POPL	EBX
+	POPL	EAX
+	RET
+.ENDC
+.PAGE
+	.SBTTL	Data
+
+xosdskMsgLUn:     CHARINFO  {Logical unit}
+xosdskMsgBlockIn: CHARINFO  {Number of blocks input}
+xosdskMsgBlockOut:CHARINFO  {Number of blocks output}
+xosdskMsgShrDelay:CHARINFO  {File sharing delay factor}
+xosdskMsgShrFail: CHARINFO  {Number of file sharing failures}
+xosdskMsgShrRetry:CHARINFO  {Number of file sharing retries}
+xosdskMsgTSeekErr:CHARINFO  {Total number of seek errors}
+xosdskMsgHSeekErr:CHARINFO  {Number of hard seek errors}
+xosdskMsgTIdFErr: CHARINFO  {Total number of ID field errors}
+xosdskMsgHIdFErr: CHARINFO  {Number of hard ID field errors}
+xosdskMsgTRNFErr: CHARINFO  {Total number of record not found errors}
+xosdskMsgHRNFErr: CHARINFO  {Number of hard record not found errors}
+xosdskMsgUnexpInt:CHARINFO  {Number of unexpected interrupts}
+xosdskMsgDiskID:  CHARINFO  {Disk ID}
+xosdskMsgPrtnType:CHARINFO  {Partition type}
+xosdskMsgFSType:  CHARINFO  {File structure type}
+xosdskMsgProtect: CHARINFO  {File access protection}
+xosdskMsgReady:   CHARINFO  {Disk unit is ready}
+xosdskMsgDosName: CHARINFO  {DOS disk name}
+xosdskMsgVolName: CHARINFO  {Volume name}
+xosdskMsgClsSz:   CHARINFO  {Cluster size}
+xosdskMsgClsters: CHARINFO  {Total number of clusters}
+xosdskMsgAvail:   CHARINFO  {Number of free clusters}
+xosdskMsgConDsp:  CHARINFO  {Controller description}
+xosdskMsgMSensor: CHARINFO  {Drive has media sensor}
+xosdskMsgRemove:  CHARINFO  {Media is removable}
+xosdskMsgDupFat:  CHARINFO  {Duplicate FAT blocks are maintained}
+xosdskMsgPartn:   CHARINFO  {Partition table index}
+xosdskMsgPartOff: CHARINFO  {Partition offset}
+xosdskMsgTrkDen:  CHARINFO  {Track density in TPI}
+xosdskMsgDataDen: CHARINFO  {Data density}
+xosdskMsgCBlocks: CHARINFO  {Current total number of blocks on disk}
+xosdskMsgCBlkSz:  CHARINFO  {Current block size in bytes}
+xosdskMsgCHeads:  CHARINFO  {Current number of heads}
+xosdskMsgCSects:  CHARINFO  {Current number of sectors per track}
+xosdskMsgCCylns:  CHARINFO  {Current number of cylinders}
+xosdskMsgIBlocks: CHARINFO  {Initial total number of blocks on disk}
+xosdskMsgIBlkSz:  CHARINFO  {Initial block size in bytes}
+xosdskMsgIHeads:  CHARINFO  {Initial number of heads}
+xosdskMsgISects:  CHARINFO  {Initial number of sectors per track}
+xosdskMsgICylns:  CHARINFO  {Initial number of cylinders}
+xosdskMsgWPcCyln: CHARINFO  {Write pre-comp cylinder}
+xosdskMsgFatMode: CHARINFO  {DOS FAT mode byte}
+xosdskMsgFatSize: CHARINFO  {Size of DOS FAT block}
+xosdskMsgNumFats: CHARINFO  {Number of DOS FAT blocks}
+xosdskMsgVolLabel:CHARINFO  {Volume label}
+xosdskMsgVolCDT:  CHARINFO  {Volume creation date and time}
+xosdskMsgVolMDT:  CHARINFO  {Volume modification date and time}
+xosdskMsgVolXDT:  CHARINFO  {Volume expriation date and time}
+xosdskMsgVolEDT:  CHARINFO  {Volume effective date and time}
+xosdskMsgReserved:CHARINFO  {Initial reserved blocks}
+xosdskMsgRootBlk: CHARINFO  {First block for root directory}
+xosdskMsgRootSize:CHARINFO  {Size of root directory (blocks)}
+xosdskMsgRootProt:CHARINFO  {Root directory protection}
+xosdskMsgBaseDev: CHARINFO  {Base device for partition}
+xosdskMsgLbaMode: CHARINFO  {LBA mode available}
+
+	DATA
+
+numdbuf::   .LONG 20t		;Number of disk data buffers
+numsbuf::   .LONG 40t		;Number of disk system buffers
+firstkcb::  .LONG 0		;Offset of first KCB in system
+firstfscb:: .LONG 0		;Offset of first file system control block
+lastfscb::  .LONG 0		;Offset of last file system control block
+ucbcount::  .LONG 0		;Number of disk UCBs
+dskdcbnum:  .LONG 0		;Number of in use disk DCBs
+dskdcbmax:  .LONG 0		;Maximum number of in use disk DCBs
+dskdcblmt:  .LONG 10000t	;Maximum number of disk DCBs allowed
+dskrescall::.LONG 0
+dskkwcnt::  .LONG 0		;Number of times had to wait for the kontroller
+
+xosdskCcb::
+	.LONG	'CCB*'		;ccb_label   - 'CCB*'
+	.LONG	0		;ccb_next    - Address of next CCB
+	.LONG	'DISK', 0	;ccb_name    - Name of this class
+	.LONG	0		;ccb_npfxmsk - Name prefix part mask
+	.LONG	0		;ccb_npfxval - Name prefix part value
+	.LONG	dskdevchk	;ccb_devchk  - Address of device check routine
+	.LONG	dskcls		;ccb_fdsp    - Address of class func disp table
+	.LONG	diskdctbl	;ccb_clschar - Address of class char table
+	.LONG	0		;ccb_dcbhead - Address of first DCB for class
+	.LONG	0		;ccb_dcbtail - Address of last DCB for class
+	.LONG	0		;ccb_blkhead - Address of first data block for class
+	.LONG	0		;ccb_blktail - Address of last data block for class
+	.LONG	0		;ccb_dlbhead - Address of first DLB for class
+
+.IF NE $$DSKWRITE
+  xosdskwrpnt::.LONG xosdskwring
+  xosdskwring::.BLKB 4000t*16t
+  xosdskwrend::.LONG 0x66666666, 0x66666666
+  xosdskwrcnt::.LONG 0
+.ENDC
+
+.IF NE $$DSKDEBUG
+  dskrpnt:: .LONG dskring-16t
+  dskring:: .BLKB 1024t*16t
+  dskrend::
+.ENDC
+
+	LKEEND

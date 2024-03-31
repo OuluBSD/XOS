@@ -1,0 +1,2712 @@
+	.TITLE	memory2 - Memory allocation routine for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\PCAT.PAR
+
+$$DEBUGXMB=!1			;Set to 1 to enable special XMB debug checks
+$$FILLXMB =!1			;Set to 1 to fill XMBs with data pattern
+$$DEBUGPDA=!1			;Set to 1 to enable special PDA debug checks
+
+	CODE
+
+	.SBTTL	pgfvirtpg - Routine to handle reference to virtual page
+
+;Here if at fork level
+
+2$:	CRASH	PFFL			;[Page Fault at Fork Level]
+
+;Here if at interrupt level
+
+4$:	CRASH	PFIL			;[Page Fault at Interrupt Level]
+
+;Here on page failure when attempting to reference virtual page - DS contains
+;  GS_XDATA and the stack is setup as follows:
+;	c{{ESP}+0}  = Saved DS
+;	c{{ESP}+4}  = Saved EAX
+;	c{{ESP}+8}  = CR2
+;	c{{ESP}+12} = Trap error code
+;	c{{ESP}+16} = Trap EIP
+;	c{{ESP}+20} = Trap CS
+;	c{{ESP}+24} = Trap EFR
+
+pgfvirtpg::
+	CMPB	knlForkLvl#, #FORK_MAIN	;At main progralm level
+	JNE	2$			;No - serious problem
+	POPL	DS			;Yes - Restore registers
+	POPL	EAX
+	POPL	knlTda+tdaURegCR2#	;Save the CR2 value
+	CLI
+	POPL	knlTda+tdaTrapErr#	;Save the error code value
+	PUSHAL				;Save all registers the right way
+	STI
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	MOVL	EAX, #GS_XDATA
+	MOVL	DS, EAX
+	MOVL	ES, EAX
+	CLI
+	MOVB	AL, #0Bh		;Get interrupt in service bits
+	OUTB	P_INC1P0
+	IOPAUSE
+	INB	P_INC1P0
+	STI
+	TESTB	AL, AL			;At interrupt level?
+	JNE	4$.S			;Yes - fail big!
+	MOVL	EDX, knlTda+tdaURegCR2#	;No - get linear address
+	SHRL	EDX, #12t		;Change to page table index
+	CMPL	EDX, #0x0110		;Is this a real mode warp-around page?
+	JAE	6$.S			;No
+	CMPL	EDX, #0x0100		;Maybe
+	JB	6$.S			;No
+	SUBL	EDX, #0x0100		;Yes - look at the real page
+6$:	TESTB	knlPgTable#[EDX*4], #1	;Is a page allocated here?
+	JNE	12$			;Yes - just give page fail trap (must
+					;  be trying to write read-only page!)
+	MOVL	ECX, knlPgTable#[EDX*4]	;No - get address of MDB for page
+	ANDL	ECX, #0xFFFFFFC0
+	PUSHL	EDX			;No
+	SHLL	EDX, #12t		;Calculate offset in MDB
+	SUBL	EDX, mdb_base[ECX]
+	SHRL	EDX, #12t		;Change to page in MDB
+	ORL	EDX, #MT_PUSER<20t	;Merge in page type
+	PUSHL	EDX
+	PUSHL	ECX
+	CALL	sysMemGetMP		;Get a memory page
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	nomemfail		;If none available
+	ORB	AL, #0x65		;Got one - set bits for page table entry
+	CLI
+	ANDL	knlPgTable#[EDX*4], #0x02 ;Save the write bit
+	ORL	knlPgTable#[EDX*4], EAX	;Store in page table
+	MOVL	EAX, knlPda+pdaSpy#
+	INCL	pspy_wspages[EAX]	;Increase count of real pages
+
+	MOVL	EAX, CR3		;Also map it where we can get at it
+	MOVL	CR3, EAX		;Clear the page cache
+
+	STI
+	SHLL	EDX, #12t		;Get address of page
+	MOVL	EDI, EDX
+	MOVL	ECX, #0x1000/4		;Zero the page
+	CLD
+	CLRL	EAX
+	RSTOSL	[EDI]
+	TESTB	52t[ESP], #0x03		;Called from user mode?
+	JNE	10$			;Yes - return to user
+	TESTB	56t+2[ESP], #0x02	;Called from real mode mode?
+	JE	pgfvird			;No - just return
+
+;Here if trap occured in user mode
+
+10$:	TOFORK
+	JMP	knlSignalChk#
+
+pgfvird:POPL	GS			;No - restore registers
+	POPL	FS
+	POPL	ES
+	POPL	DS
+	POPAL
+	IRET				;And return
+
+;Here if page is already allocated - must be trying to write a read-only
+;  page
+
+12$:	POPL	GS			;Restore registers
+	POPL	FS
+	POPL	ES
+	POPL	DS
+	POPAL
+	PUSHL	knlTda+tdaTrapErr#
+	PUSHL	knlTda+tdaURegCR2#
+	JMP	pgfuna2#		;Go handle this case
+.PAGE
+;Here if no more memory is available.  If the faulting instruction is preceeded
+;  with an IFFAULT pseudo-instruction with the $X bit set we go to the error
+;  routine specified with c{EAX} = ER_NEMA.  Otherwise, for now, we just kill
+;  the process - should give a critical error alert here and let the user
+;  decide what to do!
+
+nomemfail:
+	CMPW	52t[ESP], #GS_XCODE	;Was it from our code segment?
+	JNE	nomemkill		;No - fatal error
+	MOVL	EBX, 48t[ESP]		;Yes - get offset of instruction
+	CMPL	EBX, #0x1002		;Possible value?
+	JB	nomemkill		;No
+	CMPL	EBX, knlXCodePnt#	;Maybe
+	JAE	nomemkill		;No
+	CMPB	-5[EBX], #0xA9		;Yes - have FAULT instruction?
+	JNE	nomemkill		;No
+	MOVL	EAX, -4[EBX]		;Maybe - get offset
+	CMPL	EAX, #0x1002		;Possible value?
+	JB	nomemkill		;No
+	CMPL	EAX, knlXCodePnt#	;Maybe
+	JAE	nomemkill		;No
+	CMPB	-1[EAX], #0xFE		;Have right header value?
+	JNE	nomemkill		;No
+	MOVL	48t[ESP], EAX		;Store error handler offset as return
+					;  offset
+	MOVL	44t[ESP], #ER_NEMA	;Store error code in his EAX
+	JMP	pgfvird
+
+;Here if should kill the process
+
+nomemkill::
+	ADDL	ESP, #48t
+	POPL	EDI
+	POPL	EDX
+	POPL	EBP
+nomemkil2::
+	PUSHL	#TC_NOMEM<24t		;Termination status
+	PUSHL	knlTda+tdaAddr#
+	PUSHL	#0
+	CALL	sysSchTerminate#	;Kill the process (will not return)
+	CRASH	KILL
+.PAGE
+;Function to get address of memory table entry given the page table entry
+;	c{EDX} = Address of page table entry
+;	CALL	knlGetMTE
+;	Z:set = No corresponding memory table entry
+;	Z:clr = Normal
+;	  c{EAX} = Address of memory table entry
+;  All other registers are respected
+
+;	PTE XOSFNC *sysMemGetMTE(
+;	    long pte);
+;  Value returned is address of the knlMemTable entry if normal or NULL if the
+;    page is not managed by knlMemTable
+
+gmte_pte=!4
+
+sysMemGetMTE::
+	MOVL	EAX, gmte_pte[ESP]
+	TESTB	AL, #0x01		;Is page mapped?
+	JE	6$			;No, thus no corresponding knlMemTable
+					;  entry
+	SHRL	EAX, #12t		;Get physical page number
+	CMPL	EAX, knlMemTop		;Above knlMemTable?
+	JAE	6$			;Yes
+	LEAL	EAX, knlMemTable#[EAX*8] ;Get address of the knlMemTable entry
+	CMPL	[EAX], #0xFFFFFFFF	;Non-managed page?
+	JNE	10$			;Yes
+6$:	CLRL	EAX
+10$:	RET	4
+.PAGE
+	.SBTTL	knlForceLowMem - Subroutine to force page to low memory
+
+;Subroutine to force page to low memory - called by the DMA setup routine to
+;  ensure that a page is usable for DMA transfers since some machines can't
+;  do DMA transfers into memory mapped at the very top of their physical
+;  address spaces
+;	c{EAX} = Physical address of page
+;	c{EBX} = Virtual buffer address
+;	c{EDX} = Page table index for page
+;	c[FS]  = Selector for PDA for process doing IO
+;	CALL	knlForceLowMem
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = New physical address of page
+
+$$$=!0
+FRM flm_optx  , 4	;Page table index for old page
+FRM flm_vaddr , 8	;Virtual address of page
+FRM flm_paddr , 4	;Physical address of page
+FRM flm_oldpa , 4	;Old physical address of page
+flm_SIZE=!$$$
+
+2$:	RET
+
+	FAULTHDR
+knlForceLowMem::
+
+	CRASH	????
+
+	CMPL	hidmalmt#, EAX		;Is this physical address too high?
+	JAE	2$			;No - nothing needed here
+	ENTER	flm_SIZE, 0		;Yes
+	PUSHAL
+	MOVL	flm_oldpa[EBP], EAX	;First try to find a free page below
+	MOVL	flm_optx[EBP], EDX	;  the DMA limit
+	MOVL	flm_vaddr+0[EBP], EBX
+	MOVL	flm_vaddr+4[EBP], ES
+	MOVL	ECX, #knlMemFree	;Point to first page on the free list
+4$:	MOVL	EBX, [ECX]
+	TESTL	EBX, EBX		;Have another free page to check?
+	JE	frclowna		;No - go do it the hard way!
+;;;;	MOVL	EBX, knlMemTable#-4[EBX*4] ;Get physical address of this page
+	MOVL	EAX, 4[ECX]
+	MOVL	EDX, EAX
+	SHLL	EDX, #12t
+	ADDL	EDX, -4[EBX]
+	CMPL	EDX, hidmalmt#		;Is this page OK?
+	JB	8$			;Yes - go use it
+	LEAL	ECX, [EBX+EAX*8]	;No - point to this page's free list
+					;  entry
+	JMP	4$			;Continue
+
+;Here with free page we can use
+;	c{EAX} = Page table pointer for page
+;	c{EDX} = Physical address of page
+
+8$:	MOVL	flm_paddr[EBP], EDX	;Store physical address
+	PUSHL	EAX
+	MOVZWL	EAX, AX
+	LEAL	EDX, [EBX+EAX*8]
+	MOVL	EAX, [EDX]		;Remove this page from the free list
+	MOVL	[ECX], EAX
+	MOVL	EAX, 4[EDX]
+	MOVL	[ECX], EAX
+	DECL	knlMemAvail#		;Adjust amount free
+	MOVL	EAX, flm_optx[EBP]	;Find memory table entry for the old
+	MOVL	EAX, knlPgTable#[EAX*4]	;  page
+	MOVL	ECX, EAX
+	SHRL	EAX, #7
+	ANDL	EAX, #0x1C
+;;;;	MOVL	EBX, knlMemTable#-4[EAX]
+	SUBL	ECX, -4[EBX]
+	SHRL	ECX, #12t
+	MOVL	EAX, [EBX+ECX*8]	;Copy memory table entry for the old
+	MOVL	[EDX], EAX		;  page to the entry for the new page
+	MOVL	EAX, 4[EBX+ECX*8]
+	MOVL	4[EDX], EAX
+	POPL	EDX			;Restore memory table pointer for new
+	SHRL	EDX, #7			;  page
+	ANDL	EDX, #0x0E00		;Get page table index in bits 9-11
+	ORL	EDX, flm_paddr[EBP]	;Merge in physical page address
+	MOVL	EAX, flm_optx[EBP]	;Get pointer to page table entry for
+	MOVL	ECX, knlPgTable#[EAX*4]	;  old page
+	MOVL	EAX, ECX		;Get page table entry
+	ANDL	ECX, #01FFh		;Just save the page state bits
+	ORL	EDX, ECX		;Merge in page state bits
+	MOVL	knlRamAccessPTE#, EDX
+	MOVL	ECX, CR3		;Map it where we can get at it
+	MOVL	CR3, ECX		;Clear the page cache
+	PUSHL	EAX
+	CALL	sysMemGiveMP		;Put old page on the free list
+
+;At this point we have placed the old page on the free list but have not yet
+;  cleared its page table entry so we can still access it - we have removed
+;  the new page from the free list and have mapped it at knlRamAccess - now
+;  we must copy the contents of the old page to the new page
+
+	IFFAULT	frclowme
+	MOVL	ESI, flm_vaddr[EBP]	;Get address of original page
+	ANDL	ESI, #0xFFFFF000h
+	PUSHL	DS
+	POPL	ES
+	MOVL	EDI, #knlRamAccess#
+	MOVL	ECX, #0x400
+	CLD
+	IFFAULT	frclowmep
+	RMOVSL	[EDI], [ESI]		;Copy the page
+	POPL	GS
+	POPL	ES
+	MOVL	EDX, flm_optx[EBP]	;Update page table index
+	MOVL	EAX, knlRamAccessPTE#
+	MOVL	knlPgTable#[EDX*4], EAX
+	MOVL	ECX, CR3		;Clear the page cache
+	MOVL	CR3, ECX
+	ANDL	flm_oldpa[EBP], #0x0FFF	;Get new physical address
+	ANDL	EAX, #0xFFFFF000
+	ORL	flm_oldpa[EBP], EAX
+	POPAL
+	MOVL	EAX, flm_oldpa[EBP]
+	LEAVE
+	RET
+.PAGE
+;Here if there are no free memory pages below the DMA limit - we search for
+;  an allocated page which we can exchange with the our page
+
+frclowna:
+	CRASH	NLPA			;[No Low Page Available]
+
+	CLRL	EDI			;Start with the base table
+	MOVL	EDX, firstuser		;Start with first possible user page
+;;;;;	MOVL	ECX, basetable-8
+	SUBL	ECX, EDX
+;;;;;	MOVL	EBX, #basetable
+2$:	MOVB	AL, 2[EBX+EDX*8]	;Get page type
+	ANDB	AL, #0xF0		;Remove junk
+	CMPB	AL, #MT_PUSER<4t	;Is this a user page?
+	JAE	10$			;Yes - go use it
+4$:	INCL	EDX			;No - advance to next page
+	LOOP	ECX, 2$			;Continue if more in this table
+	INCL	EDI			;Advance to next table
+;;;;	MOVL	EBX, knlMemTable#[EDI*4] ;Get offset of table
+	CLRL	EDX
+	MOVL	ECX, -8[EBX]		;Get size of table
+	TESTL	ECX, ECX
+	JNE	2$			;Continue if more to check
+	POPL	EAX			;No more - return failure!
+	LEAVE
+	MOVL	EAX, #ER_NEMA
+	STC
+	RET
+
+;Here with a page which we can use
+;CONSIDERATIONS:
+;	VIRTUAL PAGE 0 (DOUBLELY MAPPED)!
+;	SHARED PAGE
+
+10$:
+	CRASH	NLPA			;[No Low Page Available]
+
+;Here if have memory error
+
+frclowmep:
+	POPL	GS
+	POPL	ES
+frclowme:
+	POPAL
+	LEAVE
+	MOVL	EAX, #ER_ADRER
+	STC
+	RET
+.PAGE
+	.SBTTL	resetmem - Subroutine to give up all memory for process
+
+;Subroutine to give up all memory for process
+;	CALL	resetmem
+;	C:set = Error (page is locked)
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+resetmem::
+	ANDB	knlPda+pdaStatus1#, #{~{P1$V86MEM}}&0xFF
+					;Indicate no V86 mode environment
+4$:	MOVL	EDI, knlPda+pdaFirstMdb# ;Have any user memory allocated?
+	ANDL	EDI, #0x00FFFFFF
+	JE	ret004			;No
+	ORL	EDI, #database&0xFF000000
+	MOVL	EDX, mdb_base[EDI]	;Yes - get its address
+	CLRL	ECX
+	CLRL	EBP
+
+
+	CRASH	????
+
+
+;;;;;	CALL	knlChngMsect#		;Give up the msect
+	JNC	4$			;Continue if OK
+ret004:	RET
+.PAGE
+;Function to extend the PDA.
+;	long sysMemExptendPda(
+;	    long pages);	// Number of pages to add
+;  Value returned is 0 if normal or a negative XOS error code if error. The
+;    pdaTop values is updated and the additional pages are zeroed.
+
+mepda_pages=!8
+
+sysMemExtendPda::
+	PUSHL	EBX
+	PUSHL	knlPda+pdaTop#		;Get the additional memory
+	PUSHL	mepda_pages+4[ESP]
+	PUSHL	#MT_PDA
+	PUSHL	#0x63
+	PUSHL	knlPda+pdaAddr#
+	CALL	sysMemGetPages		;Get pages for the PDA
+	TESTL	EAX, EAX
+	JS	8$			;If error 
+	MOVL	EDX, knlPda+pdaTop#	;Add these pages to the per-process area
+	SHRL	EDX, #10t
+	MOVL	EBX, EDX
+	ANDL	EBX, #0x0FC
+	MOVL	ECX, mepda_pages[ESP]
+4$:	MOVL	EAX, knlPgTable#+0[EDX]
+	MOVL	knlPda+pdaPageTbl+{{knlPda>10t}&0xFFC}[EBX], EAX
+	ADDL	EDX, #4
+	ADDL	EBX, #4
+	LOOP	ECX, 4$
+	PUSHL	EDI
+	MOVL	ECX, mepda_pages+4[ESP]
+	SHLL	ECX, #12t
+	MOVL	EDI, knlPda+pdaTop#
+	ADDL	knlPda+pdaTop#, ECX	;Update the PDA's top address
+	SHRL	ECX, #2
+	CLD
+	PUSHL	DS			;Clear the new space
+	POPL	ES
+	CLRL	EAX
+	RSTOSL	[EDI]
+	POPL	EDI
+	CLRL	EAX
+8$:	POPL	EBX
+	RET	4
+.PAGE
+;Function to allocate memory pages - this routine is called to allocate
+;	long sysMemGetPages(
+;	    void *addr,		// Address of first page
+;	    long  size,		// Number of pages to allocate
+;	    long  type,		// Memory type (MT_xxx value)
+;	    long  attr,		// Attribute bits for each page
+;	    long  data);	// Data for memory table (address of MDB if
+;				//   user page)
+;	Value returned is 0 if normal or a negative error code if error.
+
+;Pages allocated in a single call must all be in the same area, this is, user
+;  pages, PDA pages, etc.
+
+$$$=!0
+FRM mgp_f1    , 4t
+FRM mgp_f2    , 4t
+FRM mgp_inc   , 4t
+FRM mgp_pgtbl , 4t
+mgp_SIZE=!$$$
+
+mgp_addr=!28t
+mgp_size=!24t
+mgp_type=!20t
+mgp_attr=!16t
+mgp_data=!12t
+
+sysMemGetPages::
+;;;;	REQUIREFORK
+	PUSHL	ESI
+	ENTER	mgp_SIZE, 0
+	MOVL	ESI, mgp_addr[EBP]
+	SHRL	ESI, #10t		;Get page table index
+	ANDL	ESI, #0xFFFFFFFC
+	ADDL	ESI, #knlPgTable#
+	MOVL	mgp_pgtbl[EBP], ESI
+
+;Check to see if any pages are already allocated in this range. This also
+;  tells us now many pages we need for page tables.
+
+	CLRL	EDX
+	MOVL	ECX, mgp_size[EBP]
+	IFFAULT	8$
+2$:	TESTB	[ESI], #0x03
+	JNE	6$
+4$:	ADDL	ESI, #4
+	LOOP	ECX, 2$
+	JMP	10$
+
+6$:	MOVL	EAX, #ER_MACFT
+	JMP	mgpdone
+
+;Here if have page fault when accessing the GDT. This means there is no page
+;  directory for this address. We count this and advance to the start of the
+;  next page directory.
+
+	FAULTHDR
+8$:	INCL	EDX
+	MOVL	EAX, ESI
+	ORL	EAX, #0x0FFC
+	SUBL	EAX, ESI
+	JE	4$
+	SHRL	EAX, #2			;Get number pages left for this PD
+	INCL	EAX
+	SUBL	ECX, EAX
+	JLE	10$			;If finished
+	ORL	ESI, #0xFFC		;Need more - advance to start of next PD
+	ADDL	ESI, #0x004
+	JMP	2$
+
+;Here when we have determined that there is no address conflict for the
+;  requested pages
+
+10$:	MOVL	ECX, mgp_size[EBP]
+
+;;;;	ADDL	ECX, knlPda+pdaUMPages#
+;;;;	CMPL	ECX, knlPda+pdaUMLimit#
+;;;;	JA	40$
+;;;;	ADDL	EDX, knlPda+pdaOMPages#
+;;;;	CMPL	EDX, knlPda+pdaOMLimit#
+;;;;	JA	40$
+
+	TESTB	mgp_attr[EBP], #0x01	;Want virtual only allocation?
+	JE	getvir			;Yes
+
+;;;;	CMPL	ECX, knlPda+pdaWSLimit#
+;;;;	JA	40$
+
+	ADDL	EDX, ECX		;No - is there enough memory available?
+	CMPL	EDX, knlMemAvail#
+	JA	nema			;No - fail
+	MOVL	EDX, mgp_data[EBP]	;Yes
+	MOVL	EAX, mgp_type[EBP]	;Get the area type
+
+	ANDL	EAX, #0x0F
+	JMPIL	mgpdsp[EAX*4]
+
+	.MOD	4
+mgpdsp:	.LONG	mgpbad		;MT_FREE  = 0  - Unallocated page
+	.LONG	mgpsys		;MT_SYS   = 1  - System page
+	.LONG	mgppdir		;MT_PDIR  = 2  - Page directory page
+	.LONG	mgpptbl		;MT_PTBL  = 3  - Page table page
+	.LONG	mgptda		;MT_TDA   = 4  - Thread data are (TDA) page
+	.LONG	mgpbad		;         = 5
+	.LONG	mgppda		;MT_PDA   = 6  - Process data area (PDA) page
+	.LONG	mgpsda		;MT_SDA   = 7  - Shared section data area (SDA) page
+	.LONG	mgppuser	;MT_PLOCK = 8  - Private locked user page
+	.LONG	mgpsuser	;MT_SLOCK = 9  - Shared locked user page
+	.LONG	mgppuser	;MT_PNSWP = 10 - Private non-swapable user page
+	.LONG	mgpsuser	;MT_SNSWP = 11 - Shared non-swapable user page
+	.LONG	mgppuser	;MT_PUSER = 12 - Private user page
+	.LONG	mgpsuser	;MT_SUSER = 13 - Shared user page
+	.LONG	mgptuser	;MT_TUSER = 14 - Per-thread user page
+	.LONG	mgpbad		;MT_XFER  = 15 - Page being transfered
+
+;Here if getting system pages
+
+mgpsys:	MOVL	ECX, #MT_SYS<20t
+	CLRL	EAX
+	JMP	30$
+
+;Here if getting TDA pages
+
+mgptda:	MOVL	ECX, #MT_TDA<20t
+	JMP	12$
+
+;Here if getting PDA pages
+
+mgppda:	MOVL	ECX, #MT_PDA<20t
+12$:	MOVL	ESI, mgp_addr[EBP]
+	SHRL	ESI, #12t
+	ANDL	ESI, #0x0F
+	ORL	ECX, ESI
+	MOVL	EAX, #1
+	JMP	30$
+
+;Here if getting SDA pages
+
+mgpsda:	CRASH	?SDA
+
+;Here if getting a page table page - The only time this should be done is when
+;  allocating the initial page table for a process which maps the per-process
+;  area. All other page tables are allocated by sysMemGetPgTbl.
+
+mgpptbl:MOVL	ECX, #MT_PTBL<20t
+	JMP	14$
+
+;Here if getting page directory page - The only time this should be done is
+;  when allocating initial memory for a process.
+
+mgppdir:MOVL	ECX, #MT_PDIR<20t
+14$:	CLRL	EAX
+	JMP	30$
+
+;Here if getting sharable user pages
+
+mgpsuser:
+	CRASH	?SHR
+
+;Here if getting private user pages
+
+mgppuser:
+	MOVL	ECX, mgp_size[EBP]
+	MOVL	ESI, knlPda+pdaSpy#
+	ADDL	pspy_umpages[ESI], ECX
+	ADDL	pspy_wspages[ESI], ECX
+	MOVL	ECX, mgp_addr[EBP]	;Get page number in msect
+	SUBL	ECX, mdb_base[EDX]
+	JS	50$
+	SHRL	ECX, #12t
+	SHLL	EAX, #20t
+	ORL	ECX, EAX
+	MOVL	EAX, #1
+30$:	MOVL	mgp_f1[EBP], ECX
+	MOVL	mgp_f2[EBP], EDX
+	MOVL	mgp_inc[EBP], EAX
+	MOVL	ESI, mgp_pgtbl[EBP]
+32$:	PUSHL	mgp_f1[EBP]
+	PUSHL	mgp_f2[EBP]
+	CALL	sysMemGetMP
+	TESTL	EAX, EAX
+	JE	52$
+	ORL	EAX, mgp_attr[EBP]
+	IFFAULT	ndpgtbl
+34$:	MOVL	[ESI], EAX
+	ADDL	ESI, #4
+	MOVL	EAX, mgp_inc[EBP]
+	ADDL	mgp_f1[EBP], EAX
+	DECL	mgp_size[EBP]
+	JNE	32$
+
+36$:	MOVL	EAX, CR3
+	MOVL	CR3, EAX
+mgpdnok:
+.IF NE $$MEMDEBUG
+	CALL	chkmfl
+.ENDC
+	CLRL	EAX
+mgpdone:LEAVE
+	POPL	ESI
+	RET	20t
+
+;Here if getting a per-thread user page
+
+mgptuser:
+	CMPL	mgp_size[EBP], #1	;Must be 1 page
+	JE	38$
+	CRASH	BMSZ			;[BaD Memory SiZe]
+
+38$:	PUSHL	#MT_TUSER<20t
+	PUSHL	mgp_pgtbl[EBP]
+	CALL	sysMemGetMP
+	TESTL	EAX, EAX
+	JE	52$
+	ORL	EAX, mgp_attr[EBP]
+	IFFAULT	ndpgtbl
+	MOVL	EDX, mgp_pgtbl[EBP]
+	MOVL	[EDX], EAX
+	JMP	36$
+
+;Here if our memory limit would be exceeded
+
+;;;40$:	MOVL	EAX, #ER_MEMLX
+;;;	JMP	mgpdone
+
+nema:	MOVL	EAX, #ER_NEMA
+	JMP	mgpdone
+
+50$:	CRASH	BDMA			;[BaD Memory Address]
+
+52$:	CRASH	MALF			;[Memory ALlocation Failed
+
+mgpbad:	CRASH	BDMT			;[BaD Memory Type]
+
+;Here if have page fault when storing an entry in the page table - must not
+;  have a page table allocated for these pages
+
+	FAULTHDR
+ndpgtbl:PUSHL	EAX
+	PUSHL	ESI
+	CALL	sysMemGetPgTbl		;Get page table
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	60$			;If error (Should not be possible since
+					;  we made sure there were enough pages
+					;  available!)
+	MOVL	EAX, ECX		;OK - restore EAX
+	JMP	34$			;Continue
+
+60$:	CRASH	CAPT			;[Can't Allocate Page Table]
+.PAGE
+;Here if want virtual only allocation
+
+;;;; NEED TO CHECK FOR OTHER THAN PRIVATE USER PAGES!!!!!
+
+getvir:	CMPL	EDX, knlMemAvail#	;Have enough pages for the overhead
+					;  pages?
+	JA	nema			;No - fail
+	MOVL	ECX, mgp_size[EBP]
+	MOVL	EAX, knlPda+pdaSpy#
+	ADDL	pspy_umpages[EAX], ECX
+	MOVL	EAX, mgp_attr[EBP]	;Get the read bit
+	ANDL	EAX, #0x02	
+	ORL	EAX, #PT_VIRT<2		;Add in the page type
+	ORL	EAX, mgp_data[EBP]	;Add in the data value (which will be					;  the MDB offset)
+	MOVL	ESI, mgp_pgtbl[EBP]
+	IFFAULT	ndpgtblv
+10$:	CMPL	[ESI], #0		;Is this linear page in use?
+	JNE	18$			;Yes - but we already checked!
+12$:	MOVL	[ESI], EAX		;No - store in page table
+	ADDL	ESI, #4t
+	DECL	mgp_size[EBP]
+	JNE	10$
+	JMP	mgpdnok
+
+;Here if page is in use
+
+18$:	CRASH	PIIU			;[Page Is In Use]
+
+;Here if have page fault when storing an entry in the page table - must not
+;  have a page table allocated for these pages
+
+	FAULTHDR
+ndpgtblv:
+	PUSHL	EAX
+	PUSHL	ESI
+	CALL	sysMemGetPgTbl		;Get page table
+	POPL	ECX
+	TESTL	EAX, EAX
+	JS	20$			;If error (should not be possible since
+					;  we made sure there was enough pages
+					;  available!)
+	MOVL	EAX, ECX		;OK - restore EAX
+	JMP	12$			;Continue
+
+20$:	CRASH	CAPT			;[Can't Allocate Page Table]
+.PAGE
+	.SBTTL	knlMapPhyTemp - Subroutine to temporarily map physical location
+
+;Subroutine to temporarily map physical location - this routine is intended
+;  for strictly temporary use when initializing devices which use shared
+;  memory.  The mapped area is one page only and MUST be given up by calling
+;  knlMapPhyClr before ANY other memory allocation or IO is done.  It must be
+;  called from main program level only.
+;	c{EBX} = Physical address
+;	CALL	knlMapPhyTemp
+;	c{EBX} = Data segment offset corresponding to physical address
+;  All registers except EBX are preserved
+
+knlMapPhyTemp::
+	PUSHL	EBX
+	ANDL	EBX, #0FFFFF000h	;Clear the mapping control bits
+	ORB	BL, #0x1B		;Set the bits we need (including the
+					;  80486 cache disable bits)
+	MOVL	knlRamAccessPTE#, EBX
+	MOVL	EBX, CR3		;Clear the page cache
+	MOVL	CR3, EBX
+	POPL	EBX
+	ANDL	EBX, #0x0FFF
+	ORL	EBX, #knlRamAccess	;Return the corresponding offset
+	RET
+
+;Subroutine to unmap temporarily mapped physical location which was mapped by
+;  knlMapPhyTemp
+;	CALL	knlMapPhyClr
+;  All registers are preserved
+
+knlMapPhyClr::
+	MOVL	knlRamAccessPTE#, #0	;Clear the map
+	PUSHL	EAX
+	MOVL	EAX, CR3		;Clear the page cache
+	MOVL	CR3, EAX
+	POPL	EAX
+	RET
+.PAGE
+;Function to map physical pages Address must be on a page boundry and size
+;  must be an even multiple of the page size.
+;	long sysMemMapPhyPages(
+;	    void *vaddr,	// Virtual address of first page
+;	    long  size,		// Number of pages to map
+;	    long  type,		// Memory type (MT_xxx value)
+;	    long  attr,		// Attribute bits for each page
+;	    char *paddr,	// Physical address of first page
+;	    long  imask);	// Increment mask for physical address
+
+mmpp_vaddr=!32t
+mmpp_size =!28t
+mmpp_type =!24t
+mmpp_attr =!20t
+mmpp_paddr=!16t
+mmpp_imask=!12t
+
+sysMemMapPhyPages::
+	PUSHL	ESI
+	PUSHL	EBX
+	CLRL	ESI			;Clear count of pages mapped
+	ANDL	mmpp_paddr[ESP], #0xFFFFF000 ;Ensure at beginning of a page
+	MOVL	EDX, mmpp_paddr[ESP]
+	ORL	EDX, mmpp_attr[ESP]
+	MOVL	EBX, mmpp_vaddr[ESP]
+	SHRL	EBX, #10t		;Get page table index
+	ANDL	EBX, #0xFFFFFFFC
+	MOVL	EAX, mmpp_imask[ESP]	;Get constant physical address bits
+	NOTL	EAX
+	ANDL	EAX, EDX
+	ADDL	EBX, #knlPgTable#
+	IFFAULT	8$
+2$:	CMPB	[EBX], #0		;Is this linear page in use?
+	JNE	conflct			;Yes - fail
+	MOVL	[EBX], EDX		;Store in page table
+	INCL	ESI
+	ADDL	EBX, #4			;Bump page table pointer
+	ADDL	EDX, #0x1000		;Bump physical address
+	ANDL	EDX, mmpp_imask[ESP]
+	ORL	EDX, mmpp_attr[ESP]
+	DECL	mmpp_size[ESP]
+	JNE	2$
+	MOVL	EBX, CR3		;Clear the translation cache
+	MOVL	CR3, EBX
+.IF NE $$MEMDEBUG
+	CALL	chkmfl
+.ENDC
+	CLRL	EAX
+mmppdn:	POPL	EBX
+	POPL	ESI
+	RET	24t
+
+;Here if have page fault when referencing the page table - must not have
+;  a page table allocated for these pages
+
+	FAULTHDR
+8$:	PUSHL	EAX
+	PUSHL	EBX
+	PUSHL	ECX
+	PUSHL	EDX
+	PUSHL	EBX
+	CALL	sysMemGetPgTbl		;Get page table
+	POPL	EDX
+	POPL	ECX
+	POPL	EBX
+	TESTL	EAX, EAX
+	JS	10$
+	POPL	EAX
+	JMP	2$
+
+10$:	POPL	EDX
+	JMP	pagfail
+
+;Here if do not have enough pages available for request
+
+pagnota:MOVL	EAX, #ER_NEMA
+	JMP	mmppdn
+
+;Here if a needed page is already allocated
+;	c{EDX} = Value for F2 field in knlMemTable
+
+conflct:MOVL	EAX, #ER_MACFT
+pagfail:MOVL	EBX, [ESP]		;Restore first page
+	TESTL	ESI, ESI		;Did we get any pages at all?
+	JE	14$			;No
+	PUSHL	EAX			;Yes - save error code
+	PUSHL	knlPda+pdaAddr#		;PDA selector
+	PUSHL	EBX			;Address
+	PUSHL	#-1			;F2 value
+	PUSHL	ESI			;Number of pages to give up
+	CALL	sysMemGivePages		;Give up what we got
+	POPL	EAX			;Restore error code
+	JC	20$			;This should not fail!
+	MOVL	ECX, CR3		;Clear the translation cache
+	MOVL	CR3, ECX
+14$:
+.IF NE $$MEMDEBUG
+	CALL	chkmfl
+.ENDC
+	JMP	mmppdn
+
+;Here if error when giving up pages just allocated - this should not happen
+;  since the only possible error here is due to a lock page and there is no
+;  way these pages can be locked!
+
+20$:	CRASH	MPLK			;[Memory Page is LocKed]
+.PAGE
+;Function to create page table for page
+;	long sysMemGetPgTbl(
+;	    long *pgent);	// Address of page table entry
+;	Value returned is 0 if normal or a negative error code if error.
+
+mgpt_pgent=!12t
+
+sysMemGetPgTbl::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EDI, knlPda+pdaSpy#
+	MOVL	EAX, pspy_ompages[EDI]	;Can he have another overhead page?
+	CMPL	EAX, knlPda+pdaOMLimit#
+	JB	2$			;Yes
+	MOVL	EAX, #ER_MEMLX		;No - fail!
+	JMP	22$
+
+2$:	MOVL	EDI, mgpt_pgent[ESP]
+	SUBL	EDI, #knlPgTable#
+	SHRL	EDI, #12t		;Get page directory index
+	TESTB	knlPda+pdaPageDir[EDI*4], #0x07 ;Do we have a page table for
+						;  this region?
+	JE	4$			;No - go on
+	CRASH	PTAE			;[Page Table Allocation Error]
+
+4$:	CMPL	knlMemAvail#, #1	;No - at least two pages available?
+	JBE	24$			;No
+	MOVL	ECX, EDI		;Yes - get data for page table entry
+	ORL	ECX, #MT_PTBL<20t
+	CMPL	EDI, #systembase>22t	;Is this a system page?
+	JB	18$			;No - go on
+	PUSHL	ECX
+	PUSHL	#0			;Yes
+	CALL	sysMemGetMP		;Get a page
+	TESTL	EAX, EAX
+	JNE	5$
+	CRASH	NMEM
+
+5$:	ORL	EAX, #0x63		;Add in page attributes
+	CMPL	EDI, #0xD0000000>22t	;Below 0xD0000000?
+	JB	6$			;No
+	XORL	EAX, #0x06		;Yes
+6$:	DECL	knlMemUser#		;Adjust number of user pages
+	MOVL	ECX, knlProcHigh#	;Get number of processes
+	INCL	ECX
+	CLRL	EBX
+8$:	CMPB	knlPdaTable#[EBX], #PDATYPE_PDA ;Is this slot in use as a PDA?
+	JNE	10$			;No
+	MOVL	EDX, EBX
+	SHLL	EDX, #pda_SHIFT
+	IFFAULT	10$			;Store new page directory entry
+	MOVL	pdabase+pdaPageDir[EDX+EDI*4], EAX
+	FAULTHDR
+10$:	INCL	EBX
+	LOOP	ECX, 8$
+	JMP	20$
+
+;Here if not a system page
+
+18$:	PUSHL	ECX
+	PUSHL	knlPda+pdaAddr#
+	CALL	sysMemGetMP		;Get a page
+	TESTL	EAX, EAX
+	JNE	19$
+	CRASH	NMEM
+
+19$:	ORL	EAX, #0x67		;Add in page attributes
+					;  (user read/write)
+	MOVL	knlPda+pdaPageDir[EDI*4], EAX ;Store in current page directory
+	MOVL	EDI, knlPda+pdaSpy#
+	INCL	pspy_ompages[EDI]	;Charge the page to him
+20$:	MOVL	EDI, mgpt_pgent[ESP]
+	ANDL	EDI, #0xFFFFF000
+	MOVL	ECX, #1024t
+	CLRL	EAX
+	RSTOSL	[EDI]
+	CLRL	EAX
+22$:	POPL	EBX
+	POPL	EDI
+	RET	4
+
+;Here if don't have enough pages to map a map page
+
+24$:	MOVL	EAX, #ER_NEMA
+	JMP	22$
+.PAGE
+	.SBTTL	sysMemGivePages - Subroutine to deallocate memory pages
+
+;Function to deallocate memory pages
+;	long sysMemGivePages(
+;	    PDA  *pda,		// Actual address of PDA
+;	    char *addr,		// Address of first page to give up
+;	    long  f2val,	// Value fo F2 field in memory table (-1 if
+;				//   pages are not to be checked or given up)
+;	    long  count,	// Number of pages to give up
+;  Value returned is the number of allocated pages given up if normal or a
+;    negative XOS error code if error
+
+;Memory can be deallocated at any level below interrupt level. Care should be
+;  taken, however, that pages that are deallocated at any level above main
+;  program level are not being accessed at main program level. Currently all
+;  deallocation is done at main program or scheduler level.
+
+mgvp_pda  =!28t
+mgvp_addr =!24t
+mgvp_f2val=!20t
+mgvp_count=!16t
+
+sysMemGivePages::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	TESTL	mgvp_addr[ESP], #0x0FFF
+	JE	2$
+	CRASH	BPLA			;[Bad Page Linear Address]
+
+2$:	SHRL	mgvp_addr[ESP], #10t	;Change to page table offset
+	MOVL	EDX, mgvp_addr[ESP]
+	ADDL	EDX, #knlPgTable#	;Point to page table entry
+
+;Following loop verifies that all of the requested pages can be given up and
+;  are vaild
+
+	MOVL	ECX, mgvp_count[ESP]
+mgvplp1:PUSHL	EDX
+	PUSHL	[EDX]
+	CALL	sysMemGetMTE		;Get corresponding memory table entry
+	POPL	EDX
+	TESTL	EAX, EAX
+	JE	14$			;If physical page
+	CMPL	mgvp_f2val[ESP], #-1	;Want to check this page?
+	JE	10$			;No
+	CMPL	mgvp_f2val[ESP], #0
+	JE	10$
+	MOVL	EBX, 4[EAX]		;Yes
+	CMPL	EBX, mgvp_f2val[ESP]
+	JE	10$			;If OK
+	CRASH	BMTE			;[Bad Memory Table Entry]
+
+10$:	CMPB	3[EAX], #0		;Is this page locked?
+	JE	14$			;No - go on
+	MOVL	mpilmte, EAX		;Yes - save offsets of memory table and
+	MOVL	mpilpte, EDX		;  page table entries for debugging!
+	MOVL	EAX, #ER_MPILK
+	JMP	mgvpdn
+
+14$:	ADDL	EDX, #4			;No - bump pointer
+	LOOP	ECX, mgvplp1		;Continue if more to check
+
+;Now we are ready to actually give up the pages
+
+mgvplp2:MOVL	EBX, mgvp_addr[ESP]
+	MOVL	EAX, knlPgTable#[EBX]	;Get physical address of page
+	TESTL	EAX, EAX		;Have another page to give up?
+	JE	32$			;No - all done here
+	MOVL	knlPgTable#[EBX], #0	;Yes - clear page table entry
+	CMPL	EBX, #0x40		;One of the first 16 pages?
+	JAE	18$			;No
+	MOVL	knlPgTable#+0x400[EBX], #0	;Yes - unmap it above 1M too
+18$:	CMPL	[ESP], #-1		;Should we deallocate this page
+	JE	28$			;No - (device page)
+	TESTB	AL, #0x01		;Need to deallocate the page?
+	JE	24$			;No (virtual page)
+	TESTB	AH, #0x02		;Maybe
+	JNE	28$			;No (physical page)
+	PUSHL	EAX
+	CALL	sysMemGiveMP		;Yes - give up the memory page
+	CMPL	mgvp_addr[ESP], #systembase>10t ;System area?
+	JB	mgvpup			;No
+
+;Here if giving up a system page - if it was a PDA page it has been charged
+;  to the process
+
+mgvpsp:	CMPL	mgvp_addr[ESP], #pdabase>10t ;Yes - did we charge this process?
+	JB	20$			;No
+	CMPL	mgvp_addr[ESP], #pdatop>10t ;Maybe
+	JAE	20$			;No
+	CMPL	mgvp_pda[ESP], #0
+	JE	28$
+	MOVL	EBX, mgvp_pda[ESP]
+	MOVL	EBX, pdaSpy#[EBX]
+	DECL	pspy_ompages[EBX]	;Yes
+	JNS	28$
+	CRASH	BOMC			;[Bad OM Count]
+
+;Here if giving up system page which was not changed to a process
+
+20$:	INCL	knlMemUser#
+	JMP	28$
+
+;Here if giving up user page
+
+mgvpup:	CMPL	mgvp_pda[ESP], #0
+	JE	28$
+	MOVL	EBX, mgvp_pda[ESP]
+	MOVL	EBX, pdaSpy#[EBX]
+	DECL	pspy_wspages[EBX]
+	JNS	26$
+	CRASH	BWSC			;[Bad WS Count]
+
+24$:	MOVL	EBX, mgvp_pda[ESP]
+	MOVL	EBX, pdaSpy#[EBX]
+26$:	DECL	pspy_umpages[EBX]
+	JNS	28$
+	CRASH	BUMC			;[Bad UM Count]
+
+28$:	ADDL	mgvp_addr[ESP], #4	;Bump page table index
+	TESTL	mgvp_addr[ESP], #0x0FFF	;At end of directory page?
+	JNE	30$			;No
+	PUSHL	mgvp_addr[ESP]
+	CALL	givepgtbl		;Yes - see if should give up this page
+	DECL	mgvp_count[ESP]
+	JNE	mgvplp2			;Continue if more to give up
+	JMP	34$			;If finished
+
+;Here if not at end of directory page
+
+30$:	DECL	mgvp_count[ESP]
+	JNE	mgvplp2			;Continue if more to give up
+32$:	PUSHL	mgvp_addr[ESP]		;Finished - give up last directory page
+	CALL	givepgtbl		;  if its empty now
+34$:	MOVL	EAX, CR3		;Clear the translation cache
+	MOVL	CR3, EAX
+.IF NE $$MEMDEBUG
+	CALL	chkmfl
+.ENDC
+	CLRL	EAX
+mgvpdn:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	16t
+.PAGE
+;Subroutine to give up directory page if it is empty
+;	void givepgtbl(
+;	    long offset);	// Offset from start of page table to first
+;				//   entry for next directory page
+
+gpt_offset=!12t
+
+givepgtbl::
+	PUSHL	EDI
+	PUSHL	EBX
+	MOVL	EBX, gpt_offset[ESP]
+	CMPL	EBX, #systembase>10t	;Is this for a system mapped page
+	JAE	10$			;Yes - don't ever give up the directory
+	SUBL	EBX, #0x04		;No - get offset of start of page
+	ANDL	EBX, #0xFFFFF000
+	LEAL	EDI, knlPgTable#[EBX]	;Point to start of page table page
+	MOVL	ECX, #0x0400		;Check all entries
+	PUSHL	DS
+	POPL	ES
+	CLRL	EAX
+	CLD
+	RESCASL	[EDI]
+	JNE	10$			;If page not empty
+	SHRL	EBX, #12t		;Get offset in page directory for this
+					;  entry
+	MOVL	EAX, knlPda+pdaPageDir[EBX*4] ;Get physical page
+	MOVL	knlPda+pdaPageDir[EBX*4], #0 ;Clear page directory entry
+	PUSHL	EAX
+	CALL	sysMemGiveMP		;Put page on the free list
+	MOVL	EAX, CR3		;Clear the page cache
+	MOVL	CR3, EAX
+	MOVL	EAX, knlPda+pdaSpy#
+	DECL	pspy_ompages[EAX]
+	JS	12$
+10$:	POPL	EBX
+	POPL	EDI
+	RET	4			;All done
+
+12$:	CRASH	BSPC			;[Bad System Page Count]
+.PAGE
+	.SBTTL	chkmfl - Debug subroutine to check memory free list
+
+;This subroutine scans the memory free list, counts the entries, and compares
+;  the count to the expected value
+
+.IF NE $$MEMDEBUG
+
+chkmfl::PUSHL	ECX
+	PUSHL	EAX
+	PUSHL	EBX
+	CLRL	ECX
+	MOVZWL	EAX, knlMemFree+0
+	MOVZWL	EBX, knlMemFree+2
+2$:	TESTL	EBX, EBX
+	JE	4$
+	INCL	ECX
+	PUSHL	lstfree2
+	POPL	lstfree3
+	PUSHL	lstfree1
+	POPL	lstfree2
+	MOVL	lstfree1, EAX
+	MOVW	lstfree1+2, BX
+;;;;;	MOVL	EBX, knlMemTable#-4[EBX*4]
+	MOVL	EBX, [EBX+EAX*8]
+	MOVZWL	EAX, BX
+	SHRL	EBX, #16t
+	MOVB	BH, #0
+	JMP	2$
+
+4$:	CMPL	knlMemAvail#, ECX
+	JNE	10$
+	POPL	EBX
+	POPL	EAX
+	POPL	ECX
+	RET
+
+10$:	CRASH	BMFL			;[Bad Memory Free List]
+
+	DATA
+lstfree3::.LONG	0
+lstfree2::.LONG	0
+lstfree1::.LONG	0
+	CODE
+
+.ENDC
+.PAGE
+;Function to get memory page from the memory free list
+
+;	c{ECX} = Data for type + F1 field in memory table
+;	c{EDX} = Data for F2 field in memory table
+;	CALL	getmp
+;	C:set = None available
+;	C:clr = Normal
+;	  c{EAX} = Physical address of page obtained (includes memory section
+;		     table index in bits 9-11)
+
+;	long sysMemGetMP(
+;	    long F1,		// Data for type + F1 field in memory table
+;	    long F2);		// Data for F2 field in memory table
+;  Valued returned is physical address of page obtained if normal or 0 if
+;    error (only possible error is no memory page available)
+
+gmp_f1=!8
+gmp_f2=!4
+
+sysMemGetMP::
+	TOFORKS	EDX			;Make sure at fork level
+	CMPL	knlMemAvail#, #0	;Do we have a page available?
+	JE	10$			;No!
+.IF NE $$MEMDEBUG			;Yes
+	CALL	chkmfl
+.ENDC
+	DECL	knlMemAvail#		;Reduce number of pages available
+	MOVL	EAX, knlMemFree		;Get a free page
+	TESTL	EAX, EAX		;Make sure  have one
+	JNE	4$
+	CRASH	BMFL			;[Bad Memory Free List]
+
+4$:	LEAL	EAX, knlMemTable#[EAX*8] ;Get address of the knlMemTable entry
+	MOVL	ECX, [EAX]		;Remove page from the free list
+	MOVL	knlMemFree, ECX
+	MOVL	ECX, gmp_f1[ESP]
+	MOVL	[EAX], ECX
+	MOVL	ECX, gmp_f2[ESP]
+	MOVL	4[EAX], ECX
+	SUBL	EAX, #knlMemTable#	;Get address of the page obtained
+	SHLL	EAX, #9
+8$:	FROMFORKR DL
+	RET	8
+
+;Here if the free list is empty
+
+10$:	CLRL	EAX
+	JMP	8$
+.PAGE
+	.SBTTL	knlGetCMP - Subroutine to get contiguous memory pages from the memory free list
+
+;Subroutine to get contiguous memory page from the memory free list
+;	c{EAX} = Data for type + F1 field in memory table
+;	c{ECX} = Number of contiguous pages to allocate
+;	c{EDX} = Data for F2 field in memory table
+;	CALL	getcmp
+;	C:set = None available
+;	C:clr = Normal
+;	  c{EAX} = Physical address of first page obtained (includes memory
+;	             section table index in bits 9-11)
+
+;This function is intended to be used to allocate dedicated device buffers
+;  of more than 4KB which must be contiguous.  It should not be called as a
+;  part of normal IO operations but should be called once to allocate a
+;  dedicated buffer when the device is originally set up.  Because of the way
+;  memory is managed, the cost of allocating contiguous pages is quite high!
+;  This routine may stay at fork level for an extended period. Fortunately,
+;  most modern devices do not require large contiguous buffers.
+
+$$$=!0
+FRM gcmp_first, 4
+FRM gcmp_last , 4
+FRM gcmp_fork , 4
+gcmp_SIZE=!$$$
+
+
+gcmp_num=!16t
+gcmp_f1 =!12t
+gcmp_f2 =!8
+
+sysMemGetCMP::
+	ENTER	gcmp_SIZE
+	DECL	gcmp_num[EBP]		;Only want 1 page?
+	JNE	4$			;No
+	PUSHL	gcmp_f1[EBP]		;Yes - that is easy!
+	PUSHL	gcmp_f2[EBP]
+	CALL	sysMemGetMP
+	JMP	32$
+
+;Here if really want multiple pages
+
+4$:	TOFORKS	EAX
+	MOVL	gcmp_fork[EBP], EAX
+	MOVL	EAX, gcmp_num[EBP]
+	CMPL	EAX, knlMemAvail#	;Do we have enough pages available?
+	JGE	12$			;No - fail
+
+.IF NE $$MEMDEBUG
+	CALL	chkmfl
+.ENDC
+
+;First scan through the memory free-list and find a page which has N - 1 free
+;  pages following it
+
+	MOVL	EAX, #knlMemFree	;Start with the first page on the free
+					;  list
+6$:	MOVL	gcmp_first[EBP], EAX
+8$:	INCL	EAX
+	CMPL	EAX, knlMemTop
+	JAE	10$
+	TESTB	knlMemTable#+2[EAX*8], #0xF0 ;Is this page free?
+	LOOPE	ECX, 8$			;Continue if so and need more
+	JE	14$			;If we found enough free pages
+
+;Here if don't have enought free pages starting with this free page - advance
+;  to the next page in the free list
+
+10$:	MOVL	EAX, gcmp_first[EBP]	;Get next page in the free list
+	MOVL	EAX, knlMemTable#+4[EAX*8]
+	TESTL	EAX, EAX
+	JNE	6$
+12$:	CLRL	EAX
+	JMP	30$
+
+;Here with the requested number of contiguous pages
+
+14$:	MOVL	gcmp_last[EBP], EAX	;Remember the last page
+	MOVL	EAX, gcmp_num[EBP]	;Reduce the number of pages available
+	INCL	EAX
+	SUBL	knlMemAvail#, EAX
+
+;Now we have to remove the pages we want from the free list.  This is difficult
+;  since it's a singlely linked list which is NOT ordered by address. This
+;  means we have to scan the entire free-list looking for each page. Actually,
+;  it's not quite that bad since it's fairly easy to check for any of the pages
+;  we want (since they are contiguous) so we only have to make one pass through
+;  the free-list. Also, when the system is started the free-list IS mostly
+;  ordered by address, so if the system has not been running for too long
+;  (which will usually be the case when devices are installed), this should be
+;  fairly quick.
+
+	MOVL	EDX, #knlMemFree
+18$:	MOVL	EAX, [EDX]
+	TESTL	EAX, EAX		;Make sure have another entry
+	JNE	20$
+	CRASH	BMFL			;[Bad Memory Free List]
+
+20$:	CMPL	EAX, gcmp_first[EBP]	;Is this one of our pages?
+	JB	22$			;No
+	CMPL	EAX, gcmp_last[EBP]
+	JBE	24$			;Yes
+22$:	LEAL	EDX, knlMemTable#[EAX*8] ;No - advance to next page from the
+	JMP	18$			 ;  free list and continue
+
+;Here with one of the pages we want - remove it from the free list and mark
+;  it as in-use.
+;	c{EAX} = Page number
+
+24$:	MOVL	ECX, knlMemTable#[EAX*8] ;Remove page from the free list
+	MOVL	[EDX], ECX
+
+	MOVL	ECX, gcmp_f1[EBP]
+	MOVL	knlMemTable#+0[EAX*8], ECX
+	MOVL	ECX, gcmp_f2[EBP]
+	MOVL	knlMemTable#+4[EAX*8], ECX
+	DECL	gcmp_num[EBP]		;More to remove?
+	JNS	18$			;Yes - continue
+
+;Here with all of our pages removed from the free list and marked as in-use.
+
+	MOVL	EAX, gcmp_first[EBP]	;Get address of the first page
+	SUBL	EAX, #knlMemTable#
+	SHLL	EAX, #9
+30$:	FROMFORKR gcmp_fork[EBP]
+32$:	LEAVE
+	RET	12t
+.PAGE
+;Function to give up memory page
+;	void sysMemGiveMP(
+;	    long paddr);	// Physical address of page to give up (low
+;				//   12 bits are ignored)
+
+gmp_paddr=!4
+
+sysMemGiveMP::
+	TOFORKS	EDX
+	MOVL	EAX, gmp_paddr[ESP]
+	SHRL	EAX, #12t		;Get page number
+	CMPL	EAX, knlMemTop		;Valid page number
+	JAE	4$			;No
+	CMPL	knlMemTable#[EAX*8], #-1 ;Maybe
+	JE	4$			;No
+	TESTB	knlMemTable#+2[EAX*8], #0xF0 ;Yes - is it in use?
+	JNE	6$			;Yes
+4$:	CRASH	BDMP			;[BaD Memory Page]
+
+;Here with a valid page that is in use
+
+6$:	MOVL	ECX, knlMemFree
+	MOVL	knlMemTable#[EAX*8], ECX
+	MOVL	knlMemFree, EAX
+	INCL	knlMemAvail#
+	FROMFORKR DL
+	RET	4
+.PAGE
+	.SBTTL	createmsect - Subroutine to create memory section
+
+;Subroutine to create memory section
+;	long createmsect(
+;	    uchar *addr,	// Base address for the msect
+;	    long   size,	// Size for the msect
+;	    MDB  **pntr)	// Address of pointer to the msect
+; Value returned is 0 if normal or a negative XOS error code if error.
+
+cms_addr=!16t
+cms_size=!12t
+cms_pntr=!8
+
+createmsect::
+	PUSHL	EBX
+	ANDL	cms_addr[ESP], #0xFFFFF000 ;Round offset down to start of page
+	MOVL	EAX, cms_size[ESP]
+	ADDL	EAX, #0x00000FFF	;Round size up to whole pages
+	ANDL	EAX, #0xFFFFF000
+	MOVL	cms_size[ESP], EAX
+	ADDL	EAX, cms_addr[ESP]	;Valid address?
+	CMPL	EAX, #systembase
+	JA	14$			;No
+	CMPL	cms_addr[ESP], #humPerThrd# ;Maybe - does it start at the
+					    ;  per-thread page? (We will check
+					    ;  later to see if it crosses it.)
+	JE	14$			;Yes
+	PUSHL	#0			;No - create an MDB
+	MOVL	EAX, ESP
+	PUSHL	#-XMBX_64
+	PUSHL	EAX
+	CALL	sysMemGetXmb
+	POPL	EDX
+	TESTL	EAX, EAX
+	JS	12$			;If error
+	MOVL	mdb_label[EDX], #'MDB*' ;Store block label for debugging
+	MOVL	EAX, knlPda+pdaAddr#
+	MOVL	mdb_pda[EDX], EAX	;Store address of the PDA in the MDB
+	MOVL	mdb_remove[EDX], #nullmf ;No memory remove routine
+	MOVL	mdb_fault[EDX], #nullmf	;No memory fault routine
+	CLRL	EAX
+	MOVB	mdb_sts[EDX], AL
+	MOVB	mdb_devtype[EDX], AL	;Assume no device associated with msect
+	MOVL	mdb_size[EDX], EAX	;Size is 0 to begin with
+	MOVL	mdb_devpnt[EDX], EAX
+	MOVL	mdb_devnext[EDX], EAX
+	MOVL	EAX, cms_addr[ESP]	;Store msect address in the MDB
+	MOVL	mdb_base[EDX], EAX
+	MOVL	EBX, cms_pntr[ESP]	;Link it into the MDB list
+	MOVL	EAX, [EBX]
+	MOVL	mdb_next[EDX], EAX
+	MOVL	[EBX], EDX
+	CLRL	EAX
+12$:	POPL	EBX
+	RET	12t
+
+;Here if can't create an msect at the address specified
+
+14$:	MOVL	EAX, #ER_MACFT
+	JMP	12$
+
+nullmf:	CLRL	EAX
+	RET	4
+.PAGE
+;Function to find requested existing msect
+;	long sysMemFindMsect(
+;	    uchar *base,	// Base address of the msect
+;	    MDB  **pntr,	// Address of pointer to the MDB
+;	    MDB  **pmdb);	// Address of pointer to receive address of
+;				//   requested MDB if found or of next MDB in
+;				//   the MDB list
+;  Value returned is 1 if MDB was found, 0 if not found. No errors are pssible.
+
+mfms_base=!16t
+mfms_pntr=!12t
+mfms_pmdb=!8
+
+sysMemFindMsect::
+	PUSHL	EBX
+	MOVL	ECX, mfms_base[ESP]
+	ANDL	ECX, #0xFFFFF000
+	MOVL	EBX, #knlPda+pdaFirstMdb#
+	CLRL	EAX
+4$:	MOVL	EDX, [EBX]
+	TESTL	EDX, EDX
+	JE	10$
+	CMPL	mdb_base[EDX], ECX	;Is this the one we want or should it
+					;  go here?
+	JAE	8$			;Yes
+	LEAL	EBX, mdb_next[EDX]	;No - advance to next MDB
+	JMP	4$
+
+8$:	SETE	AL
+10$:	MOVL	ECX, mfms_pntr[ESP]
+	TESTL	ECX, ECX
+	JE	12$
+	MOVL	[ECX], EBX
+12$:	MOVL	ECX, mfms_pmdb[ESP]
+	MOVL	[ECX], EDX	
+	POPL	EBX
+	RET	12t
+.PAGE
+;The following functions allocate and deallocate exec memory buffers (XMBs).
+;  XMBs are managed using the buddy system (see Knuth, The Art of Computer
+;  Programming, Vol 1, Chapter 2). The minimum block size is 64 bytes and
+;  the maximum is 64KB. All buffers 4KB or smaller are always contiguous in
+;  physical memory. Buffers larger than 4KB are allocated in multiple pages
+;  which may not be contiguous. Buffers may be cached or non-cached. Generally
+;  cached buffers are used except where a buffer must be directly accessed by
+;  a device which does (may) not do cache probes. Buffers 4KB or larger are
+;  allocated from the same pool. When a non-cached buffer is requested, it is
+;  made non-cached when it is allocated. For buffers smaller than 4KB, a
+;  separate pool is dymanically maintained. 4KB buffers are taken from and
+;  returned to the common pool as required.
+
+;Subroutine to get XMB size index value given block size. THIS FUNCTION IS
+;  DECRIPATED! It is not needed with the sysMemGetXmb and sysMemGetNcXmb
+;  calls since these accept either a block size or size index.
+;	c{EDX} = Size of block (in bytes)
+;	CALL	knlGetIndex
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ECX} = Size index value
+;  All registers except ECX are preserved
+
+knlGetIndex::
+	BSRL	ECX, EDX
+	JE	6$			;Fail if zero
+	SUBL	ECX, #5
+	JC	4$			;If smaller than 32t
+	CMPL	ECX, #XMBX_65536	;Is it too big?
+	JA	6$			;Probably - go make sure
+2$:	CMPL	EDX, xmbval[ECX*4]	;OK - correct for even power of 2 if
+	SBBL	ECX, #0		;  need to (this leaves C clear)
+	RET
+
+;Here for small block - return 0
+
+4$:	CLRL	ECX
+	RET
+
+;Here if illegal size
+
+6$:	CMPL	EDX, #0x10000		;Does he want a maximum size block?
+	JE	2$			;Yes - thats OK!
+	MOVL	EAX, #ER_VALUE		;No - fail
+	STC
+	RET
+.PAGE
+knlGetQelClr::
+	PUSHL	ECX
+	CLRL	ECX
+	CALL	knlGetXmb
+	JC	4$
+	PUSHL	EAX
+	PUSHL	EDI
+	PUSHL	DS			;Clear the QEL
+	POPL	ES
+	MOVL	EDI, ESI
+	MOVL	ECX, #16t
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]
+	POPL	EDI
+	POPL	EAX
+4$:	POPL	ECX
+	RET
+.PAGE
+
+	.SBTTL	knlGetQel - Subroutine to allocate a queue element
+
+;Subroutine to allocate a queue element - may be called at all fork levels.
+;  THIS FUNCTION IS DEPRECATED! the sysMemGetXmb with a 0 size value should
+;  be used instead.
+;	CALL	knlGetQel
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{ESI} = Offset of queue element allocated
+;  All registers not indicated above are preserved
+
+knlGetQel::
+	PUSHL	ECX
+	CLRL	ECX
+	CALL	knlGetXmb
+	POPL	ECX
+	RET
+.PAGE
+	.SBTTL	knlGetXmbClr - Subroutine to get exec memory buffer and clear it
+
+;Subroutine to get exec memory buffer and clear it - may be called at all fork
+;  levels.
+;	c{ECX} = Size index
+;	CALL	knlGetXmbClr
+;	C:set = Error
+;	  c{EAX} = Error code
+;	  c{ESI} = 0
+;	C:clr = Normal
+;	  c{ESI} = Offset of buffer allocated
+;  All other registers are preserved except as indicated
+
+knlGetXmbClr::
+	CALL	knlGetXmb		;Get the buffer
+	JC	4$			;If error
+	PUSHL	EAX			;OK - save registers we need here
+	PUSHL	ECX
+	PUSHL	EDI
+	PUSHL	ES
+	MOVL	ECX, knlXmbSize-8[ECX*4] ;Get size of the buffer in longs
+	MOVL	EDI, ESI
+	PUSHL	DS
+	POPL	ES
+	CLRL	EAX
+	CLD
+	RSTOSL	[EDI]			;Clear the buffer
+	POPL	ES
+	POPL	EDI			;Restore registers
+	POPL	ECX
+	POPL	EAX
+	CLC
+4$:	RET				;Finished
+.PAGE
+;Subroutine to get exec memory buffer - may be called at all fork levels.
+;  THIS FUNCTION IS DEPRICATED. Use sysMemGetXmb instead.
+;	c{ECX} = Size index
+;	CALL	knlGetXmb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	  c{ESI} = 0
+;	C:clr = Normal
+;	  c{ESI} = Offset of buffer allocated
+;  All other registers are preserved except as indicated
+
+knlGetXmb::
+	PUSHAL
+	PUSHL	ES
+	LEAL	EAX, 8[ESP]
+	MOVL	[EAX], #0
+	NEGL	ECX
+	PUSHL	ECX
+	PUSHL	EAX
+	CALL	sysMemGetXmb
+	POPL	ES
+	TESTL	EAX, EAX
+	JNS	4$
+	MOVL	28t[ESP], EAX
+	STC
+4$:	POPAL
+	RET	
+.PAGE
+;Subroutine to get non-cached exec memory buffer using the Pascal calling
+;  sequence - may be called at all fork levels.
+;	long sysMemGetNcXmb(
+;	    int  size,		// Minimum buffer size (positive) or buffer
+;				//   size index (zero or negative)
+;	    XMB *pnt);		// Address of location to receive address of
+;				//   buffer allocated
+;  Value returned is 0 if OK or a negative XOS error code if error
+
+gtncxmb_size=!20t
+gtncxmb_pnt =!16t
+
+sysMemGetNcXmb::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ECX, gtncxmb_size[ESP]
+	TESTL	ECX, ECX		;Index specified?
+	JLE	6$			;Yes
+	BSRL	EAX, ECX		;No - get index value
+	SUBL	EAX, #5
+	JC	4$			;If smaller than 32t
+	CMPL	EAX, #XMBX_65536	;Is it too big?
+	JBE	2$			;No
+	CMPL	ECX, #0x10000		;Maybe - does he want a maximum size
+					;  block?
+	JA	10$			;No - fail
+2$:	CMPL	ECX, xmbval[EAX*4]	;OK - correct for even power of 2 if
+	SBBL	EAX, #0			;  need to
+	MOVL	ECX, EAX
+	JMP	8$
+
+;Here for small block - index is 0
+
+4$:	CLRL	ECX
+	JMP	8$
+
+;Here if index specified
+
+6$:	NEGL	ECX
+	CMPL	ECX, #XMBX_65536	;Valid index value?
+	JA	10$			;No - fail big!
+
+;Here with the size index in ECX
+
+8$:	MOVL	gtncxmb_size[ESP], ECX	;Save the size index
+	CMPL	ECX, #XMBX_4096		;Want a buffer of 4096 or more?
+	JB	30$			;No - this is harder
+
+;Here if want a buffer which is 1 page or larger - In this case we just
+;  allocate a normal buffer and make it non-cachable.
+
+	TOFORK	12$
+
+;Here if not at fork level
+
+	INCL	xmbiuhwm[ECX*4]		;Protect the high water mark value
+	CALL	getxm0
+	FROMFORK
+	JMP	20$
+
+;Here if invalid index value
+
+10$:	MOVL	EAX, #ER_VALUE
+	JMP	28$
+
+;Here if at fork level
+
+12$:	INCL	xmbiuhwm[ECX*4]		;Protect the high water mark value
+	CALL	getxm0
+20$:	MOVL	ECX, gtncxmb_size[ESP]	;Get the buffer size
+	DECL	xmbiuhwm[ECX*4]
+	TESTL	EAX, EAX
+	JS	28$
+	DECL	xmbinuse[ECX*4]		;Fix up the in use counts
+	JNS	22$
+	CRASH	BXMC
+
+22$:	INCL	ncxmbinuse[ECX*4]
+	MOVL	EAX, ncxmbinuse[ECX*4]	;Is it a new maximum?
+	CMPL	EAX, ncxmbiuhwm[ECX*4]
+	JBE	24$			;No
+	MOVL	ncxmbiuhwm[ECX*4], EAX	;Yes
+24$:	MOVL	EDX, gtncxmb_pnt[ESP]	;Store the buffer address for the
+	MOVL	[EDX], ESI		;  caller
+	MOVL	ECX, knlXmbSize[ECX*4]	;Get the buffer size
+	SHRL	ECX, #12t		;Change to number of pages
+	LEAL	EAX, -xmbbase[ESI]	;Get offset in the management table
+	SHRL	EAX, #6t
+	ORB	xmbmtbase[EAX], #0x40	;Indicate buffer is non-cached
+.IF NE $$FILLXMB
+	PUSHL	ESI
+.ENDC
+
+;;;;;	ADDL	ESI, #database		;Get linear address
+
+26$:	PUSHL	ECX
+	PUSHL	ESI			;Make the page non-cachable
+	PUSHL	#0
+	CALL	sysMemCacheCtlLA#
+	POPL	ECX
+	ADDL	ESI, #0x1000
+	LOOP	ECX, 26$
+	POPL	ESI
+	JMP	getx02
+
+28$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8t
+
+;Here if the size is less than 1 page. In this case we use a buffer from
+;  the non-cached lists.
+
+30$:	TOFORK	32$
+
+;Here if not at fork level
+
+	CALL	getncxm0
+	FROMFORK
+	JMP	getx01
+
+;Here if at fork level
+
+32$:	CALL	getncxm0
+	JMP	getx01
+.PAGE
+;Local subroutine to allocate non-cached exec memory block - must be called
+;  at fork level of some kind
+;	c{ECX} = Size index
+;	CALL	getncxm0
+;	c{EAX} = Error code
+;	c{ESI} = Address of block (if no error)
+
+;This routine duplicates quite a bit of code used for allocating normal XMBs
+;  but combining this into one routine would make it significantly more complex.
+;  It seems better to keep it as a separate routine for understandability and
+;  for somewhat faster execution.
+
+getncxm0:
+	PUSHL	ECX			;Save requested size
+2$:	MOVL	ESI, ncxmbfree[ECX*4]	;Get buffer from the free list
+	TESTL	ESI, ESI		;Do we have a buffer
+	JNE	getncxm2		;Yes - go use it
+	INCL	ECX			;No - bump size
+	CMPL	ECX, #XMBX_4096		;At maximum size yet?
+	JBE	2$			;No - continue
+	CALL	newncxmb		;Allocate another non-cached memory page
+	TESTL	EAX, EAX
+	JS	8$			;If error
+	MOVL	ECX, #XMBX_4096
+	MOVL	ESI, ncxmbfree+XMBX_4096*4
+	JMP	getncxm2
+
+;Here if can't allocate page
+
+8$:	POPL	ECX
+	CLRL	ESI
+	STC
+	RET
+.PAGE
+;Here with a non-cached buffer we can use (it may be bigger than we want)
+;	c{ECX} = Size index of buffer
+;	c{ESI} = Address of buffer
+
+getncxm2:
+	MOVL	EAX, xmf_next[ESI]	;Remove buffer from its free list
+
+.IF NE $$DEBUGXMB
+	CMPL	[ESI], #XMF_MAGIC
+	JNE	2$
+	CMPL	xmf_size[ESI], ECX
+	JNE	2$
+	TESTL	EAX, EAX
+	JE	4$
+	CMPL	EAX, #xmbbase
+	JB	2$
+	CMPL	EAX, #xmbbase+1000000h
+	JB	4$
+2$:	CRASH	BXMB
+.ENDC
+
+4$:	MOVL	ncxmbfree[ECX*4], EAX
+	TESTL	EAX, EAX
+	JE	6$
+	MOVL	xmf_prev[EAX], #0
+6$:	DECL	ncxmbcnt[ECX*4]
+8$:	CMPL	ECX, [ESP]		;Is it the right size?
+	JE	14$			;Yes - almost done!
+	DECL	ECX			;No - put buffer on next smaller list
+	MOVL	EAX, ncxmbfree[ECX*4]
+	MOVL	xmf_next[ESI], EAX
+	MOVL	ncxmbfree[ECX*4], ESI
+	TESTL	EAX, EAX
+	JE	10$
+	MOVL	xmf_prev[EAX], ESI
+10$:	MOVL	xmf_prev[ESI], #0
+	MOVL	xmf_size[ESI], ECX
+	MOVL	[ESI], #XMF_MAGIC	;Store magic number
+	INCL	ncxmbcnt[ECX*4]
+	MOVL	EAX, ncxmbcnt[ECX*4]
+	CMPL	EAX, ncxmbchwm[ECX*4]
+	JBE	12$
+	MOVL	ncxmbchwm[ECX*4], EAX
+12$:	LEAL	EAX, -xmbbase[ESI]	;Get offset in the management table
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	ORB	xmbmtbase[EAX], #0xC0	;Indicate free and non-cached
+	ADDL	ESI, knlXmbSize[ECX*4]	;Point to second half of buffer
+	LEAL	EAX, -xmbbase[ESI]	;Get offset in the management table
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	ORB	xmbmtbase[EAX], #0x40	;Indicate in use and non-cached
+	JMP	8$			;Continue
+
+;Here with buffer to return
+
+14$:	MOVL	[ESI], #0		;Clear the magic number
+	INCL	ncxmbinuse[ECX*4]	;Increase in-use count
+	LEAL	EAX, -xmbbase[ESI]
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	ORB	xmbmtbase[EAX], #0x40	;Indicate in use and non-cached
+	MOVL	EAX, ncxmbinuse[ECX*4]	;Is it a new maximum?
+	CMPL	EAX, ncxmbiuhwm[ECX*4]
+	JBE	16$			;No
+	MOVL	ncxmbiuhwm[ECX*4], EAX	;Yes
+16$:	POPL	ECX
+	CLRL	EAX
+	RET				;And return
+.PAGE
+;Subroutine to create additional non-cached exec memory buffers - a single
+;  4KB buffer is allocated from the normal exec memory buffer pool, make
+;  non-cachable, and placed on the 4KB non-cached free list.
+;	CALL	newncxmb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+newncxmb:
+	INCL	xmbiuhwm+XMBX_4096*4	;Protect the high water mark value
+	PUSHL	#0
+	MOVL	EAX, ESP
+	PUSHL	#-XMBX_4096		;Get a normal 4KB buffer
+	PUSHL	EAX
+	CALL	sysMemGetXmb
+	POPL	EBX
+	DECL	xmbiuhwm+XMBX_4096*4
+	TESTL	EAX, EAX
+	JS	10$
+	DECL	xmbinuse+XMBX_4096*4	;Reduce the 4K in use count
+	JNS	4$
+	CRASH	BXMC
+
+4$:	LEAL	EAX, -xmbbase[EBX]	;Get offset in the management table
+	SHRL	EAX, #6t
+	ORB	xmbmtbase[EAX], #0x40	;Indicate non-cached
+	PUSHL	EBX			;Make the page non-cached
+	PUSHL	EBX
+	PUSHL	#0
+	CALL	sysMemCacheCtlLA#
+	POPL	EBX
+	MOVL	xmf_prev[EBX], #0	   ;Put the buffer on the 4KB non-cached
+	MOVL	EAX, ncxmbfree+XMBX_4096*4 ;  free list
+	MOVL	ncxmbfree+XMBX_4096*4, EBX
+	MOVL	xmf_next[EBX], EAX
+	TESTL	EAX, EAX
+	JE	6$
+	MOVL	xmf_prev[EAX], EBX
+6$:	INCL	ncxmbcnt+XMBX_4096*4
+	MOVL	EAX, ncxmbcnt+XMBX_4096*4
+	CMPL	EAX, ncxmbchwm+XMBX_4096*4
+	JBE	8$
+	MOVL	ncxmbchwm+XMBX_4096*4, EAX
+8$:	MOVL	[EBX], #XMF_MAGIC
+	MOVL	xmf_size[EBX], #XMBX_4096
+	CLRL	EAX
+10$:	RET
+.PAGE
+;Subroutine to get exec memory buffer using the Pascal calling sequence - may
+;  be called at all fork levels.
+;	long sysMemGetXmb(
+;	    int  size,		// Minimum buffer size (positive) or buffer
+;				//   size index (zero or negative)
+;	    XMB *pnt);		// Address of location to receive address of
+;				//   buffer allocated
+;  Value returned is actual of XMB allocated (positive) if OK or a negative
+;    XOS error code if error
+
+gtxmb_size=!20t
+gtxmb_pnt =!16t
+
+sysMemGetXmb::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ECX, gtxmb_size[ESP]
+	TESTL	ECX, ECX		;Index specified?
+	JLE	6$			;Yes
+	BSRL	EAX, ECX		;No - get index value
+	SUBL	EAX, #5
+	JC	4$			;If smaller than 32t
+	CMPL	EAX, #XMBX_65536	;Is it too big?
+	JBE	2$			;No
+	CMPL	ECX, #0x10000		;Maybe - does he want a maximum size
+					;  block?
+	JA	10$			;No - fail
+2$:	CMPL	ECX, xmbval[EAX*4]	;OK - correct for even power of 2 if
+	SBBL	EAX, #0			;  need to
+	MOVL	ECX, EAX
+	JMP	8$
+
+;Here for small block - index is 0
+
+4$:	CLRL	ECX
+	JMP	8$
+
+;Here if index specified
+
+6$:	NEGL	ECX
+	CMPL	ECX, #XMBX_65536	;Valid index value?
+	JA	10$			;No - fail big!
+8$:
+.IF NE $$FILLXMB
+	MOVL	gtxmb_size[ESP], ECX
+.ENDC
+	TOFORK	12$
+
+;Here if not at fork level
+
+	CALL	getxm0
+	FROMFORK
+	JMP	getx01
+
+;Here if invalid index value
+
+10$:	MOVL	EAX, #ER_VALUE
+	JMP	24$
+
+;Here if at fork level
+
+12$:	CALL	getxm0
+getx01:	TESTL	EAX, EAX
+	JS	24$
+	MOVL	EDX, gtxmb_pnt[ESP]
+	MOVL	[EDX], ESI
+getx02:
+.IF NE $$FILLXMB
+	MOVL	ECX, gtxmb_size[ESP]
+	MOVL	ECX, knlXmbSize-8t[ECX*4] ;Get number of longs to set
+	MOVL	EDX, ECX
+	MOVL	EDI, ESI
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	MOVL	EAX, #0x66666666	;Get data pattern
+	CLD
+	RSTOSL	[EDI]			;Store the pattern
+	MOVL	EAX, EDX
+	ADDL	EAX, EAX
+	ADDL	EAX, EAX
+.IFF
+	MOVL	EAX, gtxmb_size[ESP]
+	MOVL	EAX, knlXmbSize[EAX*4] ;Get actual size.ENDC
+.ENDC
+24$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	8
+.PAGE
+;Local subroutine to allocate exec memory block - must be called at fork level
+;  of some kind
+;	c{ECX} = Size index
+;	CALL	getxm0
+;	c{EAX} = Error code
+;	c{ESI} = Address of block (if no error)
+
+getxm0:	PUSHL	ECX
+
+	TESTL	ECX, ECX
+	JE	1$
+$$$$XMB:NOP
+1$:
+
+2$:	MOVL	ESI, xmbfree[ECX*4]	;Get buffer from the free list
+	TESTL	ESI, ESI		;Do we have a buffer
+	JNE	getxm2			;Yes - go use it
+	INCL	ECX			;No - bump size
+	CMPL	ECX, #XMBX_65536	;At maximum size yet?
+	JBE	2$			;No - continue
+	CALL	newxmb			;Allocate another memory page
+	JC	8$			;If error
+	MOVL	ECX, #XMBX_65536
+	MOVL	ESI, xmbfree+XMBX_65536*4
+	JMP	getxm2
+
+;Here if can't allocate page
+
+8$:	POPL	ECX
+	CLRL	ESI
+	STC
+	RET
+.PAGE
+;Here with a buffer we can use (it may be bigger than we want)
+;	c{ECX} = Size index of buffer
+;	c{ESI} = Address of buffer
+
+getxm2:	MOVL	EAX, xmf_next[ESI]	;Remove buffer from its free list
+
+.IF NE $$DEBUGXMB
+	CMPL	[ESI], #XMF_MAGIC
+	JNE	2$
+	CMPL	xmf_size[ESI], ECX
+	JNE	2$
+	TESTL	EAX, EAX
+	JE	4$
+	CMPL	EAX, #xmbbase
+	JB	2$
+	CMPL	EAX, #xmbbase+1000000h
+	JB	4$
+2$:	CRASH	BXMB
+.ENDC
+
+4$:	MOVL	xmbfree[ECX*4], EAX
+	TESTL	EAX, EAX
+	JE	6$
+	MOVL	xmf_prev[EAX], #0
+6$:	DECL	xmbcnt[ECX*4]
+8$:	CMPL	ECX, [ESP]		;Is it the right size?
+	JE	14$			;Yes - almost done!
+	DECL	ECX			;No - put buffer on next smaller list
+	MOVL	EAX, xmbfree[ECX*4]
+	MOVL	xmf_next[ESI], EAX
+	MOVL	xmbfree[ECX*4], ESI
+	TESTL	EAX, EAX
+	JE	10$
+	MOVL	xmf_prev[EAX], ESI
+10$:	MOVL	xmf_prev[ESI], #0
+	MOVL	xmf_size[ESI], ECX
+	MOVL	[ESI], #XMF_MAGIC	;Store magic number
+	INCL	xmbcnt[ECX*4]
+	MOVL	EAX, xmbcnt[ECX*4]
+	CMPL	EAX, xmbchwm[ECX*4]
+	JBE	12$
+	MOVL	xmbchwm[ECX*4], EAX
+12$:	LEAL	EAX, -xmbbase[ESI]	;Get offset in the management table
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	ORB	xmbmtbase[EAX], #0x80	;Indicate free buffer
+	ADDL	ESI, knlXmbSize[ECX*4]	;Point to second half of buffer
+	LEAL	EAX, -xmbbase[ESI]	;Get offset in the management table
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	JMP	8$
+
+;Here with buffer to return
+
+14$:	MOVL	[ESI], #0		;Clear the magic number
+	INCL	xmbinuse[ECX*4]		;Increase in-use count
+	LEAL	EAX, -xmbbase[ESI]
+	SHRL	EAX, #6t
+	MOVB	xmbmtbase[EAX], CL
+	MOVL	EAX, xmbinuse[ECX*4]	;Is it a new maximum?
+	CMPL	EAX, xmbiuhwm[ECX*4]
+	JBE	16$			;No
+	MOVL	xmbiuhwm[ECX*4], EAX	;Yes
+16$:	POPL	ECX
+	CLRL	EAX
+	RET				;And return
+.PAGE
+;Here (from below) if no address space page is avialable (very unlikely!)
+
+2$:	MOVL	EAX, #ER_NOBUF
+	STC
+	RET
+
+;Subroutine to create additional exec memory buffers - a single 64KB buffer is
+;  allocated and placed on the 64KB free list - must be called at main
+;  program level
+;	CALL	newxmb
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+newxmb:	MOVL	EAX, xmbtop
+	CMPL	EAX, #xmbmax
+	JAE	2$
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EAX
+	PUSHL	#16t			;Allocate 64KB
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages
+	TESTL	EAX, EAX
+	JS	12$
+	MOVL	EBX, xmbtop		;OK - get address we used
+	ADDL	xmbtop, #0x10000	;Bump the address
+	MOVL	xmf_size[EBX], #XMBX_65536 ;Put the page on the 64KB free list
+	MOVL	[EBX], #XMF_MAGIC
+	CLRL	EAX
+	MOVL	xmf_prev[EBX], EAX
+	MOVL	EAX, xmbfree+XMBX_65536*4
+	MOVL	xmbfree+XMBX_65536*4, EBX
+	MOVL	xmf_next[EBX], EAX
+	TESTL	EAX, EAX
+	JE	6$
+	MOVL	xmf_prev[EAX], EBX
+6$:	INCL	xmbcnt+XMBX_65536*4
+	MOVL	EAX, xmbcnt+XMBX_65536*4
+	CMPL	EAX, xmbchwm+XMBX_65536*4
+	JBE	8$
+	MOVL	xmbchwm+XMBX_65536*4, EAX
+8$:	TESTL	xmbmttop, #0x0FFF	;See if we need another page for the
+	JNE	10$			;  management table
+	PUSHL	xmbmttop		;Get another page
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages
+	TESTL	EAX, EAX
+	JS	14$
+	MOVL	EDI, xmbmttop		;Mark the top 3/4 of the page as
+	ADDL	EDI, #0x400		;  invalid
+	MOVL	ECX, #0x300
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	MOVL	EAX, #0xFEFEFEFE
+	CLD
+	RSTOSL	[EDI]
+10$:	MOVL	EDI, xmbmttop
+	ADDL	xmbmttop, #0x400	;Mark the 64KB buffer
+	PUSHL	DS
+	POPL	ES
+	CLD
+	MOVL	EAX, #0xFFFFFF80+XMBX_65536
+	STOSL	[EDI]
+	MOVL	ECX, #0x0FF
+	MOVL	EAX, #0xFFFFFFFF
+	RSTOSL	[EDI]
+	CLRL	EAX
+12$:	POPL	ESI
+	POPL	EDI
+	BTL	EAX, #31t
+	RET
+
+;Here if can't allocate memory for the management table
+
+14$:	PUSHL	EAX
+	MOVL	EBX, xmbtop		;Give up the memory we just allocated
+	ADDL	EBX, #-0x10000
+	PUSHL	#0			;Don't need a PDA address since these
+					;  are pure system pages
+	PUSHL	EBX			;Address
+	PUSHL	#0			;F2 value
+	PUSHL	#16t			;Number of pages to give up
+	CALL	sysMemGivePages
+	POPL	EAX
+	JMP	12$
+.PAGE
+;Subroutine to give up exec memory buffer
+;	c{ESI} = Offset of buffer
+;	CALL	knlGiveXmb
+;  All registers except ESI are preserved, ESI is set to 0
+
+knlGiveXmb::
+knlGiveQel::
+	PUSHAL
+	PUSHL	ESI
+	CALL	sysMemGiveXmb
+	POPAL
+	CLRL	ESI
+	RET
+.PAGE
+;Function to give up an exec memory buffer using the Pascal calling sequence
+;	void sysMemGiveXmb(
+;	    XMB *bufr);		// Address of buffer to give up
+
+gvxmb_bufr=!16t
+
+sysMemGiveXmb::
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, gvxmb_bufr[ESP]
+	TESTL	ESI, #0x3F
+	JNE	2$
+	CMPL	ESI, #xmbbase		;Make sure offset is in right range
+	JB	2$
+	CMPL	ESI, xmbtop
+	JB	4$
+2$:	CRASH	BXMB
+
+4$:	LEAL	EBX, -xmbbase[ESI]
+	SHRL	EBX, #6t
+	MOVXBL	ECX, xmbmtbase[EBX]
+	TESTL	ECX, ECX
+	JS	6$
+	ANDL	ECX, #0x3F
+	CMPL	ECX, #XMBX_65536
+	JLE	8$
+6$:	CRASH	BXMB
+
+8$:	TOFORK	10$
+	CALL	gvxmb0
+	FROMFORK
+	JMP	12$
+
+10$:	CALL	gvxmb0
+12$:	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET	4t
+.PAGE
+;	c{ECX} = Size index (without the non-cached bit)
+;	c{EBX} = Index in the management table
+;	c{ESI} = Address of buffer
+
+gvxmb0:	TESTB	xmbmtbase[EBX], #0x40	;Non-cached buffer?
+	JE	gvxmb2			;No - go on
+
+;Here if this is a non-cached buffer
+
+	DECL	ncxmbinuse[ECX*4]	;Reduce in-use count
+	JNS	2$
+	CRASH	BXMC
+
+2$:	CMPL	ECX, #XMBX_4096		;1 page or more?
+	JB	10$			;No
+	ANDB	xmbmtbase[EBX], #~0x40	;Yes - indicate buffer is cached
+	PUSHL	ESI
+	PUSHL	EBX
+	PUSHL	ECX
+	MOVL	ECX, knlXmbSize[ECX*4]	;Get buffer size
+	SHRL	ECX, #12t		;Change to number of pages
+6$:	PUSHL	ECX
+	MOVL	EAX, ESI		;Get linear address
+	PUSHL	EAX			;Make the page cachable
+	PUSHL	#1
+	CALL	sysMemCacheCtlLA#
+	POPL	ECX
+	ADDL	ESI, #0x1000
+	LOOP	ECX, 6$
+	POPL	ECX
+	POPL	EBX
+	POPL	ESI
+	JMP	gvxmb3			;Now its a normal cachable buffer
+
+;Here if non-cached buffer is smaller than 1 page. We have to put it one
+;  one of the non-cached free lists (unless we can merge it to make a whole
+;  page).
+
+10$:	MOVL	EAX, ESI		;Get offset of buddy
+	XORL	EAX, knlXmbSize[ECX*4]
+	LEAL	EBX, -xmbbase[EAX]	;Get the management table byte
+	SHRL	EBX, #6t
+	MOVZBL	EDX, xmbmtbase[EBX]
+	TESTB	DL, #0x40		;Is the buddy free or cached?
+	JE	16$			;No
+	TESTB	DL, #0x80		;Yes - is the buddy free?
+	JE	16$			;No - put this buffer on the free list
+
+	ANDL	EDX, #0x3F		;No
+	CMPL	ECX, EDX		;Yes - is it the same size (it might
+					;  be smaller if it was split and the
+					;  upper part(s) is in use)
+	JE	18$			;Yes - merge the buffers
+	JG	32$			;Not same size - Just put this buffer
+					;  on the free list if buddy is smaller.
+					;  It is serious error if the buddy is
+					;  larger, which could also mean not
+					;  the start of a buffer!
+	CRASH	BXBB			;[Bad eXec Buffer Buddy]
+
+;Here if the buddy is not free or is cached - make sure the size if valid
+
+16$:	ANDL	EDX, #0x3F
+	CMPL	ECX, EDX
+	JGE	32$
+	CRASH	BXBB			;[Bad eXec Buffer Buddy]
+
+;Here with a buddy we can merge
+
+18$:	CMPL	[EAX], #XMF_MAGIC	;Is the buddy a valid free buffer?
+	JNE	20$			;No - can't merge here
+	CMPL	xmf_size[EAX], ECX	;Maybe
+	JE	22$			;Yes
+20$:	CRASH	BFXB			;[Bad Free eXec Buffer]
+
+;Here when can merge with the buddy and the buddy is a valid free buffer
+
+22$:	MOVL	EDX, xmf_next[EAX]	;Remove buddy from its free list
+	MOVL	EBX, xmf_prev[EAX]
+	TESTL	EBX, EBX
+	JE	24$
+	MOVL	xmf_next[EBX], EDX
+	JMP	26$
+
+24$:	MOVL	ncxmbfree[ECX*4], EDX
+26$:	TESTL	EDX, EDX
+	JE	28$
+	MOVL	xmf_prev[EDX], EBX
+28$:	DECL	ncxmbcnt[ECX*4]
+	JNS	30$
+	CRASH	BXMC
+
+30$:	CLRL	EDX
+	MOVL	[EAX], EDX		;Clear magic numbers
+	MOVL	[ESI], EDX
+	LEAL	EBX, -xmbbase[EAX]
+	SHRL	EBX, #6t
+	MOVB	xmbmtbase[EBX], #0xFF
+	INCL	ECX			;Bump size index
+	LEAL	EBX, -xmbbase[ESI]
+	SHRL	EBX, #6t
+	MOVB	xmbmtbase[EBX], #0xFF
+	ANDL	ESI, xmbmask[ECX*4]	;Get address of merged buffer
+	JMP	10$			;Continue
+
+;Here with buffer to place on a free list
+
+32$:	CMPL	ECX, #XMBX_4096		;Is the a 4KB (1 page) buffer?
+	JE	40$			;Yes
+	MOVL	EAX, ncxmbfree[ECX*4]	;No - put it on a non-cached free list
+	MOVL	ncxmbfree[ECX*4], ESI
+	MOVL	xmf_next[ESI], EAX
+	TESTL	EAX, EAX
+	JE	34$
+	MOVL	xmf_prev[EAX], ESI
+34$:	MOVL	xmf_prev[ESI], #0
+	MOVL	xmf_size[ESI], ECX
+	MOVL	[ESI], #XMF_MAGIC
+	INCL	ncxmbcnt[ECX*4]
+	MOVL	EAX, ncxmbcnt[ECX*4]
+	CMPL	EAX, ncxmbchwm[ECX*4]
+	JBE	36$
+	MOVL	ncxmbchwm[ECX*4], EAX
+36$:	SUBL	ESI, #xmbbase
+	SHRL	ESI, #6t
+	LEAL	EAX, 0xC0[ECX]
+	MOVB	xmbmtbase[ESI], AL
+	RET
+
+;Here with a 4KB buffer to put on a free list. Convert it to a cached buffer
+;  and put it on the normal free list.
+
+40$:	MOVL	EAX, ESI
+	PUSHL	EAX
+	PUSHL	#1
+	CALL	sysMemCacheCtlLA#
+	JMP	gvxmb6
+.PAGE
+;Here to give up a normal cached buffer
+
+gvxmb2:	DECL	xmbinuse[ECX*4]		;Reduce in-use count
+	JNS	gvxmb3
+	CRASH	BXMC
+
+gvxmb3:	CMPL	ECX, #XMBX_65536		;Maximum size buffer?
+	JAE	gvxmb6			;Yes - just put it on its free list
+	MOVL	EAX, ESI		;No - get offset of buddy
+	XORL	EAX, knlXmbSize[ECX*4]
+	LEAL	EBX, -xmbbase[EAX]	;Is it free?
+	SHRL	EBX, #6t
+	MOVZBL	EDX, xmbmtbase[EBX]
+	TESTB	DL, #0x80		;Yes - is it free?
+	JE	16$			;No
+	TESTB	DL, #0x40		;Yes - is the buddy cached?
+	JNE	16$			;No - serious error (This should be
+					;  impossible since we never put 4K
+					;  non-cached buffers on the free list,
+					;  smaller buffers cannot have buddies
+					;  in other 4K blocks.)
+	ANDL	EDX, #0x7F		;Yes - is it the same size (it might
+					;  be smaller if it was split and the
+	CMPL	ECX, EDX		;  upper part(s) is in use)
+	JE	18$			;Yes - merge the buffers
+	JG	gvxmb6			;No - serious error if the buddy is
+					;  larger, which could also mean not
+					;  the start of a buffer!
+	CRASH	BXBB			;[Bad eXec Buffer Buddy]
+
+;Here if the buddy is not free - make sure the size if valid
+
+16$:	ANDL	EDX, #0x3F		;Make sure the non-cached bit is clear
+					;  (It is possible to have a 4K or
+					;  larger non-cached buddy that is in
+					;  use.)
+	CMPL	ECX, EDX		;Is the buddy smaller?
+	JGE	gvxmb6			;No
+	CRASH	BXBB			;Yes [Bad eXec Buffer Buddy]
+
+;Here with a buddy we can merge
+
+18$:	CMPL	[EAX], #XMF_MAGIC	;Is the buddy a valid free buffer?
+	JNE	20$			;No - can't merge here
+	CMPL	xmf_size[EAX], ECX	;Maybe
+	JE	gvxmb4			;Yes
+20$:	CRASH	BFXB			;[Bad Free eXec Buffer]
+
+;Here when can merge with the buddy and the buddy is a valid free buffer
+
+gvxmb4:	MOVL	EDX, xmf_next[EAX]	;Remove buddy from its free list
+	MOVL	EBX, xmf_prev[EAX]
+	TESTL	EBX, EBX
+	JE	24$
+	MOVL	xmf_next[EBX], EDX
+	JMP	26$
+
+24$:	MOVL	xmbfree[ECX*4], EDX
+26$:	TESTL	EDX, EDX
+	JE	28$
+	MOVL	xmf_prev[EDX], EBX
+28$:	DECL	xmbcnt[ECX*4]
+	CLRL	EDX
+	MOVL	[EAX], EDX		;Clear magic numbers
+	MOVL	[ESI], EDX
+	LEAL	EBX, -xmbbase[EAX]
+	SHRL	EBX, #6t
+	MOVB	xmbmtbase[EBX], #0xFF
+	INCL	ECX			;Bump size index
+	LEAL	EBX, -xmbbase[ESI]
+	SHRL	EBX, #6t
+	MOVB	xmbmtbase[EBX], #0xFF
+	ANDL	ESI, xmbmask[ECX*4]	;Get address of merged buffer
+	JMP	gvxmb3			;Continue
+
+;Here with buffer to place on a free list
+
+gvxmb6:	MOVL	EAX, xmbfree[ECX*4]
+	MOVL	xmbfree[ECX*4], ESI
+	MOVL	xmf_next[ESI], EAX
+	TESTL	EAX, EAX
+	JE	32$
+	MOVL	xmf_prev[EAX], ESI
+32$:	MOVL	xmf_prev[ESI], #0
+	MOVL	xmf_size[ESI], ECX
+	MOVL	[ESI], #XMF_MAGIC
+	INCL	xmbcnt[ECX*4]
+	MOVL	EAX, xmbcnt[ECX*4]
+	CMPL	EAX, xmbchwm[ECX*4]
+	JBE	34$
+	MOVL	xmbchwm[ECX*4], EAX
+34$:	SUBL	ESI, #xmbbase
+	SHRL	ESI, #6t
+	LEAL	EAX, 0x80[ECX]
+	MOVB	xmbmtbase[ESI], AL
+	RET
+.PAGE
+;Subroutine to get the size of an exec memory buffer
+;	long sysMemXmbSize(
+;	    XMB *bufr);		// Address of buffer
+;  Value returned is the size of the buffer in bytes
+
+xmbsz_bufr=!4t
+
+sysMemXmbSize::
+	MOVL	ECX, xmbsz_bufr[ESP]
+	TESTL	ECX, #0x3F
+	JNE	2$
+	CMPL	ECX, #xmbbase		;Make sure offset is in right range
+	JB	2$
+	CMPL	ECX, xmbtop
+	JB	4$
+2$:	CRASH	BXMB
+
+4$:	LEAL	EDX, -xmbbase[ECX]
+	SHRL	EDX, #6t
+	MOVXBL	ECX, xmbmtbase[EDX]
+	TESTL	ECX, ECX
+	JS	6$
+	ANDL	ECX, #0x3F
+	CMPL	ECX, #XMBX_65536
+	JLE	8$
+6$:	CRASH	BXMB
+
+8$:	MOVL	EAX, #0x40
+	SHLL	EAX, CL
+	RET	4t
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+.IF NE 0
+
+;Segment type table
+
+	.MOD	4
+
+segttbl::
+	.BYTE	0              , 0	     ; 0. - Illegal or default
+	.BYTE	DT_RODATA+PL_3 , DC_PG+DC_32 ; 1. - 32 bit read only data
+					     ;	      segment
+	.BYTE	DT_RWDATA+PL_3 , DC_PG+DC_32 ; 2. - 32 bit writable data segment
+	.BYTE	DT_STACK+PL_3  , DC_PG+DC_32 ; 3. - 32 bit stack segment
+	.BYTE	DT_NXOCODE+PL_3, DC_PG+DC_32 ; 4. - 32 bit normal execute only
+					     ;	      code segment
+	.BYTE	DT_NXRCODE+PL_3, DC_PG+DC_32 ; 5. - 32 bit normal readable code
+					     ;        segment
+	.BYTE	DT_CXOCODE+PL_3, DC_PG+DC_32 ; 6. - 32 bit conformable execute
+					     ;	      only code segment
+	.BYTE	DT_CXRCODE+PL_3, DC_PG+DC_32 ; 7. - 32 bit conformable readable
+					     ;        code segment
+	.BYTE	0              , 0	     ; 8. - Illegal or default
+	.BYTE	DT_RODATA+PL_3 , DC_PG+DC_16 ; 9. - 16 bit read only data
+					     ;        segment
+	.BYTE	DT_RWDATA+PL_3 , DC_PG+DC_16 ;10. - 16 bit writable data segment
+	.BYTE	DT_STACK+PL_3  , DC_PG+DC_16 ;11. - 16 bit stack segment
+	.BYTE	DT_NXOCODE+PL_3, DC_PG+DC_16 ;12. - 16 bit normal execute only
+					     ;	      code segment
+	.BYTE	DT_NXRCODE+PL_3, DC_PG+DC_16 ;10. - 16 bit normal readable code
+					     ;        segment
+	.BYTE	DT_CXOCODE+PL_3, DC_PG+DC_16 ;11. - 16 bit conformable execute
+					     ;	      only code segment
+	.BYTE	DT_CXRCODE+PL_3, DC_PG+DC_16 ;12. - 16 bit conformable readable
+					     ;         code segment
+.ENDC
+
+	.MOD	4
+knlMemFree:: .LONG 0		;Memory page free list head pointer
+knlMemTop::  .LONG 0		;Number of first page above knlMemTable
+memlockcnt:: .LONG 0		;Memory lock count
+
+				;Following 2 items are used for debugging only!
+mpilmte::    .LONG 0		;Offset of last locked memory table entry which
+				;  caused ER_MPILK to be returned
+mpilpte::    .LONG 0		;Offset of page table entry corresponding to
+				;  value stored in mpilmte
+firstuser::  .LONG 0		;First physical page allocated to a user
+firstsda::   .LONG 0		;Selector for first SDA in system
+xpagefree::  .LONG 0		;Head pointer for exec memory pool page free
+				;  list
+xmbtop::     .LONG xmbbase	;Next address for creating new XMBs 
+xmbmttop::   .LONG xmbmtbase	;Next management table address for creating
+				;  new XMBs
+xmbreserve:: .LONG 3		;Number of XMB reserve buffers
+
+
+xmbfree:     .BLKL XMBX_65536+1	;Exec memory pool free list pointer array
+xmbcnt::     .BLKL XMBX_65536+1	;Exec memory pool free list count array
+xmbchwm::    .BLKL XMBX_65536+1
+xmbinuse::   .BLKL XMBX_65536+1	;Number of in use exec memory buffers
+xmbiuhwm::   .BLKL XMBX_65536+1	;High water mark for in use exec memory buffers
+
+ncxmbfree::  .BLKL XMBX_4096+1	;Exec non-cached memory pool free list pointer
+				;  array
+ncxmbcnt::   .BLKL XMBX_4096+1	;Exec non-cached memory pool free list count
+				;   array
+ncxmbchwm::  .BLKL XMBX_4096+1
+
+ncxmbinuse:: .BLKL XMBX_65536+1	;Number of in use exec non-cached memory buffers
+ncxmbiuhwm:: .BLKL XMBX_65536+1	;High water mark for in use exec non-cached
+				;  memory buffers
+
+xmbmask:     .LONG 0xFFFFFFC0
+	     .LONG 0xFFFFFF80
+	     .LONG 0xFFFFFF00
+	     .LONG 0xFFFFFE00
+	     .LONG 0xFFFFFC00
+	     .LONG 0xFFFFF800
+	     .LONG 0xFFFFF000
+	     .LONG 0xFFFFE000
+	     .LONG 0xFFFFC000
+	     .LONG 0xFFFF8000
+	     .LONG 0xFFFF0000
+
+xmbval:      .LONG 0x00000
+	     .LONG 0x00041
+	     .LONG 0x00081
+	     .LONG 0x00101
+	     .LONG 0x00201
+	     .LONG 0x00401
+	     .LONG 0x00801
+	     .LONG 0x01001
+	     .LONG 0x02001
+	     .LONG 0x04001
+	     .LONG 0x08001
+	     .LONG 0x10001
+	     .LONG 0x20001
+
+.IF NE $$DEBUGXMB
+ xmbchkm:    .LONG 0x003F
+	     .LONG 0x007F
+	     .LONG 0x00FF
+	     .LONG 0x01FF
+	     .LONG 0x03FF
+	     .LONG 0x07FF
+	     .LONG 0x0FFF
+	     .LONG 0x1FFF
+	     .LONG 0x3FFF
+	     .LONG 0x7FFF
+	     .LONG 0xFFFF
+.ENDC
+
+xmbwakexff:: .LONG 0		;Head pointer for list of XFFs to wake up
+				;  after additional exec memory buffers made
+;;;xmbqel1:     .BLKB 64t		;Special QELs used as signal link blocks
+;;;xmbqel2:     .BLKB 64t		;  when requesting exec signal to allocate
+				;  more exec memory buffers from fork level
+;;;xmbqel1bsy:  .BYTE 0		;Non-zero when xmbqel1 is in use
+;;;xmbqel2bsy:  .BYTE 0		;Non-zero when xmbqel2 is in use
+
+knlSvCodePnt:: .LONG 0		;Saved knlXCodePnt
+knlSvDataPnt:: .LONG 0		;Saved knlXDataPnt
+knlSvSpacePnt::.LONG 0
+
+	     .LONG 0x00010
+	     .LONG 0x00020
+knlXmbSize:: .LONG 0x00040	;Exec memory buffer size table
+	     .LONG 0x00080
+	     .LONG 0x00100
+	     .LONG 0x00200
+	     .LONG 0x00400
+	     .LONG 0x00800
+	     .LONG 0x01000
+	     .LONG 0x02000
+	     .LONG 0x04000
+	     .LONG 0x08000
+xmbsize64KB::.LONG 0x10000
+	     .LONG 0x20000
+
+wslimit::    .LONG 0xFFFFFFFF
+umlimit::    .LONG 0xFFFFFFFF
+omlimit::    .LONG 0xFFFFFFFF
+
+xmbrngpnt::.LONG  xmbrng
+xmbrng::   .BLKL  512t*2
+xmbrngend::.LONG  0xFFFFFFFF
+
+qellist::   .BLKL  256t
+qellisttop::.LONG  0xFFFFFFFF
+defertmr::  .LONG  0
+
+	END

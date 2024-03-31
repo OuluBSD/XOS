@@ -1,0 +1,61 @@
+USB client drivers are specified in files in the \XOS\USB directory. File
+names have the format:
+
+   CLScc.USB
+
+or
+   VENvvvv.USB
+
+Upper case letters are literal. Lower case letters represent values as
+follows:
+
+   cc   - Class (2 hex digits)
+   vvvv - Vender ID (4 hex digits)
+
+When adding a USB device a VEN file is looked for first. If one is found and
+it specifies the device being added it is used to specify how the device is
+added. If not a CLS file is looked for. If a matching CLS file with matching
+sub-class and protocol is found it is used. Otherwise the device is not added.
+
+
+
+The client driver is initialized with the ADDUNIT function for the specified
+device class. The following characteristics are always specified:
+
+TYPE     - The device type as specified in the file.
+UNIT     - The device unit number (allocated by USBCTL)
+USBUNIT  - The unit number for the USB controller device
+USBPORT  - The port specification for the device. This is a 32-bit value where
+           each 4-bit nibble (from low to high order) specifies a port from 1
+           to 15. 0 means no port at that level. Bits 0-3 (which specify the
+           port on the root hub) must be nonzero. Each succesive nonzero nibble
+           specifies the port on the next hub. Note that this value is only
+           used to determine when the client should be notified of a status
+           change (device removed). It does not affect data transfers in any
+           way.
+USBADDR  - The USB bus address assigned to the device
+USBSPEED - The USB bus speed of the DEVICE
+USBEP0MX - The maximum packet size for EP0
+
+The following characteristics are specified as needed:
+
+USBMFCTR - Manufacturer string
+USBMODEL - Model string
+USBSERNO - Serial number string
+USBIIN   - Interrupt input endpoint
+USBBIN   - Bulk transfer input endpoint
+USBSIN   - Isochronous input endpoint
+USBIOUT  - Interrupt output endpoint
+USBBOUT  - Bulk transvfer output endpoint
+USBSOUT  - Isochronous output endpoint
+USBCTRL  - Control endpoint
+USBPKTMX - The maximum packet size for the previous end-point specified
+
+The USBPKTMX characteristic is initially specified to specify the maximum
+packet size for endpoint 0. It is also specified after each of the endpoint
+characteristics and specifies the maximum packet size for the most recently
+specified endpoint. All of these optional characteristics will be specified
+multiple times if there are multiple end-points of the same type. If more
+endponts are specified that expected by the driver, the excess endpoints
+should usually be quietly ignored althoug in some cases it may be desirable
+to indicate an error when this happens.

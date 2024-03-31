@@ -1,0 +1,150 @@
+	.TITLE	HEADER - XOS disk bootstrap header block
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+;This file generates the header information for the bootstrap image.  It also
+;  specifies the order of loading of all Psects.
+
+	.PROC	80386
+	.STK16
+
+;v1.6 - ??
+;	Fixed bug, was using BIOS timer wrong, destroyed current time of day
+;	as seen by DOS.
+;v1.7 - 16-Oct-91
+;	Fixed bug, was not clearing memory in auto mode.
+;v1.8 - 21-Mar-92
+;	Fixed bug, was not correctly modifying floppy parameter table, also
+;	added some debug code under $$DEBUG conditional.
+;v1.9 - 21-Oct-92
+;	Added display of error code and disk address on disk errors, fixed
+;	bug in determining if have 12 bit FATs.
+;v1.10 - 29-Oct-93
+;	Added support for loading from any directory.
+;v1.11 - 9-May-93
+;	Added support for version 2 IMG files.
+;v2.0 - 1-Jun-93
+;	Added ability to use with XDTB, removed internal debugging stuff;
+;	Changed file system support to be separate module which executes at
+;	top of memory and is usable with the kernel once-only code; Added
+;	support for DOS disk names; added time-out message; Expanded error
+;	reporting.
+;v2.1 - 28-Jun-94
+;	Fixed bug in file read routine, was not checking for end of file right
+;v2.2 - 29-Jun-94
+;	Changed the SEARCH function to return file length in EAX (used by
+;	ONCER)
+;v2.3 - 5-Jul-94
+;	Another attempt at fixing the EOF check problem (first fixed in 2.1).
+;v2.4 - 15-Jul-94
+;	Moved function to get error message text to the file system module so
+;	it would be available to the kernel.
+;v3.0 - 30-Aug-94
+;	Modified to support FORTE directory names and conventions; fixed bug
+;	which cleared a border character when clearing the time-out message.
+;v3.1 - 6-Sep-94
+;	Changed image file extension to .RUN
+;v4.0 - 10-Oct-94
+;	Modified to support Allegro directory names and conventions.
+;v4.1 - 3-Dec-94
+;	Changed default default file to ALLEGRO (was KERNEL); fixed bug which
+;	prevented using 8 character names, changed to set up file routines
+;	first (needed so can process errors which occur before file access).
+;v4.2 - 19-Dec-94
+;	Fixed bug, was not clearing high 16 bits of cluster size long; added
+;	error message for divide errors.
+;v4.3 - 31-Oct-95
+;	Fixed bug which caused divide error if sector number was greater than
+;	2**15.
+;v5.0 - 9-Sep-97
+;	First XOS version.
+;v5.1 - 9-Nov-97
+;	Added initial minimal support for FAT32 file systems.
+;v5.2 - 25-Sep-98
+;	Changed to use selector of first segment (if specified) to specify
+;	load address. (Kernel does not use this, its intended to allow loading
+;	of the BIOS for debugging.)
+;v5.4 - 23-Nov-98
+;	Added support for booting from 32-bit FAT file structures (still cannot
+;	put bootstrap on a 32-bit FAT FS); fixed serious bug in handling of
+;	extended partitions - only first two volumns were accessable!
+;v5.5 - Corrected confusion with version numbering with versions 5.3 and 5.4
+;	(There were two different incompatable versions 5.3, on of which should
+;	have been 5.4!).
+;v7.0 - ????
+;v7.1 - ????
+;v7.2 - 4-Feb-03
+;	Minor cleanup to work right with new version of XMAC.
+;v7.3 -
+;v7.4 -
+;v7.5 - Added code to FAT32 (level 1) to get CHS values from the BIOS
+;v8.0 - Major restructuring, all file systems now use a 2 level bootstrap with
+;	the level2 code stored in the reserved blocks. The XOS.BSF file is no
+;	longer used. level 1 is now common to all file systems. Disks up to
+;	2TB should boot from any position on the disk (assuming the BIOS
+;	supports it). XFS support is still just a stub.
+
+;The version number is defined in boot.par. If it is changed, reassemble at
+;  least level1 and level2
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xosrun.par
+	.INCLUD XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+	.INCLUD XOSINC:\xmac\xosxffs.par
+	.INCLUD	XOSINC:\xmac\xosboot.par
+
+;The only function performed by this module is to define the order of the
+;  segments and msects.  No code is generated.
+
+	.SEG	boot_s  , DATA, READ, WRITE, 16BIT
+	.MSECT	level1_m, boot_s, ADDR=0x7C00
+	.MSECT	level2_m, boot_s, ADDR=0x8200
+	.MSECT	fat_m   , boot_s, ADDR=0
+	.MSECT	xfs_m   , boot_s, ADDR=0
+
+;When loaded from a floppy or IDE hard disk this bootstrap can boot XOS from
+;  any floppy or IDE hard disk (or partition) on the system, independent of
+;  the device it is loaded from as long as the file system is the same type
+;  (FAT or XFS). This version CANNOT boot DOS or any other OS. When booting
+;  from a CD or a USB disk, it can boot from any partition on the boot device.
+
+;This is a 2 level bootstrap. Level 1, which is loaded into memory at 0:7C00
+;  from the boot block by the BIOS or by the MBR code, loads level 2 from the
+;  reserved blocks. Level 2 contains all code needed to interact with the user
+;  and to load XOS.
+
+;The memory map during loading is as follows:
+;	0:0000 - 0:05FF  Vectors
+;	0:0600 - 0:0613  Saved floppy parameter table
+;	0:0614 - 0:0FFF	 Bootstrap stack
+;	0:1000 - 0:3FFF	 Not used
+;	0:4000 - 0:5FFF  Bootstrap data
+;	0:7C00 - 0:7DFF  Level 1 bootstrap code for all file systems
+;	0:7E00 - 0:7FFF  Configuration data block
+;	0:8000 -         Level 2 bootstrap code + debugger code and data if
+;			   loaded
+
+;If no debugger code is included with the bootstrap, the target program is
+;  loaded at 1000:0 or above.  If a debugger is included, the target program
+;  is loaded at 2000:0 or above. The file system code (from fat_m or xfs_m)
+;  is initially loaded immediately above the boot_m code and is copied to
+;  the top of available base ram.

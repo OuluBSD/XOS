@@ -1,0 +1,102 @@
+	.TITLE	PRTASM
+
+	.PROC	80386
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD XOSINC:\XMAC\CLIBX.PAR
+	.INCLUD XWS.PAR
+	.INCLUD XWSX.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+;Function to format a window buffer for printing
+;	int prtformat(
+;	    uchar *winbfr,
+;	    uchar *prtbfr,
+;	    int    width,
+;	    int    height);
+;  Value returned is the number of bytes stored in the print buffer
+
+;This function copies the 16-bit per pixel window buffer to a 1-bit per pixel
+;  printer buffer and reorganizes it in column-major order for the printer.
+
+pf_winbfr=!16t			;Address of the window buffer
+pf_prtbfr=!20t			;Address of the printer buffer
+pf_width =!24t			;Width of the window (printer height)
+pf_height=!28t			;Height of the window (printer width)
+
+$$$=!0
+FRM pf_cnt1, 4t
+FRM pf_cnt2, 4t
+FRM        , 3t
+FRM pf_inc , 1t
+pf_SIZE=!$$$
+
+prtformat::
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	pf_SIZE, 0
+	MOVL	ESI, pf_winbfr.B[EBP]	;Get our arguments in registers
+	MOVL	EDI, pf_prtbfr.B[EBP]
+	MOVL	ECX, pf_height.B[EBP]
+	MOVL	EDX, pf_width.B[EBP]
+	MOVL	pf_cnt2.B[EBP], EDX	;Store outer count (number of printer
+					;  pixel lines)
+	ADDL	EDX, EDX
+	LEAL	EBX, -1.B[ECX]		;Calculate distance between vertically
+	IMULL	EBX, EDX		;  adjacent pixels
+	SHRL	ECX, #3t		;Adjust the inner loop count value
+	MOVB	pf_inc.B[EBP], #0
+
+;Outer loop: Copies all columns
+
+4$:	ADDL	ESI, EBX		;Fix up the window buffer pointer
+	MOVL	pf_cnt1.B[EBP], ECX	;Store inner loop count
+
+;Inner loop: Copies one column
+
+$$$$loop::
+6$:	MOVB	AL, [ESI]		;Get the 8 pixels for one byte (note
+	ADDB	AL, AL			;  that this has been unrolled for
+	SUBL	ESI, EDX		;  speed)
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	ADDB	AL, AL
+	SUBL	ESI, EDX
+	ORB	AL, [ESI]
+	SUBL	ESI, EDX
+	NOTB	AL
+	MOVB	[EDI], AL		;Store byte in the printer buffer
+	MOVB	[EDI+ECX], AL
+	INCL	EDI
+	DECL	pf_cnt1.B[EBP]		;More in this column?
+	JNE	6$.S			;Yes - continue
+	ADDL	EDI, ECX
+	LEAL	ESI, 2.B[ESI+EDX]
+	DECL	pf_cnt2.B[EBP]		;More columns?
+	JNE	4$.S			;Yes - continue
+	MOVL	EAX, EDI		;Get number of bytes stored
+	SUBL	EAX, pf_prtbfr.B[EBP]
+	LEAVE				;No - finished
+	POPL	ESI
+	POPL	EDI
+	RET
+
+	.END

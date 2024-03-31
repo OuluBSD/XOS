@@ -1,0 +1,255 @@
+	.TITLE	_main - Startup routines for C programs
+	.SBTTL	STDC run-time library for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\STDIO.PAR
+
+;This routine contains the first code executed when a C program is started
+;  after it is loaded.
+
+	.STDSEGS
+	.LNKSEG	CODE_s, DATA_s
+	.PSECT	_BEGIN_p, DGROUP_m
+_clib_begin::
+	.STACK	_clib_stack
+	.BLKL	128t		;Stack
+_clib_stack::
+
+	.PSECT	_HEAP_p , DGROUP_m
+_clib_heap::
+
+	.PSECT	_DATA_p
+_clib_membase::			;These 3 items must be in this order!
+	.LONG	_clib_begin	;Offset of start of base msect
+_clib_mempnt::
+	.LONG	_clib_heap	;Memory allocation pointer
+_clib_memtop::
+	.LONG	0		;Top of memory offset
+
+_argv::	.LONG	0
+_argc::	.LONG	0
+__IsDBCS::			;For OW1.8, never set non-zero
+	.LONG	0
+_clib_dosdrive::
+	.BYTE	1
+
+maemsg:	.ASCIZ	"? Memory allocation error"{CR,LF}
+strmsg:	.ASCIZ	"? Stream initialization error"{CR,LF}
+
+__8087==!1
+__init_387_emulator==!0
+_fltused_==!0
+
+	.PSECT	_TEXT_p
+
+;This is the first instruction executed for the process. This is the "standard"
+;  C startup routine. It parses the argument string into individual tokens and
+;  builds an array of pointers to the tokens. It also sets up the standard IO
+;  streams. When get here the registers are set up as follows:
+;	c{EDI} = Address of argument data
+
+	.START	_main
+	.ENTRY	_main, _cstart_
+_cstart_:!
+_main:	PUSHL	#!_DATA_p
+	POPL	DS
+	PUSHL	#_clib_begin-_STACKSIZE	;Allocate additional memory for our
+	PUSHL	#0x0B			;  stack but make it all virtual
+	PUSHL	#_STACKSIZE;
+	CALL	svcMemChange#
+	TESTL	EAX, EAX
+	JS	$mainmb			;If can't get more space for the stack!
+	PUSHL	#_clib_begin		;See how big we are
+	PUSHL	#0
+	PUSHL	#-1
+	CALL	svcMemChange#
+	TESTL	EAX, EAX
+	JNS	2$			;This should not fail!
+$mainmb::
+	INT3
+
+	LEAL	EDI, maemsg		;Memory allocation failure
+mainfl:	PUSHL	#DH_STDTRM
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	svcIoOutString#
+	PUSHL	#1
+	CALL	svcSchExit#
+
+strmerr:
+	LEAL	EDI, strmsg		;Stream initialization error
+	JMP	mainfl			;Now exit
+
+;Here with memory allocation determined
+
+2$:	ADDL	EAX, #_clib_begin	;Get address for top
+	MOVL	_clib_memtop, EAX	;Remember allocated top of memory
+	PUSHL	#0			;Store final NULL for the argv array
+
+;First, we must scan the command line, find the beginning of each token, and
+;  build a pointer table on the stack.
+
+	MOVL	ESI, 8[EDI]		;Get start of command string
+	CMPL	ESI, #0x10000
+	JA	3$
+	ADDL	ESI, EDI
+3$:	MOVL	EBP, ESP		;Remember where we are on the stack
+4$:	MOVZBL	EAX, [ESI]		;Skip leading whitespace
+	INCL	ESI
+	CMPB	AL, #' '
+	JE	4$
+	CMPB	AL, #HT
+	JE	4$
+	CMPB	AL, #0			;End of command?
+	JE	22$			;Yes
+	DECL	ESI
+	PUSHL	ESI			;Save offset of this string
+	INCL	ESI
+	INCL	_argc			;Count the string
+6$:	CMPB	AL, #'"'		;Quote?
+	JE	14$			;Yes
+8$:	MOVZBL	EAX,[ESI]		;Get next character
+	INCL	ESI
+	INCL	ECX
+10$:	CMPB	AL, #0			;End of command?
+	JE	12$			;Yes
+	CMPB	AL, #' '		;No - whitespace?
+	JE	12$			;Yes
+	CMPB	AL, #HT			;Maybe
+	JNE	6$			;No
+12$:	MOVB	-1[ESI], #0		;Store null over the terminator
+	CMPB	AL, #0			;At end of command line?
+	JNE	4$			;No
+	JMP	22$
+
+;Here if have double quote in the argument
+
+14$:	MOVZBL	EAX, [ESI]		;Get next character
+	INCL	ESI
+	INCL	ECX			;Count the character
+	CMPB	AL, #0			;End of command line?
+	JE	12$			;Yes
+	CMPB	AL, #'"'		;No - another double quote?
+	JNE	14$			;No
+
+;Here with a double quote in a quoted string
+
+20$:	MOVZBL	EAX, [ESI]		;Get next character
+	INCL	ESI
+	INCL	ECX			;Count it
+	CMPB	AL, #'"'		;Another double quote?
+	JE	14$			;Yes - continue in quoted mode
+	JMP	10$			;No - switch back to unquoted mode
+
+;Here at end of command line - We now have the offset of the beginning of each
+;  token on the stack but in reverse order. We must reverse the list.
+
+22$:	MOVL	_argv, ESP		;Store the argv value
+	MOVL	ECX, _argc
+	SHRL	ECX
+	JE	26$			;If 0 or 1 tokens
+	MOVL	ESI, ESP
+24$:	SUBL	EBP, #4
+	MOVL	EAX, [EBP]
+	MOVL	EDX, [ESI]
+	MOVL	[ESI], EAX
+	MOVL	[EBP], EDX
+	ADDL	ESI, #4
+	LOOP	ECX, 24$
+
+26$:	MOVL	EAX, [EDI]		;Get address of the file spec
+	CMPL	EAX, #0x10000
+	JA	28$
+	ADDL	EAX, EDI
+28$:	PUSHL	EAX			;Store it as the -1 entry in argv
+
+;Here with the argument pointer table (argv) set up - Now initialize the
+;  standard IO streams
+
+	PUSHL	#_stdin#		;Setup stdin
+	CALL	__fsetup#
+	TESTL	EAX, EAX		;Any error?
+	JE	strmerr			;Yes, error in setting up stream
+	PUSHL	#_stdout#		;Setup stdout
+	CALL	__fsetup#
+	TESTL	EAX, EAX		;Any error?
+	JE	strmerr			;Yes, error in setting up stream
+	PUSHL	#_stderr#		;Setup stderr
+	CALL	__fsetup#
+	TESTL	EAX, EAX		;Any error?
+	JE	strmerr			;Yes, error in setting up stream
+	PUSHL	#_stdtrm#		;Setup stdtrm
+	CALL	__fsetup#
+	TESTL	EAX, EAX		;Any error?
+	JE	strmerr			;Yes, error in setting up stream
+
+;Here with all argument and IO stream set up complete - Initialize the FPU
+
+	FINIT
+
+;Call the user's program
+
+	PUSHL	#0			;Push arguments for main (The zero is
+	PUSHL	_argv			;  in case someone expects to find a
+	PUSHL	_argc			;  pointer to a Unix style environment
+					;  area as the third argument!)
+	CALL	main#			;Call main program
+	PUSHL	EAX			;Return value is exit status
+	CALL	exit#			;Go exit
+.PAGE
+	.SBTTL	Common error returns
+
+;Error return for functions which have a stack frame and have saved both
+;  EDI and ESI and ESI points to the IOB
+
+$errorrtnlvp2x::
+	MOVL	iob_error[ESI], EAX
+$errorrtnlvp2::
+	NEGL	EAX			;Make positive for errno
+	MOVL	errno#, EAX
+	MOVL	EAX, #-1
+	LEAVE
+	POPL	EDI
+	POPL	ESI
+	RET
+
+$errorrtnlv::
+	LEAVE
+$errorrtn::
+	NEGL	EAX			;Make positive for errno
+	MOVL	errno#, EAX
+	MOVL	EAX, #-1
+	RET
+
+;Error return for functions which do not have stack frame and have saved ESI
+;  only
+
+$errorrtnp1x::
+	MOVL	iob_error[ESI], EAX
+$errorrtnp1::
+	NEGL	EAX			;Make positive for errno
+	MOVL	errno#, EAX
+	MOVL	EAX, #-1
+	POPL	ESI
+	RET	
+
+	.END

@@ -1,0 +1,100 @@
+	.TITLE	_fmode - Scan open mode
+	.SBTTL	STDC run-time library for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\stdio.par
+
+	.STDSEGS
+
+;Function to scan fopen mode strings
+;	int __fmode(
+;	   char *mode);
+;  Value returned is 0 if OK or -1 if error (errno is set)
+
+	.PSECT	_TEXT_p
+
+arg_mode=!8
+
+	.ENTRY	__fmode
+__fmode:PUSHL	ESI
+	MOVL	ESI, arg_mode[ESP]
+	CLRL	EAX			;Clear all bits in case we return
+					; a success code of zero
+	CLRL	EBX			;Assume ASCII file
+	CLRL	ECX			;No open bits
+	MOVZBL	EAX, [ESI]		;Get first character in AL
+	INCL	ESI
+	CMPB	AL, #'r'		;Open for read?
+	JE	20$			;Yes
+	MOVL	ECX, #XO$TRUNCA		;Assume write
+	CMPB	AL, #'w'		;Open for write?
+	JE	10$			;Yes
+	CMPB	AL, #'a'		;Open for append?
+	JNE	50$			;No, it's an error
+	MOVL	ECX, #XO$APPEND		;Use append mode (and clear O$TRUNCA)
+10$:	ORL	ECX, #XO$OUT | XO$IN | XO$CREATE
+					;Allow output & input, create if needed
+	ORL	EBX, #IOB$WRITE
+	JMP	30$			;Continue
+
+;Here if we need to open the file in read mode
+
+20$:	MOVL	ECX, #XO$IN		;Allow input
+	ORL	EBX, #IOB$READ
+
+;Here to check for binary and update modes - the only forms that
+;  are allowed here are "", "+", "b", "b+", and "+b".
+
+30$:	MOVZBL	EAX, [ESI]		;Get next character in AL
+	INCL	EAX
+	CALL	bincheck		;Check for 'b' following mode (and
+					; before any '+'
+;Here to check for update mode
+
+	CMPB	AL, #'+'		;Update mode?
+	JNE	40$			;No, check for trailing NUL
+	ORL	ECX, #XO$IN | XO$OUT	;Yes, allow both input and output
+	ORL	EBX, #IOB$READ | IOB$WRITE
+	MOVZBL	EAX, [ESI]		;Get next character in AL
+	INCL	EAX
+	BTL	EBX, #IOB%BINARY	;Have we seen 'b' yet?
+	JC	40$			;Yes, don't allow another 'b'
+	CALL	bincheck		;Check for 'b' following '+'
+40$:	TESTB	AL, AL			;Is last character a NUL?
+	JE	60$			;Yes, exit with EAX = 0 (high 24
+					; bits are already zero from above)
+50$:	MOVL	EAX, #ER_PARMV		;No, call it an error
+60$:	POPL	ESI			;Restore old ESI
+	RET	4
+
+;Here to check for binary mode
+
+bincheck:
+	CMPB	AL, #'b'		;Binary mode?
+	JNE	80$			;No
+	BTSL	EBX, #IOB%BINARY	;Yes, remove ASCII mode
+	MOVZBL	EAX, [ESI]		;Get next character in AL
+	INCL	ESI
+80$:	RET
+
+	.END

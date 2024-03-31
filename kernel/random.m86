@@ -1,0 +1,143 @@
+	.TITLE	random - Simple random number generator
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+
+	DATA
+	CODE
+
+;System call to obtain random bytes
+;	long svcSysGetRandom(
+;	    long   mode,
+;	    uchar *bufr,
+;	    long   amount);
+
+;Here for prtected mode entry
+
+psvcSysGetRandom::
+	IFFAULT	knlRtnAdrEr#
+	MOVL	EDI, knlTda+tdaArg2#	;Get address of data block
+	MOVL	ECX, knlTda+tdaArg3#	;Get number of bytes wanted
+	SHRL	ECX, #2			;Get number of longs
+	JE	done
+	MOVL	EAX, knlTda+tdaArg1#	;Get mode
+	DECL	EAX
+	JS	mode0
+	JE	mode1
+	DECL	EAX
+	JE	mode2
+
+;Here for mode 3 - This mode collects bits from the beginning of the disk
+;  cache buffers.  This providesa an alternate source that does not change
+;  as quickly as the exec buffers.
+
+mode3:	MOVL	EDX, #3C725369
+	MOVL	ESI, #syscbbase
+loop3:	CMPL	ESI, #syscbbase+0x10000
+	JAE	done
+	MOVL	EAX, [ESI]
+	ADDL	ESI, #4
+	TESTL	EAX, EAX
+	JE	loop2
+	XORL	EAX, EDX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EDI], EAX
+	ADDL	EDI, #4
+	MOVL	EDX, EAX
+	LOOP	ECX, loop3
+	JMP	done
+.PAGE
+;Here for mode 2 - This mode collects bits from the beginning of exec
+;  buffer space.  This seems to be the best source of reasonably rapidly
+;  changing data that we have.  It will return a maximum of 4KB and may
+;  return significanly less since all 0 and 0x66666666 long values are
+;  discarded.  Entropy for this mode can be considered to be amount/2 or
+;  amount/3.
+
+mode2:	MOVL	EDX, #7253693C
+	MOVL	ESI, #xmbbase
+loop2:	CMPL	ESI, #xmbbase+0x1000
+	JAE	done
+	MOVL	EAX, [ESI]
+	ADDL	ESI, #4
+	TESTL	EAX, EAX
+	JE	loop2
+	CMPL	EAX, #66666666h
+	JE	loop2
+	XORL	EAX, EDX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EDI], EAX
+	ADDL	EDI, #4
+	MOVL	EDX, EAX
+	LOOP	ECX, loop2
+done:	MOVL	EAX, EDI
+	SUBL	EAX, knlTda+tdaArg3
+	RET
+.PAGE
+;Here for mode 1 - This mode collects bits from selected locations in each
+;  PDA in the system.  It may return as few as xxx bytes on a lightly
+;  loaded system.
+
+mode1:
+	JMP	done
+
+.PAGE
+;Here for mode 0 - This mode is fast and the values returned look pretty
+;  random but are not realy very random at all. It will return completely
+;  different values each time it is called, unlike the other modes which
+;  may repeat quite of bit of data on succesive calls. - DO NOT USE THIS
+;  MODE FOR CRYPTOGRAPHIC APPLICATIONS!
+
+mode0:	MOVL	ESI, knlSysTtl#
+	IMULL	ESI, #33553355h
+8$:	CALL	knlGetClkTotal#
+	XORL	EAX, knlSysTime
+	IMULL	EAX, #55335533h
+	XORL	EAX, ESI
+	XORL	EAX, lastrandom
+	MOVL	lastrandom, EAX
+	IFFAULT	knlRtnAdrEr#
+	MOVL	[EDI], EAX
+	ADDL	EDI, #4t.B
+	LOOP	ECX, 8$
+	JMP	done
+
+10$:	CLRL	EAX
+	RET
+
+knlGetRandom32::
+	PUSHL	EDX
+	CALL	knlGetClkTotal#
+	XORL	EAX, knlSysTime#
+	IMULL	EAX, #55335533h
+	XORL	EAX, lastrandom
+	MOVL	lastrandom, EAX
+	POPL	EDX
+	RET
+
+	DATA
+
+lastrandom:.LONG 0
+
+	END

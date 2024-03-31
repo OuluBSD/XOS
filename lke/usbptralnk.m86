@@ -1,0 +1,744 @@
+	.TITLE	usbptralnk - UDB printer interface routine
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	xosinc:\xmac\xostime.par
+	.INCLUD	xosinc:\xmac\xoserr.par
+	.INCLUD	xosinc:\xmac\pcat.par
+	.INCLUD	xosinc:\xmac\xosxptr.par
+;;;	.INCLUD	xosinc:\xmac\xosxdisk.par
+;;;	.INCLUD	xosinc:\xmac\xosdisk.par
+	.INCLUD	xosinc:\xmac\xoslke.par
+	.INCLUD	xosinc:\xmac\xosxlke.par
+	.INCLUD	xosinc:\xmac\xosxusb.par
+	.INCLUD	scsi.par
+
+MAJV   =!1t
+MINV   =!0t
+EDITNUM=!0t
+
+;This driver supports both bidirectional and unidirectional printers. In
+;  either case it supports status interrupt input.
+
+;Define offsets in our DCB
+
+$$$=!dcb_ptrdep
+
+BLK dcb_ptruaclb     , 4t
+BLK dcb_ptruapcb0    , 4t
+BLK dcb_ptruapcbbin  , 4t
+BLK dcb_ptruapcbbout , 4t
+BLK dcb_ptruapcbint  , 4t
+BLK dcb_ptruagport   , 4t
+BLK dcb_ptruaep0max  , 2t
+BLK dcb_ptruabinmax  , 2t
+BLK dcb_ptruaboutmax , 2t
+BLK dcb_ptruaaddr    , 1t
+BLK dcb_ptruaepbin   , 1t
+BLK dcb_ptruaepbout  , 1t
+BLK dcb_ptruaspeed   , 1t
+BLK                  , 2t
+BLK dcb_ptruaspec    , 2t
+BLK dcb_ptruaven     , 2t
+BLK dcb_ptruadev     , 2t
+BLK dcb_ptruarel     , 2t
+BLK dcb_ptruasplname , 16t
+BLK dcb_ptruausbmnftr, 44t
+BLK dcb_ptruausbprod , 44t
+BLK dcb_ptruausbsernm, 44t
+BLK dcb_ptruaptrmnftr, 44t
+BLK dcb_ptruaptrmodel, 44t
+BLK dcb_ptruaptrcmd  , 44t
+dcb_ptruaSIZE=!$$$
+XMBINDEX dcb_ptruaINDEX, dcb_ptruaSIZE
+
+	LKEHEAD	USBPTRALNK, MAJV, MINV, EDITNUM, LKETYPE_LINK
+
+	DATA
+
+;USB printer device driver type A dispatch table
+
+usbptradsp:
+	.LONG	0		;ptrf_init   =  0 - Initialize interface
+	.LONG	ptruaoutput	;ptrf_output =  4 - Output
+	.LONG	ptruaoutsts	;ptrf_outsts =  8 - Get output status
+	.LONG	ptruainput	;ptrf_input  = 12 - Input
+	.LONG	ptruainpsts	;ptrf_inpsts = 16 - Get input status
+	.LONG	ptruaptrsts	;ptrf_ptrsts = 20 - Get printer status
+UPADSPSZ=!{$-usbptradsp}/4
+
+;USB printer (type USBA) device characteristics table
+
+	.MOD	4
+usbptradchartbl:
+ CHARBGN  1, sysIoCharValues##
+ CHARENT  CLASS   , TEXT, ,  8, knlDcMsgClass##    , knlDcGetClass##, knlDcSetClass##   , 0
+ CHARENT  TYPE    , TEXT, ,  4, knlDcMsgType##     , knlDcGet4Byte##, 0                 , dcb_typename
+ CHARENT  USBGPORT, HEXV, ,  4, xosusbMsgGPort##   , knlDcGet4Byte##, 0                 , dcb_ptruagport
+ CHARENT  USBSPEC , STR , ,  8, xosusbMsgUsbSpec## , usbptragetspec , 0                 , 0
+ CHARENT  USBADDR , DECV, ,  4, xosusbMsgBusAddr## , knlDcGet1Byte##, 0                 , dcb_ptruaaddr
+ CHARENT  USBSPEED, TEXT, ,  8, xosusbMsgSpeed##   , usbptragetspeed, 0                 , 0
+ CHARENT  USBEP0MX, DECV, ,  4, xosusbMsgEP0Max##  , knlDcGet1Byte##, 0                 , dcb_ptruaep0max
+ CHARENT  USBEPIN , DECV, ,  4, msgepin            , knlDcGet1Byte##, 0                 , dcb_ptruaepbin
+ CHARENT  USBINMX , DECV, ,  4, msginpktmax        , knlDcGet2Byte##, 0                 , dcb_ptruabinmax
+ CHARENT  USBEPOUT, DECV, ,  4, msgepout           , knlDcGet1Byte##, 0                 , dcb_ptruaepbout
+ CHARENT  USBOUTMX, DECV, ,  4, msgoutpktmax       , knlDcGet2Byte##, 0                 , dcb_ptruaboutmax
+ CHARENT  USBVEN  , HEXV, ,  4, xosusbMsgVendor##  , knlDcGet2Byte##, 0                 , dcb_ptruaven
+ CHARENT  USBDEV  , HEXV, ,  4, xosusbMsgDevice##  , knlDcGet2Byte##, 0                 , dcb_ptruadev
+ CHARENT  USBREL  , STR , ,  8, xosusbMsgRelease## , usbptragetrel  , 0                 , 0
+ CHARENT  USBMNFTR, STR , , 44, xosusbMsgMnftr##   , knlDcGetStr##  , 0                 , dcb_ptruausbmnftr
+ CHARENT  USBPROD , STR , , 44, xosusbMsgProd##    , knlDcGetStr##  , 0                 , dcb_ptruausbprod
+ CHARENT  USBSERNM, STR , , 44, xosusbMsgSerNm##   , knlDcGetStr##  , 0                 , dcb_ptruausbsernm
+ CHARENT  PTRMNFTR, STR , , 44, knlDcMsgManufctr## , knlDcGetStr##  , 0                 , dcb_ptruaptrmnftr
+ CHARENT  PTRPROD , STR , , 44, knlDcMsgModel##    , knlDcGetStr##  , 0                 , dcb_ptruaptrmodel
+ CHARENT  PTRCMD  , STR , , 44, msgptrcmd          , knlDcGetStr##  , 0                 , dcb_ptruaptrcmd
+ CHARENT  SPLNAME , STR , , 14, msgsplname         , knlDcGetStr##  , 0                 , dcb_ptruasplname
+ CHAREND
+
+	CODE
+
+msgsplname:   CHARINFO  {Spool name for printer}
+msgptrcmd:    CHARINFO  {Supported printer command languages}
+msgepout:     CHARINFO  {Bulk output endpoint}
+msgoutpktmax: CHARINFO  {Maximum packet size for bulk output}
+msgepin:      CHARINFO  {Bulk input endpoint}
+msginpktmax:  CHARINFO  {Maximum packet size for bulk input}
+msgintpktrate:CHARINFO  {Interrupt rate}
+.PAGE
+	.SBTTL	Initialization
+
+	INITSUB	initusbptra
+
+	DATA
+
+	.MOD	4
+usbptrainitblk:			;Characteristics description
+ CHARBGN  2, 0			;  block for initialization
+ CHARENT  RESULT, STR , , 0, 0, knlGetDcNullS##, 0       , 0
+ CHAREND
+
+	ONCE
+
+initusbptra::
+	PUSHL	FS
+	PUSHL	EDX
+	PUSHL	#drvname
+	PUSHL	#usbptraaddunit
+	PUSHL	#xosptrCcb##
+	CALL	sysIoDriverRegister##	;Register this printer driver
+	POPL	EDX
+	POPL	FS
+	TESTL	EAX, EAX
+	JS	6$			;If error
+	MOVL	EBX, lkei_pctop-4[ESP]
+	MOVL	[EBX], #codetop
+	CLRL	EAX
+6$:	RET	lkei_ADJ
+
+	CODE
+.PAGE
+	.SBTTL	usbotraaddunit - Subroutine to add printer unit
+
+;Subroutine to add printer unit
+;	long usbptraaddunit(
+;	    int   unit),
+;  Value returned is 0 if normal or a negative XOS error if error
+;  Must be called at main program level. Returns at device fork level. The
+;    IORB is always give up.
+
+;The ADDUNIT function must specify all of the details describing how the
+;  USB device is connected. This includes the controller name, port on the
+;  controller, USB bus address, bus speed, maximum packet size and endpoints
+;  to use. Normally this function is issued by the USBCTL symbiont which
+;  provices this information.
+
+	DATA
+
+	.MOD	4
+usbptraaublk:			;Characteristics description block for addunit
+ CHARBGN  3, 0
+ CHARENT  TYPE    , TEXT, ,  8, 0, 0, knlRtnZero##, 0
+ CHARENT  UNIT    , DECV, ,  4, 0, 0, knlRtnZero##, 0
+ CHARENT  USBGPORT, DECV, ,  4, 0, 0, augport     , 0
+ CHARENT  USBADDR , DECV, ,  4, 0, 0, auaddr      , 0
+ CHARENT  USBSPEC , HEXV, ,  4, 0, 0, auvalue     , au_spec
+ CHARENT  USBSPEED, TEXT, ,  4, 0, 0, auspeed     , 0
+ CHARENT  USBEP0MX, DECV, ,  4, 0, 0, auep0max    , 0
+ CHARENT  USBBIN  , DECV, ,  4, 0, 0, auepin      , 0
+ CHARENT  USBBOUT , DECV, ,  4, 0, 0, auepout     , 0
+ CHARENT  USBPKTMX, DECV, ,  4, 0, 0, aupktmax    , 0
+ CHARENT  USBVEN  , HEXV, ,  4, 0, 0, auvalue     , au_ven
+ CHARENT  USBDEV  , HEXV, ,  4, 0, 0, auvalue     , au_dev
+ CHARENT  USBREL  , HEXV, ,  4, 0, 0, auvalue     , au_rel
+ CHARENT  USBMNFTR, STR , , 42, 0, 0, autext      , au_usbmnftr
+ CHARENT  USBPROD , STR , , 42, 0, 0, autext      , au_usbprod
+ CHARENT  USBSERNM, STR , , 42, 0, 0, autext      , au_usbsernm
+ CHARENT  PTRMNFTR, STR , , 42, 0, 0, autext      , au_ptrmnftr
+ CHARENT  PTRMODEL, STR , , 42, 0, 0, autext      , au_ptrmodel
+ CHARENT  PTRCMD  , STR , , 42, 0, 0, autext      , au_ptrcmd
+ CHARENT  SPLNAME , STR , , 20, 0, 0, autext      , au_splname
+ CHAREND
+
+	CODE
+
+au_unit=!16t
+
+$$$=!0
+FRM au_gport   , 4		;Global port
+FRM au_addr    , 4		;USB address
+FRM au_epbin   , 4		;Input end-point number
+FRM au_epbout  , 4		;Output end-point number
+FRM au_mxpntr  , 4
+FRM au_binmax  , 4
+FRM au_boutmax , 4
+FRM au_clb     , 4		;Offset of USB CLB
+FRM au_ep0max  , 4
+FRM au_speed   , 4
+FRM au_spec    , 4
+FRM au_ven     , 4
+FRM au_dev     , 4
+FRM au_rel     , 4
+FRM au_devname , 16t
+FRM au_splname , 16t
+FRM au_usbmnftr, 44t
+FRM au_usbprod , 44t
+FRM au_usbsernm, 44t
+FRM au_ptrmnftr, 44t
+FRM au_ptrmodel, 44t
+FRM au_ptrcmd  , 44t
+au_SIZE=!$$$
+
+usbptraaddunit:
+	PUSHL	EDI
+	PUSHL	ESI
+	ENTER	au_SIZE, 0
+	CLRL	EAX
+	MOVL	au_ven[EBP], EAX
+	MOVL	au_dev[EBP], EAX
+	MOVL	au_rel[EBP], EAX
+	MOVL	au_mxpntr[EBP], EAX
+	MOVL	au_usbmnftr[EBP], EAX
+	MOVL	au_usbprod[EBP], EAX
+	MOVL	au_usbsernm[EBP], EAX
+	MOVL	au_ptrmnftr[EBP], EAX
+	MOVL	au_ptrmodel[EBP], EAX
+	MOVL	au_ptrcmd[EBP], EAX
+	DECL	EAX
+	MOVL	au_gport[EBP], EAX
+	MOVL	au_addr[EBP], EAX
+	MOVL	au_speed[EBP], EAX
+	MOVL	au_epbin[EBP], EAX
+	MOVL	au_epbout[EBP], EAX
+	MOVL	au_ep0max[EBP], EAX
+	MOVL	au_binmax[EBP], EAX
+	MOVL	au_boutmax[EBP], EAX
+	PUSHL	#0			;Fail on bad names
+	PUSHL	#usbptraaublk
+	CALL	sysIoCharValues##	;Process characteristics
+	TESTL	EAX, EAX
+	JS	audone			;If error
+	MOVL	EAX, au_gport[EBP]	;Did we get the required
+	ORL	EAX, au_addr[EBP]	;  characteristics?
+	ORL	EAX, au_speed[EBP]
+	ORL	EAX, au_epbin[EBP]
+	ORL	EAX, au_epbout[EBP]
+	ORL	EAX, au_binmax[EBP]
+	ORL	EAX, au_boutmax[EBP]
+	INCL	EAX
+	JNE	2$			;Yes
+	MOVL	EAX, #ER_CHARM
+	JMP	audone
+
+;Here with all required characteristics
+
+2$:	MOVL	au_devname+0[EBP], #'PTR'
+	MOVL	au_devname+4[EBP], #0
+	MOVL	au_devname+8[EBP], #0
+	MOVL	au_devname+12t[EBP], #0
+	LEAL	EBX, au_devname+3[EBP]
+	MOVL	EAX, au_unit[EBP]	;Create a DCB
+	CALL	knlPutDecNmbr##
+	PUSHL	#0
+	MOVL	EAX, ESP
+	LEAL	EDX, au_devname[EBP]
+	PUSHL	EDX
+	MOVL	EDX, #DS$DUPLEX|DS$PHYS|DS$REMOVE|DS$QOUT
+	CMPB	au_epbin[EBP], #0
+	JE	4$
+	BTSL	EDX, #DS%QIN
+4$:	PUSHL	EDX
+	PUSHL	#-dcb_ptruaINDEX
+	PUSHL	EAX
+	CALL	sysIoGetDymDcb##
+	POPL	EDI
+	TESTL	EAX, EAX
+	JS	audone
+
+;;;;	PUSHL	#0x4700+'0'
+;;;;	CALL	knlPutDebugChr##
+
+	PUSHL	EDI
+	PUSHL	#xosptrCcb##
+	CALL	sysIoLinkDcb##
+	MOVL	dcb_sdisp[EDI], #xosptrSDisp##
+	MOVL	dcb_ptrdsp[EDI], #usbptradsp
+	MOVL	dcb_typename[EDI], #'USBA'
+	MOVL	EAX, au_unit[EBP]	;Store unit number in the DCB
+	MOVB	dcb_punit[EDI], AL
+	MOVL	EAX, au_gport[EBP]
+	MOVL	dcb_ptruagport[EDI], EAX
+	MOVL	EAX, au_ep0max[EBP]
+	MOVW	dcb_ptruaep0max[EDI], AX
+	MOVL	EAX, au_binmax[EBP]
+	MOVW	dcb_ptruabinmax[EDI], AX
+	MOVL	EAX, au_boutmax[EBP]
+	MOVW	dcb_ptruaboutmax[EDI], AX
+	MOVL	EAX, au_addr[EBP]
+	MOVB	dcb_ptruaaddr[EDI], AL
+	MOVL	EAX, au_epbin[EBP]
+	MOVB	dcb_ptruaepbin[EDI], AL
+	MOVL	EAX, au_epbout[EBP]
+	MOVB	dcb_ptruaepbout[EDI], AL
+	MOVL	EAX, au_speed[EBP]
+	MOVB	dcb_ptruaspeed[EDI], AL
+	MOVL	EAX, au_spec[EBP]
+	MOVW	dcb_ptruaspec[EDI], AX
+	MOVL	EAX, au_ven[EBP]
+	MOVW	dcb_ptruaven[EDI], AX
+	MOVL	EAX, au_dev[EBP]
+	MOVW	dcb_ptruadev[EDI], AX
+	MOVL	EAX, au_rel[EBP]
+	MOVW	dcb_ptruarel[EDI], AX
+	LEAL	EBX, au_usbmnftr[EBP]	;Store our text strings in the DCB
+	MOVL	EDX, #dcb_ptruausbmnftr
+	CALL	copytext
+	LEAL	EBX, au_usbprod[EBP]
+	MOVL	EDX, #dcb_ptruausbprod
+	CALL	copytext
+	LEAL	EBX, au_usbsernm[EBP]
+	MOVL	EDX, #dcb_ptruausbsernm
+	CALL	copytext
+	LEAL	EBX, au_ptrmnftr[EBP]
+	MOVL	EDX, #dcb_ptruaptrmnftr
+	CALL	copytext
+	LEAL	EBX, au_ptrmodel[EBP]
+	MOVL	EDX, #dcb_ptruaptrmodel
+	CALL	copytext
+	LEAL	EBX, au_ptrcmd[EBP]
+	MOVL	EDX, #dcb_ptruaptrcmd
+	CALL	copytext
+	LEAL	EBX, au_splname[EBP]
+	MOVL	EDX, #dcb_ptruasplname
+	CALL	copytext
+
+;Here with a DCB - now link to the USB device
+
+;;;;	PUSHL	#0x4700+'1'
+;;;;	CALL	knlPutDebugChr##
+
+	PUSHL	EDI			;CDB (really our DCB)
+	PUSHL	au_gport[EBP]		;Global port
+	PUSHL	au_addr[EBP]		;USB bus address
+	PUSHL	au_speed[EBP]		;USB device speed
+	PUSHL	#removed		;Address of "removed" function
+	LEAL	EAX, dcb_ptruaclb[EDI]	;Address of place to store address of
+	PUSHL	EAX			;  the CLB
+	CALL	xosusbLinkToDev##	;Link to the USB device
+	TESTL	EAX, EAX
+	JS	linkerr
+
+;Now create the USB endpoints
+
+;;;;	PUSHL	#0x4700+'2'
+;;;;	CALL	knlPutDebugChr##
+
+	PUSHL	dcb_ptruaclb[EDI]
+	PUSHL	#0			;Control endpoint
+	PUSHL	au_ep0max[EBP]
+	LEAL	EAX, dcb_ptruapcb0[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+
+;;;;	PUSHL	#0x4700+'3'
+;;;;	CALL	knlPutDebugChr##
+
+	CMPL	au_epbin[EBP], #0	;Do we need the bulk input endpoint?
+	JE	6$			;No
+	PUSHL	dcb_ptruaclb[EDI]	;Yes
+	MOVZBL	EAX, au_epbin[EBP]	;Bulk input endpoint
+	ORL	EAX, #PCB$XT_BULK|PCB$XT_INPUT
+	PUSHL	EAX
+	PUSHL	au_binmax[EBP]
+	LEAL	EAX, dcb_ptruapcbbin[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+6$:
+;;;;	PUSHL	#0x4700+'4'
+;;;;	CALL	knlPutDebugChr##
+
+	PUSHL	dcb_ptruaclb[EDI]
+	MOVZBL	EAX, au_epbout[EBP]	;Bulk output endpoint
+	ORL	EAX, #PCB$XT_BULK
+	PUSHL	EAX
+	PUSHL	au_boutmax[EBP]
+	LEAL	EAX, dcb_ptruapcbbout[EDI]
+	PUSHL	EAX
+	CALL	xosusbCreatePipe##
+	TESTL	EAX, EAX
+	JS	pipeerr
+
+;;;;	PUSHL	#0x4700+'5'
+;;;;	CALL	knlPutDebugChr##
+
+	MOVL	dcb_devchar[EDI], #usbptradchartbl ;Store offset of our device
+						   ;  characteristics table
+					;Reset the printer
+	JMP	8$
+
+	PUSHL	EDI			;Address of DCB
+	PUSHL	dcb_ptruapcb0[EDI]	;Address of PCB
+	PUSHL	#0x00000000		;SETUP data
+	PUSHL	#0x00000221
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#knlTda+tdaCount##	;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	TESTL	EAX, EAX
+	JS	audone
+8$:	CLRL	EAX			;OK
+audone:	LEAVE
+	POPL	ESI
+	POPL	EDI
+	RET	8t
+.PAGE
+;Here if error creating a pipe
+
+pipeerr:PUSHL	EAX
+	PUSHL	dcb_ptruaclb[EDI]
+	CALL	xosusbUnlinkFromDevBgn##
+	POPL	EAX
+
+;Here error linking to USB device (????)
+
+linkerr:PUSHL	EAX
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;Give up the DCB
+	POPL	EAX
+	JMP	audone
+.PAGE
+copytext:
+	ADDL	EDX, EDI
+4$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	6$
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	EBX
+	LOOP	ECX, 4$
+6$:	MOVB	[EDX], #0
+	RET
+.PAGE
+;Subroutine called by addunitchar for the USBADDR characteristic
+
+auaddr:	CMPL	EAX, #127t		;Valid value?
+	JA	12$			;No
+	MOVL	au_addr[EBP], EAX	;Yes - store value
+	CLC
+	RET
+
+;Subroutine called by addunitchar for the USBEPIN characteristic
+
+auepin:	CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	MOVL	au_epbin[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_binmax
+	CLC
+	RET
+
+12$:	MOVL	EAX, #ER_CHARV		;No - fail
+	STC
+	RET
+
+;Subroutine called by addunitchar for the USBEPINT characteristic
+
+;;;auepint:CMPL	EAX, #15t		;Valid value?
+;;;	JA	12$			;No
+;;;	MOVL	au_epint[EBP], EAX	;Yes - store value
+;;;	MOVL	au_mxpntr[EBP], #au_intmax
+;;;	CLC
+;;;	RET
+
+;Subroutine called by addunitchar for the USBEPOUT characteristic
+
+auepout:CMPL	EAX, #15t		;Valid value?
+	JA	12$			;No
+	MOVL	au_epbout[EBP], EAX	;Yes - store value
+	MOVL	au_mxpntr[EBP], #au_boutmax
+	CLC
+	RET
+
+;Subroutine called by addunitchar for the USBGPORT characteristic
+
+augport:MOVL	au_gport[EBP], EAX
+16$:	RET
+
+;Subroutine called by addunitchar for the USBSPEED characteristic
+
+auspeed:CALL	xosusbCheckSpeed##
+	JC	16$
+	MOVL	au_speed[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBEP0MX characteristic
+
+auep0max:
+	MOVL	au_ep0max[EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBPKTMX characteristic
+
+aupktmax:
+	MOVL	EDX, au_mxpntr[EBP]
+	ORL	EDX, EDX
+	JE	12$
+	MOVL	[EDX+EBP], EAX
+	RET
+
+;Subroutine called by addunitchar for the USBRATE characteristic
+
+;;;aurate:	CMPL	EAX, #255t
+;;;	JA	12$
+;;;	TESTL	EAX, EAX
+;;;	JE	12$
+;;;	MOVL	au_intrate[EBP], EAX
+;;;	RET
+
+;Subroutine called by addunitchar for the USBMFCTR, USBMODE, and USBERNO
+;   characteristics
+
+autext:	ADDL	EDX, EBP
+20$:	MOVB	AL, [EBX]
+	TESTB	AL, AL
+	JE	22$
+	MOVB	[EDX], AL
+	INCL	EBX
+	INCL	EDX
+	LOOP	ECX, 20$
+22$:	CLRL	EAX
+	MOVB	[EDX], AL
+	RET
+
+auvalue:MOVL	0[EBP+EBX], EAX
+	CLC
+	RET
+.PAGE
+;Here for the ptrf_input printer driver function - Input
+;	long = ptruainput(void);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+;  Total amount actually input is stored in tdaCount.
+
+$$$=!0
+FRM puaop_pcb  , 4
+FRM puaop_pid  , 4
+FRM puaop_blist, bl_SIZE
+puaop_SIZE=!$$$
+
+ptruainput:
+	PUSHL	EBX
+	ENTER	puaop_SIZE,0
+	MOVL	puaop_pid[EBP], #USBPID_IN
+	MOVL	EBX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_ptruapcbbin[EBX]
+	JMP	4$
+
+;Here for the ptrf_output printer driver function - Output
+;	long = ptruaoutput(void);
+;  Value returned is 0 if normal or a negative XOS error code if error.
+;  Total amount actually output is stored in tdaCount.
+
+ptruaoutput:
+	PUSHL	EBX
+	ENTER	puaop_SIZE,0
+	MOVL	puaop_pid[EBP], #USBPID_OUT
+	MOVL	EBX, knlTda+tdaDcb##
+	MOVL	EAX, dcb_ptruapcbbout[EBX]
+4$:	MOVL	puaop_pcb[EBP], EAX
+	MOVL	EAX, knlTda+tdaBuffer1## ;Address of buffer
+	MOVL	puaop_blist+bl_vaddr[EBP], EAX
+	MOVL	puaop_blist+bl_paddr[EBP], #0 ;Physical address is not known
+	MOVL	EAX, knlTda+tdaCount##	;Get length
+	MOVL	puaop_blist+bl_length[EBP], EAX
+	MOVL	EAX, puaop_pid[EBP]
+	MOVL	puaop_blist+bl_pid[EBP], EAX
+	MOVL	knlTda+tdaCount##, #0
+	PUSHL	knlTda+tdaDcb##		;DCB
+	PUSHL	puaop_pcb[EBP]		;PCB
+	LEAL	EAX, puaop_blist[EBP]	;Address of buffer list
+	PUSHL	EAX
+	PUSHL	#1			;Length of buffer list
+	PUSHL	#0			;Address of callback function
+	PUSHL	#knlTda+tdaCount##	;Address for returned amount
+	PUSHL	knlTda+tdaTimeOut##+4	;Timeout value
+	PUSHL	knlTda+tdaTimeOut##+0
+	CALL	xosusbTransfer##
+	LEAVE
+	POPL	EBX
+	RET
+.PAGE
+;Here for the ptrf_inpsts printer driver function - Get input status
+
+;Here for the ptrf_outsts printer driver function  - Get output status
+
+ptruaoutsts:
+	CRASH	????
+
+ptruainpsts:
+	CRASH	????
+
+;Here for the ptrf_ptrsts printer driver function - get printer status
+
+ptruaptrsts:
+	CRASH	????
+.PAGE
+;Subroutine to clear stalled pipe
+;	long clearstall(
+;	    DCB *dcb);
+
+clrst_dcb=!12t
+
+clearstallin:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, clrst_dcb[ESP]
+
+;Reset the stall status on the input end-point
+
+	MOVL	EDX, dcb_ptruapcbbin[EDI]
+	MOVB	pcb_toggle[EDX], #0
+	PUSHL	EDI			;Address of DCB
+	PUSHL	dcb_ptruapcb0[EBX]	;Address of PCB
+	MOVZBL	EAX, dcb_ptruaepbin[EDI] ;SETUP data
+	ORB	AL, #0x80
+	PUSHL	EAX
+	PUSHL	#0x00000102
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	POPL	ESI
+	POPL	EDI
+	RET	4
+
+clearstallout:
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, clrst_dcb[ESP]
+
+;Reset the stall status on the output end-point
+
+	MOVL	EDX, dcb_ptruapcbbout[EDI]
+	MOVB	pcb_toggle[EDX], #0
+	PUSHL	EDI			;Address of DCB
+	PUSHL	dcb_ptruapcb0[EDI]	;Address of PCB
+	MOVZBL	EAX, dcb_ptruaepbout[EDI] ;SETUP data
+	PUSHL	EAX
+	PUSHL	#0x00000102
+	PUSHL	#0			;Address of data buffer
+	PUSHL	#0			;Data length
+	PUSHL	#0			;Address of callback function
+	PUSHL	#0			;Address to receive data count
+	PUSHL	#0			;Timeout value
+	PUSHL	#ST_SECOND*5
+	CALL	xosusbControl##
+	POPL	ESI
+	POPL	EDI
+	RET	4t
+.PAGE
+;"removed" callback function
+;	void removed(
+;	    CLB *clb);		// Client link block
+
+rmvd_clb=!12t
+
+removed:PUSHL	EDI
+	PUSHL	knlTda+tdaDcb##
+	MOVL	EDX, rmvd_clb[ESP]
+	MOVL	EDI, clb_cdb[EDX]	;Get address of our DCB
+	MOVL	knlTda+tdaDcb##, EDI
+	PUSHL	dcb_ptruapcbbin[EDI]	;Cancel the input pipe if it's active
+	CALL	xosusbCancelPipe##
+	PUSHL	dcb_ptruapcbbout[EDI]	;Cancel the output pipe if it's active
+	CALL	xosusbCancelPipe##
+
+;;;;	PUSHL	dcb_ptruapcbint[EDI]	;Cancel the interrupt pipe if it's
+;;;;	CALL	xosusbCancelPipe##	;  active
+
+	PUSHL	#0			;Wait for 1 to 2 scheduler ticks to
+	PUSHL	#2*TICKPERSP		;  make sure the USB controller is
+	CALL	sysSchTimeWait##	;  fully done with these transfers.
+	PUSHL	rmvd_clb[ESP]		;Disconnect from the USB controller
+	CALL	xosusbUnlinkFromDevBgn##
+	CMPL	dcb_opencnt[EDI], #0	;Is the device in use?
+	JNE	4$			;Yes
+	PUSHL	EDI
+	CALL	sysIoGiveDymDcb##	;No - give up the DCB (this completely
+	JMP	6$			;  removes the device from the system)
+
+;Here if the device is in use
+
+4$:	PUSHL	EDI			;Unlink the DCB (it will be given up
+	CALL	sysIoUnlinkDcb##	;  on the last close)
+6$:	POPL	knlTda+tdaDcb##
+	POPL	EDI
+	RET	4
+.PAGE
+usbptragetspec:
+	MOVZWL	EAX, dcb_ptruaspec[EDI]
+	JMP	knlDcGetBCDVer##
+
+usbptragetrel:
+	MOVZWL	EAX, dcb_ptruarel[EDI]
+	JMP	knlDcGetBCDVer##
+
+usbptragetspeed:
+	MOVZBL	EAX, dcb_ptruaspeed[EDI]
+	JMP	xosusbRtnSpeed##
+.PAGE
+	.SBTTL	Data
+
+	DATA
+
+drvname:.ASCII	"USBA"
+	.LONG	0
+
+	LKEEND

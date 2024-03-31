@@ -1,0 +1,283 @@
+	.TITLE	$_memory
+
+;*--------------------------------------------------------------------------*
+;* USBEHCDRV.M86
+;*
+;* Written by: John Goltz
+;*
+;* Edit History:
+;*
+;*--------------------------------------------------------------------------*
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	xosinc:\xmac\xos.par
+	.INCLUD	xosinc:\xmac\xosx.par
+	.INCLUD	geckot.par
+
+;Interrupt descriptor table used when doing memory accesses
+
+	GTDATA
+
+	.MACRO	IDTBL addr
+	.LONG	addr, addr
+$=$-6
+	.LONG	0x8F000000+GS_XCODE
+$=$+2
+	.ENDM
+
+
+	.MOD	8
+inttbl:	IDTBL	unexpd		;ID_DIVERR  = 0x00
+	IDTBL	unexpd		;ID_DEBUG   = 0x08
+	IDTBL	unexpd		;ID_NMI     = 0x10
+	IDTBL	unexpd		;ID_BRKPNT  = 0x18
+	IDTBL	unexpd		;ID_INTO    = 0x20
+	IDTBL	unexpd		;ID_BOUND   = 0x28
+	IDTBL	unexpd		;ID_ILLINS  = 0x30
+	IDTBL	unexpd		;ID_FPUNAVL = 0x38
+	IDTBL	unexpd		;ID_DBLEXP  = 0x40
+	IDTBL	unexpd		;ID_FPUSOVR = 0x48
+	IDTBL	unexpd		;ID_ITSS    = 0x50
+	IDTBL	memflt		;ID_SEGNP   = 0x58
+	IDTBL	unexpd		;ID_STKERR  = 0x60
+	IDTBL	memflt		;ID_PROT    = 0x68
+	IDTBL	memflt		;ID_PAGEFLT = 0x70
+	IDTBL	unexpd		;           = 0x78
+	IDTBL	unexpd		;ID_FPUERR  = 0x80
+	IDTBL	unexpd		;ID_ALNCHK  = 0x88
+
+dbidt:	.WORD	dbidt-inttbl
+	.LONG	inttbl
+
+	GTCODE
+.PAGE
+;Function to read memory
+;	int rdmem(
+;	    int    size,
+;	    long   addr,
+;	    uchar *data
+;	    int    cnt)
+;  Value returned is the number of bytes read
+
+$$$=!0
+FRM mem_amnt, 4t
+FRM mem_idt , 8t
+mem_SIZE=!$$$
+
+mem_size=!24t
+mem_addr=!20t
+mem_data=!16t
+mem_cnt =!12t
+
+	.ENTRY	$_rdmem
+$_rdmem::
+
+	PUSHL	EBX
+	ENTER	mem_SIZE, 0
+.IF GT $$DISP-1
+	DISPLNG	0x47, 'S', mem_size[EBP]
+	DISPLNG	0x47, 'A', mem_addr[EBP]
+	DISPLNG	0x47, 'C', mem_cnt[EBP]
+.ENDC
+	PUSHFL
+	CLI
+	SIDT	mem_idt+2[EBP]
+	LIDTL	dbidt
+	MOVL	mem_amnt[EBP], #0
+	TESTL	EAX, #memdone
+	MOVL	EDX, mem_addr[EBP]
+	MOVL	EBX, mem_data[EBP]
+	MOVL	ECX, mem_cnt[EBP]
+	MOVZBL	EAX, mem_size[EBP]
+	JMPIL	rdmdsp[EAX*4]
+
+	.MOD	4
+rdmdsp:	.LONG	rdbyte		;RDMSZ_BYTE  = 0
+	.LONG	rdword		;RDMSZ_WORD  = 1
+	.LONG	rdlong		;RDMSZ_LONG  = 2
+	.LONG	rdllong		;RDMSZ_LLONG = 3
+	.LONG	rdbyte		;            = 4
+	.LONG	rdbyte		;            = 5
+	.LONG	rdbyte		;            = 6
+	.LONG	rdbyte		;            = 7
+
+;Here to read bytes
+
+rdbyte:	TESTL	EAX, #memdone
+	MOVZBL	EAX, [EDX]
+	INCL	EDX
+	MOVB	[EBX], AL
+	INCL	EBX
+	INCL	mem_amnt[EBP]
+	LOOP	ECX, rdbyte
+	JMP	memdone
+
+;Here to read words
+
+rdword:	TESTL	EAX, #memdone
+	MOVZWL	EAX, [EDX]
+	ADDL	EDX, #2t
+	MOVW	[EBX], AX
+	ADDL	EBX, #2t
+	ADDL	mem_amnt[EBP], #2
+	LOOP	ECX, rdword
+	JMP	memdone
+
+;Here to read longs
+
+rdlong:	TESTL	EAX, #memdone
+	MOVL	EAX, [EDX]
+	ADDL	EDX, #4t
+	MOVL	[EBX], EAX
+	ADDL	EBX, #4t
+	ADDL	mem_amnt[EBP], #4
+	LOOP	ECX, rdlong
+memdone:LIDTL	mem_idt+2[EBP]
+	POPFL
+	MOVL	EAX, mem_amnt[EBP]
+	LEAVE
+	POPL	EBX
+	RET	16t
+
+;Here to read longs
+
+rdllong:TESTL	EAX, #memdone
+	MOVL	EAX, [EDX]
+	MOVL	[EBX], EAX
+	MOVL	EAX, 4[EDX]
+	MOVL	4[EBX], EAX
+	ADDL	EDX, #8
+	ADDL	EBX, #8
+	ADDL	mem_amnt[EBP], #8
+	LOOP	ECX, rdllong
+	JMP	memdone
+
+;Here if have unexpected trap
+
+unexpd:
+	JMP	unexpd
+
+;Here if have some kind of memory fault
+
+memflt:	POPL	EAX			;Discard the error code
+	POPL	EDX			;Get the address
+	ADDL	ESP, #8			;Discard return EIP and EFR
+	CMPB	-5[EDX], #0xA9
+	JNE	unexpd
+	JMPIL	-4[EDX]
+
+
+;*******************************************
+; Function: wrtmem - Write to memory
+; Returned: Number of items actually written
+;*******************************************
+
+;	int wrtmem(
+;	    int    size,
+;	    long   addr,
+;	    uchar *data
+;	    int    cnt)
+
+	.ENTRY	$_wrtmem
+$_wrtmem::
+	PUSHL	EBX
+	ENTER	mem_SIZE, 0
+	MOVL	mem_amnt[EBP], #0
+	PUSHFL
+	CLI
+	SIDT	mem_idt+2[EBP]
+	LIDTL	dbidt
+	MOVL	EDX, mem_addr[EBP]
+	MOVL	EBX, mem_data[EBP]
+	MOVL	ECX, mem_cnt[EBP]
+	MOVZBL	EAX, mem_size[EBP]
+	ANDL	EAX, #0x07
+	CMPB	AL, #2
+	JE	wrtlong
+	CMPB	AL, #1
+	JE	wrtword
+wrtbyte:MOVZBL	EAX, [EBX]
+	INCL	EBX
+	TESTL	EAX, #memdone
+	MOVB	[EDX], AL
+	INCL	EDX
+	INCL	mem_amnt[EBP]
+	LOOP	ECX, wrtbyte
+	JMP	memdone
+
+;Here to write words
+
+wrtword:MOVZWL	EAX, [EBX]
+	ADDL	EBX, #2t
+	TESTL	EAX, #memdone
+	MOVW	[EDX], AX
+	ADDL	EDX, #2t
+	ADDL	mem_amnt[EBP], #2
+	LOOP	ECX, wrtword
+	JMP	memdone
+
+;Here to write longs
+
+wrtlong:MOVL	EAX, [EBX]
+	ADDL	EBX, #4t
+	TESTL	EAX, #memdone
+	MOVL	[EDX], EAX
+	ADDL	EDX, #4t
+	ADDL	mem_amnt[EBP], #4
+	LOOP	ECX, wrtlong
+	JMP	memdone
+.PAGE
+;Function to exchange a byte with memory
+;	int $_xchgmem(
+;	    int  data,
+;	    long addr)
+;  Value returned is the byte read from memory (high 24 bits are 0) or -1
+;    if error.
+
+$$$=!0
+FRM xchg_idt, 12t
+xchg_SIZE=!$$$
+
+xchg_data=!12t
+xchg_addr=!8
+
+	.ENTRY	$_xchgmem
+$_xchgmem::
+	ENTER	xchg_SIZE
+	PUSHFL
+	CLI
+	SIDT	xchg_idt+2[EBP]
+	LIDTL	dbidt
+	MOVL	EDX, xchg_addr[EBP]
+	MOVL	EAX, xchg_data[EBP]
+	TESTL	EAX, #10$
+	XCHGB	[EDX], AL
+	ANDL	EAX, #0xFF
+4$:	LIDTL	xchg_idt+2[EBP]
+	POPFL
+6$:	LEAVE
+	RET	8
+
+10$:	MOVL	EAX, #-1
+	JMP	4$
+
+	END

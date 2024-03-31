@@ -1,0 +1,72 @@
+Following defines the format of a USB vendor definition file. Each file
+is an ASCII text file. Each line begins with a 2 or 3 character keyword
+which is followed by a colon. Lines beginning with # are comment lines and
+are otherwise ignored. There should be no blank lines and no whitespace,
+except in comment lines.
+
+The file is divided into one or more definition blocks. Each block begins
+with a DEV line and continues to the end of the file or until another DEV
+line is encountered.
+
+Each line type is described below.
+
+Keyword: DEV (required)
+
+This line begins a definition block and specifies the device types described
+by the block. It consists of a comma seperated list of device types or device
+type ranges. A device type consists of 4 hex digits. A device type rage
+consists of two device types seperated by a minus sign. For example
+    DEV:0100,0200-0203
+would specify that device types, 0100, 0200, 0201, 0202 and 0203 are
+describied by the definition block.
+
+Keyword: FNC (required)
+
+Specifes the function to invoke to set up the device. Currently the only
+valid value is 'generic'.
+
+Keyword: DRV (required)
+
+Specifies the drivers to load for the device. It consists of a comma seperated
+list of driver names without an extension.
+
+Keyword: CLS (required)
+
+Specifies the device class used when adding the device.
+
+Keyword: DTP (optional)
+
+Specifies the device type used when adding the device. If it is not present,
+no device type is specified.
+
+Keyword: BI (optional)
+
+Specifies the minimum and maximum number of bulk transfer input endpoints
+allowed. Two decimal values are specified seperated by a comma. The first
+specifies the minimum number of bulk transfer input endpoints required. The
+device will not be added if at least this many are not availble. The second
+specifies the maximum number of bulk transfer input endpoints that will be
+used. If more than this are available, they are ignored. If not present a
+value of 0,16 is used.
+
+Keyword: BO (optional)
+
+Same as BI except specifies bulk transfer output endpoints.
+
+Keyword: II (optional)
+
+Same as BI except specifies interrupt input endpoints.
+
+Keyword: IO (optional)
+
+Same as BI except specifies interrupt output endpoints.
+
+Keyword: UNB (optional)
+
+Specifies the unit number to be used for the first device in this class. If
+not present, a value of 0 is used.
+
+Keyword: UNI (optional)
+
+Specifies the value by which the unit number is incremented for each device
+added. If not present, a value of 1 is used.

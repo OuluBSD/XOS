@@ -1,0 +1,2053 @@
+	.TITLE	trmcls2 - General terminal class driver for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTIME.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSDOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSTRM.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+
+	CODE
+
+	.SBTTL	Parameter tables for terminals
+
+	.LONG	PARMIOMAX
+trmioparms::
+	.LONG	trmiogenparms	;IOPAR_xxxxxx = 00xx - Generic IO parameters
+	.LONG	knlNullFilParms#;IOPAR_FILxxx = 01xx - File system IO parameters
+	.LONG	trmiotrmparms	;IOPAR_TRMxxx = 02xx - Terminal IO parameters
+PARMIOMAX=!{$-trmioparms}/4
+
+	.LONG	PARMIOGENMAX	;Size of table
+trmiogenparms:
+	.LONG	0
+	.LONG	knlIopFileOptn#	;IOPAR_FILEOPTN    = 0x001
+	.LONG	knlIopFileSpec#	;IOPAR_FILESPEC    = 0x002
+	.LONG	knlIopDevSts#	;IOPAR_DEVSTS      = 0x003
+	.LONG	knlIopUnitNum#	;IOPAR_UNITNUM     = 0x004
+	.LONG	knlIopGlbId#	;IOPAR_GLBID       = 0x005
+	.LONG	trmiopdelay	;IOPAR_DELAY       = 0x006
+	.LONG	trmioptimeout	;IOPAR_TIMEOUT	   = 0x007
+	.LONG	trmiopinpsts	;IOPAR_INPSTS      = 0x008
+	.LONG	trmiopoutsts	;IOPAR_OUTSTS	   = 0x009
+	.LONG	0		;IOPAR_INPQLMT	   = 0x00A
+	.LONG	0		;IOPAR_OUTQLMT	   = 0x00B
+	.LONG	0		;IOPAR_SIVECT1     = 0x00C
+	.LONG	0		;IOPAR_SIVECT2     = 0x00D
+	.LONG	0		;IOPAR_SIDATA      = 0x00E
+	.LONG	knlIopNumOpen#	;IOPAR_NUMOPEN     = 0x00F
+	.LONG	0		;IOPAR_BUFRLMT	   = 0x010
+PARMIOGENMAX=!{$-trmiogenparms}/4
+
+	.LONG	PARMIOTRMMAX
+trmiotrmparms:
+	.LONG	0
+	.LONG	trmiosinpmode	;IOPAR_TRMSINPMODE = 0x201
+	.LONG	trmiocinpmode	;IOPAR_TRMCINPMODE = 0x202
+	.LONG	trmiosoutmode	;IOPAR_TRMSOUTMODE = 0x203
+	.LONG	trmiocoutmode	;IOPAR_TRMCOUTMODE = 0x204
+	.LONG	trmiobfrlimit	;IOPAR_TRMBFRLIMIT = 0x205
+	.LONG	trmioclrbufr	;IOPAR_TRMCLRBUFR  = 0x206
+	.LONG	trmiocurtype	;IOPAR_TRMCURTYPE  = 0x207
+	.LONG	trmiocurpos	;IOPAR_TRMCURPOS   = 0x208
+	.LONG	trmiodisppage	;IOPAR_TRMDISPAGE  = 0x209
+	.LONG	0		;IOPAR_TRMSPSTATUS = 0x20A
+	.LONG	0		;IOPAR_TRMSPBREAK  = 0x20B
+	.LONG	trmiomodem	;IOPAR_TRMSPMODEM  = 0x20C
+	.LONG	0
+	.LONG	0
+	.LONG	0
+	.LONG	0
+	.LONG	trmcpvect	;IOPAR_TRMCPVECT   = 0x211
+	.LONG	trmcpdata	;IOPAR_TRMCPDATA   = 0x212
+	.LONG	trmmcvect	;IOPAR_TRMMCVECT   = 0x213
+	.LONG	trmmcdata	;IOPAR_TRMMCDATA   = 0x214
+
+PARMIOTRMMAX=!{$-trmiotrmparms}/4
+
+;Terminal IO parameter table for non-terminal devices
+
+	.LONG	NULLTRMMAX
+knlNullTrmParms::
+	.LONG	0
+	.LONG	knlIopNullN#	;IOPAR_TRMSINPMODE = 0x201
+	.LONG	knlIopNullN#	;IOPAR_TRMCINPMODE = 0x202
+	.LONG	knlIopNullN#	;IOPAR_TRMSOUTMODE = 0x203
+	.LONG	knlIopNullN#	;IOPAR_TRMCOUTMODE = 0x204
+	.LONG	knlIopNullN#	;IOPAR_TRMBFRLIMIT = 0x205
+	.LONG	knlIopNullN#	;IOPAR_TRMCLRBUFR  = 0x206
+	.LONG	knlIopNullN#	;IOPAR_TRMCURTYPE  = 0x207
+	.LONG	knlIopNullN#	;IOPAR_TRMCURPOS   = 0x208
+	.LONG	knlIopNullN#	;IOPAR_TRMDISPAGE  = 0x209
+	.LONG	knlIopNullN#	;IOPAR_TRMSPSTATUS = 0x20A
+	.LONG	knlIopNullN#	;IOPAR_TRMSPBREAK  = 0x20B
+	.LONG	knlIopNullN#	;IOPAR_TRMSPMODEM  = 0x20C
+	.LONG	knlIopNullN#
+	.LONG	knlIopNullN#
+	.LONG	knlIopNullN#
+	.LONG	knlIopNullN#
+	.LONG	knlIopNullN#	;IOPAR_TRMCPVECT   = 0x213
+	.LONG	knlIopNullN#	;IOPAR_TRMCPDATA   = 0x214
+	.LONG	knlIopNullN#	;IOPAR_TRMMCVECT   = 0x215
+	.LONG	knlIopNullN#	;IOPAR_TRMMCDATA   = 0x216
+NULLTRMMAX=!{$-knlNullTrmParms}/4
+.PAGE
+	.SBTTL	pgfmterm - Display buffer page fail routine
+
+;Get here on page fail trap on reference to available but blocked display
+;  buffer page - EAX and DS only have been saved on the stack, DS contains
+;  GS_DATA - in this case the page table entry is a normal map entry for
+;  the physical or virtual terminal buffer except that the P bit is clear
+;	c{{ESP}+0}  = Saved DS
+;	c{{ESP}+4}  = Saved EAX
+;	c{{ESP}+8}  = CR2
+;	c{{ESP}+12} = Trap error code
+;	c{{ESP}+16} = Trap EIP
+;	c{{ESP}+20} = Trap CS
+;	c{{ESP}+24} = Trap EFR
+
+pgfterm::
+	POPL	DS			;Restore registers
+	POPL	EAX
+	PUSHAL				;And save all registers the right way
+	PUSHL	DS
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	GS
+	PUSHL	#GS_XDATA
+	POPL	DS
+	REQUIREMAIN
+	MOVL	EBX, 30h[ESP]		;Get page fault linear address
+	SHRL	EBX, #12t		;Get index into page table
+	MOVL	ESI, knlPgTable#[EBX*4]	;Get page table entry
+	SHRL	ESI, #6t		;Get offset of TDB (which was stored in
+					;  the address field!)
+	ORL	ESI, #database&0xFC000000
+	MOVL	EAX, tdb_ddisp[ESI]
+	CALLI	tfx_sspageflt[EAX]
+	JMP	pgfuagn#
+.PAGE
+	.SBTTL	sd_parm - Device parameters
+
+;Here for the device parameters - get here in extended fork context
+;	c{EDI} = Offset of DCB
+;	CALL	trmparm
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+
+trmparm::
+	CLRL	EAX
+	RET
+.PAGE
+;Here for the open additional device entry (sd_opena)
+;	long trmopena(void);
+
+trmopena::
+	PUSHL	EDI
+	PUSHL	ESI
+	CMPL	knlTda+tdaParm#, #0	;Do we have a parameter list?
+	JE	4$			;No
+	PUSHL	#trmioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms#
+	PUSHL	#0
+	CALL	sysIoProcDevParam#
+	TESTL	EAX, EAX
+	JS	opndn
+4$:	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTL	ESI, ESI
+	JE	12$
+	MOVL	EAX, tdb_ddisp[ESI]	;Do terminal type dependent stuff
+	CALLI	tfx_opena[EAX]
+	TESTL	EAX, EAX
+	JS	10$
+	CMPL	knlTda+tdaHandle#, #DH_STDTRM ;Is this a console terminal?
+	JNE	10$			;No
+	MOVL	ECX, knlPda+pdaSpy#	;Yes - get address of our spy area
+	MOVZBL	EDX, tdb_pnum[ESI]
+	MOVB	DH, tdb_snum[ESI]
+	MOVW	pspy_contrm[ECX], DX
+	CLRL	EAX
+10$:	POPL	ESI
+	POPL	EDI
+	RET
+
+12$:	MOVL	EAX, #ER_TRMNA
+	JMP	10$
+.PAGE
+;Here for the open device entry - get here in extended fork context
+;	long trmopen1(
+;	    char *spec);	// Not used here
+
+trmopen1::
+	PUSHL	EDI
+	PUSHL	ESI
+	CMPL	knlTda+tdaParm#, #0	;Do we have a parameter list?
+	JE	4$			;No
+	PUSHL	#trmioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms#
+	PUSHL	#0
+	CALL	sysIoProcDevParam#
+	TESTL	EAX, EAX
+	JS	opndn
+4$:	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	ESI, dcb_trtdb[EDI]	;Point to our TDB
+	TESTL	ESI, ESI		;Fail if none
+	JNE	6$
+	MOVL	EAX, #ER_TRMNA
+	JMP	opndn
+
+6$:	MOVZBL	EAX, tdb_iflow[ESI]	;Initialize flow control enables
+	MOVB	tdb_flow[ESI], AL
+	MOVZBL	EAX, tdb_imodem[ESI]	;Initialize modem control state
+	MOVB	tdb_modem[ESI], AL
+	MOVL	EBX, tdb_ddisp[ESI]	;Do terminal type dependent stuff
+	CALLI	tfx_open1[EBX]
+	TESTL	knlTda+tdaCmd#, #XO$PHYS|XO$RAW ;Is "physical IO" specified?
+	JNE	10$			;Yes
+	MOVL	tdb_imode[ESI], #TIM$ECHO|TIM$ELFWCR
+					;No - default is line mode input with
+					;  echoing enabled and CR echoed as
+					;  CR-LF
+	MOVL	tdb_omode[ESI], #TOM$ICRBLF  ;And normal output with CR
+					     ;  inserted before LF
+	ORB	tdb_stsinp[ESI], #TSI$DISCARD
+	CALL	trmclrtypa#		;Clear out any input
+	ANDB	tdb_stsinp[ESI], #~TSI$DISCARD
+	JMP	12$
+
+;Here if "physical IO" specified
+
+10$:	MOVL	tdb_imode[ESI], #TIM$IMAGE ;Default is image input without echo
+	MOVL	tdb_omode[ESI], #TOM$IMAGE ;And image mode output
+12$:	CLRL	EDX
+	MOVL	EAX, tdb_ddisp[ESI]	;Tell the driver which input bits we set
+	CALLI	tfx_imodechng[EAX]
+	CLRL	EDX
+	MOVL	EAX, tdb_ddisp[ESI]	;Tell the driver which output bits we
+	CALLI	tfx_omodechng[EAX]	;  set
+14$:	CMPL	knlTda+tdaHandle#, #DH_STDTRM ;Is this a console terminal?
+	JNE	20$			;No
+	MOVL	EBX, knlPda+pdaSpy#	;Yes - get address of our spy area
+	MOVZBL	EAX, tdb_pnum[ESI]
+	MOVB	AH, tdb_snum[ESI]
+	MOVW	pspy_contrm[EBX], AX
+20$:	CLRL	EAX
+opndn:	POPL	ESI
+	POPL	EDI
+	RET	4
+.PAGE
+	.SBTTL	Routines for QFNC_DEVCHAR functions
+
+;Information text
+
+knlTrmMsgBFreq::   CHARINFO  {Bell tone frequency (Hertz)}
+knlTrmMsgBLen::    CHARINFO  {Bell tone length (millisec)}
+knlTrmMsgSession:: CHARINFO  {Terminal can create session}
+knlTrmMsgMsgDst::  CHARINFO  {Initial message distination}
+knlTrmMsgProgram:: CHARINFO  {Initial program to run}
+knlTrmMsgPWrd::    CHARINFO  {Password}
+knlTrmMsgIOFlow::  CHARINFO  {Initial output flow control}
+knlTrmMsgIIFlow::  CHARINFO  {Initial input flow control}
+knlTrmMsgIModem::  CHARINFO  {Initial modem control}
+knlTrmMsgModem::   CHARINFO  {Current modem control}
+knlTrmMsgOFlow::   CHARINFO  {Current output flow control}
+knlTrmMsgIFlow::   CHARINFO  {Current input flow control}
+knlTrmMsgKbChar::  CHARINFO  {Keyboard characters}
+knlTrmMsgKbTChar:: CHARINFO  {Total keyboard characters}
+knlTrmMsgInRBS::   CHARINFO  {Input ring buffer size}
+knlTrmMsgInRBSL::  CHARINFO  {Input ring buffer stop level}
+knlTrmMsgInRBPL::  CHARINFO  {Input ring buffer panic level}
+knlTrmMsgInRBHeld::CHARINFO  {Input ring buffer held count}
+knlTrmMsgInRBLost::CHARINFO  {Input ring buffer lost count}
+knlTrmMsgInLBS::   CHARINFO  {Input line buffer size}
+knlTrmMsgCharIn::  CHARINFO  {Number of characters input}
+knlTrmMsgCharOut:: CHARINFO  {Number of characters output}
+
+;Here to get the value of the SESSION characteristic
+
+knlTrmGetSession::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVL	EAX, #'YES'
+	TESTB	tdb_stsmisc[ESI], #TSM$SESSION
+	JNE	2$
+	MOVL	EAX, #'NO'
+2$:	RET
+
+;Here to get the value of the PASSWORD or PROGRAM characteristic
+
+knlTrmGetText::
+	ADDL	EDX, dcb_trtdb[EDI]
+	JMP	knlGetSysStr#
+
+;Here to get the value of the IOUTFLOW or OUTFLOW characteristic
+
+knlTrmGetOFlow::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVB	AL, [ESI+EBX]
+	ANDL	EAX, #0F0h
+	MOVL	EBX, #knlTrmOFlowTbl
+	MOVL	ECX, #knlTRMOFLOWTBLSZ
+	JMP	knlGetDcName#
+
+;Here to get the value of the IINFLOW or INFLOW characteristic
+
+knlTrmGetIFlow::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVB	AL, [ESI+EBX]
+	ANDL	EAX, #0Fh
+	MOVL	EBX, #knlTrmIFlowTbl
+	MOVL	ECX, #knlTRMIFLOWTBLSZ
+	JMP	knlGetDcName#
+
+	.MOD	4
+knlTrmOFlowTbl::
+	.LONG	'DSR' , 0    , TFC$ODSR
+	.LONG	'CTS' , 0    , TFC$OCTS
+	.LONG	'REVC', 'TS' , TFC$OCTS|TFC$OREV
+	.LONG	'REV' , 0    , TFC$OCTS|TFC$OREV
+knlTrmOFlowTblD::
+	.LONG	'NONE', 0    , 0
+	.LONG	'XONX', 'OFF', TFC$OXONXOFF
+	.LONG	'XON' , 0    , TFC$OXONXOFF
+	.LONG	'PAUS', 'E'  , TFC$OXONXOFF|TFC$OREV
+	.LONG	'PAU' , 0    , TFC$OXONXOFF|TFC$OREV
+knlTRMOFLOWTBLDSZ==!{$-knlTrmOFlowTblD}/12t
+knlTRMOFLOWTBLSZ ==!{$-knlTrmOFlowTbl}/12t
+
+	.MOD	4
+knlTrmIFlowTbl::
+	.LONG	'DTR' , 0    , TFC$IDTR
+	.LONG	'RTS' , 0    , TFC$IRTS
+	.LONG	'REVC', 'TS' , TFC$IRTS|TFC$IREV
+	.LONG	'REV' , 0    , TFC$IRTS|TFC$IREV
+knlTrmIFlowTblD::
+	.LONG	'NONE', 0    , 0
+	.LONG	'XONX', 'OFF', TFC$IXONXOFF
+	.LONG	'XON' , 0    , TFC$IXONXOFF
+	.LONG	'PAUS', 'E'  , TFC$IXONXOFF|TFC$IREV
+	.LONG	'PAU' , 0    , TFC$IXONXOFF|TFC$IREV
+knlTRMIFLOWTBLDSZ==!{$-knlTrmIFlowTblD}/12t
+knlTRMIFLOWTBLSZ ==!{$-knlTrmIFlowTbl}/12t
+.PAGE
+;Here to get the value of the MODEM characteristic
+
+knlTrmGetModem::
+	ADDL	EBX, dcb_trtdb[EDI]
+	MOVL	EAX, #'None'		;Assume NONE
+	CLRL	EDX
+	TESTB	[EBX], #TMC$MODEM	;Right?
+	JE	4$			;Yes
+	MOVL	EAX, #'Full'		;No - assume FULL
+	TESTB	[EBX], #TMC$DETACH	;Right?
+	JE	4$			;Yes
+	MOVL	EAX, #'Deta'		;No - its DETACH
+	MOVL	EDX, #'ch'
+4$:	RET
+
+;Here to set the value of the MODEM characteristic
+
+knlTrmSetModem::
+	MOVL	ESI, dcb_trtdb[EDI]
+	ADDL	ESI, EBX
+	MOVL	EBX, #modemtbl
+	MOVL	ECX, #MODEMTBLSZ
+	CALL	knlGetDcVal1#
+	JC	4$
+	MOVB	AL, modembits[EAX]
+	MOVB	[ESI], AL
+	RET
+
+	.MOD	4
+modemtbl:
+	.LONG	'NONE', 0
+	.LONG	'DETA', 'CH'
+	.LONG	'FULL', 0
+MODEMTBLSZ=!{$-modemtbl}/8
+
+modembits:
+	.BYTE	0, TMC$MODEM|TMC$DETACH, TMC$MODEM
+.PAGE
+;Here to set the value of the SESSION characteristic
+
+knlTrmSetSession::
+	MOVL	ESI, dcb_trtdb[EDI]
+	CALL	knlGetYesNo#
+	JC	4$
+	JE	2$
+	ANDB	tdb_stsmisc[ESI], #~TSM$SESSION
+	RET
+
+2$:	ORB	tdb_stsmisc[ESI], #TSM$SESSION
+4$:	RET
+
+;Here to set the value of the ACCESS characteristic
+
+knlTrmSetAccess::
+	MOVL	ESI, dcb_trtdb[EDI]
+	ADDL	EBX, ESI
+	JMP	knlSetAccess#
+
+;Here to set the value of the PASSWORD or PROGRAM characteristic
+
+knlTrmSetText::
+	ADDL	EDX, dcb_trtdb[EDI]
+	JMP	knlSetSysStr#
+
+;Here to set 2 byte characteristic value
+
+knlTrmSet2Byte::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVW	[ESI+EBX], AX
+	RET
+
+;Here to set 4 byte characteristic value
+
+knlTrmSet4Byte::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVL	[ESI+EBX], EAX
+	RET
+.PAGE
+;Here to get 1 byte characteristic value
+
+knlTrmGet1Byte::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVZBL	EAX, [ESI+EBX]
+2$:	RET
+
+;Here to get 2 byte characteristic value
+
+knlTrmGet2Byte::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVZWL	EAX, [ESI+EBX]
+	RET
+
+;Here to get 4 byte characteristic value
+
+knlTrmGet4Byte::
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVL	EAX, [ESI+EBX]		;Store value
+	RET
+
+;Here to get a string characteristic value from the TDB
+
+knlTrmGetStr::
+	ADDL	EDX, dcb_trtdb[EDI]
+	JMP	knlGetSysStr#
+.PAGE
+	.SBTTL	sd_cleardev - Clear device
+
+;Here for the clear device entry.  This routine is called by clearall which
+;  is called when an image is being replaced to ensure than the device is not
+;  linked to any existing code.  In the case of a terminal, it removes any
+;  KIBs which have been set up.  Must be called at main program level raised
+;  to fork level.
+;	c{EDI} = Offset of DCB
+;	c{ESI} = Device handle
+;	CALL	trmclear
+
+trmclear::
+	CLRL	EAX
+	RET
+.PAGE
+;Here for the close device entry - this is an extended fork context routine for
+;  all terminals
+
+trmclose::
+	MOVL	EDX, knlTda+tdaDcb#
+	CMPL	dcb_opencnt[EDX], #1	;Anyone else have this open?
+	JE	trmclose1		;No
+	CALL	checkvects		;Yes
+	RET
+
+;Here if last close for device
+
+trmclose1:
+	PUSHL	EDI
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	ESI, dcb_trtdb[EDI]	;Get address of TDB
+	TESTL	ESI, ESI		;Do we have one?
+	JE	20$			;No - skip this stuff
+	ANDB	tdb_stsout[ESI], #~{TSO$JUNK|TSO$HOLDS|TSO$HOLDP}
+	BTSL	tdb_stsout[ESI], #TSO%OUTA;Reset some stuff
+	JC	16$			;Make sure doing output if have some
+	PUSHL	EDI			;  to do now
+	MOVL	EBX, tdb_ddisp[ESI]
+	CALLI	tfx_resume[EBX]
+	POPL	EDI
+16$:	CALL	checkvects
+	TOFORK
+	CMPL	tdb_outrcnt[ESI], #0	;Anything in the output ring?
+	JE	18$			;No
+	ORB	tdb_stsout+1[ESI], #TSO$FLOUT>8 ;Yes - set the flush output
+						;  bit
+	MOVB	tdb_owkv[ESI], #0	;Wait until buffer is empty
+	ORB	tdb_stsout+1[ESI], #TSO$QOWAIT>8
+	PUSHL	#0
+	PUSHL	#5t*ST_SECOND		;Only wait for 5 seconds here!
+	PUSHL	#THDS_DW2
+	CALL	sysIoWait#
+	TOFORK
+	CALL	trmstopout#		;Make sure output stopped
+	MOVL	EBX, tdb_ddisp[ESI]	;Clear output ring buffer
+	CALLI	tfx_clrout[EBX]
+	ANDB	tdb_stsout[ESI], #~{{TSO$QOWAIT|TSO$FLOUT}>8}
+18$:	FROMFORK
+
+;;;;;;;	MOVB	dcb_sts3[EDI], #0
+
+	MOVL	EBX, tdb_ddisp[ESI]	;Ensure output is complete
+	CALLI	tfx_finout[EBX]
+	CALL	trmmkidle
+	ORB	tdb_stsinp[ESI], #TSI$DISCARD
+	CALL	trmcirg#		;Clear the input ring buffer
+	MOVB	tdb_stsinp[ESI], #0
+	MOVB	AL, tdb_iflow[ESI]	;Reset flow control enables
+	MOVB	tdb_flow[ESI], AL
+	MOVB	AL, tdb_imodem[ESI]	;Reset modem control state
+	MOVB	tdb_modem[ESI], AL
+20$:	CLRL	EAX
+	POPL	EBX
+	POPL	ESI
+	POPL	EDI
+	RET
+
+trmmkidle::
+	ANDB	tdb_stsmisc[ESI], #~TSM$IMSG
+	ANDB	tdb_stsout+1[ESI], #~{TSO$NOWRAP>8}
+	MOVL	tdb_imode[ESI], #TIM$IMAGE
+	MOVL	tdb_omode[ESI], #TOM$IMAGE|TOM$ICRBLF
+	MOVL	EBX, tdb_ddisp[ESI]	;Reset terminal to idle state
+	JMPIL	tfx_idle[EBX]
+
+;Subroutine to clear an async terminal's vectors when closing the terminal
+;	c{EBX} = Offset of vector number (in DCB)
+
+checkvects:
+	PUSHL	EDI
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	EDX, knlPda+pdaAddr
+	MOVL	ECX, knlTda+tdaHandle#
+	CMPL	dcb_trcpspda[EDI], EDX	;For this process?
+	JNE	26$			;No
+	CMPW	dcb_trcpshndl[EDI], CX	;Yes - for this handle?
+	JNE	26$			;No
+	CLRL	EAX			;Yes - clear it out
+	MOVL	dcb_trcpsvect[EDI], EAX
+	MOVL	dcb_trcpshndl[EDI], EAX
+	MOVL	dcb_trcpsdata[EDI], EAX
+26$:	CMPL	dcb_trmcspda[EDI], EDX	;For this process?
+	JNE	28$			;No
+	CMPW	dcb_trmcshndl[EDI], CX	;Yes - for this handle?
+	JNE	28$			;No
+	CLRL	EAX			;Yes - clear it out
+	MOVL	dcb_trmcsvect[EDI], EAX
+	MOVL	dcb_trmcshndl[EDI], EAX
+	MOVL	dcb_trmcsdata[EDI], EAX
+28$:	POPL	EDI
+	RET
+.PAGE
+;Here for the clear DCB entry
+
+trmcleardcb::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, knlTda+tdaDcb#
+	MOVL	ESI, dcb_trtdb[EDI]	;Are we attached now?
+	TESTL	ESI, ESI
+	JE	2$			;No
+	CLRL	EAX			;Yes - but now now
+	MOVL	tdb_dcb[ESI], EAX
+	MOVL	dcb_trtdb[EDI], EAX
+	MOVL	EDX, tdb_ddisp[ESI]	;Report status change to screen
+	CALLI	tfx_ssstatus[EDX]	;  symbiont if need to
+2$:	DECL	trmdcbnum#		;Reduce count
+	PUSHL	EDI			;Give up the DCB
+	CALL	sysIoGiveDymDcb#
+	POPL	ESI
+	POPL	EDI
+	RET
+.PAGE
+	.SBTTL	sd_inpblock - Input block
+
+;Here for the input block entry
+;	CALL	trminpblk
+
+trminpblk::
+	BTL	knlTda+tdaCmd#, #XO%IN	;Is input allowed?
+	JC	6$			;Yes - go on
+	CMPL	knlTda+tdaCount#, #0	;No - really doing input?
+	JE	6$
+	MOVL	EAX, #ER_NOIN
+	JMP	inperr
+
+6$:	MOVL	ESI, dcb_trtdb[EDI]
+	MOVL	knlTda+tdaAdb#, ESI
+	CMPL	knlTda+tdaParm#, #0	;Do we have a parameter list?
+	JE	12$			;No
+	PUSHL	#trmioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms#
+	PUSHL	#0
+	CALL	sysIoProcDevParam#
+	TESTL	EAX, EAX
+	JS	inperr			;If error
+12$:	CMPL	knlTda+tdaCount#, #0	;Finished if 0
+	JE	inpdone
+	TESTB	tdb_stsinp[ESI], #TSI$INPAVL ;Anything in the line buffer now?
+	JNE	fwdloop			;Yes - give it to him (Must have
+					;  stopped because his buffer was
+					;  to short.)
+					;No - fall into trminpc on next page
+.PAGE
+;Here to get characters from a terminal
+
+trminpc:TESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;In debug input mode?
+	JNE	10$			      ;Yes - just wait
+	MOVL	EAX, tdb_ibsize[ESI]	;No
+	SUBL	EAX, #2
+	MOVL	tdb_iblen[ESI], EAX
+	CMPL	knlTda+tdaCount#, EAX	;Is the count too big?
+	JBE	6$			;No
+	MOVL	knlTda+tdaCount#, EAX	;Yes - reduce it
+6$:	TESTB	tdb_imode[ESI], #TIM$IMAGE ;Line mode input?
+	JE	8$			;Yes
+	MOVL	EAX, knlTda+tdaCount#	;No - make our buffer same size as his
+	MOVL	tdb_iblen[ESI], EAX
+	JMP	inploop
+
+8$:	DECL	tdb_iblen[ESI]		;Adjust buffer size
+
+;This is the loop which processes characters from the terminal. It first
+;  reads characters from the input ring buffer and places them in the input
+;  line buffer. It stops when it stores a character that meets the current
+;  forwarding criteria. If it empties the ring buffer without finding a
+;  forwarding character it waits for more input, either directly (if in an
+;  IO thread) or by returning to redo the SVC (if direct IO). After it has
+;  stored a forwarding character to goes to forward which copies the line
+;  buffer to the caller's buffer.
+
+inploop:TESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;In debug input mode now?
+	JE	9$			;No
+	CMPB	knlTda+tdaType#, #TDATYPE_IO ;Are we in an IO thread
+	JNE	20$			;No
+	JMP	14$			;Yes
+
+;Here if not in debug mode
+
+9$:	ANDB	tdb_stsout[ESI], #~TSO$JUNK ;Stop junking output now
+	CMPL	tdb_ircnt[ESI], #0	;Anything available in the ring buffer?
+	JNE	hvchar			;Yes
+10$:	MOVL	EAX, knlTda+tdaTimeOut#+0 ;No - want to wait at all?
+	ORL	EAX, knlTda+tdaTimeOut#+4
+	JE	24$			;No
+	TOFORK
+12$:	CMPL	tdb_ircnt[ESI], #0	;Yes - still nothing available?
+	JNE	hvchrio			;No - false alarm (something snuck in)
+	ANDB	dcb_sts1[EDI], #~D1$DIRIAVL ;Yes - Indicate no input available
+	CMPB	knlTda+tdaType#, #TDATYPE_IO ;Are we in an IO thread
+	JNE	20$			;No
+
+;Here to wait when executing in an IO thread
+
+14$:	MOVL	EDX, knlTda+tdaUserTda#	;Use the address of the QAB plus the
+	MOVL	EAX, tdaQab#[EDX]	;  TID of the associated user thread
+	ADDL	EAX, tdaTid#[EDX]
+	PUSHL	EAX
+	CALL	sysSchSetWaitIndex#
+	MOVL	knlTda+tdaRtnValue0#, #0
+	PUSHL	knlTda+tdaAddr#		;Requeue the thread
+	PUSHL	#THDS_DW2
+	CALL	sysSchRequeue#
+	PUSHFL				;Wait
+	CALLF	knlSchedule#
+	MOVL	EAX, knlTda+tdaRtnValue0#
+	TESTL	EAX, EAX
+	JS	inperr			;If error
+	TESTB	tdb_stsinp[ESI], #TSI$DEBUGIN ;In debug input mode now?
+	JE	inploop			;No - continue with input
+	TOFORK				;Yes - just wait some more
+	JMP	14$
+
+;Here to wait if not in an IO thread
+
+20$:	FROMFORK
+	CLRL	EAX			;NEED A TIMEOUT HERE!!!
+	RET				;Just return without setting QSTS$DONE
+
+;Here if want immediate time-out
+
+24$:	MOVL	knlTda+tdaError#, #ER_NORSP
+	RET
+.PAGE
+;Here with a character available in the input ring buffer
+
+hvchrio:FROMFORK
+hvchar:	CMPL	tdb_ibcnt[ESI], #0	;Is the input line buffer empty now?
+	JNE	2$			;No
+	MOVZBL	EAX, tdb_dsppage[ESI]	   ;Yes - remember screen position of
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2] ;  beginning of the input line
+	MOVL	tdb_ibgnpos[ESI], EAX
+	MOVL	tdb_iendpos[ESI], EAX
+2$:	TOFORK
+	MOVL	EBX, tdb_irtak[ESI]	;Get the character
+	MOVL	EAX, [EBX]
+	ADDL	EBX, #4
+	CMPL	EBX, tdb_ibufr[ESI]	;At end of the ring?
+	JB	4$			;No
+	MOVL	EBX, tdb_iring[ESI]	;Yes - reset the taker pointer
+4$:	MOVL	tdb_irtak[ESI], EBX
+	DECL	tdb_ircnt[ESI]
+	FROMFORK
+	MOVL	ECX, EAX		;Get the shift bits
+	SARL	ECX, #16t
+	CMPB	AH, #0
+	JS	hvkeyvl			;Nothing to do here if no scan code
+	CMPB	AL, #0			;Or if non-ASCII code
+	JE	hvkeyvl
+	CMPB	AH, #0x20		;Need to do NUM-LOCK check?
+	JB	6$			;No
+	CMPB	AH, #0x2A		;Maybe
+	JBE	16$			;Yes - go do that
+6$:	TESTL	EAX, #KB$CAPLCK		;No - is caps-lock in effect?
+	JE	hvkeyvl			;No - all done here
+	TESTL	EAX, #KB$LFTSHF|KB$RHTSHF ;Yes - is shift pressed?
+	JNE	12$			;Yes
+	CMPB	AL, #'a'		;No - is this a lower case letter?
+	JB	hvkeyvl			;No
+	CMPB	AL, #'z'		;Maybe
+	JBE	14$			;Yes - go change to upper case
+	JMP	hvkeyvl
+
+;Here if cap-lock is active and shift is pressed
+
+12$:	CMPB	AL, #'A'		;Is this an upper case letter?
+	JB	hvkeyvl			;No
+	CMPB	AL, #'Z'		;Maybe
+	JA	hvkeyvl			;No
+14$:	XORB	AL, #0x20		;Yes - toggle case
+	JMP	hvkeyvl
+
+;Here if have a key which may be affected by num-lock
+
+16$:	TESTL	EAX, #KB$NUMLCK		;Yes - is num-lock in effect?
+	JE	18$			;No
+	TESTL	EAX, #KB$LFTSHF|KB$RHTSHF ;Yes - is shift pressed?
+	JNE	20$			;Yes - its a special key
+	JMP	hvkeyvl			;No - not special
+
+;Here if num-lock not in effect
+
+18$:	TESTL	EAX, #KB$LFTSHF|KB$RHTSHF ;Is shift pressed?
+	JNE	hvkeyvl			;Yes - not special
+20$:	MOVB	AL, #0			;No - clear out the ASCII part to make
+					;  it special
+.PAGE
+;Here with the full key code value in EAX - see if this key requires special
+;  processing here
+
+hvkeyvl:TESTB	tdb_imode[ESI], #TIM$IMAGE ;In image mode?
+	JNE	strchr			;Yes - nothing is special
+	CMPB	AL, #0			;No - ASCII character?
+	JE	2$			;No
+	CMPB	AL, #0x7F		;Yes - RUBOUT?
+	JE	spcbsp			;Yes
+	CMPB	AL, #0x1B		;No - might it be special?
+	JA	strchr			;No
+	MOVZBL	ECX, AL			;Yes
+	JMPIL	spctbl-4[ECX*4]
+
+	.MOD	4
+spctbl:	.LONG	strchr		;01
+	.LONG	strchr		;02
+	.LONG	strchr		;03
+	.LONG	strchr		;04
+	.LONG	strchr		;05
+	.LONG	strchr		;06
+	.LONG	strchr		;07
+	.LONG	spcbsp		;08 - BS
+	.LONG	strchr		;09
+	.LONG	putatend	;0A - LF
+	.LONG	strchr		;0B
+	.LONG	strchr		;0C
+	.LONG	spccr		;0D - CR
+	.LONG	strchr		;0E
+	.LONG	strchr		;0F
+	.LONG	strchr		;10
+	.LONG	strchr		;11
+	.LONG	strchr		;12
+	.LONG	strchr		;13
+	.LONG	strchr		;14
+	.LONG	strchr		;15
+	.LONG	strchr		;16
+	.LONG	strchr		;17
+	.LONG	spccntx		;18 - ^X
+	.LONG	strchr		;19
+	.LONG	strchr		;1A
+	.LONG	spccntx		;1B - ESC
+
+;Here if have a non-ASCII character
+
+2$:	CMPB	AH, #0x2A		;Might it be special?
+	JA	putatend		;No
+	MOVZBL	ECX, AH			;Yes
+	JMPIL	nonatbl[ECX*4]
+
+	.MOD	5
+nonatbl:.LONG	putatend	;00
+	.LONG	putatend	;01
+	.LONG	putatend	;02
+	.LONG	putatend	;03
+	.LONG	putatend	;04
+	.LONG	putatend	;05
+	.LONG	putatend	;06
+	.LONG	putatend	;07
+	.LONG	putatend	;08
+	.LONG	putatend	;09
+	.LONG	putatend	;0A
+	.LONG	putatend	;0B
+	.LONG	putatend	;0C
+	.LONG	putatend	;0D
+	.LONG	putatend	;0E
+	.LONG	putatend	;0F
+	.LONG	putatend	;10
+	.LONG	spcins		;11 - INSERT    - Toggle insert mode
+	.LONG	spchome		;12 - HOME      - Go to beginning of line
+	.LONG	putatend	;13
+	.LONG	spcdel		;14 - DELETE    - Delete character under cursor
+	.LONG	spcend		;15 - END       - Go to end of line
+	.LONG	putatend	;16
+	.LONG	spccurx		;17 - CURUP     - Cursor up
+	.LONG	spccurl		;18 - CURLEFT   - Cursor left
+	.LONG	spccurx		;19 - CURDOWN   - Cursor down
+	.LONG	spccurr		;1A - CURRIGHT  - Cursor right
+	.LONG	putatend	;1B
+	.LONG	putatend	;1C
+	.LONG	putatend	;1D
+	.LONG	putatend	;1E
+	.LONG	putatend	;1F
+	.LONG	spcins		;20
+	.LONG	spcend		;21
+	.LONG	spccurx		;22
+	.LONG	putatend	;23
+	.LONG	spccurl		;24
+	.LONG	putatend	;25
+	.LONG	spccurr		;26
+	.LONG	spchome		;27
+	.LONG	spccurx		;28
+	.LONG	putatend	;29
+	.LONG	spcdel		;2A
+
+;Here with a character that should be put at the end of the line buffer
+
+putatend:
+	MOVL	ECX, tdb_ibcnt[ESI]	;Set to end of line
+	MOVL	tdb_ibpnt[ESI], ECX
+
+;Here to store the character in the line buffer
+
+strchr:	MOVL	EBX, tdb_iblen[ESI]
+	CMPL	tdb_ibcnt[ESI], EBX	;Is the input line buffer full?
+	JAE	10$			;Yes - ignore this character
+	MOVL	EBX, tdb_ibpnt[ESI]	;No - get input buffer putter pointer
+	CMPL	EBX, tdb_ibcnt[ESI]	;At end of line?
+	JNE	inschar			;No - this is much harder!
+	INCL	tdb_ibcnt[ESI]		;Yes - increase length of line
+strchr2:MOVL	ECX, tdb_ibufr[ESI]
+	MOVL	[ECX+EBX*4], EAX	;Store character in buffer
+	INCL	tdb_ibpnt[ESI]
+	TESTL	tdb_imode[ESI], #TIM$ECHO ;Are we echoing now?
+	JE	4$			;No
+	CMPB	AL, #0			;Yes - ASCII character?
+	JE	4$			;No - don't echo it
+	PUSHL	EAX			;Yes
+	PUSHL	EAX
+	CALL	echochar
+	POPL	EAX
+4$:	MOVL	EBX, tdb_iblen[ESI]
+	DECL	EBX
+	CMPL	tdb_ibcnt[ESI], EBX	;Is the input line buffer full?
+	JAE	forward			;Yes - give it to him now
+	TESTB	tdb_imode[ESI], #TIM$IMAGE ;No - image mode?
+	JNE	6$			;Yes
+	CMPB	AL, #0			;No - non-ASCII character?
+	JE	forward			;Yes - always forward
+	CMPB	AL, #LF			;No - LF?
+	JNE	inploop			;Yes
+	JE	forward			;No
+
+;Here if image mode input
+
+6$:	TESTL	tdb_imode[ESI], #TIM$DEFER ;Do we want a full buffer?
+	JNE	inploop			;Yes - keep collecting characters
+	CMPL	tdb_ircnt[ESI], #0	;No - anything else there?
+	JE	forward			;No - give him what we have now
+	JMP	inploop			;Yes - collect as much as we have
+
+;Here if should ignore character because input buffer is full - try to beep
+;  at him!
+
+10$:
+;;;;;;	MOVB	AL, #BEL		;Echo a bell
+;;;;;;	CALL	echochx
+	JMP	inploop
+.PAGE
+;Here to insert character into buffer
+
+inschar:TESTB	tdb_stsinp[ESI], #TSI$OVER ;Want overlay type insert?
+	JE	6$			;No - go do insert type insert
+	MOVL	ECX, tdb_ibufr[ESI]
+	CMPL	[ECX+EBX*4], EAX	;Really changing the character?
+	JE	inploop			;Yes - really doing nothing at all!
+
+	MOVL	ECX, tdb_ibufr[ESI]
+
+	MOVL	ECX, [ECX+EBX*4]	;Get character we are overlaying
+	CMPB	AL, #' '		;Is the new character printing?
+	JB	4$			;No
+	CMPB	CL, #' ' 		;Yes - is current character printing?
+	JB	10$			;No - must re-echo rest of line
+	JMP	strchr2			;Yes - do simple store
+
+;Here if storing (overlay mode) non-printing character
+
+4$:	CMPB	CL, #' '		;Is the current character non-printing?
+	JAE	10$			;No - must re-echo rest of line
+	CMPB	CL, #HT			;Is the current character HT?
+	JE	10$			;Yes - must re-echo
+	CMPB	AL, #HT			;Is the new character HT?
+	JE	10$			;Yes - must re-echo
+	JMP	strchr2			;No - just do simple store
+
+;Here if should do insert type insert
+
+6$:	MOVL	ECX, tdb_ibcnt[ESI]	;Get number of characters to move
+	TESTL	ECX, ECX
+	JE	7$
+	CMPL	ECX, #132t
+	JB	8$
+7$:	CRASH	BIBC			;[Bad Input Buffer Count]
+
+8$:	MOVL	EDX, ECX		;  inorder to create a hole for this
+	SUBL	ECX, EBX		;  character
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EDI, DS			;Get offsets for the  move
+	MOVL	ES, EDI
+	MOVL	ESI, tdb_ibufr[ESI]
+	LEAL	ESI, -4[ESI+EDX*4]
+	LEAL	EDI, 4[ESI]
+	STD
+	RMOVSL	[EDI], [ESI]		;Move characters to create hole
+	CLD
+	POPL	ESI
+	POPL	EDI
+	INCL	tdb_ibcnt[ESI]		;Increase length of line
+
+;Here if need to re-echo the rest of the line
+
+10$:	MOVL	ECX, tdb_ibufr[ESI]
+	MOVL	[ECX+EBX*4], EAX	;Store character in buffer
+	PUSHL	#-1
+	CALL	reecho			;Re-echo rest of line
+	CALL	newposright		;Put the cursor after the character
+	PUSHL	EAX			;  we just inserted
+	CALL	setcurpos
+	INCL	tdb_ibpnt[ESI]
+	JMP	inploop
+.PAGE
+;Here for CR
+
+spccr:	TESTL	tdb_imode[ESI], #TIM$ECHO ;Are we echoing now?
+	JE	4$			;No
+	TESTL	tdb_imode[ESI], #TIM$ELFWCR ;Yes - want to echo as CR-LF?
+	JE	4$			;No
+	PUSHL	#CR			;Yes - echo CR now
+	CALL	echochar
+4$:	MOVB	AL, #LF			;Yes
+	JMP	putatend
+
+;Here for backspace - delete character to left of cursor
+
+spcbsp:	CMPL	tdb_ibpnt[ESI], #0	;At beginning of line now?
+	JE	inploop			;Yes - ignore this
+	CALL	curleft			;No - move left one character
+					;Fall into delete routine
+
+;Here for DELETE - delete character under cursor
+
+spcdel:	MOVL	ECX, tdb_ibcnt[ESI]	;Get number of characters in the buffer
+	MOVL	EDX, tdb_ibpnt[ESI]	;Calculate number of characters to move
+	SUBL	ECX, EDX
+	DECL	ECX
+	JS	inploop			;If nothing to delete
+	JE	6$			;If nothing to move
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	EAX, tdb_ibufr[ESI]
+	LEAL	ESI, 4[EAX+EDX*4]
+	LEAL	EDI, -4[ESI]
+	MOVL	EAX, DS
+	MOVL	ES, EAX
+	CLD
+	RMOVSL	[EDI], [ESI]
+	STD
+	POPL	ESI
+	POPL	EDI
+6$:	DECL	tdb_ibcnt[ESI]		;Reduce line length
+	PUSHL	tdb_iendpos[ESI]
+	CALL	reecho			;Re-echo rest of line
+	MOVZBL	EAX, tdb_dsppage[ESI]	;Are we at the first column?
+	CMPB	tdb_curpos+0[ESI+EAX*2], #0
+	JNE	inploop			;No
+	MOVZBL	EAX, tdb_ibcnt[ESI]	;Yes - also at end of line?
+	CMPB	AL, tdb_ibpnt[ESI]
+	JNE	inploop			;No
+	ORB	tdb_stsinp[ESI], #TSI$WRAPPED ;Yes - indicate line wrapped
+	JMP	inploop
+
+;Here for cntl-X - delete entire line
+
+spccntx:CALL	delline
+	JMP	inploop
+
+;Here for INSERT - toggle insert mode
+
+spcins:	XORB	tdb_stsinp[ESI], #TSI$OVER ;Toggle insert mode
+	JMP	inploop			;Thats all
+
+;Here for HOME - move cursor to beginning of line
+
+spchome:MOVL	tdb_ibpnt[ESI], #0
+	PUSHL	tdb_ibgnpos[ESI]
+	JMP	10$
+
+;Here for END - move cursor to end of line
+
+spcend:	MOVL	EAX, tdb_ibcnt[ESI]
+	MOVL	tdb_ibpnt[ESI], EAX
+	PUSHL	tdb_iendpos[ESI]
+	JMP	10$
+
+;Here for cursor up or cursor down
+
+spccurx:PUSHL	EAX
+	CALL	delline			;Clear out the line
+	POPL	EAX
+	JMP	strchr			;Go process the character
+
+;Here for cursor left
+
+spccurl:CALL	curleft			;Move cursor left 1 position
+	JMP	inploop
+
+;Here for cursor right
+
+spccurr:MOVL	EAX, tdb_ibcnt[ESI]	;At end of input line now?
+	CMPL	EAX, tdb_ibpnt[ESI]
+	JBE	inploop			;Yes - ignore this
+	CALL	newposright		;No - move cursor right one character
+	INCL	tdb_ibpnt[ESI]
+	PUSHL	EAX
+10$:	CALL	setcurpos
+	JMP	inploop
+.PAGE
+;Here with data ready in the input line buffer - Now copy it to the caller's
+;  buffer. If it does not all fit, store what will fit and return to the
+;  caller. The next input call will transfer anything that is left over.
+;  This code is a bit more complex than might be expected since it allows
+;  multi-byte non-ASCII codes to be split across separate calls.
+
+forward:MOVL	tdb_ibpnt[ESI], #0	;Set to start of the line buffer
+	ORB	tdb_stsinp[ESI], #TSI$INPAVL ;Indicate there is something in
+					     ;  the line buffer now?
+fwdloop:MOVL	EAX, tdb_ibpnt[ESI]	;Get next character
+	MOVL	EDX, tdb_ibufr[ESI]
+	MOVL	EAX, [EDX+EAX*4]
+	TESTB	tdb_modem[ESI], #TMC$MODEM ;Using modem control?
+	JE	12$			;No - go on
+	TESTL	EAX, #KB$CARDET		;Yes - have carrier for this character?
+	JNE	8$			;Yes
+	TESTB	knlTda+tdaFunc#+1, #QFNC$OOBD>8 ;No - should we have it?
+	JNE	12$			;No - go on
+	MOVL	EAX, #ER_MDNCN		;Yes - fail!
+	JMP	inperr
+
+;Here if have carrier for the character
+
+8$:	TESTB	knlTda+tdaFunc#+1, #QFNC$OOBD>8 ;Should we have carrier here?
+	JE	12$			;Yes
+10$:	MOVL	EAX, #ER_MDICN		;No - fail
+	JMP	inperr
+
+12$:	TESTL	tdb_imode[ESI], #TIM$SCNCODE|TIM$SCNCALL ;Does he want scan
+							 ;  codes?
+	JNE	14$			;Yes
+	TESTL	EAX, #KB$LFTALT|KB$RHTALT ;No - was either ALT key pressed?
+	JE	14$			;No
+	CMPB	AL, #0			;Yes - ASCII code?
+	JE	14$			;No
+	ORB	AL, #0x80		;Yes - set the high bit
+14$:	MOVZBL	EBX, tdb_scstate[ESI]	;Dispatch on special code state
+	JMPIL	xspcddsp[EBX*4]
+
+	.MOD	4
+xspcddsp:
+	.LONG	xspcdnrm	;SCS_NORM = 0 - Normal
+	.LONG	xspcd2c		;SCS_SC1  = 1 - 2st character of special code
+	.LONG	xspcd3c		;SCS_SC2  = 2 - 3rd character of special code
+	.LONG	xspcd4c		;SCS_SC3  = 3 - 4th character of special code
+.PAGE
+;Here if not returning special code
+
+xspcdnrm:				;Always want scan codes?
+	TESTL	tdb_imode[ESI], #TIM$SCNCODE|TIM$SCNCALL
+	JNE	8$			;Yes
+	TESTB	AL, AL			;No - have ASCII code?
+	JNE	12$			;Yes - just return it
+	JMP	8$			;No - return NULL sequence
+
+;Here if need second character of special code
+
+xspcd2c:MOVB	AL, AH			;Get the scan-code value
+	JMP	8$			;Advance state
+
+;Here if need third character of special code
+
+xspcd3c:SHRL	EAX, #16t		;Get shift-control-ALT bits
+8$:	INCB	tdb_scstate[ESI]	;Advance state
+	JMP	inphvchar
+
+;Here if need fourth character of special code
+
+xspcd4c:SHRL	EAX, #24t		;Get the lock bits
+10$:	MOVB	tdb_scstate[ESI], #SCS_NORM ;Reset state
+12$:	INCL	tdb_ibpnt[ESI]		;Bump buffer pointer
+	DECL	tdb_ibcnt[ESI]		;Reduce the character count
+inphvchar:
+	MOVL	EBX, knlTda+tdaBuffer1#
+	IFFAULT	24$
+	MOVB	[EBX], AL		;Store character in memory
+	INCL	knlTda+tdaBuffer1#	;Bump pointer
+	INCL	knlTda+tdaAmount#	;Count the character
+16$:	CMPL	tdb_ibcnt[ESI], #0	;More there?
+	JE	18$			;No - finished
+	SUBL	knlTda+tdaCount#, #1	;Yes - more space in his buffer?
+	JG	fwdloop			;Yes - continue
+	JMP	inpdone			;No - finished for now
+
+;Here if we have emptied the line buffer
+
+18$:	CLRL	EAX			;There is nothing in the line buffer
+	MOVL	tdb_ibpnt[ESI], EAX	;  now
+	MOVL	tdb_ibcnt[ESI], EAX
+	ANDB	tdb_stsinp[ESI], #~TSI$INPAVL
+inpdone:ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	CLRL	EAX
+	RET
+
+;Here if address error while storing in the user's buffer
+
+	FAULTHDR
+24$:	MOVL	EAX, #ER_ADRER		;Try to report the error!
+inperr:	MOVL	knlTda+tdaError#, EAX
+	JMP	inpdone
+.PAGE
+;Subroutine to re-echo rest of line
+;	c{EBX} = Pointer to first character to re-echo
+;	CALL	reecho
+
+;Function to re-echo rest of the line in the input line buffer. The cursor
+;  must be positioned at the screen location for the first character to be
+;  re-echoed. This is the character pointed to by tdb_ibpnt. The cursor is
+;  restored to this position be the function returns. If the line has been
+;  shortened it is space filled out to the previous length.
+;	void reecho(
+;	    long endpos);	// Cursor position of previous end of line
+;				//   if line has been shortened (-1 if
+;				//   definately not shortened)
+
+; NOTE: This function is used in all cases were there is a possibility that
+;       the remainder of the line may have been changed. It may be called
+;       a few times when it is not necessary since the check for this is
+;       not complete but is conservative. It would be possible to replace
+;       this with code which scrolled the line when possible but this is
+;       very complex (mainly due to HT characters) and does not seem to be
+;       worth it, especially since the cost for re-echoing on a console
+;       display is small and we don't expect to run into many serial display
+;       terminals where it MIGHT be justified!
+
+ree_endpos=!12t
+
+reecho:	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, knlTda+tdaAdb#
+	BTL	tdb_imode[ESI], #TIM%ECHO ;Are we echoing now?
+	JNC	20$			;No
+	MOVZBL	EAX, tdb_dsppage[ESI]	   ;Stack the current cursor position
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2] ;  for the call to setcurpos below
+	PUSHL	EAX
+	MOVL	EBX, tdb_ibpnt[ESI]
+	MOVL	ECX, tdb_ibcnt[ESI]	;Get number of characters to echo here
+	SUBL	ECX, EBX
+	JLE	4$			;If nothing to echo
+	SHLL	EBX, #2
+	ADDL	EBX, tdb_ibufr[ESI]
+	MOVL	ESI, ECX
+2$:	PUSHL	[EBX]			;Get a character
+	ADDL	EBX, #4			;Bump pointer
+	CALL	echochar		;Echo character
+	DECL	ESI			;Continue if more to echo
+	JNE	2$
+	MOVL	ESI, knlTda+tdaAdb#
+
+;Here with the entire line echoed. Update the end of line position and see
+;  if we need to add any space fill.
+
+4$:	MOVZBL	EAX, tdb_dsppage[ESI]	;Update the end of line position
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2]
+	MOVL	tdb_iendpos[ESI], EAX
+	CMPL	ree_endpos+4[ESP], #-1
+	JE	14$
+	MOVZBL	EAX, tdb_dsppage[ESI]	;Get current cursor position
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2]
+	CMPB	AH, ree_endpos+1+4[ESP]	;Same line?
+	JNE	6$			;No
+	MOVZBL	ECX, AL
+	MOVZBL	EAX, ree_endpos+0+4[ESP]
+	SUBL	EAX, ECX
+	JLE	14$			;If didn't really shorten it
+	JMP	10$
+
+;Here if we wound up on a different line
+
+6$:	JNS	14$			;Should not be possilble!!
+	MOVXBL	ECX, AH
+	MOVZBL	EDX, ree_endpos+1+4[ESP]
+	SUBL	EDX, ECX
+	IMULL	EDX, tdb_columns[ESI]
+	MOVZBL	ECX, AL
+	MOVZBL	EAX, ree_endpos+0+4[ESP]
+	SUBL	EAX, ECX
+;;;;;	JG	8$
+;;;;;	ADDL	EAX, tdb_columns[ESI]
+8$:	ADDL	EAX, EDX
+10$:	MOVL	ESI, EAX
+12$:	PUSHL	#' '
+	CALL	echochar
+	DECL	ESI
+	JNE	12$
+	MOVL	ESI, knlTda+tdaAdb#
+14$:	CALL	setcurpos		;Put the cursor back (the argument
+20$:	POPL	EBX			;  was pushed above!)
+	POPL	ESI
+	RET	4
+.PAGE
+;Function to delete entire line
+;	CALL	delline
+
+delline:PUSHL	ESI
+	MOVL	ESI, knlTda+tdaAdb#
+	PUSHL	tdb_ibgnpos[ESI]	;Set cursor to beginning of input
+	CALL	setcurpos
+	PUSHL	tdb_iendpos[ESI]	;Push argument for reecho call below
+	MOVL	EAX, tdb_ibgnpos[ESI]	;Clear the line buffer
+	MOVL	tdb_iendpos[ESI], EAX
+	CLRL	EAX
+	MOVL	tdb_ibcnt[ESI], EAX
+	MOVL	tdb_ibpnt[ESI], EAX
+	CALL	reecho			;Reecho the line (Since the line is
+	POPL	ESI			;  now empty, this will simply
+	RET				;  erase whatever is there.)
+.PAGE
+;Function to move cursor 1 position left
+;	void curleft(void);
+
+curleft:PUSHL	ESI
+	MOVL	ESI, knlTda+tdaAdb#
+	CALL	newposleft		;Get new cursor position
+	TESTL	EAX, EAX		;Already at beginninig of input?
+	JS	4$			;Yes - do nothing here
+	DECL	tdb_ibpnt[ESI]		;No - back up one character
+	JNS	2$
+	MOVB	AL, tdb_columns[ESI]
+	SUBL	EAX, #0x0101
+2$:	PUSHL	EAX			;Set new cursor position
+	CALL	setcurpos
+4$:	POPL	ESI
+	RET
+.PAGE
+;Function to determine cursor position when moving right 1 chracter. This
+;  compensates for HT characters but assumes that there will never be a BS
+;  character stored in the input line buffer.
+;	int newposright(void);
+;  Value returned is the new cursor position. This will be at the end of the
+;    line if originally at the end.
+
+newposright:
+	PUSHL	ESI
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EDX, tdb_ibufr[ESI]
+	MOVL	ECX, tdb_ibpnt[ESI]
+	MOVZBL	EAX, tdb_dsppage[ESI]
+	MOVZWL	EAX, tdb_curpos+0[ESI+EAX*2] ;Get current cursor position
+4$:	CMPL	ECX, tdb_ibcnt[ESI]	;At end now?
+	JAE	10$			;Yes - finished
+	INCL	EAX			;No - bump cursor position
+	CMPB	AL, tdb_columns[ESI]	;Past edge of screen?
+	JB	6$			;No
+	MOVB	AL, #0			;Yes
+	INCB	AH
+6$:	INCL	ECX
+	CMPB	-1[EDX+ECX*4], #HT	;Is this an HT?
+	JNE	10$			;No
+	ADDL	EAX, #8			;Yes - adjust the cursor position
+					;  for it
+	CMPB	AL, tdb_columns[ESI]	;Past edge of screen?
+	JB	8$			;No
+	MOVB	AL, #0			;Yes
+	INCB	AH
+8$:	ANDL	EAX, #0xFFFFFFF8
+10$:	POPL	ESI
+	RET
+.PAGE
+;Function to determine cursor position when moving left 1 character. This
+;  compensates for HT characters but assumes that there will never be a BS
+;  character stored in the input line buffer.
+;	int newposleft(void);
+;  Value returned is the new cursor position (-1 if was at beginning of the
+;    line).
+
+newposleft:
+	PUSHL	ESI
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVL	EDX, tdb_ibufr[ESI]
+	MOVL	ECX, tdb_ibpnt[ESI]	;Get current position
+	DECL	ECX			;Minus 1
+	JS	6$			;If at beginning
+	MOVZBL	EAX, tdb_dsppage[ESI]	   ;Not at beginning - get current
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2] ;  position
+	DECB	AL			;Minus one
+	JNS	2$			;If not before beginning of the display
+					;  line
+	MOVB	AL, tdb_columns[ESI]	;Before beginning - put at end of
+	SUBL	EAX, #0x0101		;  previous line
+2$:	CMPB	[EDX+ECX*4], #HT	;Is previous character an HT?
+	JE	8$			;Yes
+4$:	POPL	ESI
+	RET
+
+;Here if already at the beginning of the line - return -1
+
+6$:	MOVL	EAX, #-1
+	JMP	4$
+
+;Here previous character is an HT. The only way to find its position is to
+;  scan from the start of the buffer.
+
+8$:	MOVZWL	EAX, tdb_ibgnpos[ESI]	;Get cursor position for first character
+	CLRL	ECX			;Start at beginning of the line
+10$:	INCL	ECX
+	CMPL	ECX, tdb_ibpnt[ESI]	;Are we back to where we were?
+	JE	4$			;Yes
+	INCL	EAX			;No - advance cursor position
+	CMPB	-1[EDX+EAX*4], #HT	;Is this an HT?
+	JNE	10$			;No - continue
+	ADDL	EAX, #8			;Yes - adjust cursor position for it
+	ANDL	EAX, #0xFFFFFFF8
+	JMP	10$
+.PAGE
+;Function to set the cursor position
+;	long setcurpos(
+;	    long curpos);	// Cursor position (horizontal position in bits
+;				//   0-7, vertical position in bits 8-15, 0xFF
+;				//   for either if should not be changed)
+;  Value returned is previous position (same encoding as curpos) if display,
+;    always 0 if serial port.
+
+scp_pos=!12t
+
+setcurpos:
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVZBL	EBX, tdb_dsppage[ESI]
+	MOVXBL	ECX, scp_pos+0[ESP]
+	MOVXBL	EDX, scp_pos+1[ESP]
+	MOVL	EAX, tdb_ddisp[ESI]
+	CALLI	tfx_curpos[EAX]
+	POPL	EBX
+	POPL	ESI
+	RET	4
+.PAGE
+;Function to echo character
+;	void echochar(
+;	    long chr);
+
+echr_chr=!12t
+
+echochar:
+	PUSHL	ESI
+	PUSHL	EBX
+	MOVL	ESI, knlTda+tdaAdb#
+	MOVZBL	EAX, tdb_dsppage[ESI]	;Save current cursor position
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2]
+	PUSHL	EAX
+	MOVL	EAX, echr_chr+4[ESP]
+	CMPB	AL, #SPA		;No - normal printing character?
+	JAE	10$			;Yes
+	CMPB	AL, #ESC		;No - escape?
+	JNE	2$			;No
+	MOVB	AL, #'$'		;Yes - echo as $
+	JMP	10$
+
+;Here if not ESC
+
+2$:	CMPB	AL, #HT			;Control character which echos as
+	JE	4$			;  itself?
+	CMPB	AL, #CR
+	JE	10$
+	CMPB	AL, #LF
+	JE	10$			;Yes
+	ADDB	AL, #0x40		;No - change to printing character
+	PUSHL	EAX
+	MOVB	AL, #'^'
+	MOVL	EDX, tdb_ddisp[ESI]
+	CALLI	tfx_outchr[EDX]
+	POPL	EAX
+	JMP	10$
+
+;Here to echo HT character
+
+4$:	MOVL	EAX, #' '
+	MOVL	EDX, tdb_ddisp[ESI]	;Output a space
+	CALLI	tfx_outchr[EDX]
+	MOVZBL	EDX, tdb_dsppage[ESI]	;Get cursor position
+	MOVZBL	EDX, tdb_curpos+0[ESI+EBX*2]
+	TESTB	DL, #0x07		;At next tab position?
+	JNE	4$			;No - continue
+	JMP	14$
+
+;Here to echo normal printing character
+
+10$:	MOVL	EDX, tdb_ddisp[ESI]	;Output the character
+	CALLI	tfx_outchr[EDX]
+14$:	POPL	EDX			;Restore original cursor position
+	MOVZBL	EAX, tdb_dsppage[ESI]	;Get new cursor position
+	MOVZWL	EAX, tdb_curpos[ESI+EAX*2]
+	CMPB	AH, DH			;Did the row change?
+	JA	18$			;Yes - this must be a new end position
+					;  (It should not be possible for the
+					;  row to decrease here!)
+	CMPB	AL, DL			;No - did the character position
+					;  increase?
+	JA	16$			;Yes - must not have scrolled
+	DECB	tdb_ibgnpos+1[ESI]	;No - must have scrolled - adjust the
+	JMP	18$			;  beginning position
+
+;Here if still on the same line
+
+16$:	CMPB	AL, tdb_iendpos+0[ESI]	;Past the previous end of line?
+	JBE	20$			;No
+18$:	MOVW	tdb_iendpos[ESI], AX	;Yes - update the end position
+20$:	POPL	EBX
+	POPL	ESI
+	RET	4
+.PAGE
+;Here for the output block svcIoQueue function
+;	CALL	trmoutblk
+
+;Since all transfers to user space are done by scheduled code, there is no
+;  need to lock any memory here!
+
+trmoutblk::
+	TESTB	knlPda+pdaStatus1#, #P1$TRMJUNK ;Are we junking output after ^C?
+	JNE	20$			;Yes
+	BTL	ECX, #XO%OUT		;No - is output allowed?
+	JC	4$			;Yes - go on
+	CMPL	knlTda+tdaCount#, #0	;No - really doing output?
+	JNE	10$			;Yes - fail
+4$:	MOVL	ESI, dcb_trtdb[EDI]
+	MOVL	knlTda+tdaAdb#, ESI
+	CMPL	knlTda+tdaParm#, #0	;Do we have a parameter list?
+	JE	6$			;No
+	PUSHL	#trmioparms		;Yes - process parameters
+	PUSHL	#knlComDPParms#
+	PUSHL	#0
+	CALL	sysIoProcDevParam#
+	TESTL	EAX, EAX
+	JS	12$			;If error
+6$:	CMPL	knlTda+tdaCount#, #0
+	JE	14$
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to the driver routine
+	JMPIL	tfx_outblk[EAX]
+
+;Here if output is invalid
+
+10$:	MOVL	EAX, #ER_NOOUT
+12$:	MOVL	knlTda+tdaError#, EAX
+14$:	CLRL	EAX
+	ORB	knlTda+tdaStatus#+1, #QSTS$DONE>8
+	RET
+
+;Here if junking output after ^C - discard everything but say we did it!
+
+20$:	MOVL	EAX, knlTda+tdaCount#
+	MOVL	knlTda+tdaAmount#, EAX
+	JMP	14$
+.PAGE
+	.SBTTL	sd_getiosts - Get input/output status
+
+;Here for the get input/output status entry
+;	c(DL)  = 0 if want input status, 1 if want output status
+;	c{EDI} = Offset of DCB
+;	CALL	trmiosts
+;	C:set = Error
+;	  c{EAX} = Error code
+;	C:clr = Normal
+;	  c{EAX} = 0 if ready, -1 if not ready
+
+trmiosts::
+	CMPB	DL, #0			;Want input status?
+	JNE	knlRtnMOne#		;No - output - always say ready for now!
+	MOVL	ESI, dcb_trtdb[EDI]
+	CLRL	EAX			;Assume no input
+	MOVL	ECX, tdb_ircnt[ESI]	;Right?
+	ORL	ECX, tdb_ibcnt[ESI]
+	JE	4$			;Yes
+	DECL	EAX			;No - indicate have data
+4$:	RET
+.PAGE
+	.SBTTL	trmiopdelay - Here for the IOPAR_DELAY parameter for input
+
+	DPARMHDR  SET, HEXV
+trmiopdelay:
+	CALL	knlGetParm#		;Get his value
+	JC	4$			;If error
+	MOVL	knlTda+tdaDelay#, EAX	;Store it
+	RET
+
+	.SBTTL	trmioptimeout - Here for the IOPAR_TIMEOUT parameter for input
+
+	DPARMHDR  SET, HEXV
+trmioptimeout:
+	CALL	knlGetParm#		;Get his value
+	JC	4$			;If error
+	MOVL	knlTda+tdaTimeOut#+0, EAX ;Store it
+	MOVL	knlTda+tdaTimeOut#+4, EDX
+4$:	RET
+
+	.SBTTL	trmiopinpsts - Here for the IOPAR_INPSTS parameter for IO
+
+	DPARMHDR  GET, HEXV
+trmiopinpsts:
+	CLRL	EAX			;Assume no input
+	MOVL	ECX, tdb_ircnt[ESI]	;Right?
+	ORL	ECX, tdb_ibcnt[ESI]
+	JE	6$			;Yes
+	INCL	EAX			;No - indicate have data
+6$:	JMP	knlStrParm4#		;Store the value
+
+	.SBTTL	trmiopoutsts - Here for the IOPAR_OUTSTS parameter for IO
+
+	DPARMHDR  GET, HEXV
+trmiopoutsts:
+	MOVL	EAX, #1			;For now, always say can take more data
+	JMP	knlStrParm4#
+.PAGE
+;Function to get the terminal DCB and TDB - Handle is taken from tdaArg1.
+;	long sysTrmGetDcb(void);
+;  Value returned is 0 if normal or a negative XOS error code if error. On a
+;    normal return, the address of the DCB is stored in tdaDCB, the command
+;    bits are stored in tdaCmd, and the address of the TDB is stored in
+;    tdaAdb.
+
+sysTrmGetDcb::
+	MOVL	EAX, knlTda+tdaArg1#	;Get the handle
+	MOVL	knlTda+tdaHandle#, EAX
+	CALL	sysIoGetDcb#		;Get the DCB
+	TESTL	EAX, EAX
+	JS	2$
+	MOVL	EDX, knlTda+tdaDcb#
+	CMPL	dcb_ccb[EDX], #knlTrmCcb# ;Is it a terminal DCB?
+	JNE	4$	
+	MOVL	EAX, dcb_trtdb[EDX]	;Yes - get the TDB address
+	MOVL	knlTda+tdaAdb#, EAX
+	CLRL	EAX
+2$:	RET
+
+;Here if not a terminal DCB
+
+4$:	MOVL	EAX, #ER_NTTRM
+	RET
+.PAGE
+	.SBTTL	trmcinpmode - Here for the IOPAR_TRMCINPMODE IO parameter
+
+;Here for the IOPAR_TRMCINPMODE IO parameter - clear input mode bits
+
+	DPARMHDR  BOTH, HEXV
+trmiocinpmode:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmcinpmode
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmcinpmode:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	18$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	6$
+	NOTL	EAX
+	MOVL	EDX, tdb_imode[ESI]	;Get previous bits
+	ANDL	tdb_imode[ESI], EAX	;Clear bits
+	JMP	12$
+
+6$:	POPL	EBX
+8$:	RET
+
+	.SBTTL	trmsinpmode - Here for the IOPAR_TRMSINPMODE IO parameter
+
+;Here for the IOPAR_TRMSINPMODE IO parameter - set input mode bits
+
+	DPARMHDR  BOTH, HEXV
+trmiosinpmode:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmsinpmode
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	8$			;No
+	PUSHL	EAX			;Yes
+	CALL	knlGetParm#
+	MOVL	ESI, dcb_trtdb[EDI]
+	ORL	tdb_imode[ESI], EAX
+	POPL	EAX
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmsinpmode:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	18$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	6$
+	MOVL	EDX, tdb_imode[ESI]	;Get previous bits
+	ORL	tdb_imode[ESI], EAX	;Set bits
+12$:	CMPL	tdb_imode[ESI], EDX	;Did we change any bits?
+	JE	16$			;No - go on
+14$:	MOVL	EAX, tdb_ddisp[ESI]	;Yes tell the driver which input bits
+	CALLI	tfx_imodechng[EAX]	;  we changed
+16$:	POPL	EAX
+18$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No
+	MOVL	EAX, tdb_imode[ESI]	;Yes - return current value
+	JMP	knlStrParm4#
+.PAGE
+	.SBTTL	trmcoutmode - Here for the IOPAR_TRMCOUTMODE IO parameter
+
+;Here for the IOPAR_TRMCOUTMODE IO parameter - clear output mode bits
+
+	DPARMHDR  BOTH, HEXV
+trmiocoutmode:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmcoutmode
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmcoutmode:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	4$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	6$
+	BTL	EAX, #TOM%SERBRK	;Clear break bit?
+	JNC	1$			;No
+	PUSHL	EAX			;Yes
+	CLRL	EAX
+	MOVL	ECX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_serbreak[ECX]
+	POPL	EAX
+1$:	NOTL	EAX
+	ANDL	tdb_omode[ESI], EAX	;Clear bits
+2$:	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want value returned?
+	JE	8$			;No
+	MOVL	EAX, tdb_omode[ESI]	;Yes - get value
+	JMP	knlStrParm4#
+
+6$:	POPL	EBX
+8$:	RET
+
+	.SBTTL	trmsoutmode - Here for the IOPAR_TRMSOUTMODE IO parameter
+
+;Here for the IOPAR_TRMSOUTMODE IO parameter - set output mode bits
+
+	DPARMHDR  BOTH, HEXV
+trmiosoutmode:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmsoutmode
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmsoutmode:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	4$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	6$
+	BTL	EAX, #TOM%SERBRK	;Set break bit?
+	JNC	10$			;No
+	PUSHL	EAX			;Yes
+	MOVL	ECX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_serbreak[ECX]
+	POPL	EAX
+10$:	ORL	tdb_omode[ESI], EAX	;Set bits
+	JMP	2$
+.PAGE
+	.SBTTL	trmbfrlimit - Here for the IOPAR_TRMBFRLIMIT IO parameter
+
+;Here for the IOPAR_TRMBFRLIMIT IO parameter - set input buffer limit
+
+	DPARMHDR  SET, HEXV
+trmiobfrlimit:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmbfrlimit
+	RET
+
+	DPARMHDR  SET, HEXV
+trmbfrlimit:
+	MOVL	ESI, dcb_trtdb[EDI]
+	CALL	knlGetParm#		;Get value
+	JC	4$
+	CMPL	EAX, tdb_ibsize[ESI]	;Is the value too big?
+	JBE	2$			;No
+	MOVL	EAX, tdb_ibsize[ESI]	;Yes - just make it as big as we can
+2$:	MOVL	tdb_iblen[ESI], EAX	;Store buffer limit
+	CLC
+4$:	RET
+
+	.SBTTL	trmclrinpbufr - Here for the IOPAR_TRMCLRBUFR IO parameter
+
+;Here for the IOPAR_TRMCLRBFR IO parameter - clear buffer
+
+	DPARMHDR  SET, HEXV
+trmioclrbufr:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmclrbufr
+	RET
+
+	DPARMHDR  SET, HEXV
+trmclrbufr:
+	MOVL	ESI, dcb_trtdb[EDI]
+	CALL	knlGetParm#		;Get value
+	JC	4$			;If error
+	TESTB	AL, #CB$OUTPUT		;Want to clear output buffer?
+	JE	10$			;No
+	TESTB	tdb_stsmisc[ESI], #TSM$OUTRING ;Yes - do we have an output ring?
+	JE	10$			;No
+	PUSHL	EAX			;Yes
+	TOFORK
+	CALL	trmcorg#
+	FROMFORK
+	POPL	EAX
+10$:	TESTB	AL, #CB$INPUT		;Want to clear input buffer?
+	JE	12$			;No
+	CLRL	EDX
+	MOVL	tdb_ibpnt[ESI], EDX	;Yes
+	MOVL	tdb_ibcnt[ESI], EDX
+12$:	TESTB	AL, #CB$AHEAD		;Want to clear type-ahead buffer?
+	JE	14$			;No
+	ORB	tdb_stsinp[ESI], #TSI$DISCARD
+	CALL	trmcirg#		;Yes
+	ANDB	tdb_stsinp[ESI], #~TSI$DISCARD
+14$:	CLC
+	RET
+
+	.SBTTL	trmcurtype - Here for the IOPAR_TRMCURTYPE IO parameter
+
+;Here for the IOPAR_TRMCURTYPE IO parameter - Set or get cursor type
+
+	DPARMHDR  BOTH, HEXV
+trmiocurtype:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmcurtype
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmcurtype:
+	MOVL	EAX, #ER_NIYT
+	STC
+	RET
+.PAGE
+	.SBTTL	trmcurpos - Here for the IOPAR_TRMCURPOS IO parameter
+
+;Here for the IOPAR_TRMCURPOS IO parameter - Set or get cursor position
+
+	DPARMHDR  BOTH, HEXV
+trmiocurpos:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmcurpos
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmcurpos:
+	TOFORK	curpos
+	CALL	curpos
+	FROMFORK
+	RET
+
+curpos:	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	6$			;No
+	PUSHL	EAX
+	PUSHL	ECX
+	PUSHL	EBX
+	PUSHL	ES
+	CALL	knlGetParm#		;Yes - get value
+	POPL	ES
+	POPL	EBX
+	POPL	ECX
+	JC	10$
+	MOVL	ESI, dcb_trtdb[EDI]
+	MOVZBL	EBX, tdb_dsppage[ESI]
+	CMPL	ECX, #2			;Have a 2 byte value?
+	JA	2$			;No
+	MOVZBL	ECX, AL			;Yes - use two 8 bit values
+	MOVZBL	EDX, AH
+	JMP	4$
+
+2$:	MOVZWL	ECX, AX			;Use 2 word values
+	MOVL	EDX, EAX
+	SHRL	EDX, #16t
+4$:	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_curpos[EAX]
+	JC	10$
+	POPL	EAX
+6$:	TESTB	AH, #PAR$GET
+	JE	12$
+
+	PUSHL	ECX
+	PUSHL	EBX
+	PUSHL	ES
+	CLRL	ECX
+	DECL	ECX
+	MOVL	EDX, ECX
+	MOVZBL	EBX, tdb_dsppage[ESI]
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_curpos[EAX]
+	POPL	ES
+	POPL	EBX
+	POPL	ECX
+	JC	12$
+	CMPL	ECX, #2
+	JBE	8$
+	SHLL	EAX, #8t
+	SHRW	AX, #8
+8$:	JMP	knlStrParm4#
+
+10$:	POPL	EDX
+12$:	RET
+.PAGE
+	.SBTTL	trmdisppage - Here for the IOPAR_TRMDISPAGE IO parameter
+
+;Here for the IOPAR_TRMDISPAGE IO parameter - Set or get display page
+
+	DPARMHDR  BOTH, DECV
+trmiodisppage:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmdisppage
+	RET
+
+	DPARMHDR  BOTH, DECV
+trmdisppage:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to change the value?
+	JE	4$
+	PUSHL	EAX
+	CALL	knlGetParm#		;Get parameter value
+	JC	6$
+	MOVL	EBX, EAX
+	MOVL	EAX, tdb_ddisp[ESI]	;Dispatch to driver for this function
+	CALLI	tfx_dsppos[EAX]
+	JC	6$
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want to get the value?
+	JE	8$			;No
+	MOVZBL	EAX, tdb_dsppage[ESI]	;Yes
+	JMP	knlStrParm4#
+
+6$:	POPL	EDX
+8$:	RET
+.PAGE
+	.SBTTL	trmmodem - Here for the IOPAR_TRMSPMODEM IO parameter
+
+;Here for the IOPAR_TRMSPMODEM IO parameter - Set or return modem control bits
+;  for serial port
+;	Bit 0 of value specifies and returns DTR state
+;	Bit 1 of value specifies and returns RTS state
+;	Bit 4 of value returns CTS state
+;	Bit 5 of value returns DSR state
+;	Bit 6 of value returns RI state
+;	Bit 7 of value returns CD state
+;	Other bits are not used and should be 0
+
+	DPARMHDR  BOTH, HEXV
+trmiomodem:
+	TESTB	knlTda+tdaURegEAX#+3, #SVC$REDOREQ>24t
+	JE	trmmodem
+	RET
+
+	DPARMHDR  BOTH, HEXV
+trmmodem:
+	MOVL	ESI, dcb_trtdb[EDI]
+	TESTB	AH, #PAR$SET		;Want to change the value?
+	JE	4$
+	PUSHL	EAX
+	PUSHL	ECX
+	CALL	knlGetParm#		;Get parameter value
+	JC	6$
+	PUSHL	EAX
+	ANDL	EAX, #01h
+	MOVL	ECX, tdb_ddisp[ESI]
+	CALLI	tfx_setdtr[ECX]
+	POPL	EAX
+	SHRL	EAX, #1t
+	ANDL	EAX, #01h
+	MOVL	ECX, tdb_ddisp[ESI]
+	CALLI	tfx_setrts[ECX]
+	POPL	ECX
+	POPL	EAX
+4$:	TESTB	AH, #PAR$GET		;Want to get the value?
+	JE	8$			;No
+	PUSHL	ECX
+	MOVL	EDX, tdb_ddisp[ESI]	;Yes
+	CALLI	tfx_getdsb[EDX]
+	POPL	ECX
+	JMP	knlStrParm4#
+
+6$:	POPL	EDX
+	POPL	EDX
+8$:	RET
+.PAGE
+	.SBTTL	trmcpvect - Here for the IOPAR_TRMCPVECT IO parameter
+
+;Here for the IOPAR_TRMCPVECT IO parameter - Get or set control-P vector number
+
+	DPARMHDR  BOTH, HEXV
+trmcpvect::
+	PUSHL	ESI
+	MOVL	ESI, #dcb_trcpsvect
+	JMP	2$
+
+	.SBTTL	trmmcvect - Here for the IOPAR_TRMMCVECT IO parameter
+
+;Here for the IOPAR_TRMMCVECT IO parameter - Get or set modem control up vector number
+
+	DPARMHDR  BOTH, HEXV
+trmmcvect::
+	MOVL	ESI, #dcb_trmcsvect
+2$:	ADDL	ESI, EDI
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	12$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	18$
+	TESTL	EAX, EAX		;Clearing the vector?
+	JNE	4$			;No
+	MOVW	[ESI], AX
+	MOVW	dcb_trcpspda-dcb_trcpsvect[ESI], AX
+	MOVW	dcb_trcpshndl-dcb_trcpsvect[ESI], AX
+	JMP	10$
+
+;Here if not clearing the vector
+
+4$:	MOVL	EDX, EAX
+	CALL	knlChkVector#		;Check for valid vector number
+	JC	16$
+	MOVW	[ESI], DX		;OK - store new value
+
+	CRASH	????
+
+;;;;;	CMPB	knlForkLvl#, #FORK_XFF
+	JB	6$
+	MOVL	EAX, knlPda+pdaAddr#
+	MOVL	EDX, knlTda+tdaHandle#
+	JMP	8$
+
+6$:	MOVL	EDX, knlTda+tdaHandle#
+8$:	MOVW	dcb_trcpspda-dcb_trcpsvect[ESI], AX
+	MOVW	dcb_trcpshndl-dcb_trcpsvect[ESI], DX
+	MOVZWL	EAX, dcb_sunit[EDI]
+	SHLL	EAX, #16t
+	MOVB	AL, dcb_punit[EDI]
+10$:	MOVL	dcb_trcpsdata-dcb_trcpsvect[ESI], EAX
+	POPL	EAX
+12$:	TESTB	AH, #PAR$GET		;Want to get value?
+	JE	14$			;No
+	MOVZWL	EAX, [ESI]		 ;Yes
+	CALL	knlStrParm4#
+14$:	RET
+
+;Here if error
+
+16$:	MOVL	EAX, #ER_PARMV
+18$:	POPL	ESI
+	RET
+
+	.SBTTL	trmcpdata - Here for the IOPAR_TRMCPDATA IO parameter
+
+;Here for the IOPAR_TRMCPDATA IO parameter - Get or set control-P vector data
+
+	DPARMHDR  BOTH, HEXV
+trmcpdata::
+	PUSHL	ESI
+	MOVL	ESI, #dcb_trcpsdata
+	JMP	20$
+
+	.SBTTL	trmmcdata - Here for the IOPAR_TRMMCDATA IO parameter
+
+;Here for the IOPAR_TRMMCDATA IO parameter - Get or set modem control vector data
+
+	DPARMHDR  BOTH, HEXV
+trmmcdata::
+	MOVL	ESI, #dcb_trmcsdata
+20$:	ADDL	ESI, EDI
+	TESTB	AH, #PAR$SET		;Want to set value?
+	JE	22$			;No
+	PUSHL	EAX
+	CALL	knlGetParm#		;Yes - get value
+	JC	18$
+	MOVL	[ESI], EAX		;Store new value
+	POPL	EAX
+22$:	TESTB	AH, #PAR$GET		;Want to get value?
+	JE	24$			;No
+	MOVL	EAX, [ESI] 		;Yes
+	CALL	knlStrParm4#
+24$:	RET
+
+	END

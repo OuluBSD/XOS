@@ -1,0 +1,313 @@
+	.TITLE	ioutil3 - Top level IO routines for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\xosdisk.par
+	.INCLUD	XOSINC:\xmac\xosxdisk.par
+
+	CODE
+
+;Function to terminate queued IO - must be called from main program level
+;  raised to fork level  - the current queued IO operation (if any) is aborted
+;  and all queued requests are canceled
+;	long sysIoCancel(
+
+;	    TDA     frame,	// Address of TDA
+;	
+;				//   function bits:
+;				//     0x8000 = Wait
+;				//     0x4000 = Cancel all
+;				//     0x2000 = Cancel after
+;				//     0x1000 = Suppress signals
+;				//     0x0002 = Cancel input
+;				//     0x0001 = Cancel output
+;	    long     handle	// Device handle
+;	    DCB     *dcb	// Address of DCB
+;	    QAB *qab);		// Address of QAB for request
+;  Value returned is 0 if device is idle or 1 if need to wait. No errors
+;    are returned. If 1 is returned the caller should wait with a wait index
+;    of the handle plus the global thread number times 64 and retry this
+;    call when woken up.
+
+;If "cancel all" is indicated, all requests for the indicated device are
+;  cancelled. Otherwise only the request(s) for the indicated QAB is cancelled.
+
+;This routine first determines if the current IO operation, if any, is for
+;  the caller.  If it is, it is marked as being cancelled and is aborted.  In
+;  this case, any queued requests will be canceled by knlXfFinish when the
+;  current operation is finished.  This routine does NOT wait for the device
+;  to finish.  If there is nothing to abort (no current operation or it is
+;  not for this handle, all queued requests are cancelled here.
+
+
+;This function will cancel any specified queued IO request and will abort
+;  any non-critical active specified IO request. Critical IO is any IO which
+;  may damage system integraty if not allowed to go to completion. This mainly
+;  consists of transfers involving local mass storage devices. Such transfers
+;  are allowed to run to completion. Transfers involving remote system are
+;  never critical.
+
+;A transfer is specified by a user thread (TDA address), a device handle,
+;  transfer direction (for full duplex devices), and the address of a QAB.
+;  If both a handle and a QAB are specified, the handle values must match.
+;  If any of these are not specified, all transfers that match the ones that
+;  are specified are canceled.
+
+;IO can only be canceled for the same process. Direct IO can be canceled from
+;  a different user thread. Queued IO can be canceled from any user thread in
+;  the process.
+
+
+;;;long XOSFNC sysIoCancel(
+	
+
+
+iocan_frame =!24t
+iocan_handle=!20t
+iocan_dcb   =!16t
+iocan_qab   =!12t
+
+sysIoCancel::
+	PUSHL	EDI
+	PUSHL	ESI
+	REQUIREFORK
+	MOVL	EDI, iocan_dcb[ESP]
+	MOVZBL	EBX, iocan_frame[ESP]
+	CMPL	[EDI+EBX], #0		;Is there a current IO operation?
+	JE	12$			;No - nothing needed here (can't have
+					;  anything queued if device is not
+					;  busy)
+	MOVL	ESI, [EDI+EBX]		;Get address of the TDA for a current
+					;  IO operation for the device
+	MOVL	EAX, ESI
+	CMPL	tdaUserTda#[ESI], #0	;Direct IO?
+	JE	1$			;Yes
+	MOVL	EAX, tdaUserTda#[ESI]	;No - get the TDA that started the IO
+1$:	MOVL	EAX, tdaAddr#[EAX]	;For this thread?
+	CMPL	EAX, knlTda+tdaAddr#
+	JNE	14$			;No
+	MOVL	EDX, iocan_handle[ESP]
+	CMPL	tdaHandle#[ESI], EDX	;Maybe
+	JNE	14$			;No
+	TESTB	iocan_frame+1[ESP], #CAN$ALL ;Yes -want to cancel all?
+	JNE	2$			;Yes
+	MOVL	EAX, iocan_qab[ESP]	;No - want to cancel this one?
+	CMPL	tdaQab#+0[ESI], EAX
+	JNE	14$			;No
+2$:	TESTB	tdaQSts1#[ESI], #XF1$ABORT ;Yes - is it being aborted now?
+	JNE	8$			;Yes - nothing more needed here
+	ORB	tdaQSts1#[ESI], #XF1$ABORT ;No - indicate being aborted
+	TESTB	CL, #CAN$ALL		;Want to cancel remaining requests?
+	JE	4$			;No
+	ORB	tdaQSts1#[ESI], #XF1$CANCEL ;Yes
+4$:	TESTB	CL, #CAN$NOSIG		;Want to suppress interrupts?
+	JE	6$			;No
+	ORB	tdaQSts1#[ESI], #XF1$NOSIG ;Yes
+6$:	BTL	dcb_dsp[EDI], #DS%NOABORT ;Can we abort the device?
+	JC	8$			;No - let it stop by itself!
+	PUSHL	ESI
+	PUSHL	#ER_ABORT
+	CALL	sysIoResumeThread#	;Stop the current IO operation and let
+	PUSHFL				;  the rest happen in sysIoThreadFinish
+	CALLF	knlSchedule#		;Give the request's thread a chance to
+	TOFORK				;  execute
+	MOVZBL	EBX, iocan_frame[ESP]
+	MOVL	ESI, [EDI+EBX]
+	TESTL	ESI, ESI
+	JE	12$			;Finished if idle now
+	TESTB	iocan_frame+1[ESP], #CAN$ALL ;Cancelling all?
+	JNE	8$			;Yes - need to wait
+	MOVL	EAX, iocan_qab[ESP]	;No - is the same request active now?
+	CMPL	tdaQab#+0[ESI], EAX
+	JNE	12$			;No - finished
+8$:	MOVL	EAX, #1			;Indicate need to wait
+10$:	POPL	ESI
+	POPL	EDI
+	RET	16t
+
+;Here if finished
+
+12$:	CLRL	EAX
+	JMP	10$
+
+;Here if current operation should not be cancelled
+
+14$:	LEAL	EDX, tdaIoQHead#[ESI]
+16$:	MOVL	EBX, [EDX]		;Get next queued IOQB
+	TESTL	EBX, EBX
+	JE	24$
+
+	MOVL	EAX, ioqb_pda[EBX]	;Is it one of ours?
+	CMPL	EAX, knlPda+pdaAddr#
+	JNE	26$			;No - continue
+	MOVL	EAX, iocan_handle[ESP]	;Maybe
+	CMPW	ioqb_handle[EBX], AX
+	JNE	26$			;No
+	TESTB	iocan_frame+1[ESP], #CAN$ALL ;Want to cancel all requests?
+	JNE	18$			;Yes
+	MOVL	EAX, iocan_qab[ESP]	;No - want to cancel this one?
+	CMPL	ioqb_qab+0[EBX], EAX
+	JNE	26$			;No
+18$:
+	CMPB	ioqb_func[EBX], #QFNC_CLOSE ;Yes - is this a close function?
+	JE	26$			;Yes - can't cancel it!
+	MOVL	EAX, ioqb_next[EBX]	;No - unlink this IORB
+	MOVL	[EDX], EAX
+	TESTL	EAX, EAX		;Was this the last one?
+	JNE	22$			;No
+20$:	MOVL	tdaIoQTail#[ESI], EAX
+22$:	CALL	canceliorbci		;Cancel the request
+	TESTB	iocan_frame+1[ESP], #CAN$ALL ;Finished now?
+	JE	24$			;Yes
+	TESTL	EDX, EDX		;No - have any more to cancel?
+	JNE	16$			;Yes
+24$:	CLRL	EAX
+	JMP	10$
+
+;Here if this is not one of our requests or is one that we do not want to
+;  cancel now
+
+26$:	LEAL	EDX, ioqb_next[EBX]	;Advance pointer
+	JMP	16$			;Continue
+.PAGE
+;Subroutine to cancel queued IO request
+;	c{ESI} = Offset of IORB
+;	CALL	canceliorb
+;  EBX, EDX, ES, and FS are respected
+
+canceliorbci:
+	PUSHL	ES
+	PUSHL	FS
+	PUSHL	EBX
+	PUSHL	EDX
+	IFFAULT	12$
+
+	CRASH	????
+
+;;;;;	MOVL	EDX, iorb_qab[ESI]	;Get offset of the QAB
+	TESTB	iocan_frame+1[EBP], #CAN$NOSIG ;Want to suppress interrupts?
+	JNE	12$			;Yes
+	JMP	2$			;No
+
+canceliorb::
+	PUSHL	ES
+	PUSHL	EBX
+	PUSHL	EDX
+	IFFAULT	12$
+
+	CRASH	????
+
+;;;;;	MOVL	EDX, iorb_qab[ESI]	;Get address of the QAB
+	IFFAULT	12$
+2$:	MOVZBL	EAX, qab_vector[EDX]	;Get interrupt vector number
+	TESTL	EAX, EAX		;Want software interrupt here?
+	JE	10$			;No
+	PUSHL	EBX
+	PUSHL	ESI
+	CALL	knlGetQel#		;Yes - get an SLB
+	JC	8$			;Forget it if error!
+	MOVB	BL, #SIGT_NORMAL	;Get interrupt type
+	MOVL	ECX, #1			;2 data items for this interrupt
+	MOVL	slb_data[ESI], EDX	;Store address of the QAB as interrupt
+
+;NEED TO ALLOW ONLY ONE OUTSTANDING INTERRUPT HERE!!!
+
+	CLRL	EDX
+
+	CRASH	SIG?
+
+;;;;;	CALL	knlReqSignal#		;Request the software interrupt
+
+8$:	POPL	ESI
+	POPL	EBX
+	IFFAULT	12$			;Forget it if error here!
+10$:	MOVW	qab_status[EDX], #QSTS$DONE ;Indicate operation canceled
+	IFFAULT	12$
+	MOVL	qab_error[EDX], #ER_CANCL
+	FAULTHDR
+12$:	PUSHL	ESI
+	CALL	sysMemGiveXmb#		;Give up the IOQB
+	POPL	EDX
+	POPL	EBX
+	POPL	ES
+	RET
+.PAGE
+;Function to cancel all IO operations for a thread - Cancels all current IO
+;  operations for the current thread.
+;	long cancelall(
+;	    long hndl);		// Starting handle
+;  Value is 0 if all operations are complete or the device handle if need
+;    to wait.
+
+cana_hndl=!12t
+
+cancelall::
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, cana_hndl[ESP]
+2$:	MOVL	EDI, knlPda+pdaHndlTbl#[ESI*8]
+	TESTL	EDI, EDI		;Really a DCB?
+	JS	4$			;Yes
+	JNS	8$			;No - Either it was just allocated or
+					;  is being transfered. In either
+					;  case we can just skip it for now.
+;Here with address of a real DCB
+
+4$:	CMPL	dcb_inpthrd[EDI], #0	;Is input active?
+	JE	6$			;No
+	PUSHL	#0x4000+dcb_inpthrd	;Yes - cancel it if we need to
+	PUSHL	ESI
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	sysIoCancel
+	TESTL	EAX, EAX		;Errors should not be possible here
+	JS	14$
+	JNE	12$			;If need to wait
+6$:	CMPL	dcb_outthrd[EDI], #0	;Is output active?
+	JE	8$			;No
+	PUSHL	#0x4000+dcb_outthrd	;Yes - cancel it if we need to
+	PUSHL	ESI
+	PUSHL	EDI
+	PUSHL	#0
+	CALL	sysIoCancel
+	TESTL	EAX, EAX		;Errors should not be possible here
+	JS	14$
+	JNE	12$			;If need to wait
+8$:	INCL	ESI			;Bump handle
+	CMPL	ESI, knlPda+pdaHndlNum#	;More to check?
+	JBE	2$			;Yes
+	CLRL	EAX			;Finished - return 0
+10$:	POPL	ESI
+	POPL	EDI
+	RET	4
+
+;Here if need to wait - return the handle
+
+12$:	MOVL	EAX, ESI
+	JMP	10$
+
+14$:	CRASH	CNIO
+
+	END

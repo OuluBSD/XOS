@@ -1,0 +1,128 @@
+	.TITLE	fputs - Function to string to IO stream
+	.SBTTL	STDC run-time library for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\STDIO.PAR
+
+	.STDSEGS
+
+	.PSECT	_TEXT_p
+
+	.SBTTL	fputs - Function to write block to IO stream
+
+;Function to write block to IO stream
+;	const void *str;	/* Pointer to string to output */
+;	FILE *stream;		/* Stream pointer */
+;	(int)val = fputs(str, stream);
+;  Value returned is number of characters output if normal or -1 if
+;    error (errno is set)
+
+$$$=!0
+FRM fw_rtn, 4t
+FRM fw_cnt, 4t
+fw_SIZE=!$$$
+
+arg_str =!16t
+arg_file=!20t
+
+	.ENTRY	fputs
+fputs:	PUSHL	EBX
+	PUSHL	EDI
+	PUSHL	ESI
+	MOVL	ESI, arg_str[ESP]	;Get offset of string
+	MOVL	EDI, arg_file[ESP]	;Get stream pointer
+	BTL	iob_flag[EDI], #IOB%IONBF ;Unbuffered device?
+	JC	10$			;Yes
+4$:	MOVZBL	EAX, [ESI]		;Get character
+	INCL	ESI
+	CMPB	AL, #0			;Finished?
+	JE	6$			;Yes
+	PUSHL	EDI			;Output it
+	PUSHL	EAX
+	CALL	fputc#
+	ADDL	ESP, #8
+	TESTL	EAX, EAX
+	JNS	4$			;Continue if OK
+	JMP	8$			;If error
+
+;Here when finished
+
+6$:	SUBL	ESI, arg_str[ESP]	;Calculate amount output
+	MOVL	EAX, ESI
+8$:	POPL	ESI
+	POPL	EDI
+	POPL	EBX
+	RET
+
+;Here if have unbuffered device - we do output directly here to minimize the
+;  number of system calls needed
+
+10$:	SUBL	ESP, #200t		;Allocate a buffer
+	CLRL	EDX
+12$:	MOVL	EBX, ESP
+	MOVL	ECX, #198t
+	CLD
+14$:	LODSB	[ESI]
+	CMPB	AL, #0
+	JE	20$
+	INCL	EDX
+	CMPB	AL, #LF
+	JNE	16$
+	MOVB	[EBX], #CR
+	INCL	EBX
+	DECL	ECX
+16$:	MOVB	[EBX], AL
+	INCL	EBX
+	DECL	ECX
+	JG	14$
+	CALL	dmpbufr
+	JNC	12$
+18$:	NEGL	EAX			;Make positive for errno
+	MOVL	errno#, EAX
+	CLRL	EAX
+	DECL	EAX
+	JMP	22$
+
+;Here at end of string
+
+20$:	CALL	dmpbufr
+	JC	18$
+	MOVL	EAX, EDX
+22$:	ADDL	ESP, #200t
+	POPL	ESI
+	POPL	EDI
+	POPL	EBX
+	RET
+
+;Local subroutine to output our buffer
+
+dmpbufr:LEAL	EAX, 4t[ESP]
+	SUBL	EBX, EAX
+	PUSHL	iob_handle[EDI]
+	PUSHL	EAX
+	PUSHL	EBX
+	CALL	svcIoOutBlock#
+	BTL	EAX, #31t
+	RET
+
+	.END

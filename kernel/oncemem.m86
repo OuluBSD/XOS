@@ -1,0 +1,701 @@
+	.TITLE	oncemem - Once-only memory set up routine for XOS
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\xmac\xos.par
+	.INCLUD XOSINC:\xmac\xostime.par
+	.INCLUD	XOSINC:\xmac\xosx.par
+	.INCLUD	XOSINC:\xmac\xoserr.par
+	.INCLUD	XOSINC:\xmac\pcat.par
+
+	ONCE
+
+;Function to initialize memory routines
+;	c{EAX} = First unavailable paragraph in base memory area
+;	c{EBX} = First available address in base memory area
+;	c{ECX} = Size of the once-only ram-disk
+;	CALL	meminit
+
+;Except for EBP, ALL registers (including ESP) are modified!
+
+;NOTE: This function changes ESP. (This is necessary because the memory needed
+;      for the standard stack is not available until it is mapped here.) The
+;      memory for the stack frame used here is taken from the original stack,
+;      which remains valid while this functtion is executing. Also, the
+;      original value of EBP is preserved so that the caller's access to his
+;      stack frame is preserved.
+
+meminit::
+	ADDL	ECX, #0x0FFF		;Change ram-disk size to number of
+	SHRL	ECX, #12t		;  pages (round up)
+	MOVL	oordsize#, ECX
+	SHRL	EAX, #8t		;Change to number of total pages
+	MOVL	knlMemTotal#, EAX	;  available (round down)
+	ADDL	EBX, #0x0FFF
+	SHRL	EBX, #12t
+	SUBL	EAX, EBX		;Get number of pages available
+	MOVL	knlMemAvail#, EAX	;Store it
+
+;Get the size of extended memory from CMOS. The "standard" value is the number
+;  of KB of extended memory and is only 16 bits. Thus the maximum size that
+;  can be reported is 65,535KB. The only generally available way to determine
+;  the actual size is to scan memory. Unfortunately, problems have been
+;  observed on a few systems when scanning memory. Thus we do not scan memory
+;  here but only set up as much memory as is reported by the CMOS value. This
+;  is more than enough for XOS to initialize and start running normal user
+;  programs. The addmem init-only LKE is normally invoked by startup.bat to
+;  scan memory and set up all available memory. The can be changed by simply
+;  editing startup.bat if this causes a problem with specific systems. addmem
+;  can also be invoked to add a specified amount of memory without scanning.
+;  We require that we have at least 2MB of extended memory. If there is less,
+;  XOS will not be able to initialize. With 2MB XOS will initialize and will
+;  be able to run "small" programs. Generally, there should be at least 4 to
+;  8MB for full XOS functionality. 
+
+	PUSHL	#0x17			;Get size of extended memory
+	CALL	sysSysReadCmos#
+	MOVL	extsz, EAX
+	PUSHL	#0x18
+	CALL	sysSysReadCmos#
+	MOVB	extsz+1, AL
+	ANDL	extsz, #0xFFFFFC00	;Round down to whole MB
+
+;oncereal has done the minimum memory set up needed to switch to protected
+;  mode. This consists of:
+;	0x0000 Page zero
+;	0x1000 Page directory
+;	0x2000 Page table for page 301 (System code segment - first 4M)
+;	0x3000 Page table for page 302 (System code segment - second 4M)
+;	0x4000 Page table for page 390 (System data segment - first 4M)
+;	0x5000 Page table for page 391 (System data segment - second 4M)
+;	0x6000 First available physical address
+
+;We use the page directory set up by oncereal as the null process page
+;  directory. The page tables set up by oncereal are used as is for the
+;  global page tables for exec code and data. Page zero is not used except
+;  for saving crash information.
+
+;New we set up the rest of the memory structure needed to support the null
+;  process and the scheduler. This includes the following:
+;	Page table for first 4M of the PDA area (1 page)
+;	Page table for first 4M of the TDA area (1 page)
+;	Null process per-process page table (1 page)
+;	Null process PDA (1 page)
+;	Null process base thread TDA (2 pages)
+;	Page table for first 4M of knlMemTable (1 page)
+;	Initial memory for knlMemTable (1 to 32 pages depending on extended
+;	  memory size)
+
+;Since there are a limited number of pages available in the base area, we take
+;  the pages we need here from extended memory immediately above the RAM disk.
+;  Since the memory free list has not yet been created, we simply grab pages
+;  as we need then and keep track of the last page we took so we can exclude
+;  these pages from the  memory free list when we create it.
+
+	MOVL	EDX, oordsize#		;Get address of first available page
+	SHLL	EDX, #12t		;  above the ram-disk
+	ADDL	EDX, #0x00100023
+	MOVL	0x1000+{pdabase>20t}, EDX ;Make this the page table for the
+					  ;  first 4M of the PDA area
+	MOVL	EDI, #knlPgTable#+{pdabase>10t} ;Clear the page
+
+	CHECKES
+
+	MOVL	ECX, #0x400
+	CLRL	EAX
+	RSTOSL	[EDI]
+	MOVL	knlPgTable#+{{{pdabase+pdaPageDir}>10t}&0xFFFFFFFC}, #0x1023
+					;Map the page directory were it
+					;  should be
+	MOVL	pdabase+pdaPageDir+0, #0 ;We no longer need the unity mapping
+					 ;  for pages 0 and 1
+	ADDL	EDX, #0x1000		;Make the next page the page table
+					;  for the first 4M of the TDA area
+	MOVL	pdabase+pdaPageDir+{tdabase>20t&0xFFC}, EDX
+	MOVL	EDI, #knlPgTable#+{tdabase>10t} ;Clear the page
+	MOVL	ECX, #0x400
+	RSTOSL	[EDI]
+	ADDL	EDX, #0x1000		;Make the null process per-process
+					;  area page table
+	MOVL	knlPgTable+{{{pdabase+pdaPageTbl}>10t}&0xFFFFFFFC}, EDX
+					;This is mapped in the PDA as a normal
+					;  page to make it easier to set up
+					;  when creating a new process
+	MOVL	EDI, #pdabase+pdaPageTbl ;Clear the page
+	MOVL	ECX, #0x400
+	RSTOSL	[EDI]
+	MOVL	pdabase+pdaPageDir+{{knlPda>20t}&0xFFC}, EDX
+					;Also make it a page table
+	MOVL	knlPgTable#+{{{knlPda+pdaPageTbl}>10t}&0xFFFFFFFC}, EDX
+	MOVL	ECX, knlPgTable#+{{{pdabase+pdaPageDir}>10t}&0xFFFFFFFC}
+	MOVL	knlPgTable#+{{{knlPda+pdaPageDir}>10t}&0xFFFFFFFC}, ECX
+
+	ADDL	EDX, #0x1000		;Make the null process PDA page - Map
+					;  it at both pdabase and knlPda.
+	MOVL	knlPgTable#+{{{pdabase+0x0000}>10t}&0xFFFFFFFC}, EDX
+	MOVL	knlPgTable#+{{{knlPda+0x0000}>10t}&0xFFFFFFFC}, EDX
+
+	MOVL	EDI, #pdabase		;Clear the page
+	MOVL	ECX, #0x400
+	RSTOSL	[EDI]
+	ADDL	EDX, #0x1000		;Make the null process base thread
+					;  TDA pages - Map them at both
+					;  tdabase and knlTda.
+	MOVL	knlPgTable#+{{{tdabase+0x0000}>10t}&0xFFFFFFFC}, EDX
+	MOVL	knlPgTable#+{{{knlTda+0x0000}>10t}&0xFFFFFFFC}, EDX
+	ADDL	EDX, #0x1000
+	MOVL	knlPgTable#+{{{tdabase+0x1000}>10t}&0xFFFFFFFC}, EDX
+	MOVL	knlPgTable#+{{{knlTda+0x1000}>10t}&0xFFFFFFFC}, EDX
+	MOVL	EDI, #tdabase		;Clear the pages
+	MOVL	ECX, #0x800
+	RSTOSL	[EDI]
+	MOVL	tdabase+tdaPtaPTP1#, EDX
+	LEAL	ECX, -0x1000[EDX]
+	MOVL	tdabase+tdaPtaPTP0#, ECX
+
+;Create the page table for the first 4M of knlMemTable
+
+	ADDL	EDX, #0x1000
+	MOVL	pdabase+pdaPageDir+knlMemTableS20#, EDX
+	MOVL	EDI, #knlPgTable#	;Clear the page
+	ADDL	EDI, #knlMemTableS10#
+	MOVL	ECX, #0x400
+	CLRL	EAX
+	RSTOSL	[EDI]
+	ADDL	EDX, #0x1000
+
+;Determine how many pages we need for knlMemTable (memtable contains one 8-byte
+;  entry for each page of physical memory).
+
+	MOVL	ECX, extsz		;Get extended memory size (KB)
+	ADDL	ECX, #1024t		;Include the base memory area
+	SHRL	ECX, #11t
+	MOVL	mtcnt, ECX		;Save number of pages needed
+
+;Create knlMemTable
+
+creatememtable:
+	MOVL	EDI, #knlPgTable#
+	ADDL	EDI, #knlMemTableS10#
+4$:	MOVL	[EDI], EDX
+	ADDL	EDI, #4
+	ADDL	EDX, #0x1000
+	LOOP	ECX, 4$
+	MOVL	EDI, #knlMemTable#	;Clear knlMemTable
+	MOVL	ECX, mtcnt
+	SHLL	ECX, #10t
+	CLRL	EAX
+	RSTOSL	[EDI]
+
+	MOVL	EAX, CR3		;Clear the mapping cache
+	MOVL	CR3, EAX
+.PAGE
+;Here with the pages needed for the null process mapped - now set them up
+
+setupnull:
+	MOVL	pdabase+pdaLabel#, #'PDA&'
+;;;;;	MOVB	pdabase+pdaType#, #PDATYPE_PDA
+	MOVL	pdabase+pdaAddr#, #pdabase
+	DECL	pdabase+pdaWSLimit# 	;Set memory limits to infinity (need
+	DECL	pdabase+pdaUMLimit# 	;  to do this so code at initsched
+	DECL	pdabase+pdaOMLimit# 	;  can create the null process)
+	MOVL	pdabase+pdaTdaHead#, #tdabase
+	MOVL	pdabase+pdaTdaTail#, #tdabase
+	MOVL	pdabase+pdaSpy#, #procspy+pspy_SIZE
+	MOVL	pdabase+pdaSesPda#, #pdabase
+	MOVL	pdabase+pdaCR3#, #0x1000
+	MOVL	tdabase+tdaTssSel#, #GS_NULLTSS
+	MOVL	tdabase+tdaLabel#, #'TDA&'
+	MOVB	tdabase+tdaType#, #TDATYPE_BASE
+	MOVL	tdabase+tdaAddr#, #tdabase
+	MOVL	tdabase+tdaPda#, #pdabase
+	MOVL	tdabase+tdaSpy#, #thrdspy
+	MOVL	tdabase+tdaURegEIP#, #nullproc#
+	MOVL	tdabase+tdaURegCS#, #GS_UCODE|0x03
+	MOVL	tdabase+tdaURegEFR#, #0x0200
+	MOVL	tdabase+tdaURegDS#, #GS_UDATA|0x03
+	MOVL	tdabase+tdaURegSS#, #GS_UDATA|0x03
+	MOVL	tdabase+tdaSRegESP#, #tdabase+tdaXStkBegin#
+	MOVL	tdabase+tdaTss#+tss_stk0+0, #tdabase+tdaXStackP#
+	MOVL	tdabase+tdaTss#+tss_stk0+4, #GS_XDATA
+	DECL	tdabase+tdaWaitList#	;Initialize the wait list pointer
+	DECL	tdabase+tdaWaitIndex#	;Initialize the process wait index
+	DECL	tdabase+tdaWaitNext#	;And the wait hash list pointer
+
+;Switch to using the null process base thread stack.
+
+;NOTE: EBP still points to the caller's original stack frame (which is on the
+;      caller's (onceprot) stack), which remains valid, although it is no
+;      longer on the current stack!
+
+	POPL	EAX			;Get the return address
+	MOVL	ESP, #tdabase+tdaXStkBegin# ;Switch to the null process's exec
+					    ;  stack
+	PUSHL	EAX			;Put the return address on the current
+					;  stack
+	MOVL	ECX, #6t
+	MOVL	EDI, #knlPgTable#+{knlV86CodeBase>10t}
+2$:	ANDB	[EDI], #~0x02		;Make the user real mode code pages
+	ADDL	EDI, #4t		;  read only
+	LOOP	ECX, 2$
+
+;Set up knlMemTable (memory for it has already been allocated and cleared). At
+;  this point, physical memory is set up as follows (starting at 0):
+;	0x000000 Page zero
+;	0x001000 Page directory
+;	0x002000 Page table for page 301 (System code segment - first 4M)
+;	0x003000 Page table for page 302 (System code segment - second 4M)
+;	0x004000 Page table for page 390 (System data segment - first 4M)
+;	0x005000 Page table for page 391 (System data segment - second 4M)
+;	0x006000 Loaded code
+;	         Available base memory pages
+;	         Unavailable base memory pages (either non-existant pages or
+;                  pages that have been grabed by the BIOS)
+;	0x0A0000 Base memory device and BIOS area
+;	0x100000 Once-only RAM-disk (These pages are marked as system pages
+;	           here and are changed to free pages when the once-only code
+;	           is given up.)
+;	         Page table for first 4M of the PDA area (1 page)
+;	         Page table for first 4M of the TDA area (1 page)
+;	         Null process per-process page table (1 page)
+;	         Null process PDA (1 page)
+;	         Null process base thread TDA (2 pages)
+;	         Page table for first 4M of knlMemTable (1 page)
+;	         Initial knlMemTable pages (1 to 32 pages depending on extended
+;	           memory size)
+;	         Available extended memory pages
+
+;	c{knlMemTotal} = Total number of base memory pages available for use
+;	c{knlMemAvail} = Number of base memory pages available above the loaded
+;			   code and data
+
+setupmemtable:
+	MOVL	EDI, #knlMemTable#	;Set the knlMemTable entries for the
+	MOVL	EAX, #MT_SYS<20t	;  pages set up by oncereal
+	MOVL	[EDI], EAX
+	MOVL	8[EDI], #MT_PDIR<20t
+	MOVL	16t[EDI], #MT_PTBL<20t
+	MOVL	24t[EDI], #MT_PTBL<20t
+	MOVL	32t[EDI], #MT_PTBL<20t
+	MOVL	40t[EDI], #MT_PTBL<20t
+	ADDL	EDI, #48t
+	MOVL	ECX, knlMemTotal#	;Get the number of loaded pages
+	SUBL	ECX, knlMemAvail#
+	SUBL	ECX, #6
+6$:	MOVL	[EDI], EAX		;Make them system pages
+	ADDL	EDI, #8
+	LOOP	ECX, 6$
+	MOVL	ESI, #knlMemFree#
+	MOVL	EAX, EDI
+	SUBL	EAX, #knlMemTable#
+	SHRL	EAX, #3
+	MOVL	ECX, knlMemAvail#
+8$:	MOVL	[ESI], EAX
+	LEAL	ESI, knlMemTable#[EAX*8]
+	INCL	EAX
+	LOOP	ECX, 8$
+	LEAL	EDI, knlMemTable#[EAX*8] ;Mark the pages from the top of the
+	MOVL	ECX, #0x100		 ;  available base memory to the top
+	SUBL	ECX, EAX		 ;  of base memory as unmanaged
+	MOVL	EAX, #-1
+10$:	MOVL	[EDI], EAX
+	ADDL	EDI, #8
+	LOOP	ECX, 10$
+	MOVL	ECX, oordsize		;Mark the RAM-disk pages, the extended
+	ADDL	ECX, #9			;  memory pages we used for system
+	ADDL	ECX, mtcnt		;  pages, and the knlMemTable pages as
+	MOVL	mtcnt, ECX		;  system pages
+	MOVL	EAX, #MT_SYS<20t
+12$:	MOVL	[EDI], EAX
+	ADDL	EDI, #8
+	LOOP	ECX, 12$
+
+	MOVL	EAX, EDI		;Get the number of the first available
+	SUBL	EAX, #knlMemTable#	;  extended memory page
+	SHRL	EAX, #3
+	MOVL	ECX, extsz		;Get the size of extended memory in KB
+	SHRL	ECX, #2			;Change to pages (round down)
+	ADDL	knlMemTotal#, ECX	;Add into total
+	SUBL	ECX, mtcnt		;Minus size of the RAM-disk plus the
+					;  system pages gives the number of
+					;  available extended memory pages
+	ADDL	knlMemAvail#, ECX	;Add into number available
+14$:	MOVL	[ESI], EAX
+	LEAL	ESI, knlMemTable#[EAX*8]
+	INCL	EAX
+	LOOP	ECX, 14$
+	MOVL	knlMemTop#, EAX		;Store the top page number
+
+
+	MOVL	EAX, knlMemFree#
+	CLRL	ECX
+20$:	TESTL	EAX, EAX
+	JE	22$
+	INCL	ECX
+	MOVL	EAX, knlMemTable#[EAX*8]
+	JMP	20$
+
+22$:	CMPL	ECX, knlMemAvail#
+	JE	setupspy
+	CRASH	BMAC			;[Bad Memory Available Count]
+
+;knlMemTable is now fully set up and we can use the normal exec memory
+;  allocation routies for everthing beyond this point.
+.PAGE
+;Initialize the first process spy area page (this includes the system spy area).
+;  This page was loaded as part of the kernel with the 32-byte system name in
+;  the first 32 bytes.
+
+setupspy:
+	MOVL	EDX, #procspy
+	MOVL	sspy_procmax[EDX], #MAXPROCS ;Max value for knlProcLimit
+	MOVL	sspy_proclimit[EDX], #MAXPROCS ;Process limit
+	MOVL	sspy_procinuse[EDX], #1
+	MOVL	sspy_thrdmax[EDX], #MAXTHRDS ;Max value for knlThrdLimit
+	MOVL	sspy_thrdlimit[EDX], #MAXTHRDS ;Thread limit
+	MOVL	sspy_thrdinuse[EDX], #1
+
+	ADDL	EDX, #pspy_SIZE
+	MOVL	pspy_name+0[EDX], #'Null' ;Store name of  the null process
+	MOVL	pspy_name+4[EDX], #'_Pro'
+	MOVL	pspy_name+8[EDX], #'cess'
+	MOVB	pspy_state[EDX], #PSSTA_PROC
+	MOVB	pspy_type[EDX], #PDATYPE_PDA
+	MOVL	pspy_ompages[EDX], #4
+
+;Allocate and initialize the first thread spy area page - This page is allocated
+;  here.
+
+	PUSHL	#thrdspy
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JNS	6$
+	CRASH	CGSP		;[Can't Get Spy area Page]
+
+6$:	MOVL	EDI, #thrdspy
+	MOVL	ECX, #0x400
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+
+;Allocate and clear the user mode junk data page
+
+	PUSHL	#userdatabase
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JNS	8$
+	CRASH	CGUD		;[Can't Get User Data page
+
+8$:	MOVL	EDI, #userdatabase
+	MOVL	ECX, #0x400
+
+	CHECKES
+
+	CLRL	EAX
+	RSTOSL	[EDI]
+.PAGE
+;Now copy (and compress) the exported symbol table
+
+$$$=!0
+FRM sym_mempnt, 4t		;Memory pointer
+FRM sym_savdst, 4t		;Pointer to start of destination block
+FRM sym_savsrc, 4t		;Pointer to start of source block
+FRM sym_savsym, 4t		;Pointer to start of source symbol entry
+FRM sym_offset, 4t		;Offset value for symbol
+FRM sym_select, 4t		;Selector value for symbol
+FRM sym_header, 48t		;Header bytes for symbol + buffer
+FRM sym_count , 4t		;Symbol counter
+sym_SIZE=!$$$
+
+setsym:	ENTER	sym_SIZE, 0
+	MOVL	sym_mempnt[EBP], #knlExportTable
+	MOVL	ESI, #exporttable#
+1$:	MOVL	EAX, #16t		;Allocate space for the table header
+	CALL	getsymmem
+	MOVL	sym_savdst[EBP], EDI
+	MOVL	sym_savsrc[EBP], ESI
+	MOVSL	[EDI], [ESI]		;Copy the block header
+	MOVSL	[EDI], [ESI]
+	MOVSL	[EDI], [ESI]
+	LODSL	[ESI]
+	STOSL	[EDI]
+	MOVL	sym_count[EBP], EAX
+2$:	MOVL	sym_savsym[EBP], ESI	;Remember where the symbol entry starts
+	LODSW	[ESI]			;Get header bytes
+	MOVL	sym_header[EBP], EAX
+	MOVB	BL, AH			;Get symbol size
+	ANDL	EBX, #0x1F
+	INCL	EBX
+	PUSHL	SS			;Copy symbol name
+	POPL	ES
+	LEAL	EDI, sym_header+2[EBP]
+	MOVL	ECX, EBX
+	RMOVSB	[EDI], [ESI]
+	MOVZBL	EDX, AL			;Determine offset size
+	SUBL	EDX, EBX
+	SUBL	EDX, ECX
+	SUBL	EDX, #2
+	CMPL	EDX, #4		;Make sure valid
+	JA	6$
+	JMPIL	symvsd[EDX*4]
+
+	.MOD	4
+symvsd:	.LONG	ofs0
+	.LONG	ofs1
+	.LONG	ofs2
+	.LONG	ofs3
+	.LONG	ofs4
+
+6$:	CRASH	IFST
+
+ofs4:	MOVL	EAX, [ESI]
+	JMP	8$
+
+ofs3:	MOVZWL	EAX, 1[ESI]
+	SHLL	EAX, #8t
+	MOVB	AL, [ESI]
+	TESTB	sym_header+1[EBP], #0x20
+	JE	8$
+	ORL	EAX, #0xFF000000
+	JMP	8$
+
+ofs2:	MOVZWL	EAX, [ESI]
+	TESTB	sym_header+1[EBP], #0x20
+	JE	8$
+	ORL	EAX, #0xFFFF0000
+	JMP	8$
+
+ofs1:	MOVZBL	EAX, [ESI]
+	TESTB	sym_header+1[EBP], #0x20
+	JE	8$
+	ORL	EAX, #0xFFFFFF00
+	JMP	8$
+
+ofs0:	CLRL	EAX
+	TESTB	sym_header+1[EBP], #0x20
+	JE	8$
+	NOTL	EAX
+8$:	MOVL	sym_offset[EBP], EAX
+	CLRL	EAX
+10$:	MOVL	sym_select[EBP], EAX
+	MOVL	EAX, sym_offset[EBP]	;Determine space needed for offset
+	ORB	sym_header+1[EBP], #20h ;Try 1 extend first
+	MOVL	EDX, EAX		;Will it fit in 0 bytes with 1 extend?
+	NOTL	EDX
+	TESTL	EDX, EDX
+	JE	18$			;Yes
+	TESTL	EDX, #0xFFFFFF00	;No - fit in 1 byte with 1 extend?
+	JE	16$			;Yes
+	TESTL	EDX, #0xFFFF0000	;No - fit in 2 bytes with 1 extend?
+	JE	14$			;Yes
+	TESTL	EDX, #0xFF000000	;No - fit in 3 bytes with 1 extend?
+	JE	12$			;Yes
+	ANDB	sym_header+1[EBP], #~20h ;No - now check for 0 extend
+	TESTL	EAX, EAX		;Will it fit in 0 bytes with 0 extend?
+	JE	18$			;Yes
+	TESTL	EAX, #0xFFFFFF00	;No - fit in 1 byte with 0 extend?
+	JE	16$			;Yes
+	TESTL	EAX, #0xFFFF0000	;No - fit in 2 bytes with 0 extend?
+	JE	14$			;Yes
+	TESTL	EAX, #0xFF000000	;No - fit in 3 bytes with 0 extend?
+	JE	12$			;Yes
+	STOSL	[EDI]			;No - store value in 4 bytes
+	JMP	18$
+
+;Here if can store value in 3 bytes
+
+12$:	STOSB	[EDI]
+	SHRL	EAX, #8t
+
+;Here if can store value in 2 bytes
+
+14$:	STOSW	[EDI]
+	JMP	18$
+
+;Here if can store value in 1 byte
+
+16$:	STOSB	[EDI]
+18$:	ANDB	sym_header+1[EBP], #~0x40
+	MOVL	EAX, EDI		;Calculate total length of entry
+	SUBL	EAX, EBP
+	SUBL	EAX, #sym_header
+	MOVB	sym_header[EBP], AL	;Store it in the header byte
+	PUSHL	EAX
+	CALL	getsymmem		;Get memory for the symbol entry
+	POPL	ECX
+	LEAL	ESI, sym_header[EBP]	;Copy the entry
+	PUSHL	DS
+	POPL	ES
+	RMOVSB	[EDI], [ESI]
+	MOVL	ESI, sym_savsym[EBP]
+	MOVZBL	EAX, [ESI]
+	ADDL	ESI, EAX
+	DECL	sym_count[EBP]
+	JNE	2$			;Continue if more in this block
+	MOVL	ESI, sym_savsrc[EBP]
+	MOVL	EAX, #1			;Always put at least one 0 byte at
+	CALL	getsymmem		;  the end
+	CLRL	EAX
+	STOSB	[EDI]
+	MOVL	EDX, sym_savdst[EBP]
+	MOVL	ECX, EDI		;Fill with 0s up to the next 4-byte
+	NEGL	ECX			;  boundry
+	ANDL	ECX, #0x03
+	RSTOSB	[EDI]
+	MOVL	[EDX], EDI		;Link to next block
+	MOVL	sym_mempnt[EBP], EDI
+	MOVL	ESI, [ESI]		;Get next block
+	TESTL	ESI, ESI		;Have another one?
+	JNE	1$			;Yes - continue
+	MOVL	exportnext#, EDI	;No - remember where this one ended
+	MOVL	[EDX], EAX		;Clear last link
+	MOVL	exportlink#, EDX
+	MOVL	ECX, EDI		;Clear the rest of the last memory
+	NEGL	ECX			;  page
+	ANDL	ECX, #0x0FFF
+	SHRL	ECX, #2t
+	RSTOSL	[EDI]
+	LEAVE				;Fall into setpage0 on next page
+.PAGE
+;Now set up possible saved crash data on physical page 0
+
+setpage0:
+	MOVW	knlPageZero+0x472, #0x1234 ;Make sure the BIOS's reboot magic
+	CLRL	EAX			   ;  number is right
+
+	CHECKES
+
+					;Clear the first 8 vectors. (Mainly to
+					;  remove the junk our real mode code
+	MOVL	ECX, #4			;  left there!)
+	MOVL	EDI, #knlPageZero
+	RSTOSL	[EDI]
+	MOVL	knlPageZero+0x21*4, #0xED010008       ;Set up the real mode
+	MOVL	knlPageZero+ID_SSVC/2, #0xED010000    ;  vectors we will need
+	MOVL	knlPageZero+ID_DISMISS/2, #0xED010004
+	MOVL	ESI, #crshmgc		;Is the crash save area set up?
+	MOVL	EDI, #crshdata
+	MOVL	ECX, #3t
+	RECMPSL	[EDI], [ESI]
+	JE	2$			;Yes
+	MOVL	ESI, #crshmgc		;No - initialize it now
+	MOVL	EDI, #crshdata
+	MOVL	ECX, #3t
+	RMOVSL	[EDI], [ESI]
+	MOVL	ECX, #pg0_crshSIZE/4-3
+	RSTOSL	[EDI]
+	MOVL	EDI, #crshsave
+	MOVL	ECX, #pg0_crshSIZE/4
+	RSTOSL	[EDI]
+2$:	CMPL	crshdata+pg0_crshCODE, #0 ;Do we have any crash data saved?
+	JE	4$			;No
+	MOVL	ESI, #crshdata		;Yes - copy it to the save area
+	MOVL	EDI, #crshsave
+	MOVL	ECX, #pg0_crshSIZE/4
+	RMOVSL	[EDI], [ESI]
+4$:	MOVL	EDI, #crshdata+12t	;Clear the active crash data
+	MOVL	ECX, #pg0_crshSIZE/4-3
+	RSTOSL	[EDI]
+	MOVL	EAX, knlMemAvail#	;Initialize count of user pages
+	MOVL	knlMemUser#, EAX
+	PUSHL	#biosrom		;Map the BIOS ROM
+	PUSHL	#16t
+	PUSHL	#MT_SYS
+	PUSHL	#0x67
+	PUSHL	#0xF0000
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages#
+	TESTL	EAX, EAX
+	JNS	8$
+	CRASH	BIOS
+
+8$:	PUSHL	#dsprom			;Map the EGA/VGA ROM
+	PUSHL	#16t
+	PUSHL	#MT_SYS
+	PUSHL	#0x67
+	PUSHL	disprom#
+	PUSHL	#0xFFFFFFFF
+	CALL	sysMemMapPhyPages#
+	MOVL	EAX, knlXCodePnt#
+	ADDL	EAX, #3			;Make sure memory allocation pointers
+	ANDL	EAX, #0xFFFFFFFC	;  point to a long
+	MOVL	knlXCodePnt#, EAX
+	ADDL	EAX, #0x0FFF
+	ANDL	EAX, #0xFFFFF000
+	MOVL	knlXCodeTop#, EAX
+	ADDL	knlXDataPnt#, #3
+	ANDL	knlXDataPnt#, #0xFFFFFFFC
+	INCL	memoryok#
+	RET				;Return from meminit
+.PAGE
+;Function to allocate memory for the exported symbol table
+;	c{EAX} = Bytes to get
+;	CALL	getsymmem
+;	c{ES:EDI} = Address of memory allocated
+;	D bit is clear
+
+getsymmem:
+	MOVL	EDI, sym_mempnt[EBP]	;Get offset to use
+	ADDL	sym_mempnt[EBP], EAX
+	TESTL	EDI, #0x0FFF
+	JE	2$
+	LEAL	ECX, [EDI+EAX]		;Do we need another page?
+	TESTL	ECX, #0x0FFF
+	JE	4$
+	XORL	ECX, EDI
+	TESTL	ECX, #0xFFFFF000
+	JE	4$			;No
+2$:	LEAL	EAX, 0FFF[EDI]
+	ANDL	EAX, #0xFFFFF000
+	PUSHL	EAX
+	PUSHL	#1
+	PUSHL	#MT_SYS
+	PUSHL	#0x27
+	PUSHL	#0
+	CALL	sysMemGetPages#
+	TESTL	EAX, EAX
+	JS	6$
+4$:
+	CHECKES
+
+	RET
+
+6$:	CRASH	NMST			;[No Memory for Symbol Table]
+.PAGE
+	.MOD	4
+
+extsz:	.LONG	0
+mtcnt:	.LONG	0
+
+
+
+crshmgc:.LONG	0xF0F0A5A5
+	.ASCII	'CRSHDATA'

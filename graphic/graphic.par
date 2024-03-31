@@ -1,0 +1,14 @@
+;Define offsets in the REGS structure
+
+$$$=!0
+BLK regs_EAX, 4
+BLK regs_EBX, 4
+BLK regs_ECX, 4
+BLK regs_EDX, 4
+BLK regs_EBP, 4
+BLK regs_EDI, 4
+BLK regs_ESI, 4
+BLK regs_DS , 4
+BLK regs_ES , 4
+BLK regs_FS , 4
+BLK regs_GS , 4

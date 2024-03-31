@@ -1,0 +1,376 @@
+	.TITLE	info
+
+;++++
+; This software is in the public domain.  It may be freely copied and used
+; for whatever purpose you see fit, including commerical uses.  Anyone
+; modifying this software may claim ownership of the modifications, but not
+; the complete derived code.  It would be appreciated if the authors were
+; told what this software is being used for, but this is not a requirement.
+
+;   THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR
+;   IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+;   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+;   IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+;   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+;   BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+;   OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+;   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+;   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+;   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;----
+
+	.PROC	80486
+	.INCLUD	XOSINC:\XMAC\XOS.PAR
+	.INCLUD	XOSINC:\XMAC\XOSX.PAR
+	.INCLUD	XOSINC:\XMAC\XOSERR.PAR
+	.INCLUD	XOSINC:\XMAC\XOSXTRM.PAR
+
+	CODE
+
+;Here for the svcSysGetInfo SVC - Get information about the system
+;	long svcSysGetInfo(
+;	    long     func,	// Function
+;	    long     data,	// Data item
+;	    DCSINFO *info,	// Address of structure to receive
+;				//   data (null means to just return
+;				//   number of items)
+;	    int      size);	// Length of the data area
+;  Value returned is number of bytes returned (positive) if normal or a
+;    negative XOS error code if error. If the buffer is too short, the
+;    returned data is truuncated to fit in the buffer but the value returned
+;    indicates what would have been returned if the buffer had been long
+;    enough.
+
+psvcSysGetInfo::
+	MOVL	EDI, knlTda+tdaArg3#	;Get address of data block
+	MOVL	ECX, knlTda+tdaArg4#	;Get length of data block
+	MOVL	EDX, knlTda+tdaArg2#	;Get data value
+
+	MOVL	EAX, knlTda+tdaArg1#	;Get function
+	CMPL	EAX, #INFOMAX		;Valid?
+	JA	illfnc			;No
+	JMPIL	infodsp[EAX*4]		;Maybe - dispatch on function
+
+;Dispatch table for the svcSysGetInfo system call
+
+	DATA
+
+infodsp:.LONG	illfnc		;	  = 0 - Illegal
+	.LONG	getlkeinfo	;GSI_LKE  = 1 - Get LKE information
+	.LONG	illfnc		;	  = 2 - Illegal
+	.LONG	getdevinfo	;GSI_DEV  = 3 - Get device information
+	.LONG	illfnc		;         = 4 - Illegal
+	.LONG	illfnc		;GSI_DCS  = 5 - Get disk cache status info
+	.LONG	illfnc		;GSI_TERM = 6 - Get terminal information
+INFOMAX=!{$-infodsp}/4 -1
+
+	CODE
+
+illfnc:	MOVL	EAX, #ER_FUNC
+	RET
+.PAGE
+;Here for the svcSysGetInfo function GSI_LKE - Get LKE information
+;	c{EDI} = Address of user buffer for data
+;	c{ECX  = Size of user buffer
+
+;Format of data returned:
+;  Offset Size Use
+;     0    16  LKE name
+;    16     4  LKE type
+;    20     4  LKE version
+;    24     4  LKE compatability level
+;    28     4  Code address
+;    32     4  Code size
+;    36     4  Data address
+;    40     4  Data size
+;    44     4  Symbol table address
+;    48     4  Symbol table size
+;    52    12  Reserved
+
+getlkeinfo:
+	TESTL	EDI, EDI		;Just want space needed?
+	JE	10$			;Yes
+	SHRL	ECX, #6			;Get number of entries there is room for
+	MOVL	EBX, firstlke#		;Point to first LKE
+4$:	TESTL	EBX, EBX
+	JE	10$			;If no more
+	MOVL	EAX, lke_name+0[EBX]	;Give him the LKE name
+	MOVL	EDX, lke_name+4[EBX]
+	IFFAULT	14$
+	MOVL	[EDI], EAX
+	IFFAULT	14$
+	MOVL	4[EDI], EDX
+	MOVL	EAX, lke_name+8[EBX]
+	MOVL	EDX, lke_name+12t[EBX]
+	IFFAULT	14$
+	MOVL	8[EDI], EAX
+	IFFAULT	14$
+	MOVL	12t[EDI], EDX
+	MOVZBL	EAX, lke_type[EBX]	;Give him the type value
+	IFFAULT	14$
+	MOVL	16t[EDI], EAX
+	MOVL	EAX, lke_version[EBX]	;Give him the version number
+	IFFAULT	14$
+	MOVL	20t[EDI], EAX
+	MOVL	EAX, lke_level[EBX]	;Give him the compatibility level value
+	IFFAULT	14$
+	MOVL	24t[EDI], EAX
+	MOVL	EAX, EBX		;Give him the code address value
+	IFFAULT	14$
+	MOVL	28t[EDI], EAX
+	MOVL	EAX, lke_codesize[EBX]	;Give him the code size value
+	IFFAULT	14$
+	MOVL	32t[EDI], EAX
+	MOVL	EAX, lke_dataaddr[EBX]	;Give him the data address value
+	IFFAULT	14$
+	MOVL	36t[EDI], EAX
+	MOVL	EAX, lke_datasize[EBX]	;Give him the data size value
+	IFFAULT	14$
+	MOVL	40t[EDI], EAX
+	MOVL	EAX, lke_symtbladdr[EBX] ;Give him the symbol table address
+	IFFAULT	14$			 ;  value
+	MOVL	44t[EDI], EAX
+	MOVL	EAX, lke_symtblsize[EBX] ;Give him the size of the symbol
+	IFFAULT	14$			 ;  table
+	MOVL	48t[EDI], EAX
+	CLRL	EAX			;Clear the extra space
+	MOVL	52t[EDI], EAX
+	MOVL	56t[EDI], EAX
+	MOVL	60t[EDI], EAX
+	ADDL	EDI, #64t
+	MOVL	EBX, lke_next[EBX]	;Get address of next LKE
+	DECL	ECX			;Continue if room for more
+	JNE	4$
+10$:	MOVL	EAX, lkecount#		;Return what we should have returned
+	SHLL	EAX, #6
+	RET
+
+	FAULTHDR
+14$:	MOVL	EAX, #ER_ADRER
+	RET
+.PAGE
+;Subroutine to return information about devices
+;	c{EDI} = Address of user's data array
+;	c{ECX} = Space available
+;	c{tdaArg2} = Data value (0 = return summary info about all devices,
+;		       otherwise gives DCB ID for detailed device info)
+
+;Format of the summary data returned:
+;  Offset   Size    Use
+;     0      16     Class name
+;    16      16     Device name
+;    32       8     Device type
+;    40       4     Group process ID
+;    44       4     Open count
+;    48       4     DCB ID
+;    52       2     Output count
+;    54       2     Input count
+;    56       8     Reserved
+;Detail data returned is the full file path and name.
+
+getdevinfo:
+	TESTL	EDX, EDX		;Want summary data?
+	JE	10$			;Yes
+	CMPW	DX, #1			;No - valid DCB ID index value?
+	JB	4$			;No
+	CMPW	DX, dcbtblsize#		;Maybe
+	JAE	4$
+	MOVZWL	EAX, DX			;Yes
+	MOVL	ESI, dcbtable-4[EAX*4]	;Get address of the DCB
+	TESTL	ESI, ESI
+	JNS	4$			;Fail if no DCB
+	CMPL	EDX, dcb_id[ESI]	;Is it the right one?
+	JNE	4$			;No
+	MOVL	knlTda+tdaDcb#, ESI
+	MOVL	knlTda+tdaBuffer1#, EDI
+	MOVL	knlTda+tdaCount#, ECX
+	MOVL	EAX, dcb_sdisp[ESI]
+	MOVL	EAX, sd_devinfo[EAX]
+	TESTL	EAX, EAX
+	JE	sysIoInfoNone
+	CALLI	EAX			;Leave these separate to make debugging
+	RET				;  easier!
+
+4$:	MOVL	EAX, #ER_VALUE
+	RET
+
+;Here if want summary data
+
+10$:	MOVL	ESI, knlFirstCcb#	;Get first CCB in system
+	SHRL	ECX, #6			;Get number of entries we have room for
+	MOVL	knlTda+tdaCount#, ECX
+	MOVL	knlTda+tdaAmount#, #0	;Clear count
+
+;Here with the next class
+
+12$:	MOVL	EBX, ccb_dcbhead[ESI]	;Get first DCB for class
+14$:	TESTL	EBX, EBX		;Do we have a DCB at all?
+	JE	16$			;No
+	CMPB	dcb_name+0[EBX], #0	;Yes - is it real?
+	JNE	16$			;Yes
+	MOVL	EBX, dcb_next[EBX]	;No - advance to next DCB
+	JMP	14$			;Continue
+
+;Here with the next DCB for the class - Also get here initially if the class
+;  has no DCBs.
+
+16$:	DECL	knlTda+tdaCount#	;Room for another entry?
+	JNS	18$			;Yes
+	TESTL	EBX, EBX		;No - do we have a DCB
+	JNE	34$			;Yes
+	JMP	22$			;No
+
+18$:	MOVL	EAX, ccb_name+0[ESI]	;Give him the class name
+	MOVL	EDX, ccb_name+4[ESI]
+	IFFAULT	40$
+	MOVL	[EDI], EAX
+	IFFAULT	40$
+	MOVL	4[EDI], EDX
+	MOVL	EAX, ccb_name+8[ESI]
+	MOVL	EDX, ccb_name+12t[ESI]
+	IFFAULT	40$
+	MOVL	8[EDI], EAX
+	IFFAULT	40$
+	MOVL	12t[EDI], EDX
+
+	TESTL	EBX, EBX		;Do we have a DCB?
+	JNE	24$			;Yes
+	MOVL	ECX, #12t		;No - clear the rest of the entry
+	LEAL	EDX, 16t[EDI]
+	IFFAULT	40$
+20$:	MOVL	[EDX], EBX
+	ADDL	EDX, #4
+	LOOP	ECX, 20$
+22$:	ADDL	knlTda+tdaAmount#, #64t	;Count this entry
+	ADDL	EDI, #64t
+	JMP	36$
+
+;Here with a DCB
+
+24$:	MOVL	EAX, dcb_name+0[EBX]	;Give him the device name
+	MOVL	EDX, dcb_name+4[EBX]
+	IFFAULT	40$
+	MOVL	16t[EDI], EAX
+	IFFAULT	40$
+	MOVL	20t[EDI], EDX
+	MOVL	EAX, dcb_name+8[EBX]
+	MOVL	EDX, dcb_name+12t[EBX]
+	IFFAULT	40$
+	MOVL	24t[EDI], EAX
+	IFFAULT	40$
+	MOVL	28t[EDI], EDX
+	MOVL	EAX, dcb_typename+0[EBX] ;Give him the type name
+	MOVL	EDX, dcb_typename+4[EBX]
+	IFFAULT	40$
+	MOVL	32t[EDI], EAX
+	IFFAULT	40$
+	MOVL	36t[EDI], EDX
+	MOVL	EAX, dcb_sespda[EBX]	;Give him the session process number
+	TESTL	EAX, EAX
+	JE	26$
+	MOVL	EAX, pdaPid#[EAX]
+	IFFAULT	40$
+26$:	MOVL	40t[EDI], EAX
+	MOVL	EAX, dcb_opencnt[EBX]	;Give him the open count
+	IFFAULT	40$
+	MOVL	44t[EDI], EAX
+	MOVL	EAX, dcb_id[EBX]	;Give him the DCB ID
+	IFFAULT	40$
+	MOVL	48t[EDI], EAX
+	MOVL	EAX, dcb_outtda[EBX]	;Do we have an output frame?
+	TESTL	EAX, EAX
+	JE	28$			;No
+	MOVZBL	EAX, tdaIoQCnt#[EAX]	;Yes - get the queue count
+	INCL	EAX			;Plus one gives the output count
+	IFFAULT	40$
+28$:	MOVW	52t[EDI], AX		;Give it to him
+	MOVL	EAX, dcb_inptda[EBX]	;Do we have an input frame?
+	TESTL	EAX, EAX
+	JE	30$			;No
+	MOVZBL	EAX, tdaIoQCnt#[EAX]	;Yes - get the queue count
+	INCL	EAX			;Plus one gives the input count
+	IFFAULT	40$
+30$:	MOVW	54t[EDI], AX		;Give it to him
+32$:	CLRL	EAX			;Zero the reserved bytes
+	IFFAULT	40$
+	MOVL	56t[EDI], EAX
+	IFFAULT	40$
+	MOVL	60t[EDI], EAX
+34$:	ADDL	knlTda+tdaAmount#, #64t	;Count this entry
+	ADDL	EDI, #64t
+35$:	MOVL	EBX, dcb_next[EBX]	;Advance to next DCB in class
+	TESTL	EBX, EBX
+	JE	36$			;If no more DCBs
+	CMPB	dcb_name+0[EBX], #0	;Is it real DCB?
+	JNE	16$			;Yes
+	JMP	35$			;No - see if we can find a real one
+
+;Here with all devices for the class (if any) returned
+
+36$:	MOVL	ESI, ccb_next[ESI]	;No - advance to next class
+	TESTL	ESI, ESI		;Have another class?
+	JNE	12$			;Yes - continue
+	MOVL	EAX, knlTda+tdaAmount#	;No - get value to return
+	RET				;And return
+
+	FAULTHDR
+40$:	MOVL	EAX, #ER_ADRER
+	RET
+.PAGE
+;Function which returns no device info - This may be used as the sd_devinfo
+;  dispatch for devices which return no detail info.
+
+sysIoInfoNone::
+	CMPL	knlTda+tdaCount#, #0	;Room for a null?
+	JLE	2$			;No
+	MOVL	EDX, knlTda+tdaBuffer1#	;Yes - store a null
+	IFFAULT	8$
+	MOVB	[EDX], #0
+2$:	CLRL	EAX
+	RET
+
+	FAULTHDR
+8$:	MOVL	EAX, #ER_ADRER
+	RET
+
+;Function which returns a fixed string as device info
+;	long sysIoInfoSimple(
+;	    char *str);
+;  Value returned is the length of the string stored or that would be stored
+;    if the buffer was longer if normal or a negative XOS error code if error.
+
+infos_str=!8
+
+sysIoInfoSimple::
+	PUSHL	EBX
+	MOVL	knlTda+tdaAmount#, #0
+	MOVL	EDX, knlTda+tdaBuffer1#
+	MOVL	EBX, infos_str[ESP]
+10$:	MOVZBL	EAX, [EBX]		;Get character
+	INCL	EBX
+	CMPB	AL, #0			;End of string?
+	JE	14$			;Yes
+	INCL	knlTda+tdaAmount#	;No - count the character
+	DECL	knlTda+tdaCount#	;Room for more?
+	JS	10$			;No
+	IFFAULT	20$			;Yes
+	MOVB	[EDX], AL		;Store character
+	INCL	EDX
+	JMP	10$
+
+;Here at end of the string
+
+14$:	DECL	knlTda+tdaCount#	;Room for a null?
+	JS	16$			;No
+	IFFAULT	20$			;Yes
+	MOVB	[EDX], AL
+
+16$:	MOVL	EAX, knlTda+tdaAmount#	;Get the string length to return
+18$:	POPL	EBX
+	RET	4
+
+	FAULTHDR
+20$:	MOVL	EAX, #ER_ADRER
+	JMP	18$
+
+	END
