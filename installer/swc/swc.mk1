@@ -1,0 +1,199 @@
+!define BLANK ""
+c:\mmspc-bsa\swc\chrtbl.obj : c:\mmspc-bsa\swc\chrtbl.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 chrtbl.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -wc&
+d604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\datetimeow.obj : c:\mmspc-bsa\swc\datetimeow.cpp .AUTODEPEN&
+D
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 datetimeow.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s&
+ -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf &
+-wx
+
+c:\mmspc-bsa\swc\qdes.obj : c:\mmspc-bsa\swc\qdes.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 qdes.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -wcd6&
+04 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\random.obj : c:\mmspc-bsa\swc\random.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 random.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -wc&
+d604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\swcbase.obj : c:\mmspc-bsa\swc\swcbase.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcbase.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -w&
+cd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\swcbutton.obj : c:\mmspc-bsa\swc\swcbutton.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcbutton.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s &
+-wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -&
+wx
+
+c:\mmspc-bsa\swc\swccheckbox.obj : c:\mmspc-bsa\swc\swccheckbox.cpp .AUTODEP&
+END
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swccheckbox.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -&
+s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf&
+ -wx
+
+c:\mmspc-bsa\swc\swcdebug.obj : c:\mmspc-bsa\swc\swcdebug.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcdebug.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -&
+wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -w&
+x
+
+c:\mmspc-bsa\swc\swcdisplay.obj : c:\mmspc-bsa\swc\swcdisplay.cpp .AUTODEPEN&
+D
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcdisplay.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s&
+ -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf &
+-wx
+
+c:\mmspc-bsa\swc\swcdisplaybase.obj : c:\mmspc-bsa\swc\swcdisplaybase.cpp .A&
+UTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcdisplaybase.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e2&
+5 -s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt &
+-mf -wx
+
+c:\mmspc-bsa\swc\swcdisplaylinked.obj : c:\mmspc-bsa\swc\swcdisplaylinked.cp&
+p .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcdisplaylinked.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -&
+e25 -s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=n&
+t -mf -wx
+
+c:\mmspc-bsa\swc\swcdropdown.obj : c:\mmspc-bsa\swc\swcdropdown.cpp .AUTODEP&
+END
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcdropdown.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -&
+s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf&
+ -wx
+
+c:\mmspc-bsa\swc\swcedit.obj : c:\mmspc-bsa\swc\swcedit.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcedit.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -w&
+cd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\swckbwedge.obj : c:\mmspc-bsa\swc\swckbwedge.cpp .AUTODEPEN&
+D
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swckbwedge.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s&
+ -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf &
+-wx
+
+c:\mmspc-bsa\swc\swclist.obj : c:\mmspc-bsa\swc\swclist.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swclist.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -w&
+cd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -wx
+
+c:\mmspc-bsa\swc\swcprint.obj : c:\mmspc-bsa\swc\swcprint.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcprint.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s -&
+wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -w&
+x
+
+c:\mmspc-bsa\swc\swcresponse.obj : c:\mmspc-bsa\swc\swcresponse.cpp .AUTODEP&
+END
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcresponse.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -&
+s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf&
+ -wx
+
+c:\mmspc-bsa\swc\swcresponsechar.obj : c:\mmspc-bsa\swc\swcresponsechar.cpp &
+.AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcresponsechar.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e&
+25 -s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt&
+ -mf -wx
+
+c:\mmspc-bsa\swc\swcresponsenum.obj : c:\mmspc-bsa\swc\swcresponsenum.cpp .A&
+UTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcresponsenum.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e2&
+5 -s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt &
+-mf -wx
+
+c:\mmspc-bsa\swc\swctoplevel.obj : c:\mmspc-bsa\swc\swctoplevel.cpp .AUTODEP&
+END
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swctoplevel.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -&
+s -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf&
+ -wx
+
+c:\mmspc-bsa\swc\swcwindows.obj : c:\mmspc-bsa\swc\swcwindows.cpp .AUTODEPEN&
+D
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 swcwindows.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s&
+ -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf &
+-wx
+
+c:\mmspc-bsa\swc\winnetwork.obj : c:\mmspc-bsa\swc\winnetwork.cpp .AUTODEPEN&
+D
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 winnetwork.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s&
+ -wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf &
+-wx
+
+c:\mmspc-bsa\swc\xoserrmsg.obj : c:\mmspc-bsa\swc\xoserrmsg.cpp .AUTODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ *wpp386 xoserrmsg.cpp -i=F:\WATCOM\h;F:\WATCOM\h\nt;..\inc -w4 -we -e25 -s &
+-wcd604 -wcd594 -j -zp1 -zq -od -of -d2 -db -bm -fp5 -fpi87 -5s -bt=nt -mf -&
+wx
+
+c:\mmspc-bsa\swc\swc.lib : c:\mmspc-bsa\swc\chrtbl.obj c:\mmspc-bsa\swc\date&
+timeow.obj c:\mmspc-bsa\swc\qdes.obj c:\mmspc-bsa\swc\random.obj c:\mmspc-bs&
+a\swc\swcbase.obj c:\mmspc-bsa\swc\swcbutton.obj c:\mmspc-bsa\swc\swccheckbo&
+x.obj c:\mmspc-bsa\swc\swcdebug.obj c:\mmspc-bsa\swc\swcdisplay.obj c:\mmspc&
+-bsa\swc\swcdisplaybase.obj c:\mmspc-bsa\swc\swcdisplaylinked.obj c:\mmspc-b&
+sa\swc\swcdropdown.obj c:\mmspc-bsa\swc\swcedit.obj c:\mmspc-bsa\swc\swckbwe&
+dge.obj c:\mmspc-bsa\swc\swclist.obj c:\mmspc-bsa\swc\swcprint.obj c:\mmspc-&
+bsa\swc\swcresponse.obj c:\mmspc-bsa\swc\swcresponsechar.obj c:\mmspc-bsa\sw&
+c\swcresponsenum.obj c:\mmspc-bsa\swc\swctoplevel.obj c:\mmspc-bsa\swc\swcwi&
+ndows.obj c:\mmspc-bsa\swc\winnetwork.obj c:\mmspc-bsa\swc\xoserrmsg.obj .AU&
+TODEPEND
+ @c:
+ cd c:\mmspc-bsa\swc
+ %create swc.lb1
+!ifneq BLANK "chrtbl.obj datetimeow.obj qdes.obj random.obj swcbase.obj swcb&
+utton.obj swccheckbox.obj swcdebug.obj swcdisplay.obj swcdisplaybase.obj swc&
+displaylinked.obj swcdropdown.obj swcedit.obj swckbwedge.obj swclist.obj swc&
+print.obj swcresponse.obj swcresponsechar.obj swcresponsenum.obj swctoplevel&
+.obj swcwindows.obj winnetwork.obj xoserrmsg.obj"
+ @for %i in (chrtbl.obj datetimeow.obj qdes.obj random.obj swcbase.obj swcbu&
+tton.obj swccheckbox.obj swcdebug.obj swcdisplay.obj swcdisplaybase.obj swcd&
+isplaylinked.obj swcdropdown.obj swcedit.obj swckbwedge.obj swclist.obj swcp&
+rint.obj swcresponse.obj swcresponsechar.obj swcresponsenum.obj swctoplevel.&
+obj swcwindows.obj winnetwork.obj xoserrmsg.obj) do @%append swc.lb1 +'%i'
+!endif
+!ifneq BLANK ""
+ @for %i in () do @%append swc.lb1 +'%i'
+!endif
+ *wlib -b -c -n -q -p=512 swc.lib @swc.lb1
+

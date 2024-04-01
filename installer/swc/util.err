@@ -1,0 +1,30 @@
+util.cpp(76): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_SALE' has not been declared 
+util.cpp(79): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_STORE' has not been declared 
+util.cpp(82): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_PINVADJ' has not been declared 
+util.cpp(85): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_MANADJ' has not been declared 
+util.cpp(88): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_SHPDDIST' has not been declared 
+util.cpp(91): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_SHPADJ' has not been declared 
+util.cpp(94): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_RCVDDIST' has not been declared 
+util.cpp(97): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_RCVDVEND' has not been declared 
+util.cpp(100): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_RCVDDISTADJ' has not been declared 
+util.cpp(103): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_RCVDVENDADJ' has not been declared 
+util.cpp(106): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_XFRDOUT' has not been declared 
+util.cpp(109): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_XFRDOUTADJ' has not been declared 
+util.cpp(112): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_XFRDIN' has not been declared 
+util.cpp(115): Error! E029: col(15) symbol 'MSGTRN_VALUE_TYPE_XFRDINADJ' has not been declared 
+util.cpp(74): Warning! W893: col(15) switch statement has no case labels 
+util.cpp(122): Warning! W726: col(1) no reference to formal parameter 'linetype' 
+util.cpp(122): Note! N392: col(1) 'int linetype' in 'char * gettrntypelbl( int, int )' defined in: util.cpp(69) (col 13) 
+util.cpp(150): Error! E029: col(15) symbol 'INVADD_PO' has not been declared 
+util.cpp(153): Error! E029: col(15) symbol 'INVADD_RCV' has not been declared 
+util.cpp(156): Error! E029: col(15) symbol 'INVADD_XIN' has not been declared 
+util.cpp(159): Error! E029: col(15) symbol 'INVADD_XINR' has not been declared 
+util.cpp(162): Error! E029: col(15) symbol 'INVADD_XOUT' has not been declared 
+util.cpp(165): Error! E029: col(15) symbol 'INVADD_SALE' has not been declared 
+util.cpp(168): Error! E029: col(15) symbol 'INVADD_RTN' has not been declared 
+util.cpp(171): Error! E029: col(15) symbol 'INVADD_SADJ' has not been declared 
+util.cpp(174): Error! E029: col(15) symbol 'INVADD_PINV' has not been declared 
+util.cpp(177): Error! E029: col(15) symbol 'INVADD_MAN' has not been declared 
+util.cpp(148): Warning! W893: col(16) switch statement has no case labels 
+util.cpp(306): Error! E029: col(44) symbol 'TKT_TENDER_CCMC' has not been declared 
+util.cpp(326): Error! E133: col(37) too many errors: compilation aborted 

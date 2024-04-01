@@ -1,0 +1,65 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: zlib - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP1416.tmp" with contents
+[
+/nologo /MTd /W3 /Gm /GX /ZI /Od /D "WIN32" /D "_DEBUG" /D "_MBCS" /D "_LIB" /Fp"Debug/zlib.pch" /YX /Fo"Debug/" /Fd"Debug/" /FD /GZ /c 
+"E:\xossrc\zlib\adler32.c"
+"E:\xossrc\zlib\compress.c"
+"E:\xossrc\zlib\crc32.c"
+"E:\xossrc\zlib\deflate.c"
+"E:\xossrc\zlib\gzio.c"
+"E:\xossrc\zlib\infback.c"
+"E:\xossrc\zlib\inffast.c"
+"E:\xossrc\zlib\inflate.c"
+"E:\xossrc\zlib\inftrees.c"
+"E:\xossrc\zlib\trees.c"
+"E:\xossrc\zlib\uncompr.c"
+"E:\xossrc\zlib\zutil.c"
+]
+Creating command line "cl.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP1416.tmp" 
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP1417.tmp" with contents
+[
+/nologo /out:"Debug\zlib.lib" 
+.\Debug\adler32.obj
+.\Debug\compress.obj
+.\Debug\crc32.obj
+.\Debug\deflate.obj
+.\Debug\gzio.obj
+.\Debug\infback.obj
+.\Debug\inffast.obj
+.\Debug\inflate.obj
+.\Debug\inftrees.obj
+.\Debug\trees.obj
+.\Debug\uncompr.obj
+.\Debug\zutil.obj
+]
+Creating command line "link.exe -lib @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP1417.tmp"
+<h3>Output Window</h3>
+Compiling...
+adler32.c
+compress.c
+crc32.c
+deflate.c
+gzio.c
+infback.c
+inffast.c
+inflate.c
+inftrees.c
+trees.c
+uncompr.c
+zutil.c
+Creating library...
+
+
+
+<h3>Results</h3>
+zlib.lib - 0 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

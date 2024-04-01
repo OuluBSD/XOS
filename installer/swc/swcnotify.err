@@ -1,0 +1,37 @@
+swcnotify.cpp(19): Error! E336: col(11) declaration specifiers are required to declare 'swcNotify' 
+swcnotify.cpp(19): Error! E121: col(11) syntax error 
+swcnotify.cpp(21): Error! E241: col(12) 'class swcNotify' has not been declared 
+swcnotify.cpp(39): Error! E420: col(1) memory initializer list may only appear in a constructor definition 
+swcnotify.cpp(51): Error! E029: col(13) symbol 'swc_NotifyWin' has not been declared 
+swcnotify.cpp(53): Error! E029: col(9) symbol 'autormv' has not been declared 
+swcnotify.cpp(54): Error! E029: col(9) symbol 'donefunc' has not been declared 
+swcnotify.cpp(55): Error! E029: col(9) symbol 'arg' has not been declared 
+swcnotify.cpp(70): Warning! W716: col(27) integral value may be truncated 
+swcnotify.cpp(72): Error! E029: col(17) symbol 'PutText' has not been declared 
+swcnotify.cpp(75): Error! E029: col(47) symbol 'height' has not been declared 
+swcnotify.cpp(86): Error! E204: col(48) 'this' pointer is not defined 
+swcnotify.cpp(94): Error! E204: col(25) 'this' pointer is not defined 
+swcnotify.cpp(95): Warning! W726: col(1) no reference to formal parameter 'label' 
+swcnotify.cpp(95): Note! N392: col(1) 'char * label' in 'int swcNotify( char *, int, char *, int, long, int, int (* )( int, void * ), void *, char *, char *, char * )' defined in: swcnotify.cpp(22) (col 16) 
+swcnotify.cpp(95): Warning! W726: col(1) no reference to formal parameter 'text' 
+swcnotify.cpp(95): Note! N392: col(1) 'char * text' in 'int swcNotify( char *, int, char *, int, long, int, int (* )( int, void * ), void *, char *, char *, char * )' defined in: swcnotify.cpp(24) (col 16) 
+swcnotify.cpp(95): Warning! W726: col(1) no reference to formal parameter 'color' 
+swcnotify.cpp(95): Note! N392: col(1) 'long color' in 'int swcNotify( char *, int, char *, int, long, int, int (* )( int, void * ), void *, char *, char *, char * )' defined in: swcnotify.cpp(26) (col 16) 
+swcnotify.cpp(97): Error! E241: col(12) 'class swcNotify' has not been declared 
+swcnotify.cpp(100): Error! E204: col(13) 'this' pointer is not defined 
+swcnotify.cpp(100): Error! E029: col(21) symbol 'swc_NotifyWin' has not been declared 
+swcnotify.cpp(106): Error! E241: col(17) 'class swcNotify' has not been declared 
+swcnotify.cpp(109): Error! E029: col(13) symbol 'swc_NotifyWin' has not been declared 
+swcnotify.cpp(114): Error! E241: col(17) 'class swcNotify' has not been declared 
+swcnotify.cpp(118): Error! E029: col(23) symbol 'width' has not been declared 
+swcnotify.cpp(118): Error! E029: col(37) symbol 'height' has not been declared 
+swcnotify.cpp(120): Warning! W726: col(1) no reference to formal parameter 'text' 
+swcnotify.cpp(120): Note! N392: col(1) 'char * text' in 'void ReplaceTextA( char * )' defined in: swcnotify.cpp(115) (col 15) 
+swcnotify.cpp(122): Error! E241: col(16) 'class swcNotify' has not been declared 
+swcnotify.cpp(155): Error! E241: col(17) 'class swcNotify' has not been declared 
+swcnotify.cpp(162): Warning! W604: col(13) must look ahead to determine whether construct is a declaration/type or an expression 
+swcnotify.cpp(162): Warning! W594: col(29) construct resolved as a declaration/type 
+swcnotify.cpp(165): Error! E121: col(29) syntax error 
+swcnotify.cpp(166): Error! E121: col(28) syntax error 
+swcnotify.cpp(167): Error! E121: col(26) syntax error 
+swcnotify.cpp(167): Error! E133: col(33) too many errors: compilation aborted 

@@ -1,0 +1,622 @@
+#include <windows.h>
+#include <windowsx.h>
+
+/*====================================================================*
+ -  Copyright (C) 2001 Leptonica.  All rights reserved.
+ -  This software is distributed in the hope that it will be
+ -  useful, but with NO WARRANTY OF ANY KIND.
+ -  No author or distributor accepts responsibility to anyone for the
+ -  consequences of using this software, or for whether it serves any
+ -  particular purpose or works at all, unless he or she says so in
+ -  writing.  Everyone is granted permission to copy, modify and
+ -  redistribute this source code, for commercial or non-commercial
+ -  purposes, with the following restrictions: (1) the origin of this
+ -  source code must not be misrepresented; (2) modified versions must
+ -  be plainly marked as such; and (3) this notice may not be removed
+ -  or altered from any source or modified source distribution.
+ *====================================================================*/
+
+
+/*
+ *  pix1.c
+ *
+ *      Pix creation
+ *          PIX          *pixCreate()
+ *          PIX          *pixCreateTemplate()
+ *          PIX          *pixClone()
+ *
+ *      Pix destruction
+ *          void          pixDestroy()
+ *
+ *      Pix copy
+ *          PIX          *pixCopy()
+ *	    l_int32       pixCopyColormap()
+ *          l_int32       pixSizesEqual()
+ *
+ *      Pix accessors
+ *          l_int32       pixGetWidth()
+ *          l_int32       pixSetWidth()
+ *          l_int32       pixGetHeight()
+ *          l_int32       pixSetHeight()
+ *          l_int32       pixGetDepth()
+ *          l_int32       pixSetDepth()
+ *          l_int32       pixGetWpl()
+ *          l_int32       pixSetWpl()
+ *          l_int32       pixGetRefcount()
+ *          l_int32       pixChangeRefcount()
+ *          l_uint32      pixGetXRes()
+ *          l_uint32      pixGetYRes()
+ *          l_int32       pixSetXRes()
+ *          l_int32       pixSetYRes()
+ *          l_int32       pixCopyResolution()
+ *          l_int32       pixScaleResolution()
+ *          char         *pixGetText()
+ *          l_int32       pixSetText()
+ *          l_int32       pixDestroyColormap()
+ *          PIXCMAP      *pixGetColormap()
+ *          l_int32       pixSetColormap()
+ *          l_uint32     *pixGetData()
+ *          l_int32       pixSetData()
+ *
+ *      Pix debug
+ *          l_int32       pixPrintStreamInfo()
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "swcscale.h"
+
+    /* Can use this to pad each rasterline.  Not presently necessary */
+static const l_int32  EXTRA_WORDS_ON_RIGHT = 0;
+
+#ifndef  NO_CONSOLE_IO
+#define   DEBUG    0
+#endif  /* ~NO_CONSOLE_IO */
+
+
+/*--------------------------------------------------------------------*
+ *                              Pix Creation                          *
+ *--------------------------------------------------------------------*/
+/*!
+ *  pixCreate() 
+ *
+ *      Input:  width, height, depth
+ *      Return: pixd, or null on error
+ *
+ *  Action: creates a Pix with data array allocated
+ */
+PIX *
+pixCreate(l_int32  width,
+	  l_int32  height,
+	  l_int32  depth)
+{
+l_int32    wpl;
+PIX       *pixd;
+l_uint32  *data;
+
+///    PROCNAME("pixCreate");
+
+    if ((depth != 1) && (depth != 2) && (depth != 4) && (depth != 8)
+			&& (depth != 16) && (depth != 24) && (depth != 32))
+		return NULL;
+    if (width <= 0)
+		return NULL;
+    if (height <= 0)
+		return NULL;
+
+    if ((pixd = (PIX *)calloc(1, sizeof(PIX))) == NULL)
+		return NULL;
+
+    pixSetWidth(pixd, width);
+    pixSetHeight(pixd, height);
+    pixSetDepth(pixd, depth);
+
+	/* So far, there is no need to add an extra word to each
+	 * raster line.  But the mechanism is here if needed, and
+	 * should have no side effects if enabled, as all ops that
+	 * use the word pad bits use the actual image width, not wpl.
+	 * When I got valgrind, I found that rasteropGeneralLow() was
+	 * making occasional read errors one word off the end
+	 * of the data, and adding an extra word to each raster
+	 * line was a quick fix, but is currently not necessary. */  
+    wpl = (width * depth + 31) / 32 + EXTRA_WORDS_ON_RIGHT;
+
+///    pixSetWpl(pixd, wpl);
+
+    if ((data = (l_uint32 *)calloc(4 * wpl, height)) == NULL)
+		return NULL;
+    pixSetData(pixd, data);
+    pixd->usecnt = 1;
+
+    return pixd;
+}
+
+
+/*!
+ *  pixCreateTemplate()
+ *
+ *      Input:  pixs
+ *      Return: pixd, or null on error
+ *
+ *  Action: makes a Pix of the same size as the input Pix, allocating
+ *          the data array, but does not copy the image data from pixs.
+ */
+PIX *
+pixCreateTemplate(PIX  *pixs)
+{
+l_int32  w, h, d;
+PIX     *pixd;
+
+///    PROCNAME("pixCreateTemplate");
+
+    w = pixGetWidth(pixs);
+    h = pixGetHeight(pixs);
+    d = pixGetDepth(pixs);
+
+    if ((pixd = pixCreate(w, h, d)) == NULL)
+        return NULL;
+
+///    pixCopyResolution(pixd, pixs);
+    
+    return pixd;
+}
+
+
+/*!
+ *  pixClone()
+ *
+ *      Input:  pix
+ *      Return: same pix (ptr), or null on error
+ *
+ *  Note: Why is this here?  We make a "clone", which
+ *        is just another handle to an existing pix, because
+ *        (1) images can be large and hence expensive to copy,
+ *        (2) extra handles to a data structure that are made
+ *        without some control are dangerous because if you
+ *        have two (say), how do you know which one should be
+ *        used to destroy the pix, and, conversely, if you
+ *        destroy the pix, how do you remember that the other
+ *        handle is no longer valid?  This is solved by a
+ *        simple protocol: (1) whenever you want a new handle
+ *        to an existing image, call pixClone(), which just
+ *        bumps a ref count, and (2) always call pixDestroy()
+ *        on ALL handles, which decrements the ref count and
+ *        only destroys the pix when pixDestroy() has
+ *        been called on all handles.
+ */
+PIX *
+pixClone(PIX  *pixs)
+{
+///    PROCNAME("pixClone");
+
+    if (!pixs)
+	return NULL;
+
+    pixChangeRefcount(pixs, 1);
+
+    return pixs;
+}
+
+
+
+/*--------------------------------------------------------------------*
+ *                           Pix Destruction                          *
+ *--------------------------------------------------------------------*/
+/*!
+ *  pixDestroy()
+ *
+ *      Input:  &pix <can be nulled>
+ *      Return: void
+ *
+ *  Action: decrements the ref count and, if 0, destroys the Pix
+ *          and nulls the input ptr.
+ */
+void
+pixDestroy(PIX  **ppix)
+{
+l_uint32  *data;
+///char      *text;
+///PIXCMAP   *cmap;
+PIX       *pix;
+
+///    PROCNAME("pixDestroy");
+
+    if ((pix = *ppix) == NULL)
+		return;
+
+	/* decrement the ref count.  If it is still > 0, just return */
+    pixChangeRefcount(pix, -1);
+    if (pixGetRefcount(pix) > 0)
+		return;
+
+	/* ok, the refcount is 0, so destroy it */
+    if ((data = pixGetData(pix)))
+	free((void *)data);
+///    if ((text = pixGetText(pix)))
+///	FREE((void *)text);
+///    if ((cmap = pixGetColormap(pix)) != NULL) { 
+///	if (cmap->array != NULL )
+///	    FREE((void *)cmap->array);
+///	FREE((void *)cmap);
+///    }
+
+    free((void *)pix);
+
+    *ppix = NULL;
+    return;
+}
+
+
+/*-------------------------------------------------------------------------*
+ *                                 Pix Copy                                *
+ *-------------------------------------------------------------------------*/
+/*!
+ *  pixCopy()
+ *
+ *      Input:  pixd (<optional>)
+ *              pixs
+ *      Return: pixd, or null on error
+ *
+ *  Notes:
+ *      (1) If pixd = NULL, this makes a new copy, with refcount of 1.
+ *          If pixd != NULL, this makes sure pixs and pixd are the same
+ *          size, and then copies the image data, leaving the refcounts
+ *          of pixs and pixd unchanged.
+ *      (2) This operation, like all others that may involve a pre-existing
+ *          pixd, will side-effect any existing clones of pixd.
+ */
+PIX *
+pixCopy(PIX  *pixd,   /* can be null */
+	PIX  *pixs)
+{
+l_int32    bytes;
+l_uint32  *datas, *datad;
+
+///    PROCNAME("pixCopy");
+
+	/* total bytes in image data */
+
+///	bytes = 4 * pixGetWpl(pixs) * pixGetHeight(pixs);
+
+    bytes = 4 * pixGetWidth(pixs) * pixGetHeight(pixs);
+
+
+	/* if we're making a new pix ... */
+    if (!pixd) {
+	if ((pixd = pixCreateTemplate(pixs)) == NULL)
+	    return NULL;
+	datas = pixGetData(pixs);
+	datad = pixGetData(pixd);
+	memcpy((char *)datad, (char *)datas, bytes);
+	return pixd;
+    }
+
+	/* programmer error! */
+    if (pixs == pixd)
+        return NULL;
+
+        /* check sizes */
+    if (!pixSizesEqual(pixs, pixd))
+	    return NULL;
+
+	/* copy the data */
+    datas = pixGetData(pixs);
+    datad = pixGetData(pixd);
+    memcpy((char*)datad, (char*)datas, bytes);
+    return pixd;
+}
+
+
+/*!
+ *  pixSizesEqual()
+ *
+ *      Input:  two Pix
+ *      Return: 1 if the two Pix have same {h, w, d}; 0 otherwise.
+ */
+l_int32
+pixSizesEqual(PIX  *pix1,
+	      PIX  *pix2)
+{
+///    PROCNAME("pixSizesEqual");
+
+    if ((pixGetWidth(pix1) != pixGetWidth(pix2)) ||
+        (pixGetHeight(pix1) != pixGetHeight(pix2)) ||
+        (pixGetDepth(pix1) != pixGetDepth(pix2))) {
+#if DEBUG
+	fprintf(stderr, "w1 = %d, w2 = %d, h1 = %d, h2 = %d, d1 = %d, d2 = %d\n",
+	                 pixGetWidth(pix1), pixGetWidth(pix2),
+	                 pixGetHeight(pix1), pixGetHeight(pix2),
+	                 pixGetDepth(pix1), pixGetDepth(pix2));
+#endif /* DEBUG */
+	return 0;
+    }
+    else
+	return 1;
+}
+
+
+
+/*--------------------------------------------------------------------*
+ *                                Accessors                           *
+ *--------------------------------------------------------------------*/
+l_int32
+pixGetWidth(PIX  *pix)
+{
+///    PROCNAME("pixGetWidth");
+
+    return pix->bmih.biWidth;
+}
+
+
+l_int32
+pixSetWidth(PIX     *pix,
+	    l_int32  width)
+{
+///    PROCNAME("pixSetWidth");
+
+    if (width < 0) {
+        pix->bmih.biWidth = 0;
+	return 1;
+    }
+
+    pix->bmih.biWidth = width;
+    return 0;
+}
+
+
+l_int32
+pixGetHeight(PIX  *pix)
+{
+///    PROCNAME("pixGetHeight");
+
+    return pix->bmih.biHeight;
+}
+
+
+l_int32
+pixSetHeight(PIX     *pix,
+	     l_int32  height)
+{
+///    PROCNAME("pixSetHeight");
+
+    if (height < 0) {
+        pix->bmih.biHeight = 0;
+	return 1;
+    }
+
+    pix->bmih.biHeight = height;
+    return 0;
+}
+
+
+l_int32 
+pixGetDepth(PIX  *pix)
+{
+///    PROCNAME("pixGetDepth");
+
+    return pix->bmih.biBitCount;
+}
+
+
+l_int32  
+pixSetDepth(PIX     *pix,
+	    l_int32  depth)
+{
+///    PROCNAME("pixSetDepth");
+
+	if (depth < 1) 
+		return 1;
+
+    pix->bmih.biBitCount = depth;
+    return 0;
+}
+
+
+#if 0
+l_int32  
+pixGetWpl(PIX  *pix)
+{
+///    PROCNAME("pixGetWpl");
+
+    return pix->wpl;
+}
+
+
+l_int32  
+pixSetWpl(PIX     *pix,
+	  l_int32  wpl)
+{
+///    PROCNAME("pixSetWpl");
+
+    pix->wpl = wpl;
+    return 0;
+}
+#endif
+
+
+l_int32
+pixGetRefcount(PIX  *pix)
+{
+///    PROCNAME("pixGetRefcount");
+
+    return pix->usecnt;
+}
+
+
+l_int32  
+pixChangeRefcount(PIX     *pix,
+	          l_int32  delta)
+{
+///    PROCNAME("pixChangeRefcount");
+
+    pix->usecnt += delta;
+    return 0;
+}
+
+#if 0
+l_uint32  
+pixGetXRes(PIX  *pix)
+{
+///    PROCNAME("pixGetXRes");
+
+    return pix->xres;
+}
+
+
+l_uint32  
+pixGetYRes(PIX  *pix)
+{
+///    PROCNAME("pixGetYRes");
+
+    return pix->yres;
+}
+
+
+l_int32  
+pixSetXRes(PIX      *pix,
+	   l_uint32  res)
+{
+///    PROCNAME("pixSetXRes");
+
+    pix->xres = res;
+    return 0;
+}
+
+
+l_int32  
+pixCopyResolution(PIX  *pixd,
+	          PIX  *pixs)
+{
+///    PROCNAME("pixCopyResolution");
+
+    pixSetXRes(pixd, pixGetXRes(pixs));
+    pixSetYRes(pixd, pixGetYRes(pixs));
+    return 0;
+}
+
+
+l_int32  
+pixScaleResolution(PIX       *pix,
+	           l_float32  xscale,
+		   l_float32  yscale)
+{
+///    PROCNAME("pixScaleResolution");
+
+    if (pix->xres == 0)
+		pix->xres = 300;
+    if (pix->yres == 0)
+		pix->yres = 300;
+    pix->xres = (l_uint32)(xscale * (l_float32)(pix->xres));
+    pix->yres = (l_uint32)(yscale * (l_float32)(pix->yres));
+    return 0;
+}
+
+
+l_int32  
+pixSetYRes(PIX      *pix,
+	   l_uint32  res)
+{
+///    PROCNAME("pixSetYRes");
+
+    pix->yres = res;
+    return 0;
+}
+#endif
+
+
+l_uint32 *
+pixGetData(PIX  *pix)
+{
+///    PROCNAME("pixGetData");
+
+    return pix->data;
+}
+
+
+l_int32  
+pixSetData(PIX       *pix,
+	   l_uint32  *data)
+{
+///    PROCNAME("pixSetData");
+
+    pix->data = data;
+    return 0;
+}
+
+
+/*!
+ *  getDataQbit()
+ *
+ *       Input: line  (ptr to beginning of data line)
+ *              n     (pixel index)
+ *       Return: val of the nth (4-bit) pixel.
+ */
+l_int32
+getDataQbit(l_uint32  *line,
+	    l_int32    n)
+{
+    return (*(line + (n >> 3)) >> (4 * (7 - (n & 7)))) & 0xf;
+}
+
+
+/*!
+ *  setDataQbit()
+ *
+ *       Input: line  (ptr to beginning of data line)
+ *              n     (pixel index)
+ *              val   (val to be inserted: 0 - 0xf)
+ *       Return: void
+ */
+void
+setDataQbit(l_uint32  *line,
+	    l_int32    n,
+	    l_int32    val)
+{
+l_uint32    *pword;
+
+    pword = line + (n >> 3);
+    *pword &= ~(0xf0000000 >> (4 * (n & 7)));  /* clear */
+    *pword |= val << (28 - 4 * (n & 7));   /* set */
+    return;
+}
+
+
+
+/*!
+ *  getDataDibit()
+ *
+ *       Input: line  (ptr to beginning of data line)
+ *              n     (pixel index)
+ *       Return: val of the nth (2-bit) pixel.
+ */
+l_int32
+getDataDibit(l_uint32  *line,
+	     l_int32    n)
+{
+    return (*(line + (n >> 4)) >> (2 * (15 - (n & 15)))) & 3;
+}
+
+
+/*!
+ *  setDataDibit()
+ *
+ *       Input: line  (ptr to beginning of data line)
+ *              n     (pixel index)
+ *              val   (val to be inserted: 0 - 3)
+ *       Return: void
+ */
+void
+setDataDibit(l_uint32  *line,
+	     l_int32    n,
+	     l_int32    val)
+{
+l_uint32    *pword;
+
+    pword = line + (n >> 4);
+    *pword &= ~(0xc0000000 >> (2 * (n & 15)));  /* clear */
+    *pword |= val << (30 - 2 * (n & 15));   /* set */
+    return;
+}
+

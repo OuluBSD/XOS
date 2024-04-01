@@ -1,0 +1,492 @@
+#include <windows.h>
+#include <windowsx.h>
+
+/*====================================================================*
+ -  Copyright (C) 2001 Leptonica.  All rights reserved.
+ -  This software is distributed in the hope that it will be
+ -  useful, but with NO WARRANTY OF ANY KIND.
+ -  No author or distributor accepts responsibility to anyone for the
+ -  consequences of using this software, or for whether it serves any
+ -  particular purpose or works at all, unless he or she says so in
+ -  writing.  Everyone is granted permission to copy, modify and
+ -  redistribute this source code, for commercial or non-commercial
+ -  purposes, with the following restrictions: (1) the origin of this
+ -  source code must not be misrepresented; (2) modified versions must
+ -  be plainly marked as such; and (3) this notice may not be removed
+ -  or altered from any source or modified source distribution.
+ *====================================================================*/
+
+
+/*
+ *  scale.c
+ *
+ *         Top-level scaling
+ *               PIX    *pixScale()
+ *
+ *         24-bit Color (linearly interpolated) scaling
+ *               PIX    *pixScaleColorLI()
+ *               PIX    *pixScaleColor2xLI()
+ *               PIX    *pixScaleColor4xLI()
+ *
+ *         Grayscale (linearly interpolated) scaling
+ *               PIX    *pixScaleGrayLI()
+ *               PIX    *pixScaleGray2xLI()
+ *               PIX    *pixScaleGray4xLI()
+ *
+ *         General scaling by closest pixel sampling
+ *               PIX    *pixScaleBySampling()
+ *
+ *         Downscaling with antialias (smoothing)
+ *               PIX    *pixScaleSmooth()
+ *               PIX    *pixScaleRGBToGray2()    special 2x reduction to gray
+ *
+ *         Binary scaling by closest pixel sampling
+ *               PIX    *pixScaleBinary()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, arbitrary reduction)
+ *               PIX    *pixScaleToGray()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, 2x reduction)
+ *               PIX    *pixScaleToGray2()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, 3x reduction)
+ *               PIX    *pixScaleToGray3()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, 4x reduction)
+ *               PIX    *pixScaleToGray4()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, 8x reduction)
+ *               PIX    *pixScaleToGray8()
+ *
+ *         Scale-to-gray (1 bpp --> 8 bpp, 16x reduction)
+ *               PIX    *pixScaleToGray16()
+ *
+ *         Scale-to-gray by mipmap(1 bpp --> 8 bpp, arbitrary reduction)
+ *               PIX    *pixScaleToGrayMipmap()
+ *
+ *         Grayscale scaling using mipmap
+ *               PIX    *pixScaleMipmap()
+ *
+ *         Upscale 2x followed by binarization
+ *               PIX    *pixScaleGray2xLIThresh()
+ *               PIX    *pixScaleGray2xLIDither()
+ *
+ *         Upscale 4x followed by binarization
+ *               PIX    *pixScaleGray4xLIThresh()
+ *               PIX    *pixScaleGray4xLIDither()
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "swcscale.h"
+
+
+
+/*------------------------------------------------------------------*
+ *                    Top level scaling dispatcher                  *
+ *------------------------------------------------------------------*/
+/*!
+ *  pixScale()
+ *
+ *      Input:  pixs (1, 2, 4, 8, 16 and 32 bpp)
+ *              scalex, scaley
+ *      Return: pixd, or null on error
+ * 
+ *  This function scales 24 bpp RGB; 2, 4 or 8 bpp palette color;
+ *  2, 4, 8 or 16 bpp gray; and binary images.
+ *
+ *  When the input has palette color, the colormap is removed and
+ *  a 24 bpp full color pix is made, which is then scaled with
+ *  either pixScalSmooth() or pixScaleColorLI(), depending on
+ *  the scale factor.
+ *
+ *  Images with 2, 4 or 16 bpp are converted to 8 bpp.
+ *
+ *  Grayscale and color images are scaled using either antialiased
+ *  subsampling (lowpass filtering followed by subsampling), or
+ *  by linear interpolation.  For scale factors less than 0.7,
+ *  antialiased subsamling is used.
+ *
+ *  Binary image are scaled by sampling the closest pixel, without
+ *  any low-pass filtering (averaging of neighboring pixels).
+ *  This will introduce aliasing for reductions, which can be
+ *  prevented by using pixScaleToGray() instead.
+ *
+ *  See notes below regarding use of filtering when subsampling.
+ *  
+ *  *** Warning: implicit assumption about RGB component order for LI color scaling
+ */
+PIX *
+pixScale(PIX       *pixs,
+	 l_float32  scalex,
+	 l_float32  scaley)
+{
+l_int32    d;
+l_float32  maxscale;
+///PIX       *pixt, *pixd;
+
+///    PROCNAME("pixScale");
+
+    if (!pixs)
+        return NULL;
+    if (scalex == 1.0 && scaley == 1.0)
+        return pixCopy(NULL, pixs);
+
+    maxscale = MAX(scalex, scaley);
+    d = pixGetDepth(pixs);
+    if (d == 1)
+///		return pixScaleBinary(pixs, scalex, scaley);
+		return NULL;
+/*    else if (pixGetColormap(pixs))		// 2, 4 or 8 bpp
+	{
+        WARNING("pixs has colormap; converting to full color", procName);
+		pixt = pixRemoveColormap(pixs, CONVERT_TO_FULL_COLOR);
+        if (maxscale >= 0.7)
+			pixd = pixScaleColorLI(pixt, scalex, scaley);
+        else
+            pixd = pixScaleSmooth(pixs, scalex, scaley);
+		pixDestroy(&pixt);
+		return pixd;
+    }
+*/
+    else if (d == 2 || d == 4)
+	{
+///        WARNING("pix has 2 or 4 bpp; converting to 8 bpp", procName);
+///        pixt = pixConvertTo8(pixs);
+///        if (maxscale >= 0.7)
+///           pixd = pixScaleGrayLI(pixt, scalex, scaley);
+///        else							// maxscale < 0.7
+///            pixd = pixScaleSmooth(pixt, scalex, scaley);
+///		pixDestroy(&pixt);
+		return NULL;
+    }
+    else if (d == 8)
+	{
+///        if (maxscale >= 0.7)
+///            return pixScaleGrayLI(pixs, scalex, scaley);
+///        else							// maxscale < 0.7
+///            return pixScaleSmooth(pixs, scalex, scaley);
+		return (NULL);
+    }
+    else if (d == 16)
+	{
+///        WARNING("pix has 16 bpp; converting to 8 bpp with MSB", procName);
+///        pixt = pixConvert16To8(pixs, 1);
+///        if (maxscale >= 0.7)
+///            pixd = pixScaleGrayLI(pixt, scalex, scaley);
+///        else							// maxscale < 0.7
+///            pixd = pixScaleSmooth(pixt, scalex, scaley);
+///		pixDestroy(&pixt);
+		return NULL;
+    }
+    else if (d == 32)
+	{
+        if (maxscale >= 0.7)
+			return pixScaleColorLI(pixs, scalex, scaley);
+        else							// maxscale < 0.7
+            return pixScaleSmooth(pixs, scalex, scaley);
+    }
+    else
+        return NULL;
+}
+
+
+/*------------------------------------------------------------------*
+ *            24-bit color scaling by linear interpolation          *
+ *------------------------------------------------------------------*/
+/*!
+ *  pixScaleColorLI()
+ *
+ *      Input:  pixs  (32 bpp, representing 24 bpp 3-color)
+ *              scalex, scaley
+ *      Return: pixd, or null on error
+ *
+ *  Notes:
+ *      (1) If this is used for scale factors less than about 0.7,
+ *          it will suffer from antialiasing.  Particularly for
+ *          document images with sharp edges, use pixScaleSmooth() instead.
+ *      (2) For the general case, it's 3-4x faster to manipulate
+ *          the color pixels directly, rather than to make component
+ *          images, do each 8 bpp component separately, and combine
+ *          the result.  The speed on intel hardware for the
+ *          general case (not 2x or 4x LI) is about
+ *          4.8 * 10^6 dest-pixels/sec/GHz.
+ *      (3) The slow method does about 2 * 10^6 dest-pixels/sec/GHz.
+ *          It is implemented using:
+ *              pixr = pixGetRGBComponent(pixs, COLOR_RED);
+ *              pixrs = pixScaleGrayLI(pixr, scalex, scaley);
+ *              pixg = pixGetRGBComponent(pixs, COLOR_GREEN);
+ *              pixgs = pixScaleGrayLI(pixg, scalex, scaley);
+ *              pixb = pixGetRGBComponent(pixs, COLOR_BLUE);
+ *              pixbs = pixScaleGrayLI(pixb, scalex, scaley);
+ *              pixd = pixCreateRGBImage(pixrs, pixgs, pixbs);
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+PIX *
+pixScaleColorLI(PIX      *pixs,
+	       l_float32  scalex,
+	       l_float32  scaley)
+{
+l_int32    ws, hs, wd, hd;
+l_uint32  *datas, *datad;
+PIX    	  *pixd;
+
+///    PROCNAME("pixScaleColorLI");
+
+    if (!pixs)
+        return NULL;
+    if (pixGetDepth(pixs) != 32)
+        return NULL;
+
+        /* do fast special cases if possible */
+    if (scalex == 1.0 && scaley == 1.0)
+		return pixCopy(NULL, pixs);
+    if (scalex == 2.0 && scaley == 2.0)
+		return pixScaleColor2xLI(pixs);
+
+///    if (scalex == 4.0 && scaley == 4.0)
+///	return pixScaleColor4xLI(pixs);
+
+        /* general case */
+
+    ws = pixGetWidth(pixs);
+    hs = pixGetHeight(pixs);
+    datas = pixGetData(pixs);
+///    wpls = pixGetWpl(pixs);
+    wd = (l_int32)(scalex * (l_float32)ws + 0.5);
+    hd = (l_int32)(scaley * (l_float32)hs + 0.5);
+    if ((pixd = pixCreate(wd, hd, 32)) == NULL)
+        return NULL;
+///    pixCopyResolution(pixd, pixs);
+///    pixScaleResolution(pixd, scalex, scaley);
+    datad = pixGetData(pixd);
+///    wpld = pixGetWpl(pixd);
+
+    scaleColorLILow(datad, wd, hd, wd, datas, ws, hs, ws);
+    return pixd;
+}
+
+
+/*!
+ *  pixScaleColor2xLI()
+ * 
+ *      Input:  pixs  (32 bpp, representing 24 bpp 3-color)
+ *      Return: pixd, or null on error
+ *
+ *  This is a special case of linear interpolated scaling
+ *  for 2x upscaling.  It is about 4x faster than using
+ *  pixScaleGray2xLI() on each component separately.
+ *  The speed on intel hardware for this special case
+ *  is about 64 * 10^6 dest-pixels/sec/GHz (!!)
+ *
+ *  The slow method, operating on each component separately, has 
+ *  a speed of about 16 * 10^6 dest-pixels/sec/GHz:
+ *       pixr = pixGetRGBComponent(pixs, COLOR_RED);
+ *       pixrs = pixScaleGray2xLI(pixr);
+ *       pixg = pixGetRGBComponent(pixs, COLOR_GREEN);
+ *       pixgs = pixScaleGray2xLI(pixg);
+ *       pixb = pixGetRGBComponent(pixs, COLOR_BLUE);
+ *       pixbs = pixScaleGray2xLI(pixb);
+ *       pixd = pixCreateRGBImage(pixrs, pixgs, pixbs);
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+PIX *
+pixScaleColor2xLI(PIX  *pixs)
+{
+l_int32    d, ws, hs;
+l_uint32  *datas, *datad;
+PIX    	  *pixd;
+
+///    PROCNAME("pixScaleColor2xLI");
+
+    if (!pixs)
+        return NULL;
+    if ((d = pixGetDepth(pixs)) != 32)
+        return NULL;
+    
+    ws = pixGetWidth(pixs);
+    hs = pixGetHeight(pixs);
+    datas = pixGetData(pixs);
+///    wpls = pixGetWpl(pixs);
+    if ((pixd = pixCreate(2 * ws, 2 * hs, 32)) == NULL)
+        return NULL;
+///    pixCopyResolution(pixd, pixs);
+///    pixScaleResolution(pixd, 2.0, 2.0);
+    datad = pixGetData(pixd);
+///    wpld = pixGetWpl(pixd);
+
+    scaleColor2xLILow(datad, 2 * ws, datas, ws, hs, ws);
+
+    return pixd;
+}
+
+
+/*------------------------------------------------------------------*
+ *              General scaling by closest pixel sampling           *
+ *------------------------------------------------------------------*/
+/*!
+ *  pixScaleBySampling()
+ *
+ *      Input:  pixs (1, 2, 4, 8, 16, 32 bpp)
+ *              scalex, scaley
+ *      Return: pixd, or null on error
+ * 
+ *  Note: this function samples from the source without
+ *        filtering, so that aliasing will result for
+ *        subsampling (scalex and scaley < 1.0).
+ */
+PIX *
+pixScaleBySampling(PIX       *pixs,
+	           l_float32  scalex,
+	           l_float32  scaley)
+{
+l_int32    ws, hs, d, wd, hd;
+l_uint32  *datas, *datad;
+PIX    	  *pixd;
+
+///    PROCNAME("pixScaleBySampling");
+
+    if (!pixs)
+        return NULL;
+    if (scalex == 1.0 && scaley == 1.0)
+        return pixCopy(NULL, pixs);
+    if ((d = pixGetDepth(pixs)) == 1)
+///        return pixScaleBinary(pixs, scalex, scaley);
+		return NULL;
+
+    ws = pixGetWidth(pixs);
+    hs = pixGetHeight(pixs);
+    datas = pixGetData(pixs);
+///    wpls = pixGetWpl(pixs);
+    wd = (l_int32)(scalex * (l_float32)ws + 0.5);
+    hd = (l_int32)(scaley * (l_float32)hs + 0.5);
+    if ((pixd = pixCreate(wd, hd, d)) == NULL)
+        return NULL;
+///    pixCopyResolution(pixd, pixs);
+///    pixScaleResolution(pixd, scalex, scaley);
+
+    datad = pixGetData(pixd);
+///    wpld = pixGetWpl(pixd);
+
+    scaleBySamplingLow(datad, wd, hd, wd, datas, ws, hs, d, ws);
+
+    return pixd;
+}
+
+
+/*------------------------------------------------------------------*
+ *               Downscaling with antialias (smoothing)             *
+ *------------------------------------------------------------------*/
+/*!
+ *  pixScaleSmooth()
+ *
+ *      Input:  pixs (2, 4, 8 or 32 bpp; and 2, 4, 8 bpp with colormap)
+ *              scalex, scaley (must both be <= 0.7)
+ *      Return: pixd, or null on error
+ * 
+ *  Notes:
+ *    (1) This function should only be used when the scale factors are less
+ *        than or equal to 0.7 (i.e., more than about 1.42x reduction).
+ *        If either scale factor is larger than 0.7, we issue a warning
+ *        and invoke pixScale().
+ *    (2) This works only on 2, 4, 8 and 32 bpp images, and if there is
+ *        a colormap, it is removed by converting to RGB.  In other
+ *        cases, we issue a warning and invoke pixScale().
+ *    (3) It does simple (flat filter) convolution, with a filter size
+ *        commensurate with the amount of reduction, to avoid antialiasing.
+ *    (4) It does simple subsampling after smoothing, which is appropriate
+ *        for this range of scaling.  Linear interpolation gives essentially
+ *        the same result with more computation for these scale factors,
+ *        so we don't use it.
+ *    (5) The result is the same as doing a full block convolution followed by
+ *        subsampling, but this is faster because the results of the block
+ *        convolution are only computed at the subsampling locations.
+ *        In fact, the computation time is approximately independent of
+ *        the scale factor, because the convolution kernel is adjusted
+ *        so that each source pixel is summed approximately once.
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+PIX *
+pixScaleSmooth(PIX       *pix,
+               l_float32  scalex,
+               l_float32  scaley)
+{
+l_int32    ws, hs, d, wd, hd, isize;
+l_uint32  *datas, *datad;
+l_float32  minscale, size;
+PIX    	  *pixs, *pixd;
+
+///    PROCNAME("pixScaleSmooth");
+
+    if (!pix)
+        return NULL;
+    if (scalex > 0.7 || scaley > 0.7) {
+///        WARNING("scaling factor not <= 0.7; doing regular scaling", procName);
+        return pixScale(pix, scalex, scaley);
+    }
+
+        /* remove colormap if necessary;
+	 * if 2 bpp or 4 bpp gray, convert to 8 bpp */
+    d = pixGetDepth(pix);
+///    if ((d == 2 || d == 4 || d == 8) && pixGetColormap(pix)) {
+///        WARNING("pix has colormap; converting to full color", procName);
+///	pixs = pixRemoveColormap(pix, CONVERT_TO_FULL_COLOR);
+///	d = 32;
+///    }
+///    else if (d == 2 || d == 4) {
+///        pixs = pixConvertTo8(pix);
+///	d = 8;
+///		return NULL;
+///    }
+///    else
+        pixs = pixClone(pix);
+
+    if (d != 8 && d != 32) {   /* d == 1 or d == 16 */
+///        WARNING("depth not 8 or 32 bpp; doing regular scaling", procName);
+		pixDestroy(&pixs);
+        return pixScale(pix, scalex, scaley);
+    }
+
+        /* If 1.42 < 1/minscale < 2.5, use size = 2
+         * If 2.5 < 1/minscale < 3.5, use size = 3, etc.
+         * Under no conditions use size < 2  */
+
+    minscale = MIN(scalex, scaley);
+    size = (float)(1.0 / minscale);		// ideal filter full width
+    isize = MAX(2, (l_int32)(size + 0.5));
+
+    ws = pixGetWidth(pixs);
+    hs = pixGetHeight(pixs);
+    if ((ws < isize) || (hs < isize)) {
+	pixDestroy(&pixs);
+        return NULL;
+    }
+    datas = pixGetData(pixs);
+///    wpls = pixGetWpl(pixs);
+    wd = (l_int32)(scalex * (l_float32)ws + 0.5);
+    hd = (l_int32)(scaley * (l_float32)hs + 0.5);
+    if (wd < 1 || hd < 1) {
+	pixDestroy(&pixs);
+        return NULL;
+    }
+    if ((pixd = pixCreate(wd, hd, d)) == NULL) {
+	pixDestroy(&pixs);
+        return NULL;
+    }
+///    pixCopyResolution(pixd, pixs);
+
+///    pixScaleResolution(pixd, scalex, scaley);
+    datad = pixGetData(pixd);
+///   wpld = pixGetWpl(pixd);
+
+    scaleSmoothLow(datad, wd, hd, wd, datas, ws, hs, d, ws, isize);
+
+    pixDestroy(&pixs);
+    return pixd;
+}

@@ -1,0 +1,68 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: xosmkinst - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC7.tmp" with contents
+[
+/nologo /MTd /W3 /Gm /GX /ZI /Od /I "..\common" /I "..\zlib" /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /D "_MBCS" /FR"Debug/" /Fo"Debug/" /Fd"Debug/" /FD /GZ /c 
+"E:\xossrc\xosmkinst\xosmkinst.cpp"
+]
+Creating command line "cl.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC7.tmp" 
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC8.tmp" with contents
+[
+kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib ..\swc\debug\swc.lib ..\zlib\debug\zlib.lib /nologo /subsystem:windows /incremental:yes /pdb:"Debug/xosmkinst.pdb" /debug /machine:I386 /out:"Debug/xosmkinst.exe" /pdbtype:sept 
+.\Debug\bootblk.obj
+.\Debug\copyitems.obj
+.\Debug\crc32.obj
+.\Debug\fmtfat32.obj
+.\Debug\initmbr.obj
+.\Debug\install.obj
+.\Debug\mbrblk.obj
+.\Debug\mkboot.obj
+.\Debug\scandisks.obj
+.\Debug\Strmov.obj
+.\Debug\swcdisplaybase.obj
+.\Debug\swcwindows.obj
+.\Debug\xid.obj
+.\Debug\xis.obj
+.\Debug\xosmkinst.obj
+.\Debug\xosmkinst.res
+]
+Creating command line "link.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC8.tmp"
+<h3>Output Window</h3>
+Compiling...
+xosmkinst.cpp
+Linking...
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC9.tmp" with contents
+[
+/nologo /o"Debug/xosmkinst.bsc" 
+.\Debug\bootblk.sbr
+.\Debug\copyitems.sbr
+.\Debug\crc32.sbr
+.\Debug\fmtfat32.sbr
+.\Debug\initmbr.sbr
+.\Debug\install.sbr
+.\Debug\mbrblk.sbr
+.\Debug\mkboot.sbr
+.\Debug\scandisks.sbr
+.\Debug\Strmov.sbr
+.\Debug\swcdisplaybase.sbr
+.\Debug\swcwindows.sbr
+.\Debug\xid.sbr
+.\Debug\xis.sbr
+.\Debug\xosmkinst.sbr]
+Creating command line "bscmake.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSPC9.tmp"
+Creating browse info file...
+<h3>Output Window</h3>
+
+
+
+<h3>Results</h3>
+xosmkinst.exe - 0 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

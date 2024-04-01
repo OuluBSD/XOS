@@ -1,0 +1,147 @@
+#include <windows.h>
+#include <windowsx.h>
+
+/*====================================================================*
+ -  Copyright (C) 2001 Leptonica.  All rights reserved.
+ -  This software is distributed in the hope that it will be
+ -  useful, but with NO WARRANTY OF ANY KIND.
+ -  No author or distributor accepts responsibility to anyone for the
+ -  consequences of using this software, or for whether it serves any
+ -  particular purpose or works at all, unless he or she says so in
+ -  writing.  Everyone is granted permission to copy, modify and
+ -  redistribute this source code, for commercial or non-commercial
+ -  purposes, with the following restrictions: (1) the origin of this
+ -  source code must not be misrepresented; (2) modified versions must
+ -  be plainly marked as such; and (3) this notice may not be removed
+ -  or altered from any source or modified source distribution.
+ *====================================================================*/
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "swcscale.h"
+
+    /* Can use this to pad each rasterline.  Not presently necessary */
+static const l_int32  EXTRA_WORDS_ON_RIGHT = 0;
+
+#ifndef  NO_CONSOLE_IO
+#define   DEBUG    0
+#endif  /* ~NO_CONSOLE_IO */
+
+
+#if 0
+/*!
+ *  pixCreateTemplate()
+ *
+ *      Input:  pixs
+ *      Return: pixd, or null on error
+ *
+ *  Action: makes a Pix of the same size as the input Pix, allocating
+ *          the data array, but does not copy the image data from pixs.
+ */
+PIX *
+pixCreateTemplate(PIX  *pixs)
+{
+l_int32  w, h;
+PIX     *pixd;
+
+///    PROCNAME("pixCreateTemplate");
+
+    w = pixs->bmih.biWidth;
+    h = pixs->bmih.biHeight;
+
+    if ((pixd = pixCreate(w, h, 32)) == NULL)
+        return NULL;
+
+///    pixCopyResolution(pixd, pixs);
+    
+    return pixd;
+}
+#endif
+
+
+
+#if 0
+/*-------------------------------------------------------------------------*
+ *                                 Pix Copy                                *
+ *-------------------------------------------------------------------------*/
+/*!
+ *  pixCopy()
+ *
+ *      Input:  pixd (<optional>)
+ *              pixs
+ *      Return: pixd, or null on error
+ *
+ *  Notes:
+ *      (1) If pixd = NULL, this makes a new copy, with refcount of 1.
+ *          If pixd != NULL, this makes sure pixs and pixd are the same
+ *          size, and then copies the image data, leaving the refcounts
+ *          of pixs and pixd unchanged.
+ *      (2) This operation, like all others that may involve a pre-existing
+ *          pixd, will side-effect any existing clones of pixd.
+ */
+PIX *
+pixCopy(PIX  *pixd,   /* can be null */
+	PIX  *pixs)
+{
+l_int32    bytes;
+l_uint32  *datas, *datad;
+
+///    PROCNAME("pixCopy");
+
+	/* total bytes in image data */
+
+///	bytes = 4 * pixGetWpl(pixs) * pixGetHeight(pixs);
+
+    bytes = 4 * pixs->bmih.biWidth * pixs->bmih.biHeight;
+
+
+	/* if we're making a new pix ... */
+    if (!pixd) {
+///	if ((pixd = pixCreateTemplate(pixs)) == NULL)
+///	    return NULL;
+	datas = pixs->data;
+	datad = pixd->data;
+	memcpy((char *)datad, (char *)datas, bytes);
+	return pixd;
+    }
+
+	/* programmer error! */
+    if (pixs == pixd)
+        return NULL;
+
+        /* check sizes */
+    if (!pixSizesEqual(pixs, pixd))
+	    return NULL;
+
+	/* copy the data */
+    datas = pixs->data;
+    datad = pixd->data;
+    memcpy((char*)datad, (char*)datas, bytes);
+    return pixd;
+}
+#endif
+
+#if 0
+/*!
+ *  pixSizesEqual()
+ *
+ *      Input:  two Pix
+ *      Return: 1 if the two Pix have same {h, w, d}; 0 otherwise.
+ */
+l_int32
+pixSizesEqual(PIX  *pix1,
+	      PIX  *pix2)
+{
+    if ((pix1->bmih.biWidth != pix2->bmih.biWidth) ||
+			(pix1->bmih.biHeight != pix2->bmih.biHeight))
+	{
+		return 0;
+    }
+    else
+		return 1;
+}
+#endif

@@ -1,0 +1,107 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: swc - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F3.tmp" with contents
+[
+/nologo /MTd /W4 /WX /GX /Zi /Od /Gf /I "..\jpeg" /I "..\png" /I "..\zlib" /I "..\common" /D "WIN32" /D "_DEBUG" /D "_LIB" /FR"Debug/" /Fo"Debug/" /Fd"Debug/" /FD /c 
+"E:\xossrc\swc\swcwindows.cpp"
+]
+Creating command line "cl.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F3.tmp" 
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F4.tmp" with contents
+[
+/nologo /out:"Debug\swc.lib" 
+.\Debug\chrtbl.obj
+.\Debug\datetimevs.obj
+.\Debug\Qdes.obj
+.\Debug\random.obj
+.\Debug\swap.obj
+.\Debug\swcbase.obj
+.\Debug\swcbutton.obj
+.\Debug\swccheckbox.obj
+.\Debug\swcclient16.obj
+.\Debug\swcclient32.obj
+.\Debug\swcdebug.obj
+.\Debug\swcdisplay.obj
+.\Debug\swcdisplaybase.obj
+.\Debug\swcdisplaylinked.obj
+.\Debug\swcdropdown.obj
+.\Debug\swcdropdown2.obj
+.\Debug\swcedit.obj
+.\Debug\swcfile.obj
+.\Debug\swcimage.obj
+.\Debug\swckbwedge.obj
+.\Debug\swclist.obj
+.\Debug\swcprint.obj
+.\Debug\swcrawprint.obj
+.\Debug\swcresponse.obj
+.\Debug\swcresponsechar.obj
+.\Debug\swcresponsenum.obj
+.\Debug\swcscale.obj
+.\Debug\swcscalelow.obj
+.\Debug\swcserver.obj
+.\Debug\swctabdisp.obj
+.\Debug\swctoplevel.obj
+.\Debug\swcwindows.obj
+.\Debug\winthread.obj
+.\Debug\xlatewinsocerror.obj
+.\Debug\xoserrmsg.obj
+]
+Creating command line "link.exe -lib @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F4.tmp"
+<h3>Output Window</h3>
+Compiling...
+swcwindows.cpp
+Creating library...
+Creating temporary file "C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F5.tmp" with contents
+[
+/nologo /o"Debug/swc.bsc" 
+.\Debug\chrtbl.sbr
+.\Debug\datetimevs.sbr
+.\Debug\Qdes.sbr
+.\Debug\random.sbr
+.\Debug\swap.sbr
+.\Debug\swcbase.sbr
+.\Debug\swcbutton.sbr
+.\Debug\swccheckbox.sbr
+.\Debug\swcclient16.sbr
+.\Debug\swcclient32.sbr
+.\Debug\swcdebug.sbr
+.\Debug\swcdisplay.sbr
+.\Debug\swcdisplaybase.sbr
+.\Debug\swcdisplaylinked.sbr
+.\Debug\swcdropdown.sbr
+.\Debug\swcdropdown2.sbr
+.\Debug\swcedit.sbr
+.\Debug\swcfile.sbr
+.\Debug\swcimage.sbr
+.\Debug\swckbwedge.sbr
+.\Debug\swclist.sbr
+.\Debug\swcprint.sbr
+.\Debug\swcrawprint.sbr
+.\Debug\swcresponse.sbr
+.\Debug\swcresponsechar.sbr
+.\Debug\swcresponsenum.sbr
+.\Debug\swcscale.sbr
+.\Debug\swcscalelow.sbr
+.\Debug\swcserver.sbr
+.\Debug\swctabdisp.sbr
+.\Debug\swctoplevel.sbr
+.\Debug\swcwindows.sbr
+.\Debug\winthread.sbr
+.\Debug\xlatewinsocerror.sbr
+.\Debug\xoserrmsg.sbr]
+Creating command line "bscmake.exe @C:\DOCUME~1\jrg\LOCALS~1\Temp\RSP43F5.tmp"
+Creating browse info file...
+<h3>Output Window</h3>
+
+
+
+<h3>Results</h3>
+swc.lib - 0 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

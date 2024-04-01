@@ -1,0 +1,3433 @@
+Module: c:\mmspc-mo3\swc\swcwindows.cpp
+GROUP: 'DGROUP' CONST,CONST2,_DATA,_BSS,XIB,XI,XIE
+
+Segment: _TEXT BYTE USE32 00000E0F bytes
+
+#include <windows.h>
+0000                          void near .fn_init():
+0000    55                        push      ebp
+0001    89 E5                     mov       ebp,esp
+0003    68 1C 00 00 00            push      0x0000001c
+0008    E8 00 00 00 00            call      __CHK
+000D    53                        push      ebx
+000E    56                        push      esi
+000F    57                        push      edi
+0010    81 EC 04 00 00 00         sub       esp,0x00000004
+0016                          L$1:
+0016    B8 00 00 00 00            mov       eax,offset swcDisplay near swc_BaseWin
+001B    50                        push      eax
+001C    E8 00 00 00 00            call      near swcDisplay::swcDisplay()
+0021    83 C4 04                  add       esp,0x00000004
+0024    89 45 F0                  mov       -0x10[ebp],eax
+0027    B8 00 00 00 00            mov       eax,offset L$111
+002C    50                        push      eax
+002D    E8 00 00 00 00            call      __wcpp_4_lcl_register_
+0032    83 C4 04                  add       esp,0x00000004
+0035                          L$2:
+0035    8D 65 F4                  lea       esp,-0xc[ebp]
+0038    5F                        pop       edi
+0039    5E                        pop       esi
+003A    5B                        pop       ebx
+003B    5D                        pop       ebp
+003C    C3                        ret       
+
+#include <windowsx.h>
+#include <stdio.h>
+#include <string.h>
+#include <dos.h>
+#include <io.h>
+#include <time.h>
+#include "xosstuff.h"
+#include "xosqdes.h"
+#include "xcstring.h"
+#include "swcwindows.h"
+#include "winnetwork.h"
+#include "common.h"
+
+scnfntdef swcscnfnttbl[FNTMAX+1] =
+{	{0, 14, 16, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_SMTEXT
+	{0, 16, 21, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_MSTEXT
+	{0, 20, 26, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_MDTEXT
+	{0, 30, 34, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_LMTEXT
+	{0, 40, 44, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_LGTEXT
+	{0, 13, 16, 0, 0, 0, NORMAL, "Arial"},				// FONT_SMSANS
+	{0, 17, 21, 0, 0, 0, NORMAL, "Arial"},				// FONT_MSSANS
+	{0, 22, 30, 0, 0, 0, NORMAL, "Arial"},				// FONT_MDSANS
+	{0, 30, 36, 0, 0, 0, NORMAL, "Arial"},				// FONT_LMSANS
+	{0, 38, 44, 0, 0, 0, NORMAL, "Arial"},				// FONT_LGSANS
+	{0, 80, 88, 0, 0, 0, NORMAL, "Arial"},				// FONT_VLSANS
+	{0, 14, 16, 0, 0, 0, BOLD  , "Arial"},				// FONT_SMHEADING
+	{0, 18, 21, 0, 0, 0, BOLD  , "Arial"},				// FONT_MSHEADING
+	{0, 22, 30, 0, 0, 0, BOLD  , "Arial"},				// FONT_MDHEADING
+	{0, 30, 36, 0, 0, 0, BOLD  , "Arial"},				// FONT_LMHEADING
+	{0, 38, 44, 0, 0, 0, BOLD  , "Arial"},				// FONT_LGHEADING
+	{0, 78, 88, 0, 0, 0, BOLD  , "Arial"},				// FONT_VLHEADING
+///	{0, 13, 15, 0, 0, 0, NORMAL, "Courier New"},		// FONT_SMFIXED
+///	{0, 19, 21, 0, 0, 0, NORMAL, "Courier New"},		// FONT_MSFIXED
+///	{0, 22, 24, 0, 0, 0, NORMAL, "Courier New"},		// FONT_MDFIXED
+///	{0, 32, 34, 0, 0, 0, NORMAL, "Courier New"},		// FONT_LMFIXED
+///	{0, 40, 44, 0, 0, 0, NORMAL, "Courier New"}			// FONT_LGFIXED
+
+	{0, 10, 12, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_SMFIXED
+	{0, 19, 21, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_MSFIXED
+	{0, 22, 24, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_MDFIXED
+	{0, 32, 34, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_LMFIXED
+	{0, 40, 44, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_LGFIXED
+///	{0, 12, 15, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_SMFIXED
+///	{0, 19, 21, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_MSFIXED
+///	{0, 22, 24, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_MDFIXED
+///	{0, 32, 34, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_LMFIXED
+///	{0, 40, 44, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_LGFIXED
+
+	{0, 13, 16, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_SMSANSN
+	{0, 17, 21, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_MSSANSN
+	{0, 22, 30, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_MDSANSN
+	{0, 30, 36, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_LMSANSN
+	{0, 38, 44, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_LGSANSN
+	{0, 80, 88, 0, 0, 0, NORMAL, "Arial Narrow"}		// FONT_VLSANSN
+};
+
+fontblk    *fontfirst = NULL;
+
+long        amountalloc;
+long        numberalloc;
+long        sf = 4;
+long        swcbasexoffset;
+long        swcbaseyoffset;
+swcDisplay  swc_BaseWin;
+swcDisplay *winblkpnt;
+
+HINSTANCE   hinst;
+HCURSOR     harrow;
+HCURSOR     hhand;
+HCURSOR     htext;
+HCURSOR     hwait;
+HACCEL      hacccur = 0;
+MSG         msg;
+
+uchar       swc_NumLockDisable = false;
+uchar       swc_NumLockInserted = false;
+uchar       swc_ForceFocusEnable = false;
+uchar       swc_MouseFocus = false;
+
+char        fatalfunc;
+char        crashed = false;	// TRUE if have fatal error
+char        inmenu = false;
+char        menuhand = false;
+char        mbdmenu = false;
+
+char        online = false;
+char        needdiscon = 0;		// 0 = Not connected, 1 = Connected,
+								//   2 = Disconnecting
+char        needexit = false;	// TRUE if need to exit
+uchar       swc_Ending = false;	// TRUE if terminating
+
+
+char        banner[120];
+
+char        progdir[256];
+char       *progname;
+
+
+static int CALLBACK findfontproc(CONST LOGFONT *, CONST TEXTMETRIC *, DWORD,
+		LPARAM);
+
+long  memring[1024];
+long *memrpnt = memring;
+
+
+void *operator new(size_t size)
+
+Routine Size: 61 bytes,    Routine Base: _TEXT + 0000
+
+003D                          void near * near operator new( int unsigned ):
+003D    55                        push      ebp
+003E    89 E5                     mov       ebp,esp
+0040    68 20 00 00 00            push      0x00000020
+0045    E8 00 00 00 00            call      __CHK
+004A    53                        push      ebx
+004B    56                        push      esi
+004C    57                        push      edi
+004D    81 EC 08 00 00 00         sub       esp,0x00000008
+
+
+{
+	long *mem;
+
+	memrpnt[0] = 0;
+0053                          L$3:
+0053    A1 00 00 00 00            mov       eax,long near * near memrpnt
+0058    C7 00 00 00 00 00         mov       dword ptr [eax],0x00000000
+
+	memrpnt[1] = size;
+005E    8B 15 00 00 00 00         mov       edx,long near * near memrpnt
+0064    8B 45 08                  mov       eax,0x8[ebp]
+0067    89 42 04                  mov       0x4[edx],eax
+
+	memrpnt += 2;
+006A    83 05 00 00 00 00 08      add       dword ptr long near * near memrpnt,0x00000008
+
+	if (memrpnt >= (memring + 1024))
+0071    B8 00 10 00 00            mov       eax,offset long near memring[]+0x1000
+0076    3B 05 00 00 00 00         cmp       eax,long near * near memrpnt
+007C    77 0A                     ja        L$4
+
+		memrpnt = memring;
+007E    C7 05 00 00 00 00 00 00 00 00
+                                  mov       dword ptr long near * near memrpnt,offset long near memring[]
+
+
+	amountalloc += size;
+0088                          L$4:
+0088    8B 45 08                  mov       eax,0x8[ebp]
+008B    01 05 00 00 00 00         add       long near amountalloc,eax
+
+	numberalloc++;
+0091    FF 05 00 00 00 00         inc       dword ptr long near numberalloc
+
+	mem = (long *)malloc(size + 4);
+0097    8B 45 08                  mov       eax,0x8[ebp]
+009A    83 C0 04                  add       eax,0x00000004
+009D    50                        push      eax
+009E    E8 00 00 00 00            call      malloc
+00A3    83 C4 04                  add       esp,0x00000004
+00A6    89 45 F0                  mov       -0x10[ebp],eax
+
+	if (mem != NULL)
+00A9    83 7D F0 00               cmp       dword ptr -0x10[ebp],0x00000000
+00AD    74 0C                     je        L$5
+
+		*mem++ = size;
+00AF    8B 55 F0                  mov       edx,-0x10[ebp]
+00B2    83 45 F0 04               add       dword ptr -0x10[ebp],0x00000004
+00B6    8B 45 08                  mov       eax,0x8[ebp]
+00B9    89 02                     mov       [edx],eax
+
+	return (mem);
+00BB                          L$5:
+00BB    8B 45 F0                  mov       eax,-0x10[ebp]
+00BE    89 45 EC                  mov       -0x14[ebp],eax
+
+}
+00C1    8B 45 EC                  mov       eax,-0x14[ebp]
+00C4                          L$6:
+00C4    8D 65 F4                  lea       esp,-0xc[ebp]
+00C7    5F                        pop       edi
+00C8    5E                        pop       esi
+00C9    5B                        pop       ebx
+00CA    5D                        pop       ebp
+00CB    C3                        ret       
+
+
+void operator delete(void *p)
+
+Routine Size: 143 bytes,    Routine Base: _TEXT + 003D
+
+00CC                          void near operator delete( void near * ):
+00CC    55                        push      ebp
+00CD    89 E5                     mov       ebp,esp
+00CF    68 18 00 00 00            push      0x00000018
+00D4    E8 00 00 00 00            call      __CHK
+00D9    53                        push      ebx
+00DA    56                        push      esi
+00DB    57                        push      edi
+00DC    81 EC 00 00 00 00         sub       esp,0x00000000
+
+
+{
+	memrpnt[0] = 1;
+00E2                          L$7:
+00E2    A1 00 00 00 00            mov       eax,long near * near memrpnt
+00E7    C7 00 01 00 00 00         mov       dword ptr [eax],0x00000001
+
+	memrpnt[1] = ((long *)p)[-1];
+00ED    8B 15 00 00 00 00         mov       edx,long near * near memrpnt
+00F3    8B 45 08                  mov       eax,0x8[ebp]
+00F6    8B 40 FC                  mov       eax,-0x4[eax]
+00F9    89 42 04                  mov       0x4[edx],eax
+
+	memrpnt += 2;
+00FC    83 05 00 00 00 00 08      add       dword ptr long near * near memrpnt,0x00000008
+
+	if (memrpnt >= (memring + 1024))
+0103    B8 00 10 00 00            mov       eax,offset long near memring[]+0x1000
+0108    3B 05 00 00 00 00         cmp       eax,long near * near memrpnt
+010E    77 0A                     ja        L$8
+
+		memrpnt = memring;
+0110    C7 05 00 00 00 00 00 00 00 00
+                                  mov       dword ptr long near * near memrpnt,offset long near memring[]
+
+
+	amountalloc -= ((long *)p)[-1];
+011A                          L$8:
+011A    8B 45 08                  mov       eax,0x8[ebp]
+011D    8B 40 FC                  mov       eax,-0x4[eax]
+0120    29 05 00 00 00 00         sub       long near amountalloc,eax
+
+	numberalloc--;
+0126    FF 0D 00 00 00 00         dec       dword ptr long near numberalloc
+
+	free (((long *)p) - 1);
+012C    8B 45 08                  mov       eax,0x8[ebp]
+012F    83 E8 04                  sub       eax,0x00000004
+0132    50                        push      eax
+0133    E8 00 00 00 00            call      free
+0138    83 C4 04                  add       esp,0x00000004
+
+}
+013B                          L$9:
+013B    8D 65 F4                  lea       esp,-0xc[ebp]
+013E    5F                        pop       edi
+013F    5E                        pop       esi
+0140    5B                        pop       ebx
+0141    5D                        pop       ebp
+0142    C3                        ret       
+
+
+//******************************************
+// Function: WinMain - Main windows function
+// Returned: Return value
+//******************************************
+
+int APIENTRY WinMain(
+
+Routine Size: 119 bytes,    Routine Base: _TEXT + 00CC
+
+0143                          _WinMain@16:
+0143    55                        push      ebp
+0144    89 E5                     mov       ebp,esp
+0146    68 28 01 00 00            push      0x00000128
+014B    E8 00 00 00 00            call      __CHK
+0150    53                        push      ebx
+0151    56                        push      esi
+0152    57                        push      edi
+0153    81 EC E4 00 00 00         sub       esp,0x000000e4
+
+    HINSTANCE hinstance,
+    HINSTANCE hprevinstance,
+    LPSTR     cmdparam,
+    int       ncmdshow)
+
+{
+    RECT       rect;
+    WNDCLASS   wndclass;
+    LOGFONT    logfnt;
+	HFONT      font;
+    HDC        hdc;
+    TEXTMETRIC metrics;
+    scnfntdef *fpnt;
+    int        cnt;
+
+	ncmdshow = ncmdshow;
+
+    hinst = hinstance;					// Make the instance handle globably
+0159                          L$10:
+0159    8B 45 08                  mov       eax,0x8[ebp]
+015C    A3 00 00 00 00            mov       void near * near hinst,eax
+
+										//   available
+    GetModuleFileName(hinst, progdir, sizeof(progdir) - 40);
+0161    68 D8 00 00 00            push      0x000000d8
+0166    B8 00 00 00 00            mov       eax,offset char near progdir[]
+016B    50                        push      eax
+016C    FF 35 00 00 00 00         push      dword ptr void near * near hinst
+0172    E8 00 00 00 00            call      _GetModuleFileNameA@12
+
+    if ((progname = strrchr(progdir, '\\')) != NULL)
+0177    6A 5C                     push      0x0000005c
+0179    B8 00 00 00 00            mov       eax,offset char near progdir[]
+017E    50                        push      eax
+017F    E8 00 00 00 00            call      strrchr
+0184    83 C4 08                  add       esp,0x00000008
+0187    A3 00 00 00 00            mov       char near * near progname,eax
+018C    83 3D 00 00 00 00 00      cmp       dword ptr char near * near progname,0x00000000
+0193    74 08                     je        L$11
+
+		progname++;
+0195    FF 05 00 00 00 00         inc       dword ptr char near * near progname
+019B    EB 19                     jmp       L$12
+
+	else
+		progname = strmov(progdir, "\\");
+019D                          L$11:
+019D    B8 00 00 00 00            mov       eax,offset L$101
+01A2    50                        push      eax
+01A3    B8 00 00 00 00            mov       eax,offset char near progdir[]
+01A8    50                        push      eax
+01A9    E8 00 00 00 00            call      char near * near strmov( char near *, char const near * )
+01AE    83 C4 08                  add       esp,0x00000008
+01B1    A3 00 00 00 00            mov       char near * near progname,eax
+
+
+    harrow = LoadCursor(0, IDC_ARROW);
+01B6                          L$12:
+01B6    68 00 7F 00 00            push      0x00007f00
+01BB    6A 00                     push      0x00000000
+01BD    E8 00 00 00 00            call      _LoadCursorA@8
+01C2    A3 00 00 00 00            mov       HICON__ near * near harrow,eax
+
+    hhand = LoadCursor(hinst, "HAND");
+01C7    B8 02 00 00 00            mov       eax,offset L$102
+01CC    50                        push      eax
+01CD    FF 35 00 00 00 00         push      dword ptr void near * near hinst
+01D3    E8 00 00 00 00            call      _LoadCursorA@8
+01D8    A3 00 00 00 00            mov       HICON__ near * near hhand,eax
+
+    htext = LoadCursor(hinst, "TEXT");
+01DD    B8 07 00 00 00            mov       eax,offset L$103
+01E2    50                        push      eax
+01E3    FF 35 00 00 00 00         push      dword ptr void near * near hinst
+01E9    E8 00 00 00 00            call      _LoadCursorA@8
+01EE    A3 00 00 00 00            mov       HICON__ near * near htext,eax
+
+    hwait = LoadCursor(0, IDC_WAIT);
+01F3    68 02 7F 00 00            push      0x00007f02
+01F8    6A 00                     push      0x00000000
+01FA    E8 00 00 00 00            call      _LoadCursorA@8
+01FF    A3 00 00 00 00            mov       HICON__ near * near hwait,eax
+
+    if (hprevinstance == 0)
+0204    83 7D 0C 00               cmp       dword ptr 0xc[ebp],0x00000000
+0208    75 6F                     jne       L$13
+
+    {
+		wndclass.style = CS_HREDRAW|CS_VREDRAW|CS_CLASSDC;
+020A    C7 45 A8 43 00 00 00      mov       dword ptr -0x58[ebp],0x00000043
+
+		wndclass.lpfnWndProc = swcDisplayBase::displayproc;
+0211    C7 45 AC 00 00 00 00      mov       dword ptr -0x54[ebp],offset long near swcDisplayBase::displayproc( HWND__ near *, int unsigned, int unsigned, long )
+
+		wndclass.cbClsExtra = 0;
+0218    C7 45 B0 00 00 00 00      mov       dword ptr -0x50[ebp],0x00000000
+
+		wndclass.cbWndExtra = 4;
+021F    C7 45 B4 04 00 00 00      mov       dword ptr -0x4c[ebp],0x00000004
+
+		wndclass.hInstance = hinst;
+0226    A1 00 00 00 00            mov       eax,void near * near hinst
+022B    89 45 B8                  mov       -0x48[ebp],eax
+
+		wndclass.hIcon = 0;
+022E    C7 45 BC 00 00 00 00      mov       dword ptr -0x44[ebp],0x00000000
+
+		wndclass.hCursor = harrow;
+0235    A1 00 00 00 00            mov       eax,HICON__ near * near harrow
+023A    89 45 C0                  mov       -0x40[ebp],eax
+
+		wndclass.hbrBackground = 0;
+023D    C7 45 C4 00 00 00 00      mov       dword ptr -0x3c[ebp],0x00000000
+
+		wndclass.lpszMenuName = NULL;
+0244    C7 45 C8 00 00 00 00      mov       dword ptr -0x38[ebp],0x00000000
+
+		wndclass.lpszClassName = "swcMAIN";
+024B    C7 45 CC 0C 00 00 00      mov       dword ptr -0x34[ebp],offset L$104
+
+		RegisterClass(&wndclass);
+0252    8D 45 A8                  lea       eax,-0x58[ebp]
+0255    50                        push      eax
+0256    E8 00 00 00 00            call      _RegisterClassA@4
+
+		wndclass.style = CS_HREDRAW|CS_VREDRAW /* |CS_NOCLOSE */ ;
+025B    C7 45 A8 03 00 00 00      mov       dword ptr -0x58[ebp],0x00000003
+
+		wndclass.lpfnWndProc = swcDisplayBase::displayproc;
+0262    C7 45 AC 00 00 00 00      mov       dword ptr -0x54[ebp],offset long near swcDisplayBase::displayproc( HWND__ near *, int unsigned, int unsigned, long )
+
+		wndclass.lpszClassName = "swcDISPLAY";
+0269    C7 45 CC 14 00 00 00      mov       dword ptr -0x34[ebp],offset L$105
+
+		RegisterClass(&wndclass);
+0270    8D 45 A8                  lea       eax,-0x58[ebp]
+0273    50                        push      eax
+0274    E8 00 00 00 00            call      _RegisterClassA@4
+
+    }
+	strmov(strmov(progname, swc_AppIniFileName), ".INI");
+0279                          L$13:
+0279    B8 1F 00 00 00            mov       eax,offset L$106
+027E    50                        push      eax
+027F    B8 00 00 00 00            mov       eax,offset char near swc_AppIniFileName[]
+0284    50                        push      eax
+0285    FF 35 00 00 00 00         push      dword ptr char near * near progname
+028B    E8 00 00 00 00            call      char near * near strmov( char near *, char const near * )
+0290    83 C4 08                  add       esp,0x00000008
+0293    50                        push      eax
+0294    E8 00 00 00 00            call      char near * near strmov( char near *, char const near * )
+0299    83 C4 08                  add       esp,0x00000008
+
+	GetClientRect(GetDesktopWindow(), &rect);
+029C    8D 45 D0                  lea       eax,-0x30[ebp]
+029F    50                        push      eax
+02A0    E8 00 00 00 00            call      _GetDesktopWindow@0
+02A5    50                        push      eax
+02A6    E8 00 00 00 00            call      _GetClientRect@8
+
+	cnt = atoi(cmdparam);
+02AB    8B 45 10                  mov       eax,0x10[ebp]
+02AE    50                        push      eax
+02AF    E8 00 00 00 00            call      atoi
+02B4    83 C4 04                  add       esp,0x00000004
+02B7    89 45 F0                  mov       -0x10[ebp],eax
+
+	sf = (cnt == 800) ? 4 : (cnt == 1024) ? 5 : (rect.right > 810) ? 5 : 4;
+02BA    81 7D F0 20 03 00 00      cmp       dword ptr -0x10[ebp],0x00000320
+02C1    75 0C                     jne       L$14
+02C3    C7 85 30 FF FF FF 04 00 00 00
+                                  mov       dword ptr -0xd0[ebp],0x00000004
+02CD    EB 4C                     jmp       L$19
+02CF                          L$14:
+02CF    81 7D F0 00 04 00 00      cmp       dword ptr -0x10[ebp],0x00000400
+02D6    75 0C                     jne       L$15
+02D8    C7 85 2C FF FF FF 05 00 00 00
+                                  mov       dword ptr -0xd4[ebp],0x00000005
+02E2    EB 2B                     jmp       L$18
+02E4                          L$15:
+02E4    81 7D D8 2A 03 00 00      cmp       dword ptr -0x28[ebp],0x0000032a
+02EB    7E 0C                     jle       L$16
+02ED    C7 85 28 FF FF FF 05 00 00 00
+                                  mov       dword ptr -0xd8[ebp],0x00000005
+02F7    EB 0A                     jmp       L$17
+02F9                          L$16:
+02F9    C7 85 28 FF FF FF 04 00 00 00
+                                  mov       dword ptr -0xd8[ebp],0x00000004
+0303                          L$17:
+0303    8B 85 28 FF FF FF         mov       eax,-0xd8[ebp]
+0309    89 85 2C FF FF FF         mov       -0xd4[ebp],eax
+030F                          L$18:
+030F    8B 85 2C FF FF FF         mov       eax,-0xd4[ebp]
+0315    89 85 30 FF FF FF         mov       -0xd0[ebp],eax
+031B                          L$19:
+031B    8B 85 30 FF FF FF         mov       eax,-0xd0[ebp]
+0321    A3 00 00 00 00            mov       long near sf,eax
+
+	if (swc_WinType == SWCWINTYPE_FULLSCREEN)
+0326    80 3D 00 00 00 00 02      cmp       byte ptr char unsigned near swc_WinType,0x02
+032D    75 40                     jne       L$20
+
+	{
+		swcbasexoffset = (rect.right - sf * 200)/2;
+032F    69 15 00 00 00 00 C8 00 00 00
+                                  imul      edx,long near sf,0x000000c8
+0339    8B 45 D8                  mov       eax,-0x28[ebp]
+033C    29 D0                     sub       eax,edx
+033E    89 C2                     mov       edx,eax
+0340    89 D0                     mov       eax,edx
+0342    C1 FA 1F                  sar       edx,0x0000001f
+0345    2B C2                     sub       eax,edx
+0347    D1 F8                     sar       eax,0x00000001
+0349    A3 00 00 00 00            mov       long near swcbasexoffset,eax
+
+		swcbaseyoffset = (rect.bottom - sf * 150)/2;
+034E    69 15 00 00 00 00 96 00 00 00
+                                  imul      edx,long near sf,0x00000096
+0358    8B 45 DC                  mov       eax,-0x24[ebp]
+035B    29 D0                     sub       eax,edx
+035D    89 C2                     mov       edx,eax
+035F    89 D0                     mov       eax,edx
+0361    C1 FA 1F                  sar       edx,0x0000001f
+0364    2B C2                     sub       eax,edx
+0366    D1 F8                     sar       eax,0x00000001
+0368    A3 00 00 00 00            mov       long near swcbaseyoffset,eax
+
+	}
+036D    EB 14                     jmp       L$21
+
+	else
+		swcbasexoffset = swcbaseyoffset = 0;
+036F                          L$20:
+036F    C7 05 00 00 00 00 00 00 00 00
+                                  mov       dword ptr long near swcbaseyoffset,0x00000000
+0379    A1 00 00 00 00            mov       eax,long near swcbaseyoffset
+037E    A3 00 00 00 00            mov       long near swcbasexoffset,eax
+
+    swc_BaseWin.hwin = CreateWindow("swcMAIN", swc_AppMainBanner,
+0383                          L$21:
+0383    6A 00                     push      0x00000000
+0385    8B 45 08                  mov       eax,0x8[ebp]
+0388    89 85 24 FF FF FF         mov       -0xdc[ebp],eax
+038E    FF B5 24 FF FF FF         push      dword ptr -0xdc[ebp]
+0394    6A 00                     push      0x00000000
+0396    6A 00                     push      0x00000000
+0398    A1 00 00 00 00            mov       eax,long near swc_YSize
+039D    0F AF 05 00 00 00 00      imul      eax,long near sf
+03A4    89 85 20 FF FF FF         mov       -0xe0[ebp],eax
+03AA    FF B5 20 FF FF FF         push      dword ptr -0xe0[ebp]
+03B0    A1 00 00 00 00            mov       eax,long near swc_XSize
+03B5    0F AF 05 00 00 00 00      imul      eax,long near sf
+03BC    89 85 1C FF FF FF         mov       -0xe4[ebp],eax
+03C2    FF B5 1C FF FF FF         push      dword ptr -0xe4[ebp]
+03C8    6A 00                     push      0x00000000
+03CA    6A 00                     push      0x00000000
+03CC    80 3D 00 00 00 00 02      cmp       byte ptr char unsigned near swc_WinType,0x02
+03D3    75 0C                     jne       L$22
+03D5    C7 85 18 FF FF FF 00 00 00 86
+                                  mov       dword ptr -0xe8[ebp],0x86000000
+03DF    EB 0A                     jmp       L$23
+03E1                          L$22:
+03E1    C7 85 18 FF FF FF 00 00 CF 06
+                                  mov       dword ptr -0xe8[ebp],0x06cf0000
+03EB                          L$23:
+03EB    FF B5 18 FF FF FF         push      dword ptr -0xe8[ebp]
+03F1    B8 00 00 00 00            mov       eax,offset char near swc_AppMainBanner[]
+03F6    50                        push      eax
+03F7    B8 24 00 00 00            mov       eax,offset L$107
+03FC    50                        push      eax
+03FD    6A 00                     push      0x00000000
+03FF    E8 00 00 00 00            call      _CreateWindowExA@48
+0404    A3 00 00 00 00            mov       swcDisplay near swc_BaseWin,eax
+
+			(swc_WinType == SWCWINTYPE_FULLSCREEN) ? (WS_POPUP|WS_CLIPCHILDREN|
+			WS_CLIPSIBLINGS) : (WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN|
+			WS_CLIPSIBLINGS), 0, 0, swc_XSize * sf, swc_YSize * sf, 0, 0,
+			hinstance, 0);
+    SetWindowLong(swc_BaseWin.hwin, GWL_USERDATA, (LONG)&swc_BaseWin);
+0409    B8 00 00 00 00            mov       eax,offset swcDisplay near swc_BaseWin
+040E    50                        push      eax
+040F    6A EB                     push      0xffffffeb
+0411    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0417    E8 00 00 00 00            call      _SetWindowLongA@12
+
+    GetClientRect(swc_BaseWin.hwin, &rect);
+041C    8D 45 D0                  lea       eax,-0x30[ebp]
+041F    50                        push      eax
+0420    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0426    E8 00 00 00 00            call      _GetClientRect@8
+
+///    swc_BaseWin.xpos = swc_BaseWin.ypos = 0;
+///    swc_BaseWin.width = rect.right;
+///    swc_BaseWin.height = rect.bottom;
+    swc_BaseWin.txtcolor = 0x000000;
+042B    C7 05 18 00 00 00 00 00 00 00
+                                  mov       dword ptr swcDisplay near swc_BaseWin+0x18,0x00000000
+
+    swc_BaseWin.bgcolor = 0xD0D0D0;
+0435    C7 05 1C 00 00 00 D0 D0 D0 00
+                                  mov       dword ptr swcDisplay near swc_BaseWin+0x1c,0x00d0d0d0
+
+	swc_BaseWin.parent = NULL;
+043F    C7 05 20 00 00 00 00 00 00 00
+                                  mov       dword ptr swcDisplay near swc_BaseWin+0x20,0x00000000
+
+	swc_BaseWin.sibling = NULL;
+0449    C7 05 24 00 00 00 00 00 00 00
+                                  mov       dword ptr swcDisplay near swc_BaseWin+0x24,0x00000000
+
+    UpdateWindow(swc_BaseWin.hwin);
+0453    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0459    E8 00 00 00 00            call      _UpdateWindow@4
+
+    SetFocus(swc_BaseWin.hwin);
+045E    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0464    E8 00 00 00 00            call      _SetFocus@4
+
+	if (swc_WinType == SWCWINTYPE_FULLSCREEN)
+0469    80 3D 00 00 00 00 02      cmp       byte ptr char unsigned near swc_WinType,0x02
+0470    75 23                     jne       L$24
+
+		SetWindowOrgEx(GetDC(swc_BaseWin.hwin), -swcbasexoffset,
+0472    6A 00                     push      0x00000000
+0474    A1 00 00 00 00            mov       eax,long near swcbaseyoffset
+0479    F7 D8                     neg       eax
+047B    50                        push      eax
+047C    A1 00 00 00 00            mov       eax,long near swcbasexoffset
+0481    F7 D8                     neg       eax
+0483    50                        push      eax
+0484    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+048A    E8 00 00 00 00            call      _GetDC@4
+048F    50                        push      eax
+0490    E8 00 00 00 00            call      _SetWindowOrgEx@16
+
+				-swcbaseyoffset, NULL);
+    ShowWindow(swc_BaseWin.hwin, (swc_WinType == SWCWINTYPE_FULLSCREEN) ?
+0495                          L$24:
+0495    80 3D 00 00 00 00 02      cmp       byte ptr char unsigned near swc_WinType,0x02
+049C    75 0C                     jne       L$25
+049E    C7 85 14 FF FF FF 03 00 00 00
+                                  mov       dword ptr -0xec[ebp],0x00000003
+04A8    EB 0A                     jmp       L$26
+04AA                          L$25:
+04AA    C7 85 14 FF FF FF 01 00 00 00
+                                  mov       dword ptr -0xec[ebp],0x00000001
+04B4                          L$26:
+04B4    FF B5 14 FF FF FF         push      dword ptr -0xec[ebp]
+04BA    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+04C0    E8 00 00 00 00            call      _ShowWindow@8
+
+			SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
+    hdc = CreateIC("DISPLAY", NULL, NULL, NULL);
+04C5    6A 00                     push      0x00000000
+04C7    6A 00                     push      0x00000000
+04C9    6A 00                     push      0x00000000
+04CB    B8 2C 00 00 00            mov       eax,offset L$108
+04D0    50                        push      eax
+04D1    E8 00 00 00 00            call      _CreateICA@16
+04D6    89 45 E8                  mov       -0x18[ebp],eax
+
+    memset(&logfnt, 0, sizeof(logfnt));
+04D9    6A 3C                     push      0x0000003c
+04DB    6A 00                     push      0x00000000
+04DD    8D 85 34 FF FF FF         lea       eax,-0xcc[ebp]
+04E3    50                        push      eax
+04E4    E8 00 00 00 00            call      memset
+04E9    83 C4 0C                  add       esp,0x0000000c
+
+    fpnt = swcscnfnttbl + FNTMAX;
+04EC    C7 45 EC 80 05 00 00      mov       dword ptr -0x14[ebp],offset scnfntdef near swcscnfnttbl[]+0x580
+
+    cnt = FNTMAX;
+04F3    C7 45 F0 20 00 00 00      mov       dword ptr -0x10[ebp],0x00000020
+
+    do
+    {
+		logfnt.lfHeight = (sf == 4) ? fpnt->size4 : fpnt->size5;
+04FA                          L$27:
+04FA    83 3D 00 00 00 00 04      cmp       dword ptr long near sf,0x00000004
+0501    75 0E                     jne       L$28
+0503    8B 45 EC                  mov       eax,-0x14[ebp]
+0506    8A 40 04                  mov       al,0x4[eax]
+0509    88 85 10 FF FF FF         mov       -0xf0[ebp],al
+050F    EB 0C                     jmp       L$29
+0511                          L$28:
+0511    8B 45 EC                  mov       eax,-0x14[ebp]
+0514    8A 40 05                  mov       al,0x5[eax]
+0517    88 85 10 FF FF FF         mov       -0xf0[ebp],al
+051D                          L$29:
+051D    31 C0                     xor       eax,eax
+051F    8A 85 10 FF FF FF         mov       al,-0xf0[ebp]
+0525    89 85 34 FF FF FF         mov       -0xcc[ebp],eax
+
+		logfnt.lfWeight = fpnt->weight;
+052B    31 C0                     xor       eax,eax
+052D    8B 55 EC                  mov       edx,-0x14[ebp]
+0530    66 8B 42 0A               mov       ax,0xa[edx]
+0534    89 85 44 FF FF FF         mov       -0xbc[ebp],eax
+
+		logfnt.lfItalic = fpnt->italic;
+053A    8B 45 EC                  mov       eax,-0x14[ebp]
+053D    8A 40 07                  mov       al,0x7[eax]
+0540    88 85 48 FF FF FF         mov       -0xb8[ebp],al
+
+		strcpy(logfnt.lfFaceName, fpnt->name);
+0546    8B 45 EC                  mov       eax,-0x14[ebp]
+0549    83 C0 0C                  add       eax,0x0000000c
+054C    50                        push      eax
+054D    8D 85 50 FF FF FF         lea       eax,-0xb0[ebp]
+0553    50                        push      eax
+0554    E8 00 00 00 00            call      strcpy
+0559    83 C4 08                  add       esp,0x00000008
+
+		font = CreateFontIndirect(&logfnt);
+055C    8D 85 34 FF FF FF         lea       eax,-0xcc[ebp]
+0562    50                        push      eax
+0563    E8 00 00 00 00            call      _CreateFontIndirectA@4
+0568    89 45 E4                  mov       -0x1c[ebp],eax
+
+		SelectObject(hdc, font);
+056B    8B 45 E4                  mov       eax,-0x1c[ebp]
+056E    50                        push      eax
+056F    8B 45 E8                  mov       eax,-0x18[ebp]
+0572    50                        push      eax
+0573    E8 00 00 00 00            call      _SelectObject@8
+
+		GetTextMetrics(hdc, &metrics);
+0578    8D 85 70 FF FF FF         lea       eax,-0x90[ebp]
+057E    50                        push      eax
+057F    8B 45 E8                  mov       eax,-0x18[ebp]
+0582    50                        push      eax
+0583    E8 00 00 00 00            call      _GetTextMetricsA@8
+
+		fpnt->actual = (ushort)(metrics.tmHeight);
+0588    8B 85 70 FF FF FF         mov       eax,-0x90[ebp]
+058E    8B 55 EC                  mov       edx,-0x14[ebp]
+0591    66 89 42 08               mov       0x8[edx],ax
+
+		SelectObject(hdc, GetStockFont(SYSTEM_FONT));
+0595    6A 0D                     push      0x0000000d
+0597    E8 00 00 00 00            call      _GetStockObject@4
+059C    50                        push      eax
+059D    8B 45 E8                  mov       eax,-0x18[ebp]
+05A0    50                        push      eax
+05A1    E8 00 00 00 00            call      _SelectObject@8
+
+		DeleteObject(font);
+05A6    8B 45 E4                  mov       eax,-0x1c[ebp]
+05A9    50                        push      eax
+05AA    E8 00 00 00 00            call      _DeleteObject@4
+
+		fpnt--;
+05AF    8B 45 EC                  mov       eax,-0x14[ebp]
+05B2    83 45 EC D4               add       dword ptr -0x14[ebp],0xffffffd4
+
+    } while (--cnt >= 0);
+05B6    83 45 F0 FF               add       dword ptr -0x10[ebp],0xffffffff
+05BA    83 7D F0 00               cmp       dword ptr -0x10[ebp],0x00000000
+05BE    7C 05                     jl        L$30
+05C0    E9 35 FF FF FF            jmp       L$27
+
+    DeleteDC(hdc);
+05C5                          L$30:
+05C5    8B 45 E8                  mov       eax,-0x18[ebp]
+05C8    50                        push      eax
+05C9    E8 00 00 00 00            call      _DeleteDC@4
+
+
+	swcAppMain();
+05CE    E8 00 00 00 00            call      void near swcAppMain()
+
+    while (GetMessage(&msg, 0, 0, 0))
+05D3                          L$31:
+05D3    6A 00                     push      0x00000000
+05D5    6A 00                     push      0x00000000
+05D7    6A 00                     push      0x00000000
+05D9    B8 00 00 00 00            mov       eax,offset tagMSG near msg
+05DE    50                        push      eax
+05DF    E8 00 00 00 00            call      _GetMessageA@16
+05E4    85 C0                     test      eax,eax
+05E6    74 10                     je        L$32
+
+		swchandlemessage(&msg);
+05E8    B8 00 00 00 00            mov       eax,offset tagMSG near msg
+05ED    50                        push      eax
+05EE    E8 00 00 00 00            call      void near swchandlemessage( tagMSG near * )
+05F3    83 C4 04                  add       esp,0x00000004
+05F6    EB DB                     jmp       L$31
+
+	while (fontfirst != NULL)
+05F8                          L$32:
+05F8    83 3D 00 00 00 00 00      cmp       dword ptr fontblk near * near fontfirst,0x00000000
+05FF    74 1C                     je        L$33
+
+	{
+		RemoveFontResource(fontfirst->file);
+0601    A1 00 00 00 00            mov       eax,fontblk near * near fontfirst
+0606    83 C0 04                  add       eax,0x00000004
+0609    50                        push      eax
+060A    E8 00 00 00 00            call      _RemoveFontResourceA@4
+
+		fontfirst = fontfirst->next;
+060F    A1 00 00 00 00            mov       eax,fontblk near * near fontfirst
+0614    8B 00                     mov       eax,[eax]
+0616    A3 00 00 00 00            mov       fontblk near * near fontfirst,eax
+
+	}
+061B    EB DB                     jmp       L$32
+
+    return (msg.wParam);
+061D                          L$33:
+061D    A1 08 00 00 00            mov       eax,tagMSG near msg+0x8
+0622    89 45 E0                  mov       -0x20[ebp],eax
+
+}
+0625    8B 45 E0                  mov       eax,-0x20[ebp]
+0628                          L$34:
+0628    8D 65 F4                  lea       esp,-0xc[ebp]
+062B    5F                        pop       edi
+062C    5E                        pop       esi
+062D    5B                        pop       ebx
+062E    5D                        pop       ebp
+062F    C2 10 00                  ret       0x00000010
+
+
+
+int swcAddTrueTypeFont(
+
+Routine Size: 1263 bytes,    Routine Base: _TEXT + 0143
+
+0632                          int near swcAddTrueTypeFont( char near *, char near * ):
+0632    55                        push      ebp
+0633    89 E5                     mov       ebp,esp
+0635    68 38 00 00 00            push      0x00000038
+063A    E8 00 00 00 00            call      __CHK
+063F    53                        push      ebx
+0640    56                        push      esi
+0641    57                        push      edi
+0642    81 EC 14 00 00 00         sub       esp,0x00000014
+
+	char *name,
+	char *file)
+
+{
+	HDC      hdc;
+	int      rtn;
+	int      havefont;
+	fontblk *fb;
+
+    hdc = CreateIC("DISPLAY", NULL, NULL, NULL);
+0648                          L$35:
+0648    6A 00                     push      0x00000000
+064A    6A 00                     push      0x00000000
+064C    6A 00                     push      0x00000000
+064E    B8 34 00 00 00            mov       eax,offset L$109
+0653    50                        push      eax
+0654    E8 00 00 00 00            call      _CreateICA@16
+0659    89 45 E4                  mov       -0x1c[ebp],eax
+
+	havefont = FALSE;
+065C    C7 45 EC 00 00 00 00      mov       dword ptr -0x14[ebp],0x00000000
+
+	EnumFontFamilies(hdc, name, &findfontproc, (LPARAM)&havefont);
+0663    8D 45 EC                  lea       eax,-0x14[ebp]
+0666    50                        push      eax
+0667    B8 00 00 00 00            mov       eax,offset int near findfontproc( tagLOGFONTA const near *, tagTEXTMETRICA const near *, long unsigned, long )
+066C    50                        push      eax
+066D    8B 45 08                  mov       eax,0x8[ebp]
+0670    50                        push      eax
+0671    8B 45 E4                  mov       eax,-0x1c[ebp]
+0674    50                        push      eax
+0675    E8 00 00 00 00            call      _EnumFontFamiliesA@16
+
+    DeleteDC(hdc);
+067A    8B 45 E4                  mov       eax,-0x1c[ebp]
+067D    50                        push      eax
+067E    E8 00 00 00 00            call      _DeleteDC@4
+
+	if (havefont)
+0683    83 7D EC 00               cmp       dword ptr -0x14[ebp],0x00000000
+0687    74 09                     je        L$36
+
+		return (-1);
+0689    C7 45 E0 FF FF FF FF      mov       dword ptr -0x20[ebp],0xffffffff
+0690    EB 5D                     jmp       L$38
+
+	if ((rtn = AddFontResource(file)) <= 0)
+0692                          L$36:
+0692    8B 45 0C                  mov       eax,0xc[ebp]
+0695    50                        push      eax
+0696    E8 00 00 00 00            call      _AddFontResourceA@4
+069B    89 45 E8                  mov       -0x18[ebp],eax
+069E    83 7D E8 00               cmp       dword ptr -0x18[ebp],0x00000000
+06A2    7F 09                     jg        L$37
+
+		return (0);
+06A4    C7 45 E0 00 00 00 00      mov       dword ptr -0x20[ebp],0x00000000
+06AB    EB 42                     jmp       L$38
+
+	fb = new fontblk();
+06AD                          L$37:
+06AD    6A 44                     push      0x00000044
+06AF    E8 00 00 00 00            call      void near * near operator new( int unsigned )
+06B4    83 C4 04                  add       esp,0x00000004
+06B7    89 45 F0                  mov       -0x10[ebp],eax
+
+	strncpy(fb->file, file, 63);
+06BA    6A 3F                     push      0x0000003f
+06BC    8B 45 0C                  mov       eax,0xc[ebp]
+06BF    50                        push      eax
+06C0    8B 45 F0                  mov       eax,-0x10[ebp]
+06C3    83 C0 04                  add       eax,0x00000004
+06C6    50                        push      eax
+06C7    E8 00 00 00 00            call      strncpy
+06CC    83 C4 0C                  add       esp,0x0000000c
+
+	fb->file[63] = 0;
+06CF    8B 45 F0                  mov       eax,-0x10[ebp]
+06D2    C6 40 43 00               mov       byte ptr 0x43[eax],0x00
+
+	fb->next = fontfirst;
+06D6    8B 15 00 00 00 00         mov       edx,fontblk near * near fontfirst
+06DC    8B 45 F0                  mov       eax,-0x10[ebp]
+06DF    89 10                     mov       [eax],edx
+
+	fontfirst = fb;
+06E1    8B 45 F0                  mov       eax,-0x10[ebp]
+06E4    A3 00 00 00 00            mov       fontblk near * near fontfirst,eax
+
+	return (rtn);
+06E9    8B 45 E8                  mov       eax,-0x18[ebp]
+06EC    89 45 E0                  mov       -0x20[ebp],eax
+
+}
+06EF                          L$38:
+06EF    8B 45 E0                  mov       eax,-0x20[ebp]
+06F2                          L$39:
+06F2    8D 65 F4                  lea       esp,-0xc[ebp]
+06F5    5F                        pop       edi
+06F6    5E                        pop       esi
+06F7    5B                        pop       ebx
+06F8    5D                        pop       ebp
+06F9    C3                        ret       
+
+
+
+static int CALLBACK findfontproc(
+06FA                          int near findfontproc( tagLOGFONTA const near *, tagTEXTMETRICA const near *, long unsigned, long ):
+06FA    55                        push      ebp
+06FB    89 E5                     mov       ebp,esp
+06FD    68 18 00 00 00            push      0x00000018
+0702    E8 00 00 00 00            call      __CHK
+0707    53                        push      ebx
+0708    56                        push      esi
+0709    57                        push      edi
+070A    81 EC 04 00 00 00         sub       esp,0x00000004
+
+	CONST LOGFONT    *elf,
+	CONST TEXTMETRIC *ntm,
+	DWORD             fonttype,
+	LPARAM            lparam)
+
+{
+	elf = elf;
+	ntm = ntm;
+	fonttype = fonttype;
+
+	*(int *)lparam = true;
+0710                          L$40:
+0710    8B 45 14                  mov       eax,0x14[ebp]
+0713    C7 00 01 00 00 00         mov       dword ptr [eax],0x00000001
+
+	return (true);
+0719    C7 45 F0 01 00 00 00      mov       dword ptr -0x10[ebp],0x00000001
+
+}
+0720    8B 45 F0                  mov       eax,-0x10[ebp]
+0723                          L$41:
+0723    8D 65 F4                  lea       esp,-0xc[ebp]
+0726    5F                        pop       edi
+0727    5E                        pop       esi
+0728    5B                        pop       ebx
+0729    5D                        pop       ebp
+072A    C2 10 00                  ret       0x00000010
+
+
+
+void swchandlemessage(
+
+Routine Size: 251 bytes,    Routine Base: _TEXT + 0632
+
+072D                          void near swchandlemessage( tagMSG near * ):
+072D    55                        push      ebp
+072E    89 E5                     mov       ebp,esp
+0730    68 68 00 00 00            push      0x00000068
+0735    E8 00 00 00 00            call      __CHK
+073A    53                        push      ebx
+073B    56                        push      esi
+073C    57                        push      edi
+073D    81 EC 44 00 00 00         sub       esp,0x00000044
+
+	MSG *msg)
+
+{
+	swcBase        *pwin;
+	swcDisplayBase *dwin;
+
+	if (msg->hwnd == NULL)
+0743                          L$42:
+0743    8B 45 08                  mov       eax,0x8[ebp]
+0746    83 38 00                  cmp       dword ptr [eax],0x00000000
+0749    0F 85 C9 00 00 00         jne       L$50
+
+	{
+		if (msg->message == (WM_USER + 50))
+074F    8B 45 08                  mov       eax,0x8[ebp]
+0752    81 78 04 32 04 00 00      cmp       dword ptr 0x4[eax],0x00000432
+0759    0F 85 7B 00 00 00         jne       L$48
+
+		{
+			if ((pwin = swcBase::ffwindow) != NULL)
+075F    A1 00 00 00 00            mov       eax,swcBase near * near swcBase::ffwindow
+0764    89 45 EC                  mov       -0x14[ebp],eax
+0767    83 7D EC 00               cmp       dword ptr -0x14[ebp],0x00000000
+076B    0F 84 67 00 00 00         je        L$47
+
+			{
+				::SetFocus(pwin->hwin);
+0771    8B 45 EC                  mov       eax,-0x14[ebp]
+0774    FF 30                     push      dword ptr [eax]
+0776    E8 00 00 00 00            call      _SetFocus@4
+
+				if (pwin->type == SWC_WT_RESPONSE &&
+077B    8B 45 EC                  mov       eax,-0x14[ebp]
+077E    80 78 04 03               cmp       byte ptr 0x4[eax],0x03
+0782    75 09                     jne       L$43
+0784    8B 45 EC                  mov       eax,-0x14[ebp]
+0787    F6 40 78 02               test      byte ptr 0x78[eax],0x02
+078B    75 02                     jne       L$44
+078D                          L$43:
+078D    EB 16                     jmp       L$45
+
+						(((swcResponse *)pwin)->options & SWCRESPONSE_SELALL))
+					Edit_SetSel(pwin->hwin, 0, 0x7FFF);
+078F                          L$44:
+078F    68 FF 7F 00 00            push      0x00007fff
+0794    6A 00                     push      0x00000000
+0796    68 B1 00 00 00            push      0x000000b1
+079B    8B 45 EC                  mov       eax,-0x14[ebp]
+079E    FF 30                     push      dword ptr [eax]
+07A0    E8 00 00 00 00            call      _SendMessageA@16
+
+				while ((dwin = pwin->parent) != NULL)
+07A5                          L$45:
+07A5    8B 45 EC                  mov       eax,-0x14[ebp]
+07A8    8B 40 20                  mov       eax,0x20[eax]
+07AB    89 45 F0                  mov       -0x10[ebp],eax
+07AE    83 7D F0 00               cmp       dword ptr -0x10[ebp],0x00000000
+07B2    74 24                     je        L$47
+
+				{
+					if (dwin->havefocus(swcBase::ffwindow))
+07B4    8B 45 F0                  mov       eax,-0x10[ebp]
+07B7    8B 40 6C                  mov       eax,0x6c[eax]
+07BA    FF 35 00 00 00 00         push      dword ptr swcBase near * near swcBase::ffwindow
+07C0    8B 55 F0                  mov       edx,-0x10[ebp]
+07C3    52                        push      edx
+07C4    FF 50 1C                  call      dword ptr 0x1c[eax]
+07C7    83 C4 08                  add       esp,0x00000008
+07CA    85 C0                     test      eax,eax
+07CC    74 02                     je        L$46
+
+						break;
+07CE    EB 08                     jmp       L$47
+
+					pwin = dwin;
+07D0                          L$46:
+07D0    8B 45 F0                  mov       eax,-0x10[ebp]
+07D3    89 45 EC                  mov       -0x14[ebp],eax
+
+				}
+07D6    EB CD                     jmp       L$45
+
+			}
+		}
+07D8                          L$47:
+07D8    EB 3E                     jmp       L$50
+
+		else if (msg->message == (WM_USER + 100))
+07DA                          L$48:
+07DA    8B 45 08                  mov       eax,0x8[ebp]
+07DD    81 78 04 64 04 00 00      cmp       dword ptr 0x4[eax],0x00000464
+07E4    75 14                     jne       L$49
+
+			((winnetwork *)(msg->lParam))->networkmsg100(msg);
+07E6    8B 45 08                  mov       eax,0x8[ebp]
+07E9    50                        push      eax
+07EA    8B 45 08                  mov       eax,0x8[ebp]
+07ED    FF 70 0C                  push      dword ptr 0xc[eax]
+07F0    E8 00 00 00 00            call      void near winnetwork::networkmsg100( tagMSG near * )
+07F5    83 C4 08                  add       esp,0x00000008
+07F8    EB 1E                     jmp       L$50
+
+		else if (msg->message == (WM_USER + 101))
+07FA                          L$49:
+07FA    8B 45 08                  mov       eax,0x8[ebp]
+07FD    81 78 04 65 04 00 00      cmp       dword ptr 0x4[eax],0x00000465
+0804    75 12                     jne       L$50
+
+			((winnetwork *)(msg->lParam))->networkmsg101(msg);
+0806    8B 45 08                  mov       eax,0x8[ebp]
+0809    50                        push      eax
+080A    8B 45 08                  mov       eax,0x8[ebp]
+080D    FF 70 0C                  push      dword ptr 0xc[eax]
+0810    E8 00 00 00 00            call      void near winnetwork::networkmsg101( tagMSG near * )
+0815    83 C4 08                  add       esp,0x00000008
+
+	}
+	if (!TranslateAccelerator(swc_BaseWin.hwin, hacccur, msg))
+0818                          L$50:
+0818    8B 45 08                  mov       eax,0x8[ebp]
+081B    50                        push      eax
+081C    FF 35 00 00 00 00         push      dword ptr HACCEL__ near * near hacccur
+0822    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0828    E8 00 00 00 00            call      _TranslateAcceleratorA@12
+082D    85 C0                     test      eax,eax
+082F    0F 85 48 01 00 00         jne       L$66
+
+	{
+		if (swc_NumLockDisable && msg->message == WM_KEYDOWN)
+0835    80 3D 00 00 00 00 00      cmp       byte ptr char unsigned near swc_NumLockDisable,0x00
+083C    74 0C                     je        L$51
+083E    8B 45 08                  mov       eax,0x8[ebp]
+0841    81 78 04 00 01 00 00      cmp       dword ptr 0x4[eax],0x00000100
+0848    74 05                     je        L$52
+084A                          L$51:
+084A    E9 D3 00 00 00            jmp       L$59
+
+		{
+			if (swc_NumLockInserted && ((uchar)(msg->lParam >> 16)) == 0x45)
+084F                          L$52:
+084F    80 3D 00 00 00 00 00      cmp       byte ptr char unsigned near swc_NumLockInserted,0x00
+0856    74 0D                     je        L$53
+0858    8B 45 08                  mov       eax,0x8[ebp]
+085B    8B 40 0C                  mov       eax,0xc[eax]
+085E    C1 F8 10                  sar       eax,0x00000010
+0861    3C 45                     cmp       al,0x45
+0863    74 02                     je        L$54
+0865                          L$53:
+0865    EB 0C                     jmp       L$55
+
+			{
+				swc_NumLockInserted = false;
+0867                          L$54:
+0867    C6 05 00 00 00 00 00      mov       byte ptr char unsigned near swc_NumLockInserted,0x00
+
+				return;
+086E    E9 0A 01 00 00            jmp       L$66
+
+			}
+			if ((msg->lParam & 0x1000000) == 0)
+0873                          L$55:
+0873    8B 45 08                  mov       eax,0x8[ebp]
+0876    F6 40 0F 01               test      byte ptr 0xf[eax],0x01
+087A    0F 85 A2 00 00 00         jne       L$59
+
+			{
+				INPUT  input[2];
+				int    oemkey;
+				static uchar keytbl[] = {0x67, 0x68, 0x69, 0x6D, 0x64, 0x65, 0x66,
+						0x6B, 0x61, 0x62, 0x63, 0x60, 0x6E};
+
+				oemkey = (uchar)(msg->lParam >> 16);
+0880                          L$56:
+0880    8B 45 08                  mov       eax,0x8[ebp]
+0883    8B 40 0C                  mov       eax,0xc[eax]
+0886    C1 F8 10                  sar       eax,0x00000010
+0889    25 FF 00 00 00            and       eax,0x000000ff
+088E    89 45 E8                  mov       -0x18[ebp],eax
+
+				if (oemkey >= 0x47 && oemkey <= 0x53)
+0891    83 7D E8 47               cmp       dword ptr -0x18[ebp],0x00000047
+0895    7C 06                     jl        L$57
+0897    83 7D E8 53               cmp       dword ptr -0x18[ebp],0x00000053
+089B    7E 05                     jle       L$58
+089D                          L$57:
+089D    E9 80 00 00 00            jmp       L$59
+
+				{
+					if (msg->wParam != keytbl[oemkey - 0x47])
+08A2                          L$58:
+08A2    8B 45 E8                  mov       eax,-0x18[ebp]
+08A5    31 D2                     xor       edx,edx
+08A7    8A 90 B9 FF FF FF         mov       dl,char unsigned near void near swchandlemessage( tagMSG near * )::.m::keytbl[]+0xffffffb9[eax]
+08AD    8B 45 08                  mov       eax,0x8[ebp]
+08B0    3B 50 08                  cmp       edx,0x8[eax]
+08B3    74 6D                     je        L$59
+
+					{
+						input[0].type = INPUT_KEYBOARD;
+08B5    C7 45 B0 01 00 00 00      mov       dword ptr -0x50[ebp],0x00000001
+
+						input[0].ki.dwExtraInfo = 0;
+08BC    C7 45 C0 00 00 00 00      mov       dword ptr -0x40[ebp],0x00000000
+
+						input[0].ki.dwFlags = 0;
+08C3    C7 45 B8 00 00 00 00      mov       dword ptr -0x48[ebp],0x00000000
+
+						input[0].ki.time = 0;
+08CA    C7 45 BC 00 00 00 00      mov       dword ptr -0x44[ebp],0x00000000
+
+						input[0].ki.wScan = 0x45;
+08D1    C7 45 B4 90 00 45 00      mov       dword ptr -0x4c[ebp],0x00450090
+
+						input[0].ki.wVk = 0x90;
+						input[1].type = INPUT_KEYBOARD;
+08D8    C7 45 CC 01 00 00 00      mov       dword ptr -0x34[ebp],0x00000001
+
+						input[1].ki.dwExtraInfo = 0;
+08DF    C7 45 DC 00 00 00 00      mov       dword ptr -0x24[ebp],0x00000000
+
+						input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+08E6    C7 45 D4 02 00 00 00      mov       dword ptr -0x2c[ebp],0x00000002
+
+						input[1].ki.time = 0;
+08ED    C7 45 D8 00 00 00 00      mov       dword ptr -0x28[ebp],0x00000000
+
+						input[1].ki.wScan = 0x45;
+08F4    C7 45 D0 90 00 45 00      mov       dword ptr -0x30[ebp],0x00450090
+
+						input[1].ki.wVk = 0x90;
+						swc_NumLockInserted = true;
+08FB    C6 05 00 00 00 00 01      mov       byte ptr char unsigned near swc_NumLockInserted,0x01
+
+						SendInput(2, input, sizeof(INPUT));
+0902    6A 1C                     push      0x0000001c
+0904    8D 45 B0                  lea       eax,-0x50[ebp]
+0907    50                        push      eax
+0908    6A 02                     push      0x00000002
+090A    2E FF 15 00 00 00 00      call      dword ptr cs:__imp__SendInput@12
+
+						msg->wParam = keytbl[oemkey - 0x47];
+0911    8B 45 E8                  mov       eax,-0x18[ebp]
+0914    31 D2                     xor       edx,edx
+0916    8A 90 B9 FF FF FF         mov       dl,char unsigned near void near swchandlemessage( tagMSG near * )::.m::keytbl[]+0xffffffb9[eax]
+091C    8B 45 08                  mov       eax,0x8[ebp]
+091F    89 50 08                  mov       0x8[eax],edx
+
+					}
+				}
+			}
+		}
+		if ((msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN) &&
+0922                          L$59:
+0922    8B 45 08                  mov       eax,0x8[ebp]
+0925    81 78 04 00 01 00 00      cmp       dword ptr 0x4[eax],0x00000100
+092C    74 0C                     je        L$60
+092E    8B 45 08                  mov       eax,0x8[ebp]
+0931    81 78 04 04 01 00 00      cmp       dword ptr 0x4[eax],0x00000104
+0938    75 15                     jne       L$61
+093A                          L$60:
+093A    6A EB                     push      0xffffffeb
+093C    8B 45 08                  mov       eax,0x8[ebp]
+093F    FF 30                     push      dword ptr [eax]
+0941    E8 00 00 00 00            call      _GetWindowLongA@8
+0946    89 45 EC                  mov       -0x14[ebp],eax
+0949    83 7D EC 00               cmp       dword ptr -0x14[ebp],0x00000000
+094D    75 02                     jne       L$62
+094F                          L$61:
+094F    EB 16                     jmp       L$63
+0951                          L$62:
+0951    8B 45 08                  mov       eax,0x8[ebp]
+0954    FF 70 08                  push      dword ptr 0x8[eax]
+0957    8B 45 EC                  mov       eax,-0x14[ebp]
+095A    50                        push      eax
+095B    E8 00 00 00 00            call      int near swcBase::checkforkey( long )
+0960    83 C4 08                  add       esp,0x00000008
+0963    85 C0                     test      eax,eax
+0965    75 02                     jne       L$64
+0967                          L$63:
+0967    EB 02                     jmp       L$65
+
+				(pwin = (swcBase *)GetWindowLong(msg->hwnd, GWL_USERDATA))
+				!= NULL && pwin->checkforkey(msg->wParam))
+			return;
+0969                          L$64:
+0969    EB 12                     jmp       L$66
+
+		TranslateMessage(msg);
+096B                          L$65:
+096B    8B 45 08                  mov       eax,0x8[ebp]
+096E    50                        push      eax
+096F    E8 00 00 00 00            call      _TranslateMessage@4
+
+		DispatchMessage(msg);
+0974    8B 45 08                  mov       eax,0x8[ebp]
+0977    50                        push      eax
+0978    E8 00 00 00 00            call      _DispatchMessageA@4
+
+	}
+}
+097D                          L$66:
+097D    8D 65 F4                  lea       esp,-0xc[ebp]
+0980    5F                        pop       edi
+0981    5E                        pop       esi
+0982    5B                        pop       ebx
+0983    5D                        pop       ebp
+0984    C3                        ret       
+
+
+int swcGetIniString(
+
+Routine Size: 600 bytes,    Routine Base: _TEXT + 072D
+
+0985                          int near swcGetIniString( char near *, char near *, char near *, char near *, int ):
+0985    55                        push      ebp
+0986    89 E5                     mov       ebp,esp
+0988    68 30 00 00 00            push      0x00000030
+098D    E8 00 00 00 00            call      __CHK
+0992    53                        push      ebx
+0993    56                        push      esi
+0994    57                        push      edi
+0995    81 EC 04 00 00 00         sub       esp,0x00000004
+
+	char *section,
+	char *keyname,
+	char *dfltstr,
+	char *buffer,
+	int   length)
+
+{
+	return (GetPrivateProfileString(section, keyname, dfltstr, buffer, length,
+099B                          L$67:
+099B    B8 00 00 00 00            mov       eax,offset char near progdir[]
+09A0    50                        push      eax
+09A1    8B 45 18                  mov       eax,0x18[ebp]
+09A4    50                        push      eax
+09A5    8B 45 14                  mov       eax,0x14[ebp]
+09A8    50                        push      eax
+09A9    8B 45 10                  mov       eax,0x10[ebp]
+09AC    50                        push      eax
+09AD    8B 45 0C                  mov       eax,0xc[ebp]
+09B0    50                        push      eax
+09B1    8B 45 08                  mov       eax,0x8[ebp]
+09B4    50                        push      eax
+09B5    E8 00 00 00 00            call      _GetPrivateProfileStringA@24
+09BA    89 45 F0                  mov       -0x10[ebp],eax
+
+			progdir));
+}
+09BD    8B 45 F0                  mov       eax,-0x10[ebp]
+09C0                          L$68:
+09C0    8D 65 F4                  lea       esp,-0xc[ebp]
+09C3    5F                        pop       edi
+09C4    5E                        pop       esi
+09C5    5B                        pop       ebx
+09C6    5D                        pop       ebp
+09C7    C3                        ret       
+
+
+int swcPutIniString(
+
+Routine Size: 67 bytes,    Routine Base: _TEXT + 0985
+
+09C8                          int near swcPutIniString( char near *, char near *, char near * ):
+09C8    55                        push      ebp
+09C9    89 E5                     mov       ebp,esp
+09CB    68 28 00 00 00            push      0x00000028
+09D0    E8 00 00 00 00            call      __CHK
+09D5    53                        push      ebx
+09D6    56                        push      esi
+09D7    57                        push      edi
+09D8    81 EC 04 00 00 00         sub       esp,0x00000004
+
+	char *section,
+	char *keyname,
+	char *buffer)
+
+{
+	return (WritePrivateProfileString(section, keyname, buffer, progdir));
+09DE                          L$69:
+09DE    B8 00 00 00 00            mov       eax,offset char near progdir[]
+09E3    50                        push      eax
+09E4    8B 45 10                  mov       eax,0x10[ebp]
+09E7    50                        push      eax
+09E8    8B 45 0C                  mov       eax,0xc[ebp]
+09EB    50                        push      eax
+09EC    8B 45 08                  mov       eax,0x8[ebp]
+09EF    50                        push      eax
+09F0    E8 00 00 00 00            call      _WritePrivateProfileStringA@16
+09F5    89 45 F0                  mov       -0x10[ebp],eax
+
+}
+09F8    8B 45 F0                  mov       eax,-0x10[ebp]
+09FB                          L$70:
+09FB    8D 65 F4                  lea       esp,-0xc[ebp]
+09FE    5F                        pop       edi
+09FF    5E                        pop       esi
+0A00    5B                        pop       ebx
+0A01    5D                        pop       ebp
+0A02    C3                        ret       
+
+
+
+swcBase *swcGetFocus()
+
+Routine Size: 59 bytes,    Routine Base: _TEXT + 09C8
+
+0A03                          swcBase near * near swcGetFocus():
+0A03    55                        push      ebp
+0A04    89 E5                     mov       ebp,esp
+0A06    68 24 00 00 00            push      0x00000024
+0A0B    E8 00 00 00 00            call      __CHK
+0A10    53                        push      ebx
+0A11    56                        push      esi
+0A12    57                        push      edi
+0A13    81 EC 08 00 00 00         sub       esp,0x00000008
+
+
+{
+	HWND hwnd;
+
+	if ((hwnd = ::GetFocus()) != 0)
+0A19                          L$71:
+0A19    E8 00 00 00 00            call      _GetFocus@0
+0A1E    89 45 F0                  mov       -0x10[ebp],eax
+0A21    83 7D F0 00               cmp       dword ptr -0x10[ebp],0x00000000
+0A25    74 10                     je        L$72
+
+		return ((swcBase *)GetWindowLong(hwnd, GWL_USERDATA));
+0A27    6A EB                     push      0xffffffeb
+0A29    8B 45 F0                  mov       eax,-0x10[ebp]
+0A2C    50                        push      eax
+0A2D    E8 00 00 00 00            call      _GetWindowLongA@8
+0A32    89 45 EC                  mov       -0x14[ebp],eax
+0A35    EB 07                     jmp       L$73
+
+	return (NULL);
+0A37                          L$72:
+0A37    C7 45 EC 00 00 00 00      mov       dword ptr -0x14[ebp],0x00000000
+
+}
+0A3E                          L$73:
+0A3E    8B 45 EC                  mov       eax,-0x14[ebp]
+0A41                          L$74:
+0A41    8D 65 F4                  lea       esp,-0xc[ebp]
+0A44    5F                        pop       edi
+0A45    5E                        pop       esi
+0A46    5B                        pop       ebx
+0A47    5D                        pop       ebp
+0A48    C3                        ret       
+
+
+
+
+void swcTerminate(void)
+
+Routine Size: 70 bytes,    Routine Base: _TEXT + 0A03
+
+0A49                          void near swcTerminate():
+0A49    55                        push      ebp
+0A4A    89 E5                     mov       ebp,esp
+0A4C    68 18 00 00 00            push      0x00000018
+0A51    E8 00 00 00 00            call      __CHK
+0A56    53                        push      ebx
+0A57    56                        push      esi
+0A58    57                        push      edi
+0A59    81 EC 00 00 00 00         sub       esp,0x00000000
+
+
+{
+	swc_Ending = true;
+0A5F                          L$75:
+0A5F    C6 05 00 00 00 00 01      mov       byte ptr char unsigned near swc_Ending,0x01
+
+	DestroyWindow(swc_BaseWin.hwin);
+0A66    FF 35 00 00 00 00         push      dword ptr swcDisplay near swc_BaseWin
+0A6C    E8 00 00 00 00            call      _DestroyWindow@4
+
+}
+0A71                          L$76:
+0A71    8D 65 F4                  lea       esp,-0xc[ebp]
+0A74    5F                        pop       edi
+0A75    5E                        pop       esi
+0A76    5B                        pop       ebx
+0A77    5D                        pop       ebp
+0A78    C3                        ret       
+
+
+void swcBeep(
+
+Routine Size: 48 bytes,    Routine Base: _TEXT + 0A49
+
+0A79                          void near swcBeep( int, int ):
+0A79    55                        push      ebp
+0A7A    89 E5                     mov       ebp,esp
+0A7C    68 1C 00 00 00            push      0x0000001c
+0A81    E8 00 00 00 00            call      __CHK
+0A86    53                        push      ebx
+0A87    56                        push      esi
+0A88    57                        push      edi
+0A89    81 EC 00 00 00 00         sub       esp,0x00000000
+
+	int freq,
+	int length)
+
+{
+	Beep(freq, length);
+0A8F                          L$77:
+0A8F    8B 45 0C                  mov       eax,0xc[ebp]
+0A92    50                        push      eax
+0A93    8B 45 08                  mov       eax,0x8[ebp]
+0A96    50                        push      eax
+0A97    E8 00 00 00 00            call      _Beep@8
+
+}
+0A9C                          L$78:
+0A9C    8D 65 F4                  lea       esp,-0xc[ebp]
+0A9F    5F                        pop       edi
+0AA0    5E                        pop       esi
+0AA1    5B                        pop       ebx
+0AA2    5D                        pop       ebp
+0AA3    C3                        ret       
+
+
+HFONT swcgetscnfont(
+
+Routine Size: 43 bytes,    Routine Base: _TEXT + 0A79
+
+0AA4                          HFONT__ near * near swcgetscnfont( int ):
+0AA4    55                        push      ebp
+0AA5    89 E5                     mov       ebp,esp
+0AA7    68 64 00 00 00            push      0x00000064
+0AAC    E8 00 00 00 00            call      __CHK
+0AB1    53                        push      ebx
+0AB2    56                        push      esi
+0AB3    57                        push      edi
+0AB4    81 EC 44 00 00 00         sub       esp,0x00000044
+
+	int fontnum)
+
+{
+    LOGFONT logfnt;
+
+    memset(&logfnt, 0, sizeof(logfnt));
+0ABA                          L$79:
+0ABA    6A 3C                     push      0x0000003c
+0ABC    6A 00                     push      0x00000000
+0ABE    8D 45 B0                  lea       eax,-0x50[ebp]
+0AC1    50                        push      eax
+0AC2    E8 00 00 00 00            call      memset
+0AC7    83 C4 0C                  add       esp,0x0000000c
+
+	logfnt.lfHeight = (sf == 4) ? swcscnfnttbl[fontnum].size4 :
+0ACA    83 3D 00 00 00 00 04      cmp       dword ptr long near sf,0x00000004
+0AD1    75 0F                     jne       L$80
+0AD3    6B 45 08 2C               imul      eax,0x8[ebp],0x0000002c
+0AD7    8A 80 04 00 00 00         mov       al,scnfntdef near swcscnfnttbl[]+0x4[eax]
+0ADD    88 45 F0                  mov       -0x10[ebp],al
+0AE0    EB 0D                     jmp       L$81
+0AE2                          L$80:
+0AE2    6B 45 08 2C               imul      eax,0x8[ebp],0x0000002c
+0AE6    8A 80 05 00 00 00         mov       al,scnfntdef near swcscnfnttbl[]+0x5[eax]
+0AEC    88 45 F0                  mov       -0x10[ebp],al
+0AEF                          L$81:
+0AEF    31 C0                     xor       eax,eax
+0AF1    8A 45 F0                  mov       al,-0x10[ebp]
+0AF4    89 45 B0                  mov       -0x50[ebp],eax
+
+			swcscnfnttbl[fontnum].size5;
+	logfnt.lfWeight = swcscnfnttbl[fontnum].weight;
+0AF7    6B 55 08 2C               imul      edx,0x8[ebp],0x0000002c
+0AFB    31 C0                     xor       eax,eax
+0AFD    66 8B 82 0A 00 00 00      mov       ax,scnfntdef near swcscnfnttbl[]+0xa[edx]
+0B04    89 45 C0                  mov       -0x40[ebp],eax
+
+	logfnt.lfItalic = swcscnfnttbl[fontnum].italic;
+0B07    6B 45 08 2C               imul      eax,0x8[ebp],0x0000002c
+0B0B    8A 80 07 00 00 00         mov       al,scnfntdef near swcscnfnttbl[]+0x7[eax]
+0B11    88 45 C4                  mov       -0x3c[ebp],al
+
+	strcpy(logfnt.lfFaceName, swcscnfnttbl[fontnum].name);
+0B14    6B 45 08 2C               imul      eax,0x8[ebp],0x0000002c
+0B18    BA 00 00 00 00            mov       edx,offset scnfntdef near swcscnfnttbl[]
+0B1D    01 D0                     add       eax,edx
+0B1F    83 C0 0C                  add       eax,0x0000000c
+0B22    50                        push      eax
+0B23    8D 45 CC                  lea       eax,-0x34[ebp]
+0B26    50                        push      eax
+0B27    E8 00 00 00 00            call      strcpy
+0B2C    83 C4 08                  add       esp,0x00000008
+
+	return (CreateFontIndirect(&logfnt));
+0B2F    8D 45 B0                  lea       eax,-0x50[ebp]
+0B32    50                        push      eax
+0B33    E8 00 00 00 00            call      _CreateFontIndirectA@4
+0B38    89 45 EC                  mov       -0x14[ebp],eax
+
+}
+0B3B    8B 45 EC                  mov       eax,-0x14[ebp]
+0B3E                          L$82:
+0B3E    8D 65 F4                  lea       esp,-0xc[ebp]
+0B41    5F                        pop       edi
+0B42    5E                        pop       esi
+0B43    5B                        pop       ebx
+0B44    5D                        pop       ebp
+0B45    C3                        ret       
+
+
+swcRgn *swcCreateRectRgn(
+
+Routine Size: 162 bytes,    Routine Base: _TEXT + 0AA4
+
+0B46                          HRGN__ near * near swcCreateRectRgn( long, long, long, long ):
+0B46    55                        push      ebp
+0B47    89 E5                     mov       ebp,esp
+0B49    68 28 00 00 00            push      0x00000028
+0B4E    E8 00 00 00 00            call      __CHK
+0B53    53                        push      ebx
+0B54    56                        push      esi
+0B55    57                        push      edi
+0B56    81 EC 04 00 00 00         sub       esp,0x00000004
+
+	long hpos,
+	long vpos,
+	long width,
+	long height)
+
+{
+	return (CreateRectRgn(hpos, vpos, hpos + width, vpos + height));
+0B5C                          L$83:
+0B5C    8B 45 0C                  mov       eax,0xc[ebp]
+0B5F    03 45 14                  add       eax,0x14[ebp]
+0B62    50                        push      eax
+0B63    8B 45 08                  mov       eax,0x8[ebp]
+0B66    03 45 10                  add       eax,0x10[ebp]
+0B69    50                        push      eax
+0B6A    8B 45 0C                  mov       eax,0xc[ebp]
+0B6D    50                        push      eax
+0B6E    8B 45 08                  mov       eax,0x8[ebp]
+0B71    50                        push      eax
+0B72    E8 00 00 00 00            call      _CreateRectRgn@16
+0B77    89 45 F0                  mov       -0x10[ebp],eax
+
+}
+0B7A    8B 45 F0                  mov       eax,-0x10[ebp]
+0B7D                          L$84:
+0B7D    8D 65 F4                  lea       esp,-0xc[ebp]
+0B80    5F                        pop       edi
+0B81    5E                        pop       esi
+0B82    5B                        pop       ebx
+0B83    5D                        pop       ebp
+0B84    C3                        ret       
+
+
+void swcDeleteRgn(
+
+Routine Size: 63 bytes,    Routine Base: _TEXT + 0B46
+
+0B85                          void near swcDeleteRgn( HRGN__ near * ):
+0B85    55                        push      ebp
+0B86    89 E5                     mov       ebp,esp
+0B88    68 18 00 00 00            push      0x00000018
+0B8D    E8 00 00 00 00            call      __CHK
+0B92    53                        push      ebx
+0B93    56                        push      esi
+0B94    57                        push      edi
+0B95    81 EC 00 00 00 00         sub       esp,0x00000000
+
+	swcRgn *rgn)
+
+{
+	DeleteRgn(rgn);
+0B9B                          L$85:
+0B9B    8B 45 08                  mov       eax,0x8[ebp]
+0B9E    50                        push      eax
+0B9F    E8 00 00 00 00            call      _DeleteObject@4
+
+}
+0BA4                          L$86:
+0BA4    8D 65 F4                  lea       esp,-0xc[ebp]
+0BA7    5F                        pop       edi
+0BA8    5E                        pop       esi
+0BA9    5B                        pop       ebx
+0BAA    5D                        pop       ebp
+0BAB    C3                        ret       
+
+
+//********************************************
+// Function: swcSetNumLock - Set NUMLOCK state
+// Returned: Previous NUMLOCK state
+//********************************************
+
+// NOTE: This function does not work with NT (including XP). It does
+//       not seem to do any harm however.
+
+int swcSetNumLock(
+
+Routine Size: 39 bytes,    Routine Base: _TEXT + 0B85
+
+0BAC                          int near swcSetNumLock( int ):
+0BAC    55                        push      ebp
+0BAD    89 E5                     mov       ebp,esp
+0BAF    68 20 01 00 00            push      0x00000120
+0BB4    E8 00 00 00 00            call      __CHK
+0BB9    53                        push      ebx
+0BBA    56                        push      esi
+0BBB    57                        push      edi
+0BBC    81 EC 08 01 00 00         sub       esp,0x00000108
+
+	int state)
+
+{
+	int   value;
+	uchar keystates[256];
+
+	GetKeyboardState(keystates);
+0BC2                          L$87:
+0BC2    8D 85 EC FE FF FF         lea       eax,-0x114[ebp]
+0BC8    50                        push      eax
+0BC9    E8 00 00 00 00            call      _GetKeyboardState@4
+
+	value = keystates[VK_NUMLOCK];
+0BCE    31 C0                     xor       eax,eax
+0BD0    8A 85 7C FF FF FF         mov       al,-0x84[ebp]
+0BD6    89 45 F0                  mov       -0x10[ebp],eax
+
+	keystates[VK_NUMLOCK] = 0x01;
+0BD9    C6 85 7C FF FF FF 01      mov       byte ptr -0x84[ebp],0x01
+
+	SetKeyboardState(keystates);
+0BE0    8D 85 EC FE FF FF         lea       eax,-0x114[ebp]
+0BE6    50                        push      eax
+0BE7    E8 00 00 00 00            call      _SetKeyboardState@4
+
+	return (state);
+0BEC    8B 45 08                  mov       eax,0x8[ebp]
+0BEF    89 45 EC                  mov       -0x14[ebp],eax
+
+}
+0BF2    8B 45 EC                  mov       eax,-0x14[ebp]
+0BF5                          L$88:
+0BF5    8D 65 F4                  lea       esp,-0xc[ebp]
+0BF8    5F                        pop       edi
+0BF9    5E                        pop       esi
+0BFA    5B                        pop       ebx
+0BFB    5D                        pop       ebp
+0BFC    C3                        ret       
+
+
+long swcGetCurrentTime()
+
+Routine Size: 81 bytes,    Routine Base: _TEXT + 0BAC
+
+0BFD                          long near swcGetCurrentTime():
+0BFD    55                        push      ebp
+0BFE    89 E5                     mov       ebp,esp
+0C00    68 50 00 00 00            push      0x00000050
+0C05    E8 00 00 00 00            call      __CHK
+0C0A    53                        push      ebx
+0C0B    56                        push      esi
+0C0C    57                        push      edi
+0C0D    81 EC 38 00 00 00         sub       esp,0x00000038
+
+
+{
+	SYSTEMTIME stime;
+	struct tm  tm;
+
+	GetLocalTime(&stime);
+0C13                          L$89:
+0C13    8D 45 E0                  lea       eax,-0x20[ebp]
+0C16    50                        push      eax
+0C17    E8 00 00 00 00            call      _GetLocalTime@4
+
+	tm.tm_hour = stime.wHour;
+0C1C    31 C0                     xor       eax,eax
+0C1E    66 8B 45 E8               mov       ax,-0x18[ebp]
+0C22    89 45 C4                  mov       -0x3c[ebp],eax
+
+	tm.tm_min = stime.wMinute;
+0C25    31 C0                     xor       eax,eax
+0C27    66 8B 45 EA               mov       ax,-0x16[ebp]
+0C2B    89 45 C0                  mov       -0x40[ebp],eax
+
+	tm.tm_sec = stime.wSecond;
+0C2E    31 C0                     xor       eax,eax
+0C30    66 8B 45 EC               mov       ax,-0x14[ebp]
+0C34    89 45 BC                  mov       -0x44[ebp],eax
+
+	return (convTime2Xos(&tm));
+0C37    8D 45 BC                  lea       eax,-0x44[ebp]
+0C3A    50                        push      eax
+0C3B    E8 00 00 00 00            call      long unsigned near convTime2Xos( tm near * )
+0C40    83 C4 04                  add       esp,0x00000004
+0C43    89 45 F0                  mov       -0x10[ebp],eax
+
+}
+0C46    8B 45 F0                  mov       eax,-0x10[ebp]
+0C49                          L$90:
+0C49    8D 65 F4                  lea       esp,-0xc[ebp]
+0C4C    5F                        pop       edi
+0C4D    5E                        pop       esi
+0C4E    5B                        pop       ebx
+0C4F    5D                        pop       ebp
+0C50    C3                        ret       
+
+
+
+long swcGetCurrentDate()
+
+Routine Size: 84 bytes,    Routine Base: _TEXT + 0BFD
+
+0C51                          long near swcGetCurrentDate():
+0C51    55                        push      ebp
+0C52    89 E5                     mov       ebp,esp
+0C54    68 50 00 00 00            push      0x00000050
+0C59    E8 00 00 00 00            call      __CHK
+0C5E    53                        push      ebx
+0C5F    56                        push      esi
+0C60    57                        push      edi
+0C61    81 EC 38 00 00 00         sub       esp,0x00000038
+
+
+{
+	SYSTEMTIME stime;
+	struct tm  tm;
+
+	GetLocalTime(&stime);
+0C67                          L$91:
+0C67    8D 45 E0                  lea       eax,-0x20[ebp]
+0C6A    50                        push      eax
+0C6B    E8 00 00 00 00            call      _GetLocalTime@4
+
+	tm.tm_year = stime.wYear - 1900;
+0C70    31 C0                     xor       eax,eax
+0C72    66 8B 45 E0               mov       ax,-0x20[ebp]
+0C76    2D 6C 07 00 00            sub       eax,0x0000076c
+0C7B    89 45 D0                  mov       -0x30[ebp],eax
+
+	tm.tm_mon = stime.wMonth - 1;
+0C7E    31 C0                     xor       eax,eax
+0C80    66 8B 45 E2               mov       ax,-0x1e[ebp]
+0C84    48                        dec       eax
+0C85    89 45 CC                  mov       -0x34[ebp],eax
+
+	tm.tm_mday = stime.wDay;
+0C88    31 C0                     xor       eax,eax
+0C8A    66 8B 45 E6               mov       ax,-0x1a[ebp]
+0C8E    89 45 C8                  mov       -0x38[ebp],eax
+
+	return (convDate2Xos(&tm));
+0C91    8D 45 BC                  lea       eax,-0x44[ebp]
+0C94    50                        push      eax
+0C95    E8 00 00 00 00            call      long unsigned near convDate2Xos( tm near * )
+0C9A    83 C4 04                  add       esp,0x00000004
+0C9D    89 45 F0                  mov       -0x10[ebp],eax
+
+}
+0CA0    8B 45 F0                  mov       eax,-0x10[ebp]
+0CA3                          L$92:
+0CA3    8D 65 F4                  lea       esp,-0xc[ebp]
+0CA6    5F                        pop       edi
+0CA7    5E                        pop       esi
+0CA8    5B                        pop       ebx
+0CA9    5D                        pop       ebp
+0CAA    C3                        ret       
+
+
+
+void swcGetCurrentDateTime(
+
+Routine Size: 90 bytes,    Routine Base: _TEXT + 0C51
+
+0CAB                          void near swcGetCurrentDateTime( __2pkfb9time_sz near * ):
+0CAB    55                        push      ebp
+0CAC    89 E5                     mov       ebp,esp
+0CAE    68 4C 00 00 00            push      0x0000004c
+0CB3    E8 00 00 00 00            call      __CHK
+0CB8    53                        push      ebx
+0CB9    56                        push      esi
+0CBA    57                        push      edi
+0CBB    81 EC 34 00 00 00         sub       esp,0x00000034
+
+	time_sz *dt)
+
+{
+	SYSTEMTIME stime;
+	struct tm  tm;
+
+	GetLocalTime(&stime);
+0CC1                          L$93:
+0CC1    8D 45 E4                  lea       eax,-0x1c[ebp]
+0CC4    50                        push      eax
+0CC5    E8 00 00 00 00            call      _GetLocalTime@4
+
+	tm.tm_year = stime.wYear - 1900;
+0CCA    31 C0                     xor       eax,eax
+0CCC    66 8B 45 E4               mov       ax,-0x1c[ebp]
+0CD0    2D 6C 07 00 00            sub       eax,0x0000076c
+0CD5    89 45 D4                  mov       -0x2c[ebp],eax
+
+	tm.tm_mon = stime.wMonth - 1;
+0CD8    31 C0                     xor       eax,eax
+0CDA    66 8B 45 E6               mov       ax,-0x1a[ebp]
+0CDE    48                        dec       eax
+0CDF    89 45 D0                  mov       -0x30[ebp],eax
+
+	tm.tm_mday = stime.wDay;
+0CE2    31 C0                     xor       eax,eax
+0CE4    66 8B 45 EA               mov       ax,-0x16[ebp]
+0CE8    89 45 CC                  mov       -0x34[ebp],eax
+
+	tm.tm_hour = stime.wHour;
+0CEB    31 C0                     xor       eax,eax
+0CED    66 8B 45 EC               mov       ax,-0x14[ebp]
+0CF1    89 45 C8                  mov       -0x38[ebp],eax
+
+	tm.tm_min = stime.wMinute;
+0CF4    31 C0                     xor       eax,eax
+0CF6    66 8B 45 EE               mov       ax,-0x12[ebp]
+0CFA    89 45 C4                  mov       -0x3c[ebp],eax
+
+	tm.tm_sec = stime.wSecond;
+0CFD    31 C0                     xor       eax,eax
+0CFF    66 8B 45 F0               mov       ax,-0x10[ebp]
+0D03    89 45 C0                  mov       -0x40[ebp],eax
+
+	dt->time = convTime2Xos(&tm);
+0D06    8D 45 C0                  lea       eax,-0x40[ebp]
+0D09    50                        push      eax
+0D0A    E8 00 00 00 00            call      long unsigned near convTime2Xos( tm near * )
+0D0F    89 C2                     mov       edx,eax
+0D11    83 C4 04                  add       esp,0x00000004
+0D14    8B 45 08                  mov       eax,0x8[ebp]
+0D17    89 10                     mov       [eax],edx
+
+	dt->date = convDate2Xos(&tm);
+0D19    8D 45 C0                  lea       eax,-0x40[ebp]
+0D1C    50                        push      eax
+0D1D    E8 00 00 00 00            call      long unsigned near convDate2Xos( tm near * )
+0D22    89 C2                     mov       edx,eax
+0D24    83 C4 04                  add       esp,0x00000004
+0D27    8B 45 08                  mov       eax,0x8[ebp]
+0D2A    89 50 04                  mov       0x4[eax],edx
+
+	dt->tzone = 0;
+0D2D    8B 45 08                  mov       eax,0x8[ebp]
+0D30    66 C7 40 08 00 00         mov       word ptr 0x8[eax],0x0000
+
+	dt->dlst = 0;
+0D36    8B 45 08                  mov       eax,0x8[ebp]
+0D39    66 C7 40 0A 00 00         mov       word ptr 0xa[eax],0x0000
+
+}
+0D3F                          L$94:
+0D3F    8D 65 F4                  lea       esp,-0xc[ebp]
+0D42    5F                        pop       edi
+0D43    5E                        pop       esi
+0D44    5B                        pop       ebx
+0D45    5D                        pop       ebp
+0D46    C3                        ret       
+
+
+
+void swcSetCurrentDateTime(
+
+Routine Size: 156 bytes,    Routine Base: _TEXT + 0CAB
+
+0D47                          void near swcSetCurrentDateTime( __2pkfb9time_sz near * ):
+0D47    55                        push      ebp
+0D48    89 E5                     mov       ebp,esp
+0D4A    68 50 00 00 00            push      0x00000050
+0D4F    E8 00 00 00 00            call      __CHK
+0D54    53                        push      ebx
+0D55    56                        push      esi
+0D56    57                        push      edi
+0D57    81 EC 34 00 00 00         sub       esp,0x00000034
+
+	time_sz *dt)
+
+{
+	SYSTEMTIME stime;
+	struct tm  tm;
+
+	convTime2Dos(&tm, dt->time);
+0D5D                          L$95:
+0D5D    8B 45 08                  mov       eax,0x8[ebp]
+0D60    FF 30                     push      dword ptr [eax]
+0D62    8D 45 C0                  lea       eax,-0x40[ebp]
+0D65    50                        push      eax
+0D66    E8 00 00 00 00            call      void near convTime2Dos( tm near *, long unsigned )
+0D6B    83 C4 08                  add       esp,0x00000008
+
+	convDate2Dos(&tm, dt->date);
+0D6E    8B 45 08                  mov       eax,0x8[ebp]
+0D71    FF 70 04                  push      dword ptr 0x4[eax]
+0D74    8D 45 C0                  lea       eax,-0x40[ebp]
+0D77    50                        push      eax
+0D78    E8 00 00 00 00            call      long unsigned near convDate2Dos( tm near *, long unsigned )
+0D7D    83 C4 08                  add       esp,0x00000008
+
+	stime.wYear = (ushort)(tm.tm_year + 1900);
+0D80    8B 45 D4                  mov       eax,-0x2c[ebp]
+0D83    05 6C 07 00 00            add       eax,0x0000076c
+0D88    66 89 45 E4               mov       -0x1c[ebp],ax
+
+	stime.wMonth = (ushort)(tm.tm_mon + 1);
+0D8C    8B 45 D0                  mov       eax,-0x30[ebp]
+0D8F    40                        inc       eax
+0D90    66 89 45 E6               mov       -0x1a[ebp],ax
+
+	stime.wDay = (uchar)(tm.tm_mday);
+0D94    30 E4                     xor       ah,ah
+0D96    8A 45 CC                  mov       al,-0x34[ebp]
+0D99    66 89 45 EA               mov       -0x16[ebp],ax
+
+	stime.wHour = (uchar)(tm.tm_hour);
+0D9D    30 E4                     xor       ah,ah
+0D9F    8A 45 C8                  mov       al,-0x38[ebp]
+0DA2    66 89 45 EC               mov       -0x14[ebp],ax
+
+	stime.wMinute = (uchar)(tm.tm_min);
+0DA6    30 E4                     xor       ah,ah
+0DA8    8A 45 C4                  mov       al,-0x3c[ebp]
+0DAB    66 89 45 EE               mov       -0x12[ebp],ax
+
+	stime.wSecond = (uchar)(tm.tm_sec);
+0DAF    30 E4                     xor       ah,ah
+0DB1    8A 45 C0                  mov       al,-0x40[ebp]
+0DB4    66 89 45 F0               mov       -0x10[ebp],ax
+
+	SetLocalTime(&stime);
+0DB8    8D 45 E4                  lea       eax,-0x1c[ebp]
+0DBB    50                        push      eax
+0DBC    E8 00 00 00 00            call      _SetLocalTime@4
+
+}
+0DC1                          L$96:
+0DC1    8D 65 F4                  lea       esp,-0xc[ebp]
+0DC4    5F                        pop       edi
+0DC5    5E                        pop       esi
+0DC6    5B                        pop       ebx
+0DC7    5D                        pop       ebp
+0DC8    C3                        ret       
+
+
+
+void nullfunc(void)
+
+Routine Size: 130 bytes,    Routine Base: _TEXT + 0D47
+
+0DC9                          void near nullfunc():
+0DC9    55                        push      ebp
+0DCA    89 E5                     mov       ebp,esp
+0DCC    68 14 00 00 00            push      0x00000014
+0DD1    E8 00 00 00 00            call      __CHK
+0DD6    53                        push      ebx
+0DD7    56                        push      esi
+0DD8    57                        push      edi
+0DD9    81 EC 00 00 00 00         sub       esp,0x00000000
+
+{
+}
+0DDF                          L$97:
+0DDF    8D 65 F4                  lea       esp,-0xc[ebp]
+0DE2    5F                        pop       edi
+0DE3    5E                        pop       esi
+0DE4    5B                        pop       ebx
+0DE5    5D                        pop       ebp
+0DE6    C3                        ret       
+
+
+int rtnzero(void)
+
+Routine Size: 30 bytes,    Routine Base: _TEXT + 0DC9
+
+0DE7                          int near rtnzero():
+0DE7    55                        push      ebp
+0DE8    89 E5                     mov       ebp,esp
+0DEA    68 18 00 00 00            push      0x00000018
+0DEF    E8 00 00 00 00            call      __CHK
+0DF4    53                        push      ebx
+0DF5    56                        push      esi
+0DF6    57                        push      edi
+0DF7    81 EC 04 00 00 00         sub       esp,0x00000004
+
+
+{
+    return (0);
+0DFD                          L$98:
+0DFD    C7 45 F0 00 00 00 00      mov       dword ptr -0x10[ebp],0x00000000
+
+}
+0E04    8B 45 F0                  mov       eax,-0x10[ebp]
+0E07                          L$99:
+0E07    8D 65 F4                  lea       esp,-0xc[ebp]
+0E0A    5F                        pop       edi
+0E0B    5E                        pop       esi
+0E0C    5B                        pop       ebx
+0E0D    5D                        pop       ebp
+0E0E    C3                        ret       
+0E0F                          L$100:
+
+Routine Size: 40 bytes,    Routine Base: _TEXT + 0DE7
+
+No disassembly errors
+
+Segment: CONST BYTE USE32 0000003C bytes
+0000                          L$101:
+0000    5C 00                                           \.
+0002                          L$102:
+0002    48 41 4E 44 00                                  HAND.
+0007                          L$103:
+0007    54 45 58 54 00                                  TEXT.
+000C                          L$104:
+000C    73 77 63 4D 41 49 4E 00                         swcMAIN.
+0014                          L$105:
+0014    73 77 63 44 49 53 50 4C 41 59 00                swcDISPLAY.
+001F                          L$106:
+001F    2E 49 4E 49 00                                  .INI.
+0024                          L$107:
+0024    73 77 63 4D 41 49 4E 00                         swcMAIN.
+002C                          L$108:
+002C    44 49 53 50 4C 41 59 00                         DISPLAY.
+0034                          L$109:
+0034    44 49 53 50 4C 41 59 00                         DISPLAY.
+
+Segment: CONST2 PARA USE32 0000000C bytes
+0000                          L$110:
+0000    04 00 00 00                                     ....
+0004    00 00 00 00                                     DD	near swcDisplay::~swcDisplay()
+0008    00 00 00 00                                     DD	swcDisplay near swc_BaseWin
+
+Segment: _DATA PARA USE32 000005D4 bytes
+0000                          L$111:
+0000    00 00 00 00                                     ....
+0004    00 00 00 00                                     DD	L$110
+0008    01 00 00 00                                     ....
+000C    00 00 00 00                                     DD	swcDisplay near swc_BaseWin
+0010                          char unsigned near void near swchandlemessage( tagMSG near * )::.m::keytbl[]:
+0010    67 68 69 6D 64 65 66 6B 61 62 63 60 6E 00 00 00 ghimdefkabc`n...
+0020                          scnfntdef near swcscnfnttbl[]:
+0020    00 00 00 00 0E 10 00 00 00 00 90 01 54 69 6D 65 ............Time
+0030    73 20 4E 65 77 20 52 6F 6D 61 6E 00 00 00 00 00 s New Roman.....
+0040    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0050    10 15 00 00 00 00 90 01 54 69 6D 65 73 20 4E 65 ........Times Ne
+0060    77 20 52 6F 6D 61 6E 00 00 00 00 00 00 00 00 00 w Roman.........
+0070    00 00 00 00 00 00 00 00 00 00 00 00 14 1A 00 00 ................
+0080    00 00 90 01 54 69 6D 65 73 20 4E 65 77 20 52 6F ....Times New Ro
+0090    6D 61 6E 00 00 00 00 00 00 00 00 00 00 00 00 00 man.............
+00A0    00 00 00 00 00 00 00 00 1E 22 00 00 00 00 90 01 ........."......
+00B0    54 69 6D 65 73 20 4E 65 77 20 52 6F 6D 61 6E 00 Times New Roman.
+00C0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+00D0    00 00 00 00 28 2C 00 00 00 00 90 01 54 69 6D 65 ....(,......Time
+00E0    73 20 4E 65 77 20 52 6F 6D 61 6E 00 00 00 00 00 s New Roman.....
+00F0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0100    0D 10 00 00 00 00 90 01 41 72 69 61 6C 00 00 00 ........Arial...
+0110    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0120    00 00 00 00 00 00 00 00 00 00 00 00 11 15 00 00 ................
+0130    00 00 90 01 41 72 69 61 6C 00 00 00 00 00 00 00 ....Arial.......
+0140    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0150    00 00 00 00 00 00 00 00 16 1E 00 00 00 00 90 01 ................
+0160    41 72 69 61 6C 00 00 00 00 00 00 00 00 00 00 00 Arial...........
+0170    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0180    00 00 00 00 1E 24 00 00 00 00 90 01 41 72 69 61 .....$......Aria
+0190    6C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 l...............
+01A0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+01B0    26 2C 00 00 00 00 90 01 41 72 69 61 6C 00 00 00 &,......Arial...
+01C0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+01D0    00 00 00 00 00 00 00 00 00 00 00 00 50 58 00 00 ............PX..
+01E0    00 00 90 01 41 72 69 61 6C 00 00 00 00 00 00 00 ....Arial.......
+01F0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0200    00 00 00 00 00 00 00 00 0E 10 00 00 00 00 BC 02 ................
+0210    41 72 69 61 6C 00 00 00 00 00 00 00 00 00 00 00 Arial...........
+0220    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0230    00 00 00 00 12 15 00 00 00 00 BC 02 41 72 69 61 ............Aria
+0240    6C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 l...............
+0250    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0260    16 1E 00 00 00 00 BC 02 41 72 69 61 6C 00 00 00 ........Arial...
+0270    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0280    00 00 00 00 00 00 00 00 00 00 00 00 1E 24 00 00 .............$..
+0290    00 00 BC 02 41 72 69 61 6C 00 00 00 00 00 00 00 ....Arial.......
+02A0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+02B0    00 00 00 00 00 00 00 00 26 2C 00 00 00 00 BC 02 ........&,......
+02C0    41 72 69 61 6C 00 00 00 00 00 00 00 00 00 00 00 Arial...........
+02D0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+02E0    00 00 00 00 4E 58 00 00 00 00 BC 02 41 72 69 61 ....NX......Aria
+02F0    6C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 l...............
+0300    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0310    0A 0C 00 00 00 00 90 01 4C 75 63 69 64 61 20 43 ........Lucida C
+0320    6F 6E 73 6F 6C 65 00 00 00 00 00 00 00 00 00 00 onsole..........
+0330    00 00 00 00 00 00 00 00 00 00 00 00 13 15 00 00 ................
+0340    00 00 90 01 4C 75 63 69 64 61 20 43 6F 6E 73 6F ....Lucida Conso
+0350    6C 65 00 00 00 00 00 00 00 00 00 00 00 00 00 00 le..............
+0360    00 00 00 00 00 00 00 00 16 18 00 00 00 00 90 01 ................
+0370    4C 75 63 69 64 61 20 43 6F 6E 73 6F 6C 65 00 00 Lucida Console..
+0380    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0390    00 00 00 00 20 22 00 00 00 00 90 01 4C 75 63 69 .... "......Luci
+03A0    64 61 20 43 6F 6E 73 6F 6C 65 00 00 00 00 00 00 da Console......
+03B0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+03C0    28 2C 00 00 00 00 90 01 4C 75 63 69 64 61 20 43 (,......Lucida C
+03D0    6F 6E 73 6F 6C 65 00 00 00 00 00 00 00 00 00 00 onsole..........
+03E0    00 00 00 00 00 00 00 00 00 00 00 00 0D 10 00 00 ................
+03F0    00 00 90 01 41 72 69 61 6C 20 4E 61 72 72 6F 77 ....Arial Narrow
+0400    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0410    00 00 00 00 00 00 00 00 11 15 00 00 00 00 90 01 ................
+0420    41 72 69 61 6C 20 4E 61 72 72 6F 77 00 00 00 00 Arial Narrow....
+0430    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0440    00 00 00 00 16 1E 00 00 00 00 90 01 41 72 69 61 ............Aria
+0450    6C 20 4E 61 72 72 6F 77 00 00 00 00 00 00 00 00 l Narrow........
+0460    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+0470    1E 24 00 00 00 00 90 01 41 72 69 61 6C 20 4E 61 .$......Arial Na
+0480    72 72 6F 77 00 00 00 00 00 00 00 00 00 00 00 00 rrow............
+0490    00 00 00 00 00 00 00 00 00 00 00 00 26 2C 00 00 ............&,..
+04A0    00 00 90 01 41 72 69 61 6C 20 4E 61 72 72 6F 77 ....Arial Narrow
+04B0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+04C0    00 00 00 00 00 00 00 00 50 58 00 00 00 00 90 01 ........PX......
+04D0    41 72 69 61 6C 20 4E 61 72 72 6F 77 00 00 00 00 Arial Narrow....
+04E0    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
+	--- Above line repeats 13 times ---
+05C0    00 00 00 00 00 00 00 00 00 00 00 00             ............
+05CC                          long near sf:
+05CC    04 00 00 00                                     ....
+05D0                          long near * near memrpnt:
+05D0    00 00 00 00                                     DD	long near memring[]
+
+Segment: _BSS PARA USE32 00001274 bytes
+0000                          fontblk near * near fontfirst:
+0004                          long near amountalloc:
+0008                          long near numberalloc:
+000C                          long near swcbasexoffset:
+0010                          long near swcbaseyoffset:
+0014                          swcDisplay near swc_BaseWin:
+00B0                          swcDisplay near * near winblkpnt:
+00B4                          void near * near hinst:
+00B8                          HICON__ near * near harrow:
+00BC                          HICON__ near * near hhand:
+00C0                          HICON__ near * near htext:
+00C4                          HICON__ near * near hwait:
+00C8                          HACCEL__ near * near hacccur:
+00CC                          tagMSG near msg:
+00E8                          char unsigned near swc_NumLockDisable:
+00E9                          char unsigned near swc_NumLockInserted:
+00EA                          char unsigned near swc_ForceFocusEnable:
+00EB                          char unsigned near swc_MouseFocus:
+00EC                          char near fatalfunc:
+00ED                          char near crashed:
+00EE                          char near inmenu:
+00EF                          char near menuhand:
+00F0                          char near mbdmenu:
+00F1                          char near online:
+00F2                          char near needdiscon:
+00F3                          char near needexit:
+00F4                          char unsigned near swc_Ending:
+00F8                          char near banner[]:
+0170                          char near progdir[]:
+0270                          char near * near progname:
+0274                          long near memring[]:
+
+BSS Size: 4724 bytes
+
+
+Segment: XI WORD USE32 00000006 bytes
+0000                          void (near * near .mod_init)():
+0000    00 40                                           .@
+0002    00 00 00 00                                     DD	void near .fn_init()
+
+
+Segment: .debug_info BYTE USE32 00002521 bytes
+0000                          L$112:
+0000    1D 25 00 00 02 00                               .%....
+0006    00 00 00 00                                     DD	L$114
+000A    04 07 20 25 00 00                               .. %..
+0010    00 00 00 00                                     DD	void near .fn_init()
+0014    0F 0E 00 00                                     DD	L$100
+0018    63 3A 5C 6D 6D 73 70 63 2D 6D 6F 33 5C 73 77 63 c:\mmspc-mo3\swc
+0028    5C 73 77 63 77 69 6E 64 6F 77 73 2E 63 70 70 00 \swcwindows.cpp.
+0038    00 00 00 00                                     DD	L$113
+003C    04 00 56 31 2E 30 20 57 41 54 43 4F 4D 00 00    ..V1.0 WATCOM..
+004B    00 00 00 00                                     DD	L$115
+004F    00 00 00 00 01                                  .....
+0054    04 00 00 00                                     DD	L$116
+0058    09 62 6F 6F 6C 00 02 01 09 63 68 61 72 00 06 01 .bool....char...
+0068    09 73 69 67 6E 65 64 20 63 68 61 72 00 06 01 09 .signed char....
+0078    75 6E 73 69 67 6E 65 64 20 63 68 61 72 00 08 01 unsigned char...
+0088    09 77 63 68 61 72 5F 74 00 08 02 09 73 69 67 6E .wchar_t....sign
+0098    65 64 20 73 68 6F 72 74 00 05 02 09 75 6E 73 69 ed short....unsi
+00A8    67 6E 65 64 20 73 68 6F 72 74 00 07 02 09 73 69 gned short....si
+00B8    67 6E 65 64 20 69 6E 74 00 05 04 09 75 6E 73 69 gned int....unsi
+00C8    67 6E 65 64 20 69 6E 74 00 07 04 09 73 69 67 6E gned int....sign
+00D8    65 64 20 6C 6F 6E 67 00 05 04 09 75 6E 73 69 67 ed long....unsig
+00E8    6E 65 64 20 6C 6F 6E 67 00 07 04 09 5F 5F 69 6E ned long....__in
+00F8    74 36 34 00 05 08 09 75 6E 73 69 67 6E 65 64 20 t64....unsigned 
+0108    5F 5F 69 6E 74 36 34 00 07 08 09 66 6C 6F 61 74 __int64....float
+0118    00 04 04 09 64 6F 75 62 6C 65 00 04 08 D2 01 01 ....double......
+0128    01 00 61 6D 6F 75 6E 74 61 6C 6C 6F 63 00 05 03 ..amountalloc...
+0138    00 00 00 00                                     DD	long near amountalloc
+013C    D3 00 00 00 D2 01 01 01 00 6E 75 6D 62 65 72 61 .........numbera
+014C    6C 6C 6F 63 00 05 03                            lloc...
+0153    00 00 00 00                                     DD	long near numberalloc
+0157    D3 00 00 00 D2 01 01 01 00 68 69 6E 73 74 00 05 .........hinst..
+0167    03                                              .
+0168    00 00 00 00                                     DD	void near * near hinst
+016C    6E 1B 00 00 D2 01 01 01 00 73 66 00 05 03       n........sf...
+017A    00 00 00 00                                     DD	long near sf
+017E    D3 00 00 00 D2 01 01 01 00 73 77 63 5F 45 6E 64 .........swc_End
+018E    69 6E 67 00 05 03                               ing...
+0194    00 00 00 00                                     DD	char unsigned near swc_Ending
+0198    A8 1A 00 00 D2 01 01 01 00 73 77 63 5F 42 61 73 .........swc_Bas
+01A8    65 57 69 6E 00 05 03                            eWin...
+01AF    00 00 00 00                                     DD	swcDisplay near swc_BaseWin
+01B3    C2 10 00 00 18 21 3B 10 00 00 D2 01 01 01 00 73 .....!;........s
+01C3    77 63 73 63 6E 66 6E 74 74 62 6C 00 05 03       wcscnfnttbl...
+01D1    00 00 00 00                                     DD	scnfntdef near swcscnfnttbl[]
+01D5    B7 01 00 00 D2 01 01 01 00 73 77 63 62 61 73 65 .........swcbase
+01E5    78 6F 66 66 73 65 74 00 05 03                   xoffset...
+01EF    00 00 00 00                                     DD	long near swcbasexoffset
+01F3    D3 00 00 00 D2 01 01 01 00 73 77 63 62 61 73 65 .........swcbase
+0203    79 6F 66 66 73 65 74 00 05 03                   yoffset...
+020D    00 00 00 00                                     DD	long near swcbaseyoffset
+0211    D3 00 00 00 D2 01 01 01 00 73 77 63 5F 4E 75 6D .........swc_Num
+0221    4C 6F 63 6B 44 69 73 61 62 6C 65 00 05 03       LockDisable...
+022F    00 00 00 00                                     DD	char unsigned near swc_NumLockDisable
+0233    A8 1A 00 00 D2 01 01 01 00 73 77 63 5F 4E 75 6D .........swc_Num
+0243    4C 6F 63 6B 49 6E 73 65 72 74 65 64 00 05 03    LockInserted...
+0252    00 00 00 00                                     DD	char unsigned near swc_NumLockInserted
+0256    A8 1A 00 00 D2 01 01 01 00 73 77 63 5F 46 6F 72 .........swc_For
+0266    63 65 46 6F 63 75 73 45 6E 61 62 6C 65 00 05 03 ceFocusEnable...
+0276    00 00 00 00                                     DD	char unsigned near swc_ForceFocusEnable
+027A    A8 1A 00 00 D2 01 01 01 00 73 77 63 5F 4D 6F 75 .........swc_Mou
+028A    73 65 46 6F 63 75 73 00 05 03                   seFocus...
+0294    00 00 00 00                                     DD	char unsigned near swc_MouseFocus
+0298    A8 1A 00 00 0F F5 0F 00 00 D2 01 01 01 00 66 6F ..............fo
+02A8    6E 74 66 69 72 73 74 00 05 03                   ntfirst...
+02B2    00 00 00 00                                     DD	fontblk near * near fontfirst
+02B6    9C 02 00 00 0F C2 10 00 00 D2 01 01 01 00 77 69 ..............wi
+02C6    6E 62 6C 6B 70 6E 74 00 05 03                   nblkpnt...
+02D0    00 00 00 00                                     DD	swcDisplay near * near winblkpnt
+02D4    BA 02 00 00 D2 01 01 01 00 68 61 72 72 6F 77 00 .........harrow.
+02E4    05 03                                           ..
+02E6    00 00 00 00                                     DD	HICON__ near * near harrow
+02EA    50 1B 00 00 D2 01 01 01 00 68 68 61 6E 64 00 05 P........hhand..
+02FA    03                                              .
+02FB    00 00 00 00                                     DD	HICON__ near * near hhand
+02FF    50 1B 00 00 D2 01 01 01 00 68 74 65 78 74 00 05 P........htext..
+030F    03                                              .
+0310    00 00 00 00                                     DD	HICON__ near * near htext
+0314    50 1B 00 00 D2 01 01 01 00 68 77 61 69 74 00 05 P........hwait..
+0324    03                                              .
+0325    00 00 00 00                                     DD	HICON__ near * near hwait
+0329    50 1B 00 00 D2 01 01 01 00 68 61 63 63 63 75 72 P........hacccur
+0339    00 05 03                                        ...
+033C    00 00 00 00                                     DD	HACCEL__ near * near hacccur
+0340    A3 1B 00 00 D2 01 01 01 00 6D 73 67 00 05 03    .........msg...
+034F    00 00 00 00                                     DD	tagMSG near msg
+0353    CF 1A 00 00 D2 01 01 01 00 66 61 74 61 6C 66 75 .........fatalfu
+0363    6E 63 00 05 03                                  nc...
+0368    00 00 00 00                                     DD	char near fatalfunc
+036C    60 00 00 00 D2 01 01 01 00 63 72 61 73 68 65 64 `........crashed
+037C    00 05 03                                        ...
+037F    00 00 00 00                                     DD	char near crashed
+0383    60 00 00 00 D2 01 01 01 00 69 6E 6D 65 6E 75 00 `........inmenu.
+0393    05 03                                           ..
+0395    00 00 00 00                                     DD	char near inmenu
+0399    60 00 00 00 D2 01 01 01 00 6D 65 6E 75 68 61 6E `........menuhan
+03A9    64 00 05 03                                     d...
+03AD    00 00 00 00                                     DD	char near menuhand
+03B1    60 00 00 00 D2 01 01 01 00 6D 62 64 6D 65 6E 75 `........mbdmenu
+03C1    00 05 03                                        ...
+03C4    00 00 00 00                                     DD	char near mbdmenu
+03C8    60 00 00 00 D2 01 01 01 00 6F 6E 6C 69 6E 65 00 `........online.
+03D8    05 03                                           ..
+03DA    00 00 00 00                                     DD	char near online
+03DE    60 00 00 00 D2 01 01 01 00 6E 65 65 64 64 69 73 `........needdis
+03EE    63 6F 6E 00 05 03                               con...
+03F4    00 00 00 00                                     DD	char near needdiscon
+03F8    60 00 00 00 D2 01 01 01 00 6E 65 65 64 65 78 69 `........needexi
+0408    74 00 05 03                                     t...
+040C    00 00 00 00                                     DD	char near needexit
+0410    60 00 00 00 18 78 60 00 00 00 D2 01 01 01 00 62 `....x`........b
+0420    61 6E 6E 65 72 00 05 03                         anner...
+0428    00 00 00 00                                     DD	char near banner[]
+042C    14 04 00 00 18 80 02 60 00 00 00 D2 01 01 01 00 .......`........
+043C    70 72 6F 67 64 69 72 00 05 03                   progdir...
+0446    00 00 00 00                                     DD	char near progdir[]
+044A    30 04 00 00 0F 60 00 00 00 D2 01 01 01 00 70 72 0....`........pr
+045A    6F 67 6E 61 6D 65 00 05 03                      ogname...
+0463    00 00 00 00                                     DD	char near * near progname
+0467    4E 04 00 00 18 80 08 D3 00 00 00 D2 01 01 01 00 N...............
+0477    6D 65 6D 72 69 6E 67 00 05 03                   memring...
+0481    00 00 00 00                                     DD	long near memring[]
+0485    6B 04 00 00 0F D3 00 00 00 D2 01 01 01 00 6D 65 k.............me
+0495    6D 72 70 6E 74 00 05 03                         mrpnt...
+049D    00 00 00 00                                     DD	long near * near memrpnt
+04A1    89 04 00 00 09 76 6F 69 64 00 07 00 86 01 E3 04 .....void.......
+04B1    00 00 02 A5 04 00 00 16 2E 66 6E 5F 69 6E 69 74 .........fn_init
+04C1    00 00 00 01 01 00 01 02 91 04                   ..........
+04CB    00 00 00 00                                     DD	void near .fn_init()
+04CF    3D 00 00 00                                     DD	void near * near operator new( int unsigned )
+04D3    00 66 E2 04 00 00                               .f....
+04D9    16 00 00 00                                     DD	L$1
+04DD    35 00 00 00                                     DD	L$2
+04E1    00 00 0F A5 04 00 00 86 01 56 05 00 00 02 E3 04 .........V......
+04F1    00 00 16 6F 70 65 72 61 74 6F 72 20 6E 65 77 00 ...operator new.
+0501    01 00 01 01 00 00 02 91 04                      .........
+050A    3D 00 00 00                                     DD	void near * near operator new( int unsigned )
+050E    CC 00 00 00                                     DD	void near operator delete( void near * )
+0512    00 C8 01 73 69 7A 65 00 02 91 08 02 74 04 F4 1B ...size.....t...
+0522    00 00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 01 ........return..
+0532    50 E3 04 00 00 66 55 05 00 00                   P....fU...
+053C    53 00 00 00                                     DD	L$3
+0540    C4 00 00 00                                     DD	L$6
+0544    D2 01 01 00 00 6D 65 6D 00 02 91 70 89 04 00 00 .....mem...p....
+0554    00 00 86 01 A1 05 00 00 02 A5 04 00 00 16 6F 70 ..............op
+0564    65 72 61 74 6F 72 20 64 65 6C 65 74 65 00 01 00 erator delete...
+0574    01 01 00 00 02 91 04                            .......
+057B    CC 00 00 00                                     DD	void near operator delete( void near * )
+057F    43 01 00 00                                     DD	_WinMain@16
+0583    00 C8 01 70 00 02 91 08 02 74 04 E3 04 00 00 66 ...p.....t.....f
+0593    A0 05 00 00                                     ....
+0597    E2 00 00 00                                     DD	L$7
+059B    3B 01 00 00                                     DD	L$9
+059F    00 00 86 01 DA 06 00 00 01 B5 00 00 00 16 57 69 ..............Wi
+05AF    6E 4D 61 69 6E 00 01 00 01 01 00 00 02 91 04    nMain..........
+05BE    43 01 00 00                                     DD	_WinMain@16
+05C2    32 06 00 00                                     DD	int near swcAddTrueTypeFont( char near *, char near * )
+05C6    00 C8 01 68 69 6E 73 74 61 6E 63 65 00 02 91 08 ...hinstance....
+05D6    02 74 04 6E 1B 00 00 C8 01 68 70 72 65 76 69 6E .t.n.....hprevin
+05E6    73 74 61 6E 63 65 00 02 91 0C 02 74 08 6E 1B 00 stance.....t.n..
+05F6    00 C8 01 63 6D 64 70 61 72 61 6D 00 02 91 10 02 ...cmdparam.....
+0606    74 0C DD 1B 00 00 C8 01 6E 63 6D 64 73 68 6F 77 t.......ncmdshow
+0616    00 02 91 14 02 74 10 B5 00 00 00 D2 01 01 00 01 .....t..........
+0626    2E 72 65 74 75 72 6E 00 01 50 B5 00 00 00 66 D9 .return..P....f.
+0636    06 00 00                                        ...
+0639    59 01 00 00                                     DD	L$10
+063D    28 06 00 00                                     DD	L$34
+0641    D2 01 01 00 00 72 65 63 74 00 02 91 50 40 1B 00 .....rect...P@..
+0651    00 D2 01 01 00 00 77 6E 64 63 6C 61 73 73 00 03 ......wndclass..
+0661    91 A8 7F B4 1A 00 00 D2 01 01 00 00 6C 6F 67 66 ............logf
+0671    6E 74 00 03 91 B4 7E 21 1B 00 00 D2 01 01 00 00 nt....~!........
+0681    66 6F 6E 74 00 02 91 64 83 1B 00 00 D2 01 01 00 font...d........
+0691    00 68 64 63 00 02 91 68 94 1B 00 00 D2 01 01 00 .hdc...h........
+06A1    00 6D 65 74 72 69 63 73 00 03 91 F0 7E 10 1B 00 .metrics....~...
+06B1    00 0F 3B 10 00 00 D2 01 01 00 00 66 70 6E 74 00 ..;........fpnt.
+06C1    02 91 6C B2 06 00 00 D2 01 01 00 00 63 6E 74 00 ..l.........cnt.
+06D1    02 91 70 B5 00 00 00 00 00 86 01 93 07 00 00 02 ..p.............
+06E1    B5 00 00 00 16 73 77 63 41 64 64 54 72 75 65 54 .....swcAddTrueT
+06F1    79 70 65 46 6F 6E 74 00 01 00 01 01 00 00 02 91 ypeFont.........
+0701    04                                              .
+0702    32 06 00 00                                     DD	int near swcAddTrueTypeFont( char near *, char near * )
+0706    FA 06 00 00                                     DD	int near findfontproc( tagLOGFONTA const near *, tagTEXTMETRICA const near *, long unsigned, long )
+070A    00 C8 01 6E 61 6D 65 00 02 91 08 02 74 04 4E 04 ...name.....t.N.
+071A    00 00 C8 01 66 69 6C 65 00 02 91 0C 02 74 08 4E ....file.....t.N
+072A    04 00 00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 .........return.
+073A    01 50 B5 00 00 00 66 92 07 00 00                .P....f....
+0745    48 06 00 00                                     DD	L$35
+0749    F2 06 00 00                                     DD	L$39
+074D    D2 01 01 00 00 68 64 63 00 02 91 64 94 1B 00 00 .....hdc...d....
+075D    D2 01 01 00 00 72 74 6E 00 02 91 68 B5 00 00 00 .....rtn...h....
+076D    D2 01 01 00 00 68 61 76 65 66 6F 6E 74 00 02 91 .....havefont...
+077D    6C B5 00 00 00 D2 01 01 00 00 66 62 00 02 91 70 l.........fb...p
+078D    9C 02 00 00 00 00 86 01 3C 08 00 00 02 B5 00 00 ........<.......
+079D    00 16 66 69 6E 64 66 6F 6E 74 70 72 6F 63 00 00 ..findfontproc..
+07AD    00 01 01 00 00 02 91 04                         ........
+07B5    FA 06 00 00                                     DD	int near findfontproc( tagLOGFONTA const near *, tagTEXTMETRICA const near *, long unsigned, long )
+07B9    2D 07 00 00                                     DD	void near swchandlemessage( tagMSG near * )
+07BD    00 15 21 1B 00 00 0F BE 07 00 00 C8 01 65 6C 66 ..!..........elf
+07CD    00 02 91 08 02 74 04 C3 07 00 00 15 10 1B 00 00 .....t..........
+07DD    0F D8 07 00 00 C8 01 6E 74 6D 00 02 91 0C 02 74 .......ntm.....t
+07ED    08 DD 07 00 00 C8 01 66 6F 6E 74 74 79 70 65 00 .......fonttype.
+07FD    02 91 10 02 74 0C 0C 1C 00 00 C8 01 6C 70 61 72 ....t.......lpar
+080D    61 6D 00 02 91 14 02 74 10 BE 1B 00 00 D2 01 01 am.....t........
+081D    00 01 2E 72 65 74 75 72 6E 00 01 50 B5 00 00 00 ...return..P....
+082D    66 3B 08 00 00                                  f;...
+0832    10 07 00 00                                     DD	L$40
+0836    23 07 00 00                                     DD	L$41
+083A    00 00 86 01 11 09 00 00 02 A5 04 00 00 16 73 77 ..............sw
+084A    63 68 61 6E 64 6C 65 6D 65 73 73 61 67 65 00 01 chandlemessage..
+085A    00 01 01 00 00 02 91 04                         ........
+0862    2D 07 00 00                                     DD	void near swchandlemessage( tagMSG near * )
+0866    85 09 00 00                                     DD	int near swcGetIniString( char near *, char near *, char near *, char near *, int )
+086A    00 0F CF 1A 00 00 C8 01 6D 73 67 00 02 91 08 02 ........msg.....
+087A    74 04 6B 08 00 00 66 10 09 00 00                t.k...f....
+0885    43 07 00 00                                     DD	L$42
+0889    7D 09 00 00                                     DD	L$66
+088D    0F EF 13 00 00 D2 01 01 00 00 70 77 69 6E 00 02 ..........pwin..
+089D    91 6C 8D 08 00 00 0F 72 11 00 00 D2 01 01 00 00 .l.....r........
+08AD    64 77 69 6E 00 02 91 70 A3 08 00 00 66 0F 09 00 dwin...p....f...
+08BD    00                                              .
+08BE    80 08 00 00                                     DD	L$56
+08C2    22 09 00 00                                     DD	L$59
+08C6    18 02 C3 1A 00 00 D2 01 01 00 00 69 6E 70 75 74 ...........input
+08D6    00 03 91 B0 7F C6 08 00 00 D2 01 01 00 00 6F 65 ..............oe
+08E6    6D 6B 65 79 00 02 91 68 B5 00 00 00 18 0D A8 1A mkey...h........
+08F6    00 00 D2 01 01 00 00 6B 65 79 74 62 6C 00 05 03 .......keytbl...
+0906    00 00 00 00                                     DD	char unsigned near void near swchandlemessage( tagMSG near * )::.m::keytbl[]
+090A    F2 08 00 00 00 00 00 86 01 C3 09 00 00 02 B5 00 ................
+091A    00 00 16 73 77 63 47 65 74 49 6E 69 53 74 72 69 ...swcGetIniStri
+092A    6E 67 00 01 00 01 01 00 00 02 91 04             ng..........
+0936    85 09 00 00                                     DD	int near swcGetIniString( char near *, char near *, char near *, char near *, int )
+093A    C8 09 00 00                                     DD	int near swcPutIniString( char near *, char near *, char near * )
+093E    00 C8 01 73 65 63 74 69 6F 6E 00 02 91 08 02 74 ...section.....t
+094E    04 4E 04 00 00 C8 01 6B 65 79 6E 61 6D 65 00 02 .N.....keyname..
+095E    91 0C 02 74 08 4E 04 00 00 C8 01 64 66 6C 74 73 ...t.N.....dflts
+096E    74 72 00 02 91 10 02 74 0C 4E 04 00 00 C8 01 62 tr.....t.N.....b
+097E    75 66 66 65 72 00 02 91 14 02 74 10 4E 04 00 00 uffer.....t.N...
+098E    C8 01 6C 65 6E 67 74 68 00 02 91 18 02 74 14 B5 ..length.....t..
+099E    00 00 00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 .........return.
+09AE    01 50 B5 00 00 00 66 C2 09 00 00                .P....f....
+09B9    9B 09 00 00                                     DD	L$67
+09BD    C0 09 00 00                                     DD	L$68
+09C1    00 00 86 01 4E 0A 00 00 02 B5 00 00 00 16 73 77 ....N.........sw
+09D1    63 50 75 74 49 6E 69 53 74 72 69 6E 67 00 01 00 cPutIniString...
+09E1    01 01 00 00 02 91 04                            .......
+09E8    C8 09 00 00                                     DD	int near swcPutIniString( char near *, char near *, char near * )
+09EC    03 0A 00 00                                     DD	swcBase near * near swcGetFocus()
+09F0    00 C8 01 73 65 63 74 69 6F 6E 00 02 91 08 02 74 ...section.....t
+0A00    04 4E 04 00 00 C8 01 6B 65 79 6E 61 6D 65 00 02 .N.....keyname..
+0A10    91 0C 02 74 08 4E 04 00 00 C8 01 62 75 66 66 65 ...t.N.....buffe
+0A20    72 00 02 91 10 02 74 0C 4E 04 00 00 D2 01 01 00 r.....t.N.......
+0A30    01 2E 72 65 74 75 72 6E 00 01 50 B5 00 00 00 66 ..return..P....f
+0A40    4D 0A 00 00                                     M...
+0A44    DE 09 00 00                                     DD	L$69
+0A48    FB 09 00 00                                     DD	L$70
+0A4C    00 00 86 01 AB 0A 00 00 02 8D 08 00 00 16 73 77 ..............sw
+0A5C    63 47 65 74 46 6F 63 75 73 00 01 00 01 01 00 00 cGetFocus.......
+0A6C    02 91 04                                        ...
+0A6F    03 0A 00 00                                     DD	swcBase near * near swcGetFocus()
+0A73    49 0A 00 00                                     DD	void near swcTerminate()
+0A77    00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 01 50 .......return..P
+0A87    8D 08 00 00 66 AA 0A 00 00                      ....f....
+0A90    19 0A 00 00                                     DD	L$71
+0A94    41 0A 00 00                                     DD	L$74
+0A98    D2 01 01 00 00 68 77 6E 64 00 02 91 70 63 1B 00 .....hwnd...pc..
+0AA8    00 00 00 86 01 E5 0A 00 00 02 A5 04 00 00 16 73 ...............s
+0AB8    77 63 54 65 72 6D 69 6E 61 74 65 00 01 00 01 01 wcTerminate.....
+0AC8    00 00 02 91 04                                  .....
+0ACD    49 0A 00 00                                     DD	void near swcTerminate()
+0AD1    79 0A 00 00                                     DD	void near swcBeep( int, int )
+0AD5    00 66 E4 0A 00 00                               .f....
+0ADB    5F 0A 00 00                                     DD	L$75
+0ADF    71 0A 00 00                                     DD	L$76
+0AE3    00 00 86 01 3E 0B 00 00 02 A5 04 00 00 16 73 77 ....>.........sw
+0AF3    63 42 65 65 70 00 01 00 01 01 00 00 02 91 04    cBeep..........
+0B02    79 0A 00 00                                     DD	void near swcBeep( int, int )
+0B06    A4 0A 00 00                                     DD	HFONT__ near * near swcgetscnfont( int )
+0B0A    00 C8 01 66 72 65 71 00 02 91 08 02 74 04 B5 00 ...freq.....t...
+0B1A    00 00 C8 01 6C 65 6E 67 74 68 00 02 91 0C 02 74 ....length.....t
+0B2A    08 B5 00 00 00 66 3D 0B 00 00                   .....f=...
+0B34    8F 0A 00 00                                     DD	L$77
+0B38    9C 0A 00 00                                     DD	L$78
+0B3C    00 00 86 01 B4 0B 00 00 02 83 1B 00 00 16 73 77 ..............sw
+0B4C    63 67 65 74 73 63 6E 66 6F 6E 74 00 01 00 01 01 cgetscnfont.....
+0B5C    00 00 02 91 04                                  .....
+0B61    A4 0A 00 00                                     DD	HFONT__ near * near swcgetscnfont( int )
+0B65    46 0B 00 00                                     DD	HRGN__ near * near swcCreateRectRgn( long, long, long, long )
+0B69    00 C8 01 66 6F 6E 74 6E 75 6D 00 02 91 08 02 74 ...fontnum.....t
+0B79    04 B5 00 00 00 D2 01 01 00 01 2E 72 65 74 75 72 ...........retur
+0B89    6E 00 01 50 83 1B 00 00 66 B3 0B 00 00          n..P....f....
+0B96    BA 0A 00 00                                     DD	L$79
+0B9A    3E 0B 00 00                                     DD	L$82
+0B9E    D2 01 01 00 00 6C 6F 67 66 6E 74 00 03 91 B0 7F .....logfnt.....
+0BAE    21 1B 00 00 00 00 0F 1D 1A 00 00 86 01 51 0C 00 !............Q..
+0BBE    00 02 B4 0B 00 00 16 73 77 63 43 72 65 61 74 65 .......swcCreate
+0BCE    52 65 63 74 52 67 6E 00 01 00 01 01 00 00 02 91 RectRgn.........
+0BDE    04                                              .
+0BDF    46 0B 00 00                                     DD	HRGN__ near * near swcCreateRectRgn( long, long, long, long )
+0BE3    85 0B 00 00                                     DD	void near swcDeleteRgn( HRGN__ near * )
+0BE7    00 C8 01 68 70 6F 73 00 02 91 08 02 74 04 D3 00 ...hpos.....t...
+0BF7    00 00 C8 01 76 70 6F 73 00 02 91 0C 02 74 08 D3 ....vpos.....t..
+0C07    00 00 00 C8 01 77 69 64 74 68 00 02 91 10 02 74 .....width.....t
+0C17    0C D3 00 00 00 C8 01 68 65 69 67 68 74 00 02 91 .......height...
+0C27    14 02 74 10 D3 00 00 00 D2 01 01 00 01 2E 72 65 ..t...........re
+0C37    74 75 72 6E 00 01 50 B4 0B 00 00 66 50 0C 00 00 turn..P....fP...
+0C47    5C 0B 00 00                                     DD	L$83
+0C4B    7D 0B 00 00                                     DD	L$84
+0C4F    00 00 86 01 9B 0C 00 00 02 A5 04 00 00 16 73 77 ..............sw
+0C5F    63 44 65 6C 65 74 65 52 67 6E 00 01 00 01 01 00 cDeleteRgn......
+0C6F    00 02 91 04                                     ....
+0C73    85 0B 00 00                                     DD	void near swcDeleteRgn( HRGN__ near * )
+0C77    AC 0B 00 00                                     DD	int near swcSetNumLock( int )
+0C7B    00 C8 01 72 67 6E 00 02 91 08 02 74 04 B4 0B 00 ...rgn.....t....
+0C8B    00 66 9A 0C 00 00                               .f....
+0C91    9B 0B 00 00                                     DD	L$85
+0C95    A4 0B 00 00                                     DD	L$86
+0C99    00 00 86 01 2B 0D 00 00 02 B5 00 00 00 16 73 77 ....+.........sw
+0CA9    63 53 65 74 4E 75 6D 4C 6F 63 6B 00 01 00 01 01 cSetNumLock.....
+0CB9    00 00 02 91 04                                  .....
+0CBE    AC 0B 00 00                                     DD	int near swcSetNumLock( int )
+0CC2    FD 0B 00 00                                     DD	long near swcGetCurrentTime()
+0CC6    00 C8 01 73 74 61 74 65 00 02 91 08 02 74 04 B5 ...state.....t..
+0CD6    00 00 00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 .........return.
+0CE6    01 50 B5 00 00 00 66 2A 0D 00 00                .P....f*...
+0CF1    C2 0B 00 00                                     DD	L$87
+0CF5    F5 0B 00 00                                     DD	L$88
+0CF9    D2 01 01 00 00 76 61 6C 75 65 00 02 91 70 B5 00 .....value...p..
+0D09    00 00 18 80 02 A8 1A 00 00 D2 01 01 00 00 6B 65 ..............ke
+0D19    79 73 74 61 74 65 73 00 03 91 EC 7D 0B 0D 00 00 ystates....}....
+0D29    00 00 86 01 9F 0D 00 00 02 D3 00 00 00 16 73 77 ..............sw
+0D39    63 47 65 74 43 75 72 72 65 6E 74 54 69 6D 65 00 cGetCurrentTime.
+0D49    01 00 01 01 00 00 02 91 04                      .........
+0D52    FD 0B 00 00                                     DD	long near swcGetCurrentTime()
+0D56    51 0C 00 00                                     DD	long near swcGetCurrentDate()
+0D5A    00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 01 50 .......return..P
+0D6A    D3 00 00 00 66 9E 0D 00 00                      ....f....
+0D73    13 0C 00 00                                     DD	L$89
+0D77    49 0C 00 00                                     DD	L$90
+0D7B    D2 01 01 00 00 73 74 69 6D 65 00 02 91 60 2F 1B .....stime...`/.
+0D8B    00 00 D2 01 01 00 00 74 6D 00 03 91 BC 7F 84 19 .......tm.......
+0D9B    00 00 00 00 86 01 13 0E 00 00 02 D3 00 00 00 16 ................
+0DAB    73 77 63 47 65 74 43 75 72 72 65 6E 74 44 61 74 swcGetCurrentDat
+0DBB    65 00 01 00 01 01 00 00 02 91 04                e..........
+0DC6    51 0C 00 00                                     DD	long near swcGetCurrentDate()
+0DCA    AB 0C 00 00                                     DD	void near swcGetCurrentDateTime( __2pkfb9time_sz near * )
+0DCE    00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 01 50 .......return..P
+0DDE    D3 00 00 00 66 12 0E 00 00                      ....f....
+0DE7    67 0C 00 00                                     DD	L$91
+0DEB    A3 0C 00 00                                     DD	L$92
+0DEF    D2 01 01 00 00 73 74 69 6D 65 00 02 91 60 2F 1B .....stime...`/.
+0DFF    00 00 D2 01 01 00 00 74 6D 00 03 91 BC 7F 84 19 .......tm.......
+0E0F    00 00 00 00 86 01 8B 0E 00 00 02 A5 04 00 00 16 ................
+0E1F    73 77 63 47 65 74 43 75 72 72 65 6E 74 44 61 74 swcGetCurrentDat
+0E2F    65 54 69 6D 65 00 01 00 01 01 00 00 02 91 04    eTime..........
+0E3E    AB 0C 00 00                                     DD	void near swcGetCurrentDateTime( __2pkfb9time_sz near * )
+0E42    47 0D 00 00                                     DD	void near swcSetCurrentDateTime( __2pkfb9time_sz near * )
+0E46    00 0F 81 1A 00 00 C8 01 64 74 00 02 91 08 02 74 ........dt.....t
+0E56    04 47 0E 00 00 66 8A 0E 00 00                   .G...f....
+0E60    C1 0C 00 00                                     DD	L$93
+0E64    3F 0D 00 00                                     DD	L$94
+0E68    D2 01 01 00 00 73 74 69 6D 65 00 02 91 64 2F 1B .....stime...d/.
+0E78    00 00 D2 01 01 00 00 74 6D 00 02 91 40 84 19 00 .......tm...@...
+0E88    00 00 00 86 01 FE 0E 00 00 02 A5 04 00 00 16 73 ...............s
+0E98    77 63 53 65 74 43 75 72 72 65 6E 74 44 61 74 65 wcSetCurrentDate
+0EA8    54 69 6D 65 00 01 00 01 01 00 00 02 91 04       Time..........
+0EB6    47 0D 00 00                                     DD	void near swcSetCurrentDateTime( __2pkfb9time_sz near * )
+0EBA    C9 0D 00 00                                     DD	void near nullfunc()
+0EBE    00 C8 01 64 74 00 02 91 08 02 74 04 47 0E 00 00 ...dt.....t.G...
+0ECE    66 FD 0E 00 00                                  f....
+0ED3    5D 0D 00 00                                     DD	L$95
+0ED7    C1 0D 00 00                                     DD	L$96
+0EDB    D2 01 01 00 00 73 74 69 6D 65 00 02 91 64 2F 1B .....stime...d/.
+0EEB    00 00 D2 01 01 00 00 74 6D 00 02 91 40 84 19 00 .......tm...@...
+0EFB    00 00 00 86 01 34 0F 00 00 02 A5 04 00 00 16 6E .....4.........n
+0F0B    75 6C 6C 66 75 6E 63 00 01 00 01 01 00 00 02 91 ullfunc.........
+0F1B    04                                              .
+0F1C    C9 0D 00 00                                     DD	void near nullfunc()
+0F20    E7 0D 00 00                                     DD	int near rtnzero()
+0F24    00 66 33 0F 00 00                               .f3...
+0F2A    DF 0D 00 00                                     DD	L$97
+0F2E    DF 0D 00 00                                     DD	L$97
+0F32    00 00 86 01 7C 0F 00 00 02 B5 00 00 00 16 72 74 ....|.........rt
+0F42    6E 7A 65 72 6F 00 01 00 01 01 00 00 02 91 04    nzero..........
+0F51    E7 0D 00 00                                     DD	int near rtnzero()
+0F55    0F 0E 00 00                                     DD	L$100
+0F59    00 D2 01 01 00 01 2E 72 65 74 75 72 6E 00 01 50 .......return..P
+0F69    B5 00 00 00 66 7B 0F 00 00                      ....f{...
+0F72    FD 0D 00 00                                     DD	L$98
+0F76    07 0E 00 00                                     DD	L$99
+0F7A    00 00 8A 01 F5 0F 00 00 01 E3 04 00 00 16 C2 10 ................
+0F8A    00 00 7E 73 77 63 44 69 73 70 6C 61 79 00 01 00 ..~swcDisplay...
+0F9A    01 01 00 00 02 91 04                            .......
+0FA1    00 00 00 00                                     DD	near swcDisplay::~swcDisplay()
+0FA5    6D 00 00 00                                     DD	near swcDisplay::~swcDisplay()+0x6d
+0FA9    00 0F C2 10 00 00 C8 01 74 68 69 73 00 02 91 08 ........this....
+0FB9    02 74 04 AA 0F 00 00 C8 01 2E 63 64 74 6F 72 00 .t........cdtor.
+0FC9    02 91 0C 02 74 08 C3 00 00 00 D2 01 01 00 01 2E ....t...........
+0FD9    72 65 74 75 72 6E 00 01 50 E3 04 00 00 66 F4 0F return..P....f..
+0FE9    00 00                                           ..
+0FEB    16 00 00 00                                     DD	near swcDisplay::~swcDisplay()+0x16
+0FEF    65 00 00 00                                     DD	near swcDisplay::~swcDisplay()+0x65
+0FF3    00 00 2B 3B 10 00 00 01 66 6F 6E 74 62 6C 6B 00 ..+;....fontblk.
+1003    44 34 6E 65 78 74 00 02 23 00 9C 02 00 00 18 40 D4next..#......@
+1013    60 00 00 00 34 66 69 6C 65 00 02 23 04 11 10 00 `...4file..#....
+1023    00 13 F5 0F 00 00 BE 01 01 24 10 00 00 66 6F 6E .........$...fon
+1033    74 62 6C 6B 00 01 02 00 2B C2 10 00 00 01 73 63 tblk....+.....sc
+1043    6E 66 6E 74 64 65 66 00 2C 34 66 6F 6E 74 00 02 nfntdef.,4font..
+1053    23 00 83 1B 00 00 34 73 69 7A 65 34 00 02 23 04 #.....4size4..#.
+1063    A8 1A 00 00 34 73 69 7A 65 35 00 02 23 05 A8 1A ....4size5..#...
+1073    00 00 34 78 78 78 00 02 23 06 A8 1A 00 00 34 69 ..4xxx..#.....4i
+1083    74 61 6C 69 63 00 02 23 07 A8 1A 00 00 34 61 63 talic..#.....4ac
+1093    74 75 61 6C 00 02 23 08 9B 1A 00 00 34 77 65 69 tual..#.....4wei
+10A3    67 68 74 00 02 23 0A 9B 1A 00 00 18 20 60 00 00 ght..#...... `..
+10B3    00 34 6E 61 6D 65 00 02 23 0C AE 10 00 00 00 27 .4name..#......'
+10C3    72 11 00 00 01 73 77 63 44 69 73 70 6C 61 79 00 r....swcDisplay.
+10D3    9C 01 32 01 02 30 22 00 72 11 00 00 46 EB 10 00 ..2..0".r...F...
+10E3    00 01 01 A5 04 00 00 00 0F DF 10 00 00 15 EB 10 ................
+10F3    00 00 0F F0 10 00 00 15 F5 10 00 00 37 01 01 5F ............7.._
+1103    5F 76 66 70 74 72 00 03 09 6C 22 FA 10 00 00 13 _vfptr...l".....
+1113    C2 10 00 00 BE 01 01 12 11 00 00 73 77 63 44 69 ...........swcDi
+1123    73 70 6C 61 79 00 01 00 BE 01 01 12 11 00 00 73 splay..........s
+1133    77 63 44 69 73 70 6C 61 79 00 01 00 BE 01 01 12 wcDisplay.......
+1143    11 00 00 73 77 63 44 69 73 70 6C 61 79 00 01 02 ...swcDisplay...
+1153    C2 01 01 E3 04 00 00 7E 73 77 63 44 69 73 70 6C .......~swcDispl
+1163    61 79 00 01 02 01 07 09 6C 22 06 44 22 06 00 27 ay......l".D"..'
+1173    EF 13 00 00 01 73 77 63 44 69 73 70 6C 61 79 42 .....swcDisplayB
+1183    61 73 65 00 9C 01 32 01 02 30 22 00 EF 13 00 00 ase...2..0".....
+1193    37 01 01 5F 5F 76 66 70 74 72 00 03 09 6C 22 FA 7..__vfptr...l".
+11A3    10 00 00 34 63 77 69 64 74 68 00 02 23 70 D3 00 ...4cwidth..#p..
+11B3    00 00 34 63 68 65 69 67 68 74 00 02 23 74 D3 00 ..4cheight..#t..
+11C3    00 00 0F EF 13 00 00 34 66 63 68 69 6C 64 00 02 .......4fchild..
+11D3    23 78 C5 11 00 00 0F 37 1A 00 00 34 74 78 74 68 #x.....7...4txth
+11E3    65 61 64 00 02 23 7C D9 11 00 00 34 74 78 74 74 ead..#|....4txtt
+11F3    61 69 6C 00 03 23 80 01 D9 11 00 00 0F 2A 1A 00 ail..#.......*..
+1203    00 34 69 6D 67 68 65 61 64 00 03 23 84 01 FF 11 .4imghead..#....
+1213    00 00 34 69 6D 67 74 61 69 6C 00 03 23 88 01 FF ..4imgtail..#...
+1223    11 00 00 34 78 6F 66 66 73 65 74 00 03 23 8C 01 ...4xoffset..#..
+1233    D3 00 00 00 34 79 6F 66 66 73 65 74 00 03 23 90 ....4yoffset..#.
+1243    01 D3 00 00 00 34 72 61 6E 67 65 00 03 23 94 01 .....4range..#..
+1253    D3 00 00 00 34 69 6E 63 72 65 6D 65 6E 74 00 03 ....4increment..
+1263    23 98 01 D3 00 00 00 13 72 11 00 00 BE 01 01 6A #.......r......j
+1273    12 00 00 73 77 63 44 69 73 70 6C 61 79 42 61 73 ...swcDisplayBas
+1283    65 00 01 00 BE 01 01 6A 12 00 00 73 77 63 44 69 e......j...swcDi
+1293    73 70 6C 61 79 42 61 73 65 00 01 00 C2 01 01 E3 splayBase.......
+12A3    04 00 00 7E 73 77 63 44 69 73 70 6C 61 79 42 61 ...~swcDisplayBa
+12B3    73 65 00 01 00 01 07 09 6C 22 06 44 22 06 BE 01 se......l".D"...
+12C3    01 A5 04 00 00 42 72 69 6E 67 54 6F 54 6F 70 00 .....BringToTop.
+12D3    01 00 BE 01 01 A5 04 00 00 50 75 74 42 4D 50 49 .........PutBMPI
+12E3    6D 61 67 65 00 01 00 BE 01 01 A5 04 00 00 50 75 mage..........Pu
+12F3    74 42 4D 50 49 6D 61 67 65 00 01 00 BE 01 01 A5 tBMPImage.......
+1303    04 00 00 50 75 74 54 65 78 74 00 01 00 BE 01 01 ...PutText......
+1313    B5 00 00 00 47 65 74 54 65 78 74 45 78 74 65 6E ....GetTextExten
+1323    74 00 01 00 BE 01 01 B5 00 00 00 47 65 74 54 65 t..........GetTe
+1333    78 74 48 65 69 67 68 74 00 01 00 BE 01 01 A5 04 xtHeight........
+1343    00 00 56 65 72 74 53 63 72 6F 6C 6C 52 61 6E 67 ..VertScrollRang
+1353    65 00 01 00 BE 01 01 A5 04 00 00 56 65 72 74 53 e..........VertS
+1363    63 72 6F 6C 6C 50 6F 73 69 74 69 6F 6E 00 01 00 crollPosition...
+1373    C2 01 01 B5 00 00 00 68 61 76 65 63 6C 6F 73 65 .......haveclose
+1383    00 01 00 01 07 09 6C 22 06 48 22 06 C2 01 01 B5 ......l".H".....
+1393    00 00 00 68 61 76 65 66 6F 63 75 73 00 01 00 01 ...havefocus....
+13A3    07 09 6C 22 06 4C 22 06 BE 01 01 D3 00 00 00 64 ..l".L"........d
+13B3    69 73 70 6C 61 79 70 72 6F 63 00 01 00 BE 01 01 isplayproc......
+13C3    A5 04 00 00 61 64 6A 75 73 74 63 68 69 6C 64 73 ....adjustchilds
+13D3    00 01 00 BE 01 01 6A 12 00 00 73 77 63 44 69 73 ......j...swcDis
+13E3    70 6C 61 79 42 61 73 65 00 01 02 00 27 84 19 00 playBase....'...
+13F3    00 01 73 77 63 42 61 73 65 00 70 37 01 01 5F 5F ..swcBase.p7..__
+1403    76 66 70 74 72 00 03 09 6C 22 FA 10 00 00 34 68 vfptr...l"....4h
+1413    77 69 6E 00 02 23 00 63 1B 00 00 34 74 79 70 65 win..#.c...4type
+1423    00 02 23 04 A8 1A 00 00 34 65 6E 61 62 6C 65 64 ..#.....4enabled
+1433    00 02 23 05 A8 1A 00 00 34 78 70 6F 73 00 02 23 ..#.....4xpos..#
+1443    08 D3 00 00 00 34 79 70 6F 73 00 02 23 0C D3 00 .....4ypos..#...
+1453    00 00 34 68 65 69 67 68 74 00 02 23 10 D3 00 00 ..4height..#....
+1463    00 34 77 69 64 74 68 00 02 23 14 D3 00 00 00 34 .4width..#.....4
+1473    74 78 74 63 6F 6C 6F 72 00 02 23 18 D3 00 00 00 txtcolor..#.....
+1483    34 62 67 63 6F 6C 6F 72 00 02 23 1C D3 00 00 00 4bgcolor..#.....
+1493    34 70 61 72 65 6E 74 00 02 23 20 A3 08 00 00 34 4parent..# ....4
+14A3    73 69 62 6C 69 6E 67 00 02 23 24 8D 08 00 00 34 sibling..#$....4
+14B3    61 72 67 32 64 61 74 61 00 02 23 28 B5 00 00 00 arg2data..#(....
+14C3    34 61 72 67 33 64 61 74 61 00 02 23 2C E3 04 00 4arg3data..#,...
+14D3    00 46 F8 14 00 00 01 01 A5 04 00 00 C4 01 8D 08 .F..............
+14E3    00 00 C4 01 D3 00 00 00 C4 01 D3 00 00 00 C4 01 ................
+14F3    E3 04 00 00 00 0F D4 14 00 00 34 61 63 74 69 6F ..........4actio
+1503    6E 00 02 23 30 F8 14 00 00 34 6F 72 67 70 72 6F n..#0....4orgpro
+1513    63 00 02 23 34 02 1B 00 00 BE 01 01 A5 04 00 00 c..#4...........
+1523    46 6F 72 63 65 52 65 64 72 61 77 00 01 00 BE 01 ForceRedraw.....
+1533    01 B5 00 00 00 47 65 74 43 6C 69 65 6E 74 52 65 .....GetClientRe
+1543    63 74 00 01 00 BE 01 01 B5 00 00 00 47 65 74 55 ct..........GetU
+1553    6E 73 63 61 6C 65 64 43 6C 69 65 6E 74 52 65 63 nscaledClientRec
+1563    74 00 01 00 BE 01 01 B5 00 00 00 45 6E 61 62 6C t..........Enabl
+1573    65 00 01 00 BE 01 01 A5 04 00 00 53 65 74 46 6F e..........SetFo
+1583    63 75 73 00 01 00 BE 01 01 A5 04 00 00 46 6F 72 cus..........For
+1593    63 65 46 6F 63 75 73 00 01 00 BE 01 01 A5 04 00 ceFocus.........
+15A3    00 53 65 74 46 6F 6E 74 00 01 00 BE 01 01 B5 00 .SetFont........
+15B3    00 00 47 65 74 54 65 78 74 00 01 00 BE 01 01 B5 ..GetText.......
+15C3    00 00 00 53 65 74 54 65 78 74 00 01 00 BE 01 01 ...SetText......
+15D3    B5 00 00 00 4D 6F 76 65 52 65 73 69 7A 65 00 01 ....MoveResize..
+15E3    00 BE 01 01 B5 00 00 00 4D 6F 76 65 00 01 00 BE ........Move....
+15F3    01 01 A5 04 00 00 53 65 74 43 6F 6C 6F 72 73 00 ......SetColors.
+1603    01 00 BE 01 01 A5 04 00 00 42 72 69 6E 67 54 6F .........BringTo
+1613    54 6F 70 00 01 00 BE 01 01 B5 00 00 00 53 65 74 Top..........Set
+1623    54 72 61 76 65 72 73 65 00 01 00 BE 01 01 B5 00 Traverse........
+1633    00 00 53 65 74 54 72 61 76 65 72 73 65 00 01 00 ..SetTraverse...
+1643    C2 01 01 A5 04 00 00 64 72 61 77 69 74 65 6D 00 .......drawitem.
+1653    01 02 01 07 09 6C 22 06 30 22 06 C2 01 01 A5 04 .....l".0"......
+1663    00 00 6D 65 61 73 75 72 65 69 74 65 6D 00 01 02 ..measureitem...
+1673    01 07 09 6C 22 06 34 22 06 C2 01 01 A5 04 00 00 ...l".4"........
+1683    78 78 78 64 65 6C 65 74 65 69 74 65 6D 00 01 02 xxxdeleteitem...
+1693    01 07 09 6C 22 06 38 22 06 C2 01 01 D3 00 00 00 ...l".8"........
+16A3    63 74 6C 63 6F 6C 6F 72 00 01 02 01 07 09 6C 22 ctlcolor......l"
+16B3    06 3C 22 06 C2 01 01 A5 04 00 00 63 72 65 61 74 .<"........creat
+16C3    65 77 69 6E 64 6F 77 00 01 00 01 07 09 6C 22 06 ewindow......l".
+16D3    40 22 06 BE 01 01 18 1C 00 00 63 68 65 63 6B 66 @"........checkf
+16E3    6F 63 75 73 00 01 00 C2 01 01 E3 04 00 00 7E 73 ocus..........~s
+16F3    77 63 42 61 73 65 00 01 00 01 07 09 6C 22 06 44 wcBase......l".D
+1703    22 06 BE 01 01 A5 04 00 00 53 65 74 47 62 6C 4B "........SetGblK
+1713    65 79 48 6F 6F 6B 00 01 00 BE 01 01 B5 00 00 00 eyHook..........
+1723    52 65 6D 6F 76 65 47 62 6C 4B 65 79 48 6F 6F 6B RemoveGblKeyHook
+1733    00 01 00 BE 01 01 A5 04 00 00 53 65 74 47 62 6C ..........SetGbl
+1743    4B 65 79 46 75 6E 63 00 01 02 BE 01 01 B5 00 00 KeyFunc.........
+1753    00 63 68 65 63 6B 66 6F 72 6B 65 79 00 01 00 D2 .checkforkey....
+1763    01 01 01 00 66 66 77 69 6E 64 6F 77 00 05 03    ....ffwindow...
+1772    00 00 00 00                                     DD	swcBase near * near swcBase::ffwindow
+1776    8D 08 00 00 2B F9 17 00 00 01 6B 65 79 68 6F 6F ....+.....keyhoo
+1786    6B 00 14 0F 7A 17 00 00 34 6E 65 78 74 00 02 23 k...z...4next..#
+1796    00 89 17 00 00 34 63 6F 64 65 00 02 23 04 D3 00 .....4code..#...
+17A6    00 00 46 CC 17 00 00 01 01 B5 00 00 00 C4 01 8D ..F.............
+17B6    08 00 00 C4 01 8F 1A 00 00 C4 01 D3 00 00 00 C4 ................
+17C6    01 E3 04 00 00 00 0F A8 17 00 00 34 66 75 6E 63 ...........4func
+17D6    00 02 23 08 CC 17 00 00 34 61 72 67 69 00 02 23 ..#.....4argi..#
+17E6    0C D3 00 00 00 34 61 72 67 70 00 02 23 10 E3 04 .....4argp..#...
+17F6    00 00 00 18 05 8D 08 00 00 36 02 74 72 61 76 6C .........6.travl
+1806    69 73 74 00 02 23 38 F9 17 00 00 36 02 74 72 61 ist..#8....6.tra
+1816    76 77 69 6E 00 02 23 4C 8D 08 00 00 36 02 74 72 vwin..#L....6.tr
+1826    61 76 6E 65 78 74 00 02 23 50 8D 08 00 00 36 02 avnext..#P....6.
+1836    74 72 61 76 70 72 65 76 00 02 23 54 8D 08 00 00 travprev..#T....
+1846    36 02 67 6B 68 6F 6F 6B 00 02 23 58 89 17 00 00 6.gkhook..#X....
+1856    46 6E 18 00 00 01 01 B5 00 00 00 C4 01 8F 1A 00 Fn..............
+1866    00 C4 01 E3 04 00 00 00 0F 56 18 00 00 36 02 67 .........V...6.g
+1876    62 6C 66 75 6E 63 00 02 23 5C 6E 18 00 00 36 02 blfunc..#\n...6.
+1886    67 62 6C 61 72 67 70 00 02 23 60 E3 04 00 00 36 gblargp..#`....6
+1896    02 70 72 65 66 69 78 69 6E 64 65 78 00 02 23 64 .prefixindex..#d
+18A6    B5 00 00 00 36 02 74 72 61 76 67 72 6F 75 70 00 ....6.travgroup.
+18B6    02 23 68 A8 1A 00 00 36 02 74 72 61 76 6E 75 6D .#h....6.travnum
+18C6    62 65 72 00 02 23 69 A8 1A 00 00 36 02 74 72 61 ber..#i....6.tra
+18D6    76 72 74 6E 00 02 23 6A A8 1A 00 00 36 02 64 69 vrtn..#j....6.di
+18E6    73 61 62 6C 65 64 00 02 23 6B A8 1A 00 00 BE 01 sabled..#k......
+18F6    02 A5 04 00 00 74 72 61 76 72 65 6D 6F 76 65 00 .....travremove.
+1906    01 00 BE 01 02 B5 00 00 00 74 72 61 76 63 68 65 .........travche
+1916    63 6B 00 01 00 13 EF 13 00 00 BE 01 02 1B 19 00 ck..............
+1926    00 73 77 63 42 61 73 65 00 01 00 BE 01 02 1B 19 .swcBase........
+1936    00 00 73 77 63 42 61 73 65 00 01 00 BE 01 02 A5 ..swcBase.......
+1946    04 00 00 73 65 74 66 6F 63 75 73 74 6F 70 72 65 ...setfocustopre
+1956    76 00 01 00 BE 01 02 A5 04 00 00 73 65 74 66 6F v..........setfo
+1966    63 75 73 74 6F 6E 65 78 74 00 01 00 BE 01 01 1B custonext.......
+1976    19 00 00 73 77 63 42 61 73 65 00 01 02 00 2B 1D ...swcBase....+.
+1986    1A 00 00 01 74 6D 00 24 34 74 6D 5F 73 65 63 00 ....tm.$4tm_sec.
+1996    02 23 00 B5 00 00 00 34 74 6D 5F 6D 69 6E 00 02 .#.....4tm_min..
+19A6    23 04 B5 00 00 00 34 74 6D 5F 68 6F 75 72 00 02 #.....4tm_hour..
+19B6    23 08 B5 00 00 00 34 74 6D 5F 6D 64 61 79 00 02 #.....4tm_mday..
+19C6    23 0C B5 00 00 00 34 74 6D 5F 6D 6F 6E 00 02 23 #.....4tm_mon..#
+19D6    10 B5 00 00 00 34 74 6D 5F 79 65 61 72 00 02 23 .....4tm_year..#
+19E6    14 B5 00 00 00 34 74 6D 5F 77 64 61 79 00 02 23 .....4tm_wday..#
+19F6    18 B5 00 00 00 34 74 6D 5F 79 64 61 79 00 02 23 .....4tm_yday..#
+1A06    1C B5 00 00 00 34 74 6D 5F 69 73 64 73 74 00 02 .....4tm_isdst..
+1A16    23 20 B5 00 00 00 00 0B 01 73 77 63 52 67 6E 00 # .......swcRgn.
+1A26    94 22 00 00 0B 01 49 4D 47 42 4C 4B 00 23 1C 00 ."....IMGBLK.#..
+1A36    00 0B 01 54 58 54 42 4C 4B 00 A5 1C 00 00 2A 81 ...TXTBLK.....*.
+1A46    1A 00 00 01 0C 34 74 69 6D 65 00 02 23 00 8F 1A .....4time..#...
+1A56    00 00 34 64 61 74 65 00 02 23 04 D3 00 00 00 34 ..4date..#.....4
+1A66    74 7A 6F 6E 65 00 02 23 08 93 00 00 00 34 64 6C tzone..#.....4dl
+1A76    73 74 00 02 23 0A 93 00 00 00 00 0B 01 74 69 6D st..#........tim
+1A86    65 5F 73 7A 00 44 1A 00 00 0B 01 75 6C 6F 6E 67 e_sz.D.....ulong
+1A96    00 E2 00 00 00 0B 01 75 73 68 6F 72 74 00 A3 00 .......ushort...
+1AA6    00 00 0B 01 75 63 68 61 72 00 77 00 00 00 0B 01 ....uchar.w.....
+1AB6    57 4E 44 43 4C 41 53 53 00 86 1D 00 00 0B 01 49 WNDCLASS.......I
+1AC6    4E 50 55 54 00 47 1D 00 00 0B 01 4D 53 47 00 52 NPUT.G.....MSG.R
+1AD6    1E 00 00 46 FD 1A 00 00 01 01 B0 1B 00 00 C4 01 ...F............
+1AE6    63 1B 00 00 C4 01 01 1C 00 00 C4 01 CB 1B 00 00 c...............
+1AF6    C4 01 BE 1B 00 00 00 0F D9 1A 00 00 0B 01 57 4E ..............WN
+1B06    44 50 52 4F 43 00 FD 1A 00 00 0B 01 54 45 58 54 DPROC.......TEXT
+1B16    4D 45 54 52 49 43 00 B4 1E 00 00 0B 01 4C 4F 47 METRIC.......LOG
+1B26    46 4F 4E 54 00 71 20 00 00 0B 01 53 59 53 54 45 FONT.q ....SYSTE
+1B36    4D 54 49 4D 45 00 A0 21 00 00 0B 01 52 45 43 54 MTIME..!....RECT
+1B46    00 35 22 00 00 0F AD 22 00 00 0B 01 48 43 55 52 .5"...."....HCUR
+1B56    53 4F 52 00 4B 1B 00 00 0F 7B 22 00 00 0B 01 48 SOR.K....{"....H
+1B66    57 4E 44 00 5E 1B 00 00 0B 01 48 49 4E 53 54 41 WND.^.....HINSTA
+1B76    4E 43 45 00 E3 04 00 00 0F C7 22 00 00 0B 01 48 NCE......."....H
+1B86    46 4F 4E 54 00 7E 1B 00 00 0F E1 22 00 00 0B 01 FONT.~....."....
+1B96    48 44 43 00 8F 1B 00 00 0F F9 22 00 00 0B 01 48 HDC......."....H
+1BA6    41 43 43 45 4C 00 9E 1B 00 00 0B 01 4C 52 45 53 ACCEL.......LRES
+1BB6    55 4C 54 00 D3 00 00 00 0B 01 4C 50 41 52 41 4D ULT.......LPARAM
+1BC6    00 D3 00 00 00 0B 01 57 50 41 52 41 4D 00 C3 00 .......WPARAM...
+1BD6    00 00 0F E9 1B 00 00 0B 01 4C 50 53 54 52 00 D8 .........LPSTR..
+1BE6    1B 00 00 0B 01 43 48 41 52 00 60 00 00 00 0B 01 .....CHAR.`.....
+1BF6    73 69 7A 65 5F 74 00 C3 00 00 00 0B 01 55 49 4E size_t.......UIN
+1C06    54 00 C3 00 00 00 0B 01 44 57 4F 52 44 00 E2 00 T.......DWORD...
+1C16    00 00 0B 01 62 6F 6F 6C 00 58 00 00 00 2B A5 1C ....bool.X...+..
+1C26    00 00 01 69 6D 67 62 6C 6B 00 20 34 6E 65 78 74 ...imgblk. 4next
+1C36    00 02 23 00 FF 11 00 00 34 78 70 6F 73 00 02 23 ..#.....4xpos..#
+1C46    04 D3 00 00 00 34 79 70 6F 73 00 02 23 08 D3 00 .....4ypos..#...
+1C56    00 00 34 77 69 64 74 68 00 02 23 0C D3 00 00 00 ..4width..#.....
+1C66    34 68 65 69 67 68 74 00 02 23 10 D3 00 00 00 34 4height..#.....4
+1C76    74 79 70 65 00 02 23 14 D3 00 00 00 34 6F 66 66 type..#.....4off
+1C86    73 65 74 00 02 23 18 D3 00 00 00 18 01 A8 1A 00 set..#..........
+1C96    00 34 64 61 74 61 00 02 23 1C 91 1C 00 00 00 2B .4data..#......+
+1CA6    47 1D 00 00 01 74 78 74 62 6C 6B 00 28 34 6E 65 G....txtblk.(4ne
+1CB6    78 74 00 02 23 00 D9 11 00 00 34 6C 65 66 74 00 xt..#.....4left.
+1CC6    02 23 04 D3 00 00 00 34 72 69 67 68 74 00 02 23 .#.....4right..#
+1CD6    08 D3 00 00 00 34 74 6F 70 00 02 23 0C D3 00 00 .....4top..#....
+1CE6    00 34 62 6F 74 74 6F 6D 00 02 23 10 D3 00 00 00 .4bottom..#.....
+1CF6    34 74 78 74 63 6F 6C 6F 72 00 02 23 14 D3 00 00 4txtcolor..#....
+1D06    00 34 6C 65 6E 67 74 68 00 02 23 18 B5 00 00 00 .4length..#.....
+1D16    34 6D 6F 64 65 00 02 23 1C B5 00 00 00 34 66 6F 4mode..#.....4fo
+1D26    6E 74 6E 75 6D 00 02 23 20 B5 00 00 00 18 01 60 ntnum..# ......`
+1D36    00 00 00 34 74 65 78 74 00 02 23 24 33 1D 00 00 ...4text..#$3...
+1D46    00 2B 86 1D 00 00 01 74 61 67 49 4E 50 55 54 00 .+.....tagINPUT.
+1D56    1C 34 74 79 70 65 00 02 23 00 0C 1C 00 00 34 6D .4type..#.....4m
+1D66    69 00 02 23 04 39 23 00 00 34 6B 69 00 02 23 04 i..#.9#..4ki..#.
+1D76    28 23 00 00 34 68 69 00 02 23 04 14 23 00 00 00 (#..4hi..#..#...
+1D86    2B 52 1E 00 00 01 5F 57 4E 44 43 4C 41 53 53 41 +R...._WNDCLASSA
+1D96    00 28 34 73 74 79 6C 65 00 02 23 00 01 1C 00 00 .(4style..#.....
+1DA6    34 6C 70 66 6E 57 6E 64 50 72 6F 63 00 02 23 04 4lpfnWndProc..#.
+1DB6    02 1B 00 00 34 63 62 43 6C 73 45 78 74 72 61 00 ....4cbClsExtra.
+1DC6    02 23 08 B5 00 00 00 34 63 62 57 6E 64 45 78 74 .#.....4cbWndExt
+1DD6    72 61 00 02 23 0C B5 00 00 00 34 68 49 6E 73 74 ra..#.....4hInst
+1DE6    61 6E 63 65 00 02 23 10 74 23 00 00 34 68 49 63 ance..#.t#..4hIc
+1DF6    6F 6E 00 02 23 14 56 23 00 00 34 68 43 75 72 73 on..#.V#..4hCurs
+1E06    6F 72 00 02 23 18 50 1B 00 00 34 68 62 72 42 61 or..#.P...4hbrBa
+1E16    63 6B 67 72 6F 75 6E 64 00 02 23 1C 67 23 00 00 ckground..#.g#..
+1E26    34 6C 70 73 7A 4D 65 6E 75 4E 61 6D 65 00 02 23 4lpszMenuName..#
+1E36    20 8B 23 00 00 34 6C 70 73 7A 43 6C 61 73 73 4E  .#..4lpszClassN
+1E46    61 6D 65 00 02 23 24 8B 23 00 00 00 2B B4 1E 00 ame..#$.#...+...
+1E56    00 01 74 61 67 4D 53 47 00 1C 34 68 77 6E 64 00 ..tagMSG..4hwnd.
+1E66    02 23 00 63 1B 00 00 34 6D 65 73 73 61 67 65 00 .#.c...4message.
+1E76    02 23 04 01 1C 00 00 34 77 50 61 72 61 6D 00 02 .#.....4wParam..
+1E86    23 08 CB 1B 00 00 34 6C 50 61 72 61 6D 00 02 23 #.....4lParam..#
+1E96    0C BE 1B 00 00 34 74 69 6D 65 00 02 23 10 0C 1C .....4time..#...
+1EA6    00 00 34 70 74 00 02 23 14 4A 23 00 00 00 2B 71 ..4pt..#.J#...+q
+1EB6    20 00 00 01 74 61 67 54 45 58 54 4D 45 54 52 49  ...tagTEXTMETRI
+1EC6    43 41 00 38 34 74 6D 48 65 69 67 68 74 00 02 23 CA.84tmHeight..#
+1ED6    00 98 23 00 00 34 74 6D 41 73 63 65 6E 74 00 02 ..#..4tmAscent..
+1EE6    23 04 98 23 00 00 34 74 6D 44 65 73 63 65 6E 74 #..#..4tmDescent
+1EF6    00 02 23 08 98 23 00 00 34 74 6D 49 6E 74 65 72 ..#..#..4tmInter
+1F06    6E 61 6C 4C 65 61 64 69 6E 67 00 02 23 0C 98 23 nalLeading..#..#
+1F16    00 00 34 74 6D 45 78 74 65 72 6E 61 6C 4C 65 61 ..4tmExternalLea
+1F26    64 69 6E 67 00 02 23 10 98 23 00 00 34 74 6D 41 ding..#..#..4tmA
+1F36    76 65 43 68 61 72 57 69 64 74 68 00 02 23 14 98 veCharWidth..#..
+1F46    23 00 00 34 74 6D 4D 61 78 43 68 61 72 57 69 64 #..4tmMaxCharWid
+1F56    74 68 00 02 23 18 98 23 00 00 34 74 6D 57 65 69 th..#..#..4tmWei
+1F66    67 68 74 00 02 23 1C 98 23 00 00 34 74 6D 4F 76 ght..#..#..4tmOv
+1F76    65 72 68 61 6E 67 00 02 23 20 98 23 00 00 34 74 erhang..# .#..4t
+1F86    6D 44 69 67 69 74 69 7A 65 64 41 73 70 65 63 74 mDigitizedAspect
+1F96    58 00 02 23 24 98 23 00 00 34 74 6D 44 69 67 69 X..#$.#..4tmDigi
+1FA6    74 69 7A 65 64 41 73 70 65 63 74 59 00 02 23 28 tizedAspectY..#(
+1FB6    98 23 00 00 34 74 6D 46 69 72 73 74 43 68 61 72 .#..4tmFirstChar
+1FC6    00 02 23 2C AE 23 00 00 34 74 6D 4C 61 73 74 43 ..#,.#..4tmLastC
+1FD6    68 61 72 00 02 23 2D AE 23 00 00 34 74 6D 44 65 har..#-.#..4tmDe
+1FE6    66 61 75 6C 74 43 68 61 72 00 02 23 2E AE 23 00 faultChar..#..#.
+1FF6    00 34 74 6D 42 72 65 61 6B 43 68 61 72 00 02 23 .4tmBreakChar..#
+2006    2F AE 23 00 00 34 74 6D 49 74 61 6C 69 63 00 02 /.#..4tmItalic..
+2016    23 30 AE 23 00 00 34 74 6D 55 6E 64 65 72 6C 69 #0.#..4tmUnderli
+2026    6E 65 64 00 02 23 31 AE 23 00 00 34 74 6D 53 74 ned..#1.#..4tmSt
+2036    72 75 63 6B 4F 75 74 00 02 23 32 AE 23 00 00 34 ruckOut..#2.#..4
+2046    74 6D 50 69 74 63 68 41 6E 64 46 61 6D 69 6C 79 tmPitchAndFamily
+2056    00 02 23 33 AE 23 00 00 34 74 6D 43 68 61 72 53 ..#3.#..4tmCharS
+2066    65 74 00 02 23 34 AE 23 00 00 00 2B A0 21 00 00 et..#4.#...+.!..
+2076    01 74 61 67 4C 4F 47 46 4F 4E 54 41 00 3C 34 6C .tagLOGFONTA.<4l
+2086    66 48 65 69 67 68 74 00 02 23 00 98 23 00 00 34 fHeight..#..#..4
+2096    6C 66 57 69 64 74 68 00 02 23 04 98 23 00 00 34 lfWidth..#..#..4
+20A6    6C 66 45 73 63 61 70 65 6D 65 6E 74 00 02 23 08 lfEscapement..#.
+20B6    98 23 00 00 34 6C 66 4F 72 69 65 6E 74 61 74 69 .#..4lfOrientati
+20C6    6F 6E 00 02 23 0C 98 23 00 00 34 6C 66 57 65 69 on..#..#..4lfWei
+20D6    67 68 74 00 02 23 10 98 23 00 00 34 6C 66 49 74 ght..#..#..4lfIt
+20E6    61 6C 69 63 00 02 23 14 AE 23 00 00 34 6C 66 55 alic..#..#..4lfU
+20F6    6E 64 65 72 6C 69 6E 65 00 02 23 15 AE 23 00 00 nderline..#..#..
+2106    34 6C 66 53 74 72 69 6B 65 4F 75 74 00 02 23 16 4lfStrikeOut..#.
+2116    AE 23 00 00 34 6C 66 43 68 61 72 53 65 74 00 02 .#..4lfCharSet..
+2126    23 17 AE 23 00 00 34 6C 66 4F 75 74 50 72 65 63 #..#..4lfOutPrec
+2136    69 73 69 6F 6E 00 02 23 18 AE 23 00 00 34 6C 66 ision..#..#..4lf
+2146    43 6C 69 70 50 72 65 63 69 73 69 6F 6E 00 02 23 ClipPrecision..#
+2156    19 AE 23 00 00 34 6C 66 51 75 61 6C 69 74 79 00 ..#..4lfQuality.
+2166    02 23 1A AE 23 00 00 34 6C 66 50 69 74 63 68 41 .#..#..4lfPitchA
+2176    6E 64 46 61 6D 69 6C 79 00 02 23 1B AE 23 00 00 ndFamily..#..#..
+2186    18 20 E9 1B 00 00 34 6C 66 46 61 63 65 4E 61 6D . ....4lfFaceNam
+2196    65 00 02 23 1C 86 21 00 00 00 2B 35 22 00 00 01 e..#..!...+5"...
+21A6    5F 53 59 53 54 45 4D 54 49 4D 45 00 10 34 77 59 _SYSTEMTIME..4wY
+21B6    65 61 72 00 02 23 00 A3 23 00 00 34 77 4D 6F 6E ear..#..#..4wMon
+21C6    74 68 00 02 23 02 A3 23 00 00 34 77 44 61 79 4F th..#..#..4wDayO
+21D6    66 57 65 65 6B 00 02 23 04 A3 23 00 00 34 77 44 fWeek..#..#..4wD
+21E6    61 79 00 02 23 06 A3 23 00 00 34 77 48 6F 75 72 ay..#..#..4wHour
+21F6    00 02 23 08 A3 23 00 00 34 77 4D 69 6E 75 74 65 ..#..#..4wMinute
+2206    00 02 23 0A A3 23 00 00 34 77 53 65 63 6F 6E 64 ..#..#..4wSecond
+2216    00 02 23 0C A3 23 00 00 34 77 4D 69 6C 6C 69 73 ..#..#..4wMillis
+2226    65 63 6F 6E 64 73 00 02 23 0E A3 23 00 00 00 2B econds..#..#...+
+2236    7B 22 00 00 01 74 61 67 52 45 43 54 00 10 34 6C {"...tagRECT..4l
+2246    65 66 74 00 02 23 00 98 23 00 00 34 74 6F 70 00 eft..#..#..4top.
+2256    02 23 04 98 23 00 00 34 72 69 67 68 74 00 02 23 .#..#..4right..#
+2266    08 98 23 00 00 34 62 6F 74 74 6F 6D 00 02 23 0C ..#..4bottom..#.
+2276    98 23 00 00 00 2B 94 22 00 00 01 48 57 4E 44 5F .#...+."...HWND_
+2286    5F 00 04 34 69 00 02 23 00 B5 00 00 00 00 2B AD _..4i..#......+.
+2296    22 00 00 01 48 52 47 4E 5F 5F 00 04 34 69 00 02 "...HRGN__..4i..
+22A6    23 00 B5 00 00 00 00 2B C7 22 00 00 01 48 49 43 #......+."...HIC
+22B6    4F 4E 5F 5F 00 04 34 69 00 02 23 00 B5 00 00 00 ON__..4i..#.....
+22C6    00 2B E1 22 00 00 01 48 46 4F 4E 54 5F 5F 00 04 .+."...HFONT__..
+22D6    34 69 00 02 23 00 B5 00 00 00 00 2B F9 22 00 00 4i..#......+."..
+22E6    01 48 44 43 5F 5F 00 04 34 69 00 02 23 00 B5 00 .HDC__..4i..#...
+22F6    00 00 00 2B 14 23 00 00 01 48 41 43 43 45 4C 5F ...+.#...HACCEL_
+2306    5F 00 04 34 69 00 02 23 00 B5 00 00 00 00 0B 01 _..4i..#........
+2316    48 41 52 44 57 41 52 45 49 4E 50 55 54 00 B9 23 HARDWAREINPUT..#
+2326    00 00 0B 01 4B 45 59 42 44 49 4E 50 55 54 00 FF ....KEYBDINPUT..
+2336    23 00 00 0B 01 4D 4F 55 53 45 49 4E 50 55 54 00 #....MOUSEINPUT.
+2346    60 24 00 00 0B 01 50 4F 49 4E 54 00 CF 24 00 00 `$....POINT..$..
+2356    0B 01 48 49 43 4F 4E 00 4B 1B 00 00 0F F4 24 00 ..HICON.K.....$.
+2366    00 0B 01 48 42 52 55 53 48 00 62 23 00 00 0B 01 ...HBRUSH.b#....
+2376    48 41 4E 44 4C 45 00 E3 04 00 00 15 E9 1B 00 00 HANDLE..........
+2386    0F 81 23 00 00 0B 01 4C 50 43 53 54 52 00 86 23 ..#....LPCSTR..#
+2396    00 00 0B 01 4C 4F 4E 47 00 D3 00 00 00 0B 01 57 ....LONG.......W
+23A6    4F 52 44 00 A3 00 00 00 0B 01 42 59 54 45 00 77 ORD.......BYTE.w
+23B6    00 00 00 2B FF 23 00 00 01 74 61 67 48 41 52 44 ...+.#...tagHARD
+23C6    57 41 52 45 49 4E 50 55 54 00 08 34 75 4D 73 67 WAREINPUT..4uMsg
+23D6    00 02 23 00 0C 1C 00 00 34 77 50 61 72 61 6D 4C ..#.....4wParamL
+23E6    00 02 23 04 A3 23 00 00 34 77 50 61 72 61 6D 48 ..#..#..4wParamH
+23F6    00 02 23 06 A3 23 00 00 00 2B 60 24 00 00 01 74 ..#..#...+`$...t
+2406    61 67 4B 45 59 42 44 49 4E 50 55 54 00 10 34 77 agKEYBDINPUT..4w
+2416    56 6B 00 02 23 00 A3 23 00 00 34 77 53 63 61 6E Vk..#..#..4wScan
+2426    00 02 23 02 A3 23 00 00 34 64 77 46 6C 61 67 73 ..#..#..4dwFlags
+2436    00 02 23 04 0C 1C 00 00 34 74 69 6D 65 00 02 23 ..#.....4time..#
+2446    08 0C 1C 00 00 34 64 77 45 78 74 72 61 49 6E 66 .....4dwExtraInf
+2456    6F 00 02 23 0C 0F 25 00 00 00 2B CF 24 00 00 01 o..#..%...+.$...
+2466    74 61 67 4D 4F 55 53 45 49 4E 50 55 54 00 18 34 tagMOUSEINPUT..4
+2476    64 78 00 02 23 00 98 23 00 00 34 64 79 00 02 23 dx..#..#..4dy..#
+2486    04 98 23 00 00 34 6D 6F 75 73 65 44 61 74 61 00 ..#..4mouseData.
+2496    02 23 08 0C 1C 00 00 34 64 77 46 6C 61 67 73 00 .#.....4dwFlags.
+24A6    02 23 0C 0C 1C 00 00 34 74 69 6D 65 00 02 23 10 .#.....4time..#.
+24B6    0C 1C 00 00 34 64 77 45 78 74 72 61 49 6E 66 6F ....4dwExtraInfo
+24C6    00 02 23 14 0F 25 00 00 00 2B F4 24 00 00 01 74 ..#..%...+.$...t
+24D6    61 67 50 4F 49 4E 54 00 08 34 78 00 02 23 00 98 agPOINT..4x..#..
+24E6    23 00 00 34 79 00 02 23 04 98 23 00 00 00 2B 0F #..4y..#..#...+.
+24F6    25 00 00 01 48 42 52 55 53 48 5F 5F 00 04 34 69 %...HBRUSH__..4i
+2506    00 02 23 00 B5 00 00 00 00 0B 01 55 4C 4F 4E 47 ..#........ULONG
+2516    5F 50 54 52 00 E2 00 00 00 00 00                _PTR.......
+
+Segment: .debug_pubnames BYTE USE32 0000037F bytes
+0000    7B 03 00 00 02 00                               {.....
+0006    00 00 00 00                                     DD	L$112
+000A    7C 0E 00 00 25 01 00 00 61 6D 6F 75 6E 74 61 6C |...%...amountal
+001A    6C 6F 63 00 40 01 00 00 6E 75 6D 62 65 72 61 6C loc.@...numberal
+002A    6C 6F 63 00 5B 01 00 00 68 69 6E 73 74 00 70 01 loc.[...hinst.p.
+003A    00 00 73 66 00 82 01 00 00 73 77 63 5F 45 6E 64 ..sf.....swc_End
+004A    69 6E 67 00 9C 01 00 00 73 77 63 5F 42 61 73 65 ing.....swc_Base
+005A    57 69 6E 00 BD 01 00 00 73 77 63 73 63 6E 66 6E Win.....swcscnfn
+006A    74 74 62 6C 00 D9 01 00 00 73 77 63 62 61 73 65 ttbl.....swcbase
+007A    78 6F 66 66 73 65 74 00 F7 01 00 00 73 77 63 62 xoffset.....swcb
+008A    61 73 65 79 6F 66 66 73 65 74 00 15 02 00 00 73 aseyoffset.....s
+009A    77 63 5F 4E 75 6D 4C 6F 63 6B 44 69 73 61 62 6C wc_NumLockDisabl
+00AA    65 00 37 02 00 00 73 77 63 5F 4E 75 6D 4C 6F 63 e.7...swc_NumLoc
+00BA    6B 49 6E 73 65 72 74 65 64 00 5A 02 00 00 73 77 kInserted.Z...sw
+00CA    63 5F 46 6F 72 63 65 46 6F 63 75 73 45 6E 61 62 c_ForceFocusEnab
+00DA    6C 65 00 7E 02 00 00 73 77 63 5F 4D 6F 75 73 65 le.~...swc_Mouse
+00EA    46 6F 63 75 73 00 A1 02 00 00 66 6F 6E 74 66 69 Focus.....fontfi
+00FA    72 73 74 00 BF 02 00 00 77 69 6E 62 6C 6B 70 6E rst.....winblkpn
+010A    74 00 D8 02 00 00 68 61 72 72 6F 77 00 EE 02 00 t.....harrow....
+011A    00 68 68 61 6E 64 00 03 03 00 00 68 74 65 78 74 .hhand.....htext
+012A    00 18 03 00 00 68 77 61 69 74 00 2D 03 00 00 68 .....hwait.-...h
+013A    61 63 63 63 75 72 00 44 03 00 00 6D 73 67 00 57 acccur.D...msg.W
+014A    03 00 00 66 61 74 61 6C 66 75 6E 63 00 70 03 00 ...fatalfunc.p..
+015A    00 63 72 61 73 68 65 64 00 87 03 00 00 69 6E 6D .crashed.....inm
+016A    65 6E 75 00 9D 03 00 00 6D 65 6E 75 68 61 6E 64 enu.....menuhand
+017A    00 B5 03 00 00 6D 62 64 6D 65 6E 75 00 CC 03 00 .....mbdmenu....
+018A    00 6F 6E 6C 69 6E 65 00 E2 03 00 00 6E 65 65 64 .online.....need
+019A    64 69 73 63 6F 6E 00 FC 03 00 00 6E 65 65 64 65 discon.....neede
+01AA    78 69 74 00 1A 04 00 00 62 61 6E 6E 65 72 00 37 xit.....banner.7
+01BA    04 00 00 70 72 6F 67 64 69 72 00 53 04 00 00 70 ...progdir.S...p
+01CA    72 6F 67 6E 61 6D 65 00 72 04 00 00 6D 65 6D 72 rogname.r...memr
+01DA    69 6E 67 00 8E 04 00 00 6D 65 6D 72 70 6E 74 00 ing.....memrpnt.
+01EA    E8 04 00 00 6F 70 65 72 61 74 6F 72 20 6E 65 77 ....operator new
+01FA    00 56 05 00 00 6F 70 65 72 61 74 6F 72 20 64 65 .V...operator de
+020A    6C 65 74 65 00 A1 05 00 00 57 69 6E 4D 61 69 6E lete.....WinMain
+021A    00 DA 06 00 00 73 77 63 41 64 64 54 72 75 65 54 .....swcAddTrueT
+022A    79 70 65 46 6F 6E 74 00 3C 08 00 00 73 77 63 68 ypeFont.<...swch
+023A    61 6E 64 6C 65 6D 65 73 73 61 67 65 00 11 09 00 andlemessage....
+024A    00 73 77 63 47 65 74 49 6E 69 53 74 72 69 6E 67 .swcGetIniString
+025A    00 C3 09 00 00 73 77 63 50 75 74 49 6E 69 53 74 .....swcPutIniSt
+026A    72 69 6E 67 00 4E 0A 00 00 73 77 63 47 65 74 46 ring.N...swcGetF
+027A    6F 63 75 73 00 AB 0A 00 00 73 77 63 54 65 72 6D ocus.....swcTerm
+028A    69 6E 61 74 65 00 E5 0A 00 00 73 77 63 42 65 65 inate.....swcBee
+029A    70 00 3E 0B 00 00 73 77 63 67 65 74 73 63 6E 66 p.>...swcgetscnf
+02AA    6F 6E 74 00 B9 0B 00 00 73 77 63 43 72 65 61 74 ont.....swcCreat
+02BA    65 52 65 63 74 52 67 6E 00 51 0C 00 00 73 77 63 eRectRgn.Q...swc
+02CA    44 65 6C 65 74 65 52 67 6E 00 9B 0C 00 00 73 77 DeleteRgn.....sw
+02DA    63 53 65 74 4E 75 6D 4C 6F 63 6B 00 2B 0D 00 00 cSetNumLock.+...
+02EA    73 77 63 47 65 74 43 75 72 72 65 6E 74 54 69 6D swcGetCurrentTim
+02FA    65 00 9F 0D 00 00 73 77 63 47 65 74 43 75 72 72 e.....swcGetCurr
+030A    65 6E 74 44 61 74 65 00 13 0E 00 00 73 77 63 47 entDate.....swcG
+031A    65 74 43 75 72 72 65 6E 74 44 61 74 65 54 69 6D etCurrentDateTim
+032A    65 00 8B 0E 00 00 73 77 63 53 65 74 43 75 72 72 e.....swcSetCurr
+033A    65 6E 74 44 61 74 65 54 69 6D 65 00 FE 0E 00 00 entDateTime.....
+034A    6E 75 6C 6C 66 75 6E 63 00 34 0F 00 00 72 74 6E nullfunc.4...rtn
+035A    7A 65 72 6F 00 7C 0F 00 00 73 77 63 44 69 73 70 zero.|...swcDisp
+036A    6C 61 79 3A 3A 7E 73 77 63 44 69 73 70 6C 61 79 lay::~swcDisplay
+037A    00 00 00 00 00                                  .....
+
+Segment: .debug_aranges BYTE USE32 0000005C bytes
+0000    58 00 00 00 02 00                               X.....
+0006    00 00 00 00                                     DD	L$112
+000A    04 00                                           ..
+000C    00 00 00 00                                     DD	near swcDisplay::~swcDisplay()
+0010    6D 00 00 00                                     m...
+0014    00 00 00 00                                     DD	void near .fn_init()
+0018    0F 0E 00 00                                     ....
+001C    00 00 00 00                                     DD	L$101
+0020    3C 00 00 00                                     <...
+0024    00 00 00 00                                     DD	L$110
+0028    18 00 00 00                                     ....
+002C    00 00 00 00                                     DD	L$110
+0030    0C 00 00 00                                     ....
+0034    00 00 00 00                                     DD	L$111
+0038    12 00 00 00                                     ....
+003C    00 00 00 00                                     DD	L$111
+0040    D4 05 00 00                                     ....
+0044    00 00 00 00                                     DD	fontblk near * near fontfirst
+0048    74 12 00 00                                     t...
+004C    00 00 00 00                                     DD	void (near * near .mod_init)()
+0050    06 00 00 00 00 00 00 00 00 00 00 00             ............
+
+Segment: .debug_line BYTE USE32 000001C4 bytes
+0000                          L$113:
+0000    C0 01 00 00 02 00 10 00 00 00 01 00 FF 04 0A 00 ................
+0010    01 01 01 01 00 00 00 00 00 00 00 24 03 63 3A 5C ...........$.c:\
+0020    6D 6D 73 70 63 2D 6D 6F 33 5C 73 77 63 5C 73 77 mmspc-mo3\swc\sw
+0030    63 77 69 6E 64 6F 77 73 2E 63 70 70 00 00 00 00 cwindows.cpp....
+0040    00 05 02                                        ...
+0043    00 00 00 00                                     DD	void near .fn_init()
+0047    06 05 01 01 03 EA 00 FF 03 05 63 38 3C 28 40 35 ..........c8<(@5
+0057    30 24 54 24 3C 24 39 03 03 63 38 48 28 40 35 3C 0$T$<$9..c8H(@5<
+0067    24 48 03 07 2B 03 12 63 2D 64 84 2D 71 50 64 64 $H..+..c-d.-qPdd
+0077    50 25 28 28 28 28 2C 28 2C 28 28 28 30 28 28 28 P%((((,(,(((0(((
+0087    31 98 48 48 08 C8 31 88 88 15 5C 03 05 02 86 01 1.HH..1...\.....
+0097    01 58 03 04 47 34 34 34 34 38 38 30 99 CD 5C 58 .X..G4444880..\X
+00A7    28 03 03 27 D0 48 3C 64 48 40 4C 40 50 30 28 48 (..'.H<dH@L@P0(H
+00B7    31 20 60 4C 31 44 3C 14 2C 03 03 3F 03 0A 63 5C 1 `L1D<.,..?..c\
+00C7    28 68 30 24 30 54 30 40 60 28 38 2C 24 03 03 37 (h0$0T0@`(8,$..7
+00D7    03 0B 63 30 28 03 03 3F 03 07 63 3D 4D 55 34 5D ..c0(..?..c=MU4]
+00E7    64 49 74 14 24 15 14 3C 5C 3C 55 81 75 6D 28 21 dIt.$..<\<U.um(!
+00F7    03 07 3F 50 51 59 28 28 28 28 29 28 28 28 28 29 ..?PQY(((()(((()
+0107    28 48 03 05 4F 03 03 08 33 14 30 31 2D 03 08 63 (H..O...3.01-..c
+0117    95 39 03 06 63 74 03 03 37 03 05 63 44 4C 28 03 .9..ct..7..cDL(.
+0127    04 37 03 03 63 28 38 2D 03 05 63 40 2D 03 06 63 .7..c(8-..c@-..c
+0137    4C C1 4C 40 78 3C 39 03 07 63 84 39 03 04 63 30 L.L@x<9..c.9..c0
+0147    03 0A 2B 03 07 63 3C 38 28 3C 24 39 03 06 63 30 ..+..c<8(<$9..c0
+0157    30 30 30 48 03 03 37 03 06 63 30 44 34 30 48 03 000H..7..c0D40H.
+0167    03 37 03 07 63 30 44 34 30 30 30 30 58 5C 30 30 .7..c0D40000X\00
+0177    03 03 2B 03 07 63 50 54 3C 2C 30 30 30 30 30 03 ..+..cPT<,00000.
+0187    03 2B 65 2D 03 03 63 28 00 05 02                .+e-..c(...
+0192    00 00 00 00                                     DD	near swcDisplay::~swcDisplay()
+0196    00 22 03 63 3A 5C 6D 6D 73 70 63 2D 6D 6F 33 5C .".c:\mmspc-mo3\
+01A6    69 6E 63 5C 73 77 63 77 69 6E 64 6F 77 73 2E 68 inc\swcwindows.h
+01B6    00 00 00 00 04 02 03 97 7D 01 63 00 01 01       ........}.c...
+
+
+Segment: .debug_abbrev BYTE USE32 0000015D bytes
+0000                          L$114:
+0000    07 11 01 01 13 11 01 12 01 03 08 10 06 13 0F 1B ................
+0010    08 25 08 42 0F 43 06 35 10 82 41 0B 83 41 06 00 .%.B.C.5..A..A..
+0020    00 09 24 00 03 08 3E 0B 0B 0B 00 00 D2 01 34 00 ..$...>.......4.
+0030    32 0B 3F 0C 34 0C 03 08 02 0A 49 13 00 00 18 01 2.?.4.....I.....
+0040    00 37 0F 49 13 00 00 0F 0F 00 49 13 00 00 86 01 .7.I......I.....
+0050    2E 01 01 13 32 0B 49 13 2C 0F 03 08 3F 0C 20 0B ....2.I.,...?. .
+0060    36 0B 27 0C 4C 0B 34 0C 2A 0A 11 01 12 01 33 0B 6.'.L.4.*.....3.
+0070    00 00 66 0B 01 01 13 11 01 12 01 00 00 C8 01 05 ..f.............
+0080    00 03 08 02 0A 84 41 0A 49 13 00 00 15 26 00 49 ......A.I....&.I
+0090    13 00 00 8A 01 2E 01 01 13 32 0B 49 13 2C 0F 1D .........2.I.,..
+00A0    13 03 08 3F 0C 20 0B 36 0B 27 0C 4C 0B 34 0C 2A ...?. .6.'.L.4.*
+00B0    0A 11 01 12 01 33 0B 00 00 2B 13 01 01 13 32 0B .....3...+....2.
+00C0    03 08 0B 0F 00 00 34 0D 00 03 08 38 0A 49 13 00 ......4....8.I..
+00D0    00 13 10 00 49 13 00 00 BE 01 2E 00 32 0B 49 13 ....I.......2.I.
+00E0    03 08 3C 0C 20 0B 00 00 27 02 01 01 13 32 0B 03 ..<. ...'....2..
+00F0    08 0B 0F 00 00 32 1C 00 32 0B 38 0A 4C 0B 49 13 .....2..2.8.L.I.
+0100    00 00 46 15 01 01 13 32 0B 27 0C 49 13 00 00 37 ..F....2.'.I...7
+0110    0D 00 32 0B 34 0C 03 08 38 0A 49 13 00 00 C2 01 ..2.4...8.I.....
+0120    2E 00 32 0B 49 13 03 08 3C 0C 20 0B 4C 0B 4D 0A ..2.I...<. .L.M.
+0130    00 00 C4 01 05 00 49 13 00 00 36 0D 00 32 0B 03 ......I...6..2..
+0140    08 38 0A 49 13 00 00 0B 16 00 32 0B 03 08 49 13 .8.I......2...I.
+0150    00 00 2A 13 01 01 13 32 0B 0B 0F 00 00          ..*....2.....
+
+Segment: .debug_macinfo BYTE USE32 00000001 bytes
+0000                          L$115:
+0000    00                                              .
+
+Segment: .WATCOM_references BYTE USE32 00000004 bytes
+0000    00 00 00 00                                     ....
+0004                          L$116:
+
+Comdat: near swcDisplay::~swcDisplay() SEGMENT ANY '_TEXT' 0000006D bytes
+
+#include <windows.h>
+#include <windowsx.h>
+#include <stdio.h>
+#include <string.h>
+#include <dos.h>
+#include <io.h>
+#include <time.h>
+#include "xosstuff.h"
+#include "xosqdes.h"
+#include "xcstring.h"
+#include "swcwindows.h"
+#include "winnetwork.h"
+#include "common.h"
+
+scnfntdef swcscnfnttbl[FNTMAX+1] =
+{	{0, 14, 16, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_SMTEXT
+	{0, 16, 21, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_MSTEXT
+	{0, 20, 26, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_MDTEXT
+	{0, 30, 34, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_LMTEXT
+	{0, 40, 44, 0, 0, 0, NORMAL, "Times New Roman"},	// FONT_LGTEXT
+	{0, 13, 16, 0, 0, 0, NORMAL, "Arial"},				// FONT_SMSANS
+	{0, 17, 21, 0, 0, 0, NORMAL, "Arial"},				// FONT_MSSANS
+	{0, 22, 30, 0, 0, 0, NORMAL, "Arial"},				// FONT_MDSANS
+	{0, 30, 36, 0, 0, 0, NORMAL, "Arial"},				// FONT_LMSANS
+	{0, 38, 44, 0, 0, 0, NORMAL, "Arial"},				// FONT_LGSANS
+	{0, 80, 88, 0, 0, 0, NORMAL, "Arial"},				// FONT_VLSANS
+	{0, 14, 16, 0, 0, 0, BOLD  , "Arial"},				// FONT_SMHEADING
+	{0, 18, 21, 0, 0, 0, BOLD  , "Arial"},				// FONT_MSHEADING
+	{0, 22, 30, 0, 0, 0, BOLD  , "Arial"},				// FONT_MDHEADING
+	{0, 30, 36, 0, 0, 0, BOLD  , "Arial"},				// FONT_LMHEADING
+	{0, 38, 44, 0, 0, 0, BOLD  , "Arial"},				// FONT_LGHEADING
+	{0, 78, 88, 0, 0, 0, BOLD  , "Arial"},				// FONT_VLHEADING
+///	{0, 13, 15, 0, 0, 0, NORMAL, "Courier New"},		// FONT_SMFIXED
+///	{0, 19, 21, 0, 0, 0, NORMAL, "Courier New"},		// FONT_MSFIXED
+///	{0, 22, 24, 0, 0, 0, NORMAL, "Courier New"},		// FONT_MDFIXED
+///	{0, 32, 34, 0, 0, 0, NORMAL, "Courier New"},		// FONT_LMFIXED
+///	{0, 40, 44, 0, 0, 0, NORMAL, "Courier New"}			// FONT_LGFIXED
+
+	{0, 10, 12, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_SMFIXED
+	{0, 19, 21, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_MSFIXED
+	{0, 22, 24, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_MDFIXED
+	{0, 32, 34, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_LMFIXED
+	{0, 40, 44, 0, 0, 0, NORMAL, "Lucida Console"},		// FONT_LGFIXED
+///	{0, 12, 15, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_SMFIXED
+///	{0, 19, 21, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_MSFIXED
+///	{0, 22, 24, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_MDFIXED
+///	{0, 32, 34, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_LMFIXED
+///	{0, 40, 44, 0, 0, 0, NORMAL, "Lucida Sans Typewriter"},		// FONT_LGFIXED
+
+	{0, 13, 16, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_SMSANSN
+	{0, 17, 21, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_MSSANSN
+	{0, 22, 30, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_MDSANSN
+	{0, 30, 36, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_LMSANSN
+	{0, 38, 44, 0, 0, 0, NORMAL, "Arial Narrow"},		// FONT_LGSANSN
+	{0, 80, 88, 0, 0, 0, NORMAL, "Arial Narrow"}		// FONT_VLSANSN
+};
+
+fontblk    *fontfirst = NULL;
+
+long        amountalloc;
+long        numberalloc;
+long        sf = 4;
+long        swcbasexoffset;
+long        swcbaseyoffset;
+swcDisplay  swc_BaseWin;
+swcDisplay *winblkpnt;
+
+HINSTANCE   hinst;
+HCURSOR     harrow;
+HCURSOR     hhand;
+HCURSOR     htext;
+HCURSOR     hwait;
+HACCEL      hacccur = 0;
+MSG         msg;
+
+uchar       swc_NumLockDisable = false;
+uchar       swc_NumLockInserted = false;
+uchar       swc_ForceFocusEnable = false;
+uchar       swc_MouseFocus = false;
+
+char        fatalfunc;
+char        crashed = false;	// TRUE if have fatal error
+char        inmenu = false;
+char        menuhand = false;
+char        mbdmenu = false;
+
+char        online = false;
+char        needdiscon = 0;		// 0 = Not connected, 1 = Connected,
+								//   2 = Disconnecting
+char        needexit = false;	// TRUE if need to exit
+uchar       swc_Ending = false;	// TRUE if terminating
+
+
+char        banner[120];
+
+char        progdir[256];
+char       *progname;
+
+
+static int CALLBACK findfontproc(CONST LOGFONT *, CONST TEXTMETRIC *, DWORD,
+		LPARAM);
+
+long  memring[1024];
+long *memrpnt = memring;
+
+
+void *operator new(size_t size)
+
+{
+	long *mem;
+
+	memrpnt[0] = 0;
+	memrpnt[1] = size;
+	memrpnt += 2;
+	if (memrpnt >= (memring + 1024))
+		memrpnt = memring;
+
+	amountalloc += size;
+	numberalloc++;
+	mem = (long *)malloc(size + 4);
+	if (mem != NULL)
+		*mem++ = size;
+	return (mem);
+}
+
+void operator delete(void *p)
+
+{
+	memrpnt[0] = 1;
+	memrpnt[1] = ((long *)p)[-1];
+	memrpnt += 2;
+	if (memrpnt >= (memring + 1024))
+		memrpnt = memring;
+
+	amountalloc -= ((long *)p)[-1];
+	numberalloc--;
+	free (((long *)p) - 1);
+}
+
+//******************************************
+// Function: WinMain - Main windows function
+// Returned: Return value
+//******************************************
+
+int APIENTRY WinMain(
+    HINSTANCE hinstance,
+    HINSTANCE hprevinstance,
+    LPSTR     cmdparam,
+    int       ncmdshow)
+
+{
+    RECT       rect;
+    WNDCLASS   wndclass;
+    LOGFONT    logfnt;
+	HFONT      font;
+    HDC        hdc;
+    TEXTMETRIC metrics;
+    scnfntdef *fpnt;
+    int        cnt;
+
+	ncmdshow = ncmdshow;
+
+    hinst = hinstance;					// Make the instance handle globably
+										//   available
+    GetModuleFileName(hinst, progdir, sizeof(progdir) - 40);
+    if ((progname = strrchr(progdir, '\\')) != NULL)
+		progname++;
+	else
+		progname = strmov(progdir, "\\");
+
+    harrow = LoadCursor(0, IDC_ARROW);
+    hhand = LoadCursor(hinst, "HAND");
+    htext = LoadCursor(hinst, "TEXT");
+    hwait = LoadCursor(0, IDC_WAIT);
+    if (hprevinstance == 0)
+    {
+		wndclass.style = CS_HREDRAW|CS_VREDRAW|CS_CLASSDC;
+		wndclass.lpfnWndProc = swcDisplayBase::displayproc;
+		wndclass.cbClsExtra = 0;
+		wndclass.cbWndExtra = 4;
+		wndclass.hInstance = hinst;
+		wndclass.hIcon = 0;
+		wndclass.hCursor = harrow;
+		wndclass.hbrBackground = 0;
+		wndclass.lpszMenuName = NULL;
+		wndclass.lpszClassName = "swcMAIN";
+		RegisterClass(&wndclass);
+		wndclass.style = CS_HREDRAW|CS_VREDRAW /* |CS_NOCLOSE */ ;
+		wndclass.lpfnWndProc = swcDisplayBase::displayproc;
+		wndclass.lpszClassName = "swcDISPLAY";
+		RegisterClass(&wndclass);
+    }
+	strmov(strmov(progname, swc_AppIniFileName), ".INI");
+	GetClientRect(GetDesktopWindow(), &rect);
+	cnt = atoi(cmdparam);
+	sf = (cnt == 800) ? 4 : (cnt == 1024) ? 5 : (rect.right > 810) ? 5 : 4;
+	if (swc_WinType == SWCWINTYPE_FULLSCREEN)
+0000                          near swcDisplay::~swcDisplay():
+0000    55                        push      ebp
+0001    89 E5                     mov       ebp,esp
+0003    68 20 00 00 00            push      0x00000020
+0008    E8 00 00 00 00            call      __CHK
+000D    53                        push      ebx
+000E    56                        push      esi
+000F    57                        push      edi
+0010    81 EC 04 00 00 00         sub       esp,0x00000004
+
+0016    F6 45 0C 04               test      byte ptr 0xc[ebp],0x04
+001A    74 1D                     je        L$117
+001C    B8 00 00 00 00            mov       eax,offset char unsigned const near __typesig[]
+0021    50                        push      eax
+0022    8B 45 08                  mov       eax,0x8[ebp]
+0025    50                        push      eax
+0026    E8 00 00 00 00            call      __wcpp_4_dtor_array_store_
+002B    83 C4 08                  add       esp,0x00000008
+002E    50                        push      eax
+002F    E8 00 00 00 00            call      void near operator delete []( void near * )
+0034    83 C4 04                  add       esp,0x00000004
+0037    EB 23                     jmp       L$118
+0039                          L$117:
+0039    6A 01                     push      0x00000001
+003B    8B 45 08                  mov       eax,0x8[ebp]
+003E    50                        push      eax
+003F    E8 00 00 00 00            call      near swcDisplayBase::~swcDisplayBase()
+0044    83 C4 08                  add       esp,0x00000008
+0047    89 45 08                  mov       0x8[ebp],eax
+004A    F6 45 0C 02               test      byte ptr 0xc[ebp],0x02
+004E    74 0C                     je        L$118
+0050    8B 45 08                  mov       eax,0x8[ebp]
+0053    50                        push      eax
+0054    E8 00 00 00 00            call      void near operator delete( void near * )
+0059    83 C4 04                  add       esp,0x00000004
+005C                          L$118:
+005C    8B 45 08                  mov       eax,0x8[ebp]
+005F    89 45 F0                  mov       -0x10[ebp],eax
+0062    8B 45 F0                  mov       eax,-0x10[ebp]
+0065    8D 65 F4                  lea       esp,-0xc[ebp]
+0068    5F                        pop       edi
+0069    5E                        pop       esi
+006A    5B                        pop       ebx
+006B    5D                        pop       ebp
+006C    C3                        ret       
+
+Routine Size: 109 bytes,    Routine Base: W?$dt:swcDisplay$n()_ + 0000
+
+No disassembly errors
+
+Comdat: char unsigned const near __typesig[] SEGMENT ANY 'DGROUP:CONST2' 00000018 bytes
+0000                          char unsigned const near __typesig[]:
+0000    00 01 02 00                                     ....
+0004    00 00 00 00                                     DD	near swcDisplay::swcDisplay()
+0008    00 00 00 00                                     DD	near swcDisplay::swcDisplay( swcDisplay const near & )
+000C    00 00 00 00                                     DD	near swcDisplay::~swcDisplay()
+0010    9C 00 00 00                                     ....
+0014    04 00 00 00                                     DD	char unsigned near __typeid[]+0x4
+
+Comdat: char unsigned near __typeid[] SEGMENT ANY 'DGROUP:_DATA' 00000012 bytes
+0000                          char unsigned near __typeid[]:
+0000    00 00 00 00 24 73 77 63 44 69 73 70 6C 61 79 24 ....$swcDisplay$
+0010    24 00                                           $.
+

@@ -1,0 +1,184 @@
+// Created by Microsoft (R) C/C++ Compiler Version 12.00.8447.0 (79b17dd3).
+//
+// QBXMLRP2.tli
+//
+// Wrapper implementations for Win32 type library c:\program files\common files\intuit\quickbooks\QBXMLRP2.dll
+// compiler-generated file created 09/05/06 at 23:08:38 - DO NOT EDIT!
+
+#pragma once
+
+//
+// interface IRequestProcessor3 wrapper method implementations
+//
+
+inline _bstr_t IRequestProcessor3::ProcessRequest ( _bstr_t ticket, _bstr_t inputRequest ) {
+    BSTR _result;
+    HRESULT _hr = raw_ProcessRequest(ticket, inputRequest, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _bstr_t(_result, false);
+}
+
+inline HRESULT IRequestProcessor3::OpenConnection ( _bstr_t appID, _bstr_t appName ) {
+    HRESULT _hr = raw_OpenConnection(appID, appName);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline HRESULT IRequestProcessor3::CloseConnection ( ) {
+    HRESULT _hr = raw_CloseConnection();
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline _bstr_t IRequestProcessor3::BeginSession ( _bstr_t qbFileName, enum QBFileMode reqFileMode ) {
+    BSTR _result;
+    HRESULT _hr = raw_BeginSession(qbFileName, reqFileMode, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _bstr_t(_result, false);
+}
+
+inline HRESULT IRequestProcessor3::EndSession ( _bstr_t ticket ) {
+    HRESULT _hr = raw_EndSession(ticket);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline _bstr_t IRequestProcessor3::GetCurrentCompanyFileName ( _bstr_t ticket ) {
+    BSTR _result;
+    HRESULT _hr = raw_GetCurrentCompanyFileName(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _bstr_t(_result, false);
+}
+
+inline short IRequestProcessor3::GetMajorVersion ( ) {
+    short _result;
+    HRESULT _hr = get_MajorVersion(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline short IRequestProcessor3::GetMinorVersion ( ) {
+    short _result;
+    HRESULT _hr = get_MinorVersion(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline enum QBXMLRPReleaseLevel IRequestProcessor3::GetReleaseLevel ( ) {
+    enum QBXMLRPReleaseLevel _result;
+    HRESULT _hr = get_ReleaseLevel(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline short IRequestProcessor3::GetReleaseNumber ( ) {
+    short _result;
+    HRESULT _hr = get_ReleaseNumber(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline SAFEARRAY * IRequestProcessor3::GetQBXMLVersionsForSession ( _bstr_t ticket ) {
+    SAFEARRAY * _result;
+    HRESULT _hr = get_QBXMLVersionsForSession(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline enum QBXMLRPConnectionType IRequestProcessor3::GetConnectionType ( ) {
+    enum QBXMLRPConnectionType _result;
+    HRESULT _hr = get_ConnectionType(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline _bstr_t IRequestProcessor3::ProcessSubscription ( _bstr_t inputRequest ) {
+    BSTR _result;
+    HRESULT _hr = raw_ProcessSubscription(inputRequest, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _bstr_t(_result, false);
+}
+
+inline SAFEARRAY * IRequestProcessor3::GetQBXMLVersionsForSubscription ( ) {
+    SAFEARRAY * _result;
+    HRESULT _hr = get_QBXMLVersionsForSubscription(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+//
+// interface IRequestProcessor4 wrapper method implementations
+//
+
+inline HRESULT IRequestProcessor4::OpenConnection2 ( _bstr_t appID, _bstr_t appName, enum QBXMLRPConnectionType connPref ) {
+    HRESULT _hr = raw_OpenConnection2(appID, appName, connPref);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline IAuthPreferencesPtr IRequestProcessor4::GetAuthPreferences ( ) {
+    struct IAuthPreferences * _result;
+    HRESULT _hr = get_AuthPreferences(&_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return IAuthPreferencesPtr(_result, false);
+}
+
+//
+// interface IAuthPreferences wrapper method implementations
+//
+
+inline VARIANT_BOOL IAuthPreferences::WasAuthPreferencesObeyed ( _bstr_t ticket ) {
+    VARIANT_BOOL _result;
+    HRESULT _hr = raw_WasAuthPreferencesObeyed(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline VARIANT_BOOL IAuthPreferences::GetIsReadOnly ( _bstr_t ticket ) {
+    VARIANT_BOOL _result;
+    HRESULT _hr = raw_GetIsReadOnly(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline HRESULT IAuthPreferences::PutIsReadOnly ( VARIANT_BOOL isReadOnly ) {
+    HRESULT _hr = raw_PutIsReadOnly(isReadOnly);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline enum QBXMLRPUnattendedModePrefType IAuthPreferences::GetUnattendedModePref ( _bstr_t ticket ) {
+    enum QBXMLRPUnattendedModePrefType _result;
+    HRESULT _hr = raw_GetUnattendedModePref(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline HRESULT IAuthPreferences::PutUnattendedModePref ( enum QBXMLRPUnattendedModePrefType unattendedModePref ) {
+    HRESULT _hr = raw_PutUnattendedModePref(unattendedModePref);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+inline enum QBXMLRPPersonalDataPrefType IAuthPreferences::GetPersonalDataPref ( _bstr_t ticket ) {
+    enum QBXMLRPPersonalDataPrefType _result;
+    HRESULT _hr = raw_GetPersonalDataPref(ticket, &_result);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _result;
+}
+
+inline HRESULT IAuthPreferences::PutPersonalDataPref ( enum QBXMLRPPersonalDataPrefType personalDataPref ) {
+    HRESULT _hr = raw_PutPersonalDataPref(personalDataPref);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}
+
+//
+// interface IAuthPreferences2 wrapper method implementations
+//
+
+inline HRESULT IAuthPreferences2::PutAuthFlags ( long authFlags ) {
+    HRESULT _hr = raw_PutAuthFlags(authFlags);
+    if (FAILED(_hr)) _com_issue_errorex(_hr, this, __uuidof(this));
+    return _hr;
+}

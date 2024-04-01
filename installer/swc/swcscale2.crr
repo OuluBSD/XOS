@@ -1,0 +1,219 @@
+#include <windows.h>
+#include <windowsx.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "xcstring.h"
+#include "xosstuff.h"
+#include "swcwindows.h"
+#include "swcscale.h"
+
+
+/*====================================================================*
+ -  Copyright (C) 2001 Leptonica.  All rights reserved.
+ -  This software is distributed in the hope that it will be
+ -  useful, but with NO WARRANTY OF ANY KIND.
+ -  No author or distributor accepts responsibility to anyone for the
+ -  consequences of using this software, or for whether it serves any
+ -  particular purpose or works at all, unless he or she says so in
+ -  writing.  Everyone is granted permission to copy, modify and
+ -  redistribute this source code, for commercial or non-commercial
+ -  purposes, with the following restrictions: (1) the origin of this
+ -  source code must not be misrepresented; (2) modified versions must
+ -  be plainly marked as such; and (3) this notice may not be removed
+ -  or altered from any source or modified source distribution.
+ *====================================================================*/
+
+
+swcImage *swcImage::scale(
+	l_float32 scalex,
+	l_float32 scaley)
+
+{
+	l_float32  maxscale;
+
+    if (scalex == 1.0 && scaley == 1.0)
+        return (swcImage *)pixCopy(NULL, (PIX *)this);
+    maxscale = MAX(scalex, scaley);
+	if (maxscale >= 0.7)
+		return scalecolorli(scalex, scaley);
+	else							// maxscale < 0.7
+		return scalesmooth(scalex, scaley);
+}
+
+
+/*------------------------------------------------------------------*
+ *            24-bit color scaling by linear interpolation          *
+ *------------------------------------------------------------------*/
+/*!
+ *  swcScaleColorLI()
+ *
+ *      Input:  pixs  (32 bpp, representing 24 bpp 3-color)
+ *              scalex, scaley
+ *      Return: pixd, or null on error
+ *
+ *  Notes:
+ *      (1) If this is used for scale factors less than about 0.7,
+ *          it will suffer from antialiasing.  Particularly for
+ *          document images with sharp edges, use pixScaleSmooth() instead.
+ *      (2) For the general case, it's 3-4x faster to manipulate
+ *          the color pixels directly, rather than to make component
+ *          images, do each 8 bpp component separately, and combine
+ *          the result.  The speed on intel hardware for the
+ *          general case (not 2x or 4x LI) is about
+ *          4.8 * 10^6 dest-pixels/sec/GHz.
+ *      (3) The slow method does about 2 * 10^6 dest-pixels/sec/GHz.
+ *          It is implemented using:
+ *              pixr = pixGetRGBComponent(pixs, COLOR_RED);
+ *              pixrs = pixScaleGrayLI(pixr, scalex, scaley);
+ *              pixg = pixGetRGBComponent(pixs, COLOR_GREEN);
+ *              pixgs = pixScaleGrayLI(pixg, scalex, scaley);
+ *              pixb = pixGetRGBComponent(pixs, COLOR_BLUE);
+ *              pixbs = pixScaleGrayLI(pixb, scalex, scaley);
+ *              pixd = pixCreateRGBImage(pixrs, pixgs, pixbs);
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+
+swcImage *swcImage::scalecolorli(
+	l_float32  scalex,
+	l_float32  scaley)
+
+{
+	l_int32   ws, hs, wd, hd;
+	swcImage *pixd;
+
+	// Do fast special cases if possible
+
+    if (scalex == 2.0 && scaley == 2.0)
+		return (scalecolor2xli());
+
+	// General case
+
+    ws = bmih.biWidth;
+    hs = bmih.biHeight;
+
+    wd = (l_int32)(scalex * (l_float32)ws + 0.5);
+    hd = (l_int32)(scaley * (l_float32)hs + 0.5);
+    pixd = new swcImage();
+	pixd->bmih.biWidth = wd;
+	pixd->bmih.biHeight = hd;
+	pixd->data = (uchar *)new char[wd * hd * 4];
+    scalecolorlilow((ulong *)pixd->data, wd, hd, (ulong *)data, ws, hs);
+	pixd->type = 1;
+    return pixd;
+}
+
+
+/*!
+ *  pixScaleColor2xLI()
+ * 
+ *      Input:  pixs  (32 bpp, representing 24 bpp 3-color)
+ *      Return: pixd, or null on error
+ *
+ *  This is a special case of linear interpolated scaling
+ *  for 2x upscaling.  It is about 4x faster than using
+ *  pixScaleGray2xLI() on each component separately.
+ *  The speed on intel hardware for this special case
+ *  is about 64 * 10^6 dest-pixels/sec/GHz (!!)
+ *
+ *  The slow method, operating on each component separately, has 
+ *  a speed of about 16 * 10^6 dest-pixels/sec/GHz:
+ *       pixr = pixGetRGBComponent(pixs, COLOR_RED);
+ *       pixrs = pixScaleGray2xLI(pixr);
+ *       pixg = pixGetRGBComponent(pixs, COLOR_GREEN);
+ *       pixgs = pixScaleGray2xLI(pixg);
+ *       pixb = pixGetRGBComponent(pixs, COLOR_BLUE);
+ *       pixbs = pixScaleGray2xLI(pixb);
+ *       pixd = pixCreateRGBImage(pixrs, pixgs, pixbs);
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+
+swcImage *swcImage::scalecolor2xli()
+
+{
+	l_int32   ws, hs;
+	swcImage *pixd;
+
+    ws = bmih.biWidth;
+    hs = bmih.biHeight;
+    pixd = new swcImage();
+	pixd->bmih.biWidth = 2 * ws;
+	pixd->bmih.biHeight = 2 * hs;
+	pixd->data = (uchar *)new char[ws * hs * 16];
+    scalecolor2xlilow((ulong *)pixd->data, pixd->bmih.biWidth,
+			(ulong *)data, ws, hs);
+	pixd->type = 1;
+    return (pixd);
+}
+
+
+/*------------------------------------------------------------------*
+ *               Downscaling with antialias (smoothing)             *
+ *------------------------------------------------------------------*/
+/*!
+ *  pixScaleSmooth()
+ *
+ *      Input:  pixs (2, 4, 8 or 32 bpp; and 2, 4, 8 bpp with colormap)
+ *              scalex, scaley (must both be <= 0.7)
+ *      Return: pixd, or null on error
+ * 
+ *  Notes:
+ *    (1) This function should only be used when the scale factors are less
+ *        than or equal to 0.7 (i.e., more than about 1.42x reduction).
+ *        If either scale factor is larger than 0.7, we issue a warning
+ *        and invoke pixScale().
+ *    (2) This works only on 2, 4, 8 and 32 bpp images, and if there is
+ *        a colormap, it is removed by converting to RGB.  In other
+ *        cases, we issue a warning and invoke pixScale().
+ *    (3) It does simple (flat filter) convolution, with a filter size
+ *        commensurate with the amount of reduction, to avoid antialiasing.
+ *    (4) It does simple subsampling after smoothing, which is appropriate
+ *        for this range of scaling.  Linear interpolation gives essentially
+ *        the same result with more computation for these scale factors,
+ *        so we don't use it.
+ *    (5) The result is the same as doing a full block convolution followed by
+ *        subsampling, but this is faster because the results of the block
+ *        convolution are only computed at the subsampling locations.
+ *        In fact, the computation time is approximately independent of
+ *        the scale factor, because the convolution kernel is adjusted
+ *        so that each source pixel is summed approximately once.
+ *
+ *  *** Warning: implicit assumption about RGB component ordering ***
+ */
+
+swcImage *swcImage::scalesmooth(
+	l_float32 scalex,
+	l_float32 scaley)
+
+{
+	l_int32   ws, hs, wd, hd, isize;
+	l_float32 minscale, size;
+	swcImage *pixd;
+	
+	// If 1.42 < 1/minscale < 2.5, use size = 2
+	// If 2.5 < 1/minscale < 3.5, use size = 3, etc.
+	// Under no conditions use size < 2
+
+    minscale = MIN(scalex, scaley);
+    size = (float)(1.0 / minscale);		// Ideal filter full width
+    isize = MAX(2, (l_int32)(size + 0.5));
+    ws = bmih.biWidth;
+    hs = bmih.biHeight;
+    if ((ws < isize) || (hs < isize))	// ??????????????????????
+        return NULL;
+    wd = (l_int32)(scalex * (l_float32)ws + 0.5);
+    hd = (l_int32)(scaley * (l_float32)hs + 0.5);
+    if (wd < 1 || hd < 1)
+        return NULL;
+    pixd = new swcImage();
+	pixd->bmih.biWidth = wd;
+	pixd->bmih.biHeight = hd;
+	pixd->data = (uchar *)new char[wd * hd * 4];
+    scaleSmoothLow((uint *)pixd->data, wd, hd, (uint *)data, ws, hs, isize);
+	pixd->type = 1;
+    return pixd;
+}

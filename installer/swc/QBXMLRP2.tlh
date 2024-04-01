@@ -1,0 +1,286 @@
+// Created by Microsoft (R) C/C++ Compiler Version 12.00.8447.0 (79b17dd3).
+//
+// QBXMLRP2.tlh
+//
+// C++ source equivalent of Win32 type library c:\program files\common files\intuit\quickbooks\QBXMLRP2.dll
+// compiler-generated file created 09/05/06 at 23:08:38 - DO NOT EDIT!
+
+#pragma once
+#pragma pack(push, 8)
+
+#include <comdef.h>
+
+namespace QBXMLRP2Lib {
+
+//
+// Forward references and typedefs
+//
+
+struct /* coclass */ RequestProcessor2;
+struct __declspec(uuid("8db91b17-d5a2-41db-80a7-cc6f1e449a05"))
+/* dual interface */ IRequestProcessor4;
+struct __declspec(uuid("3b635bf7-6da9-46c8-a1f6-f0c93f10d52f"))
+/* dual interface */ IRequestProcessor3;
+struct __declspec(uuid("4277578a-9687-4ebc-8586-1ca4759b17c3"))
+/* dual interface */ IAuthPreferences;
+struct /* coclass */ AuthPreferences;
+struct __declspec(uuid("f810cc1a-151e-48a8-84c9-3f6978fb699c"))
+/* dual interface */ IAuthPreferences2;
+
+//
+// Smart pointer typedef declarations
+//
+
+_COM_SMARTPTR_TYPEDEF(IRequestProcessor3, __uuidof(IRequestProcessor3));
+_COM_SMARTPTR_TYPEDEF(IRequestProcessor4, __uuidof(IRequestProcessor4));
+_COM_SMARTPTR_TYPEDEF(IAuthPreferences, __uuidof(IAuthPreferences));
+_COM_SMARTPTR_TYPEDEF(IAuthPreferences2, __uuidof(IAuthPreferences2));
+
+//
+// Type library items
+//
+
+struct __declspec(uuid("45f5708e-3b43-4fa8-be7e-a5f1849214cb"))
+RequestProcessor2;
+    // [ default ] interface IRequestProcessor4
+    // interface IRequestProcessor3
+
+struct __declspec(uuid("3b635bf7-6da9-46c8-a1f6-f0c93f10d52f"))
+IRequestProcessor3 : IDispatch
+{
+    //
+    // Property data
+    //
+
+    __declspec(property(get=GetMajorVersion))
+    short MajorVersion;
+    __declspec(property(get=GetMinorVersion))
+    short MinorVersion;
+    __declspec(property(get=GetReleaseLevel))
+    enum QBXMLRPReleaseLevel ReleaseLevel;
+    __declspec(property(get=GetReleaseNumber))
+    short ReleaseNumber;
+    __declspec(property(get=GetQBXMLVersionsForSession))
+    SAFEARRAY * QBXMLVersionsForSession[];
+    __declspec(property(get=GetConnectionType))
+    enum QBXMLRPConnectionType ConnectionType;
+    __declspec(property(get=GetQBXMLVersionsForSubscription))
+    SAFEARRAY * QBXMLVersionsForSubscription;
+
+    //
+    // Wrapper methods for error-handling
+    //
+
+    _bstr_t ProcessRequest (
+        _bstr_t ticket,
+        _bstr_t inputRequest );
+    HRESULT OpenConnection (
+        _bstr_t appID,
+        _bstr_t appName );
+    HRESULT CloseConnection ( );
+    _bstr_t BeginSession (
+        _bstr_t qbFileName,
+        enum QBFileMode reqFileMode );
+    HRESULT EndSession (
+        _bstr_t ticket );
+    _bstr_t GetCurrentCompanyFileName (
+        _bstr_t ticket );
+    short GetMajorVersion ( );
+    short GetMinorVersion ( );
+    enum QBXMLRPReleaseLevel GetReleaseLevel ( );
+    short GetReleaseNumber ( );
+    SAFEARRAY * GetQBXMLVersionsForSession (
+        _bstr_t ticket );
+    enum QBXMLRPConnectionType GetConnectionType ( );
+    _bstr_t ProcessSubscription (
+        _bstr_t inputRequest );
+    SAFEARRAY * GetQBXMLVersionsForSubscription ( );
+
+    //
+    // Raw methods provided by interface
+    //
+
+    virtual HRESULT __stdcall raw_ProcessRequest (
+        BSTR ticket,
+        BSTR inputRequest,
+        BSTR * outputResponse ) = 0;
+    virtual HRESULT __stdcall raw_OpenConnection (
+        BSTR appID,
+        BSTR appName ) = 0;
+    virtual HRESULT __stdcall raw_CloseConnection ( ) = 0;
+    virtual HRESULT __stdcall raw_BeginSession (
+        BSTR qbFileName,
+        enum QBFileMode reqFileMode,
+        BSTR * pTicket ) = 0;
+    virtual HRESULT __stdcall raw_EndSession (
+        BSTR ticket ) = 0;
+    virtual HRESULT __stdcall raw_GetCurrentCompanyFileName (
+        BSTR ticket,
+        BSTR * pFileName ) = 0;
+    virtual HRESULT __stdcall get_MajorVersion (
+        short * pMajorVersion ) = 0;
+    virtual HRESULT __stdcall get_MinorVersion (
+        short * pMinorVersion ) = 0;
+    virtual HRESULT __stdcall get_ReleaseLevel (
+        enum QBXMLRPReleaseLevel * pReleaseLevel ) = 0;
+    virtual HRESULT __stdcall get_ReleaseNumber (
+        short * pReleaseNumber ) = 0;
+    virtual HRESULT __stdcall get_QBXMLVersionsForSession (
+        BSTR ticket,
+        SAFEARRAY * * ppsa ) = 0;
+    virtual HRESULT __stdcall get_ConnectionType (
+        enum QBXMLRPConnectionType * pVal ) = 0;
+    virtual HRESULT __stdcall raw_ProcessSubscription (
+        BSTR inputRequest,
+        BSTR * outputResponse ) = 0;
+    virtual HRESULT __stdcall get_QBXMLVersionsForSubscription (
+        SAFEARRAY * * ppsa ) = 0;
+};
+
+struct __declspec(uuid("8db91b17-d5a2-41db-80a7-cc6f1e449a05"))
+IRequestProcessor4 : IRequestProcessor3
+{
+    //
+    // Property data
+    //
+
+    __declspec(property(get=GetAuthPreferences))
+    IAuthPreferencesPtr AuthPreferences;
+
+    //
+    // Wrapper methods for error-handling
+    //
+
+    HRESULT OpenConnection2 (
+        _bstr_t appID,
+        _bstr_t appName,
+        enum QBXMLRPConnectionType connPref );
+    IAuthPreferencesPtr GetAuthPreferences ( );
+
+    //
+    // Raw methods provided by interface
+    //
+
+    virtual HRESULT __stdcall raw_OpenConnection2 (
+        BSTR appID,
+        BSTR appName,
+        enum QBXMLRPConnectionType connPref ) = 0;
+    virtual HRESULT __stdcall get_AuthPreferences (
+        struct IAuthPreferences * * ppAuthPreferences ) = 0;
+};
+
+enum QBFileMode
+{
+    qbFileOpenSingleUser = 0,
+    qbFileOpenMultiUser = 1,
+    qbFileOpenDoNotCare = 2
+};
+
+enum QBXMLRPReleaseLevel
+{
+    preAlpha = 0,
+    alpha = 1,
+    beta = 2,
+    release = 3
+};
+
+enum QBXMLRPConnectionType
+{
+    unknown = 0,
+    localQBD = 1,
+    remoteQBD = 2,
+    localQBDLaunchUI = 3,
+    remoteQBOE = 4
+};
+
+struct __declspec(uuid("4277578a-9687-4ebc-8586-1ca4759b17c3"))
+IAuthPreferences : IDispatch
+{
+    //
+    // Wrapper methods for error-handling
+    //
+
+    VARIANT_BOOL WasAuthPreferencesObeyed (
+        _bstr_t ticket );
+    VARIANT_BOOL GetIsReadOnly (
+        _bstr_t ticket );
+    HRESULT PutIsReadOnly (
+        VARIANT_BOOL isReadOnly );
+    enum QBXMLRPUnattendedModePrefType GetUnattendedModePref (
+        _bstr_t ticket );
+    HRESULT PutUnattendedModePref (
+        enum QBXMLRPUnattendedModePrefType unattendedModePref );
+    enum QBXMLRPPersonalDataPrefType GetPersonalDataPref (
+        _bstr_t ticket );
+    HRESULT PutPersonalDataPref (
+        enum QBXMLRPPersonalDataPrefType personalDataPref );
+
+    //
+    // Raw methods provided by interface
+    //
+
+    virtual HRESULT __stdcall raw_WasAuthPreferencesObeyed (
+        BSTR ticket,
+        VARIANT_BOOL * pWasAuthPreferencesObeyed ) = 0;
+    virtual HRESULT __stdcall raw_GetIsReadOnly (
+        BSTR ticket,
+        VARIANT_BOOL * pIsReadOnly ) = 0;
+    virtual HRESULT __stdcall raw_PutIsReadOnly (
+        VARIANT_BOOL isReadOnly ) = 0;
+    virtual HRESULT __stdcall raw_GetUnattendedModePref (
+        BSTR ticket,
+        enum QBXMLRPUnattendedModePrefType * pUnattendedModePref ) = 0;
+    virtual HRESULT __stdcall raw_PutUnattendedModePref (
+        enum QBXMLRPUnattendedModePrefType unattendedModePref ) = 0;
+    virtual HRESULT __stdcall raw_GetPersonalDataPref (
+        BSTR ticket,
+        enum QBXMLRPPersonalDataPrefType * pPersonalDataPref ) = 0;
+    virtual HRESULT __stdcall raw_PutPersonalDataPref (
+        enum QBXMLRPPersonalDataPrefType personalDataPref ) = 0;
+};
+
+enum QBXMLRPUnattendedModePrefType
+{
+    umpRequired = 1,
+    umpOptional = 2
+};
+
+enum QBXMLRPPersonalDataPrefType
+{
+    pdpRequired = 1,
+    pdpOptional = 2,
+    pdpNotNeeded = 3
+};
+
+struct __declspec(uuid("3a61350b-7f27-46c4-847e-1089c4c3321b"))
+AuthPreferences;
+    // [ default ] interface IAuthPreferences2
+    // interface IAuthPreferences
+
+struct __declspec(uuid("f810cc1a-151e-48a8-84c9-3f6978fb699c"))
+IAuthPreferences2 : IAuthPreferences
+{
+    //
+    // Wrapper methods for error-handling
+    //
+
+    HRESULT PutAuthFlags (
+        long authFlags );
+
+    //
+    // Raw methods provided by interface
+    //
+
+    virtual HRESULT __stdcall raw_PutAuthFlags (
+        long authFlags ) = 0;
+};
+
+//
+// Wrapper method implementations
+//
+
+#include "QBXMLRP2.tli"
+
+} // namespace QBXMLRP2Lib
+
+#pragma pack(pop)

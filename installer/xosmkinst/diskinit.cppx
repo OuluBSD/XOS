@@ -1,0 +1,81 @@
+#include "xosmkinst.h"
+
+typedef struct
+{	uchar boot;
+	uchar bgnhead;
+	uchar bgnsect;
+	uchar bgncyln;
+	uchar type;
+	uchar endhead;
+	uchar endsect;
+	uchar endcyln;
+	ulong begin;
+	ulong length;
+} PTENT;
+
+typedef struct
+{	char   btcd[440];
+	long   diskid;
+	char   fill[2];
+	PTENT  part[4];
+	ushort label;
+} MBR;
+
+//***********************************************************************************
+// Function: initmbr - Initialize MBR to create single partition that covers the disk
+// Returned: true if OK, false if failed
+//***********************************************************************************
+
+int initmbr(
+	HANDLE hndl)
+{
+	swcDateTime dt;
+	long  length;
+	ulong size;
+	int   cylns;
+
+	memcpy(dskbufr, mbrblk, 512);
+	dt.GetLocal();						// Get current date and time
+	((MBR *)dskbufr)->diskid = (long)(dt.dt >> 20); // Get a disk ID from the dt
+
+	// We always set up the disk with 255 heads and 63 sectors.
+
+	if (devsize > 10000000000)
+		devsize = 10000000000;
+	length = (long)(devsize / 512);		// Get number of sectors
+	cylns = length / (63 * 255);
+	if (cylns > 1024)
+		cylns = 1024;
+
+	// Construct the partition table entry. The partition always begins with
+	//   the first sector of a track (1) and ends with the last sector of a
+	//   track (sects). It begins with the first or second track (0 or 1)
+	//   and ends with the last track (heads - 1).
+
+	((MBR *)dskbufr)->part[0].boot = 0x80;
+	((MBR *)dskbufr)->part[0].bgnhead = 1;
+	((MBR *)dskbufr)->part[0].bgnsect = 1;
+	((MBR *)dskbufr)->part[0].bgncyln = 0;
+	((MBR *)dskbufr)->part[0].type = 12;
+	((MBR *)dskbufr)->part[0].endhead = 254;
+	((MBR *)dskbufr)->part[0].endsect = (uchar)(63 + (((cylns - 1) >> 2) & 0xC0));
+	((MBR *)dskbufr)->part[0].endcyln = (uchar)(cylns - 1);
+	((MBR *)dskbufr)->part[0].begin = 63;
+	((MBR *)dskbufr)->part[0].length = length - 63;
+
+	// Write out the master boot record
+
+	if (SetFilePointer(hndl, 0, NULL, FILE_BEGIN) < 0)
+	{
+		seterrmsg("Error setting position for MBR");
+		return (false);
+	}
+	if (!WriteFile(hndl, dskbufr, 512, &size, NULL))
+	{
+		seterrmsg("Error writing MBR");
+		return (false);
+	}
+	return (true);
+}
+
+
