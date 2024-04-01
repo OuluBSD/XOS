@@ -1,4 +1,4 @@
-# XOS v4.5.1
+# XOS
 XOS is self-hosting, 32bit 80486-based multitasking hobby operating system written in C, using Open Watcom toolchain. 
 
 This directory contains the sources for all locally written XOS system programs.
