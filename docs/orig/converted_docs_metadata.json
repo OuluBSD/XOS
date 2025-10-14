@@ -1,0 +1,29 @@
+{
+  "conversion_info": {
+    "date": "tiistaina 14. lokakuuta 2025",
+    "description": "PDF files converted to text and HTML formats for better AI reading",
+    "tools_used": [
+      "pdftotext",
+      "pdftohtml"
+    ],
+    "text_format_preserved": "layout",
+    "html_format_preserved": "structure"
+  },
+  "converted_files": [
+    {
+      "original_file": "XOS Programmer's guide v3.2.pdf",
+      "converted_text_file": "XOS Programmer's guide v3.2.txt",
+      "converted_html_file": "XOS Programmer's guide v3.2.html",
+      "text_size_lines": 17705,
+      "description": "Technical documentation for XOS programmers"
+    },
+    {
+      "original_file": "XOS User's guide v3.2.pdf",
+      "converted_text_file": "XOS User's guide v3.2.txt",
+      "converted_html_file": "XOS User's guide v3.2.html",
+      "text_size_lines": 10747,
+      "description": "User documentation for XOS end-users"
+    }
+  ],
+  "directory_path": "/home/sblo/XOS/docs"
+}

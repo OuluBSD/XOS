@@ -1,0 +1,1454 @@
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+<title>Document Outline</title>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+</head>
+<body>
+<a name="outline"></a><h1>Document Outline</h1>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-3.html">Table of Contents</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-11.html">Chapter 1 - Introduction &#160;1</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-12.html">No ta tion &#160;2</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-13.html">Chapter 2 - Structure of XOS &#160;3</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-13.html">User Pro cesses &#160;3</a></li>
+<li><a href="XOS Programmer's guide v3.2-14.html">Sched uling &#160;4</a></li>
+<li><a href="XOS Programmer's guide v3.2-15.html">Mem ory Man age ment and Al lo ca tion &#160;5</a></li>
+<li><a href="XOS Programmer's guide v3.2-16.html">En vi ron ment Strings &#160;6</a></li>
+<li><a href="XOS Programmer's guide v3.2-18.html">De vices &#160;8</a></li>
+<li><a href="XOS Programmer's guide v3.2-18.html">De vice Names &#160;8</a></li>
+<li><a href="XOS Programmer's guide v3.2-20.html">File Spec i fi ca tions &#160;10</a></li>
+<li><a href="XOS Programmer's guide v3.2-21.html">Wild card File Spec i fi ca tions &#160;11</a></li>
+<li><a href="XOS Programmer's guide v3.2-22.html">Des ti na tion Wild card File Spec i fi ca tions &#160;12</a></li>
+<li><a href="XOS Programmer's guide v3.2-22.html">Log i cal Names &#160;12</a></li>
+<li><a href="XOS Programmer's guide v3.2-23.html">In put/Out put Op er a tions &#160;13</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-25.html">Chapter 3 - The Programming Environment &#160;15</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-26.html">The XOS 32-bit En vi ron ment &#160;16</a></li>
+<li><a href="XOS Programmer's guide v3.2-26.html">The XOS 16-bit En vi ron ment &#160;16</a></li>
+<li><a href="XOS Programmer's guide v3.2-27.html">The DOS 16-bit En vi ron ment &#160;17</a></li>
+<li><a href="XOS Programmer's guide v3.2-27.html">The DOS 32-bit En vi ron ment &#160;17</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-28.html">Chapter 4 - Process Privileges &#160;19</a></li>
+<li><a href="XOS Programmer's guide v3.2-33.html">Chapter 5 - The Signal System &#160;25</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-42.html">Stack For mats for DPMI Vec tors &#160;34</a></li>
+<li><a href="XOS Programmer's guide v3.2-47.html">Mixed-mode Stack Man age ment &#160;39</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-49.html">Chapter 6 - Interprocess Communication &#160;41</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-49.html">Shared Mem ory &#160;41</a></li>
+<li><a href="XOS Programmer's guide v3.2-50.html">Interprocess Mes sages &#160;42</a></li>
+<li><a href="XOS Programmer's guide v3.2-50.html">Events &#160;42</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-52.html">Chapter 7 - System Calls Overview &#160;45</a></li>
+<li><a href="XOS Programmer's guide v3.2-54.html">Chapter 8 - Utility Function System Calls &#160;47</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-55.html">svcSysCmos - CMOS Memory Function &#160;48</a></li>
+<li><a href="XOS Programmer's guide v3.2-56.html">svcSysDateTime - Date and Time Functions &#160;49</a></li>
+<li><a href="XOS Programmer's guide v3.2-64.html">svcSysDefEnv - Define Environment String &#160;57</a></li>
+<li><a href="XOS Programmer's guide v3.2-66.html">svcSysErrMsg - Get Error Message &#160;59</a></li>
+<li><a href="XOS Programmer's guide v3.2-67.html">svcSysFindEnv - Find Environment String &#160;60</a></li>
+<li><a href="XOS Programmer's guide v3.2-69.html">svcSysGetEnv - Get All Environment Strings &#160;62</a></li>
+<li><a href="XOS Programmer's guide v3.2-70.html">svcSysLoadLke - Load LKE &#160;63</a></li>
+<li><a href="XOS Programmer's guide v3.2-71.html">svcSysLog - Place Entry in System Log File &#160;64</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-72.html">Chapter 9 - Scheduler System Calls &#160;65</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-73.html">svcSchAlarm - Alarm Functions &#160;66</a></li>
+<li><a href="XOS Programmer's guide v3.2-75.html">svcSchClrEvent - Clear Event(s) &#160;68</a></li>
+<li><a href="XOS Programmer's guide v3.2-76.html">svcSchCtlCDone - Report ctl-C Processing Done &#160;69</a></li>
+<li><a href="XOS Programmer's guide v3.2-77.html">svcSchDismiss - Dismiss Signal &#160;70</a></li>
+<li><a href="XOS Programmer's guide v3.2-78.html">svcSchExit - Terminate Process &#160;71</a></li>
+<li><a href="XOS Programmer's guide v3.2-79.html">svcSchGetVector - Get Signal Vector &#160;72</a></li>
+<li><a href="XOS Programmer's guide v3.2-81.html">svcSchIntrProc - Interrupt Child Process &#160;74</a></li>
+<li><a href="XOS Programmer's guide v3.2-83.html">svcSchIRet - Return From Interrupt &#160;76</a></li>
+<li><a href="XOS Programmer's guide v3.2-84.html">svcSchKill - Terminate Any Process &#160;77</a></li>
+<li><a href="XOS Programmer's guide v3.2-85.html">svcSchMakEvent - Make Event Cluster &#160;78</a></li>
+<li><a href="XOS Programmer's guide v3.2-86.html">svcSchRelEvent - Release Event &#160;79</a></li>
+<li><a href="XOS Programmer's guide v3.2-87.html">svcSchResEvent - Reserve Event &#160;80</a></li>
+<li><a href="XOS Programmer's guide v3.2-88.html">svcSchSetEvent - Set Event(s) &#160;81</a></li>
+<li><a href="XOS Programmer's guide v3.2-89.html">svcSchSetLevel - Set Signal Level &#160;82</a></li>
+<li><a href="XOS Programmer's guide v3.2-90.html">svcSchSetVector - Set Signal Vector &#160;83</a></li>
+<li><a href="XOS Programmer's guide v3.2-92.html">svcSchSpawn - Create Child Process &#160;85</a></li>
+<li><a href="XOS Programmer's guide v3.2-95.html">svcSchSuspend - Suspend Process &#160;88</a></li>
+<li><a href="XOS Programmer's guide v3.2-97.html">svcSchWaitProc - Wait for Process to Terminate &#160;90</a></li>
+<li><a href="XOS Programmer's guide v3.2-98.html">svcSchWaitMEvent - Wait for Multiple Events &#160;91</a></li>
+<li><a href="XOS Programmer's guide v3.2-99.html">svcSchWaitSEvent - Wait for Single Event &#160;92</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-100.html">Chapter 10 - Memory System Calls &#160;93</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-101.html">svcMemBlkAlloc - Allocate Linear Memory Block &#160;94</a></li>
+<li><a href="XOS Programmer's guide v3.2-102.html">svcMemBlkChange - Change Size of Linear Memory Block &#160;95</a></li>
+<li><a href="XOS Programmer's guide v3.2-104.html">svcMemBlkFree - Give up All Linear Memory Blocks &#160;97</a></li>
+<li><a href="XOS Programmer's guide v3.2-105.html">svcMemChange - Change Memory Allocation &#160;98</a></li>
+<li><a href="XOS Programmer's guide v3.2-107.html">svcMemConvShr - Convert to Shared Section &#160;100</a></li>
+<li><a href="XOS Programmer's guide v3.2-109.html">svcMemCopy2PM - Copy Data to Protected Mode Memory &#160;102</a></li>
+<li><a href="XOS Programmer's guide v3.2-110.html">svcMemCreate - Create New Segment &#160;103</a></li>
+<li><a href="XOS Programmer's guide v3.2-112.html">svcMemDebug - Memory Debug Functions &#160;105</a></li>
+<li><a href="XOS Programmer's guide v3.2-113.html">svcMemDescAlloc - Allocate Segment Descriptor &#160;106</a></li>
+<li><a href="XOS Programmer's guide v3.2-115.html">svcMemDescFind - Find Segment Descriptor &#160;108</a></li>
+<li><a href="XOS Programmer's guide v3.2-116.html">svcMemDescFree - Give Up Segment Descriptor &#160;109</a></li>
+<li><a href="XOS Programmer's guide v3.2-117.html">svcMemDescRead - Read Segment Descriptor &#160;110</a></li>
+<li><a href="XOS Programmer's guide v3.2-119.html">svcMemDescSet - Set Value in Segment Descriptor &#160;112</a></li>
+<li><a href="XOS Programmer's guide v3.2-120.html">svcMemDescWrite - Write Segment Descriptor &#160;113</a></li>
+<li><a href="XOS Programmer's guide v3.2-121.html">svcMemDosSetup - Set Up DOS Memory &#160;114</a></li>
+<li><a href="XOS Programmer's guide v3.2-123.html">svcMemLink - Link Segment Selectors &#160;116</a></li>
+<li><a href="XOS Programmer's guide v3.2-124.html">svcMemLinkShr - Link to Shared Section &#160;117</a></li>
+<li><a href="XOS Programmer's guide v3.2-125.html">svcMemMap - Map Physical Section &#160;118</a></li>
+<li><a href="XOS Programmer's guide v3.2-126.html">svcMemMove - Move Memory Section &#160;119</a></li>
+<li><a href="XOS Programmer's guide v3.2-127.html">svcMemNull - Map Null Memory &#160;120</a></li>
+<li><a href="XOS Programmer's guide v3.2-128.html">svcMemPageType - Change Memory Page Type &#160;121</a></li>
+<li><a href="XOS Programmer's guide v3.2-129.html">svcMemRemove - Remove Segment &#160;122</a></li>
+<li><a href="XOS Programmer's guide v3.2-130.html">svcMemRmvMult - Remove Multiple Segments &#160;123</a></li>
+<li><a href="XOS Programmer's guide v3.2-131.html">svcMemSegType - Change Segment Type &#160;124</a></li>
+<li><a href="XOS Programmer's guide v3.2-132.html">svcMemWPFunc - Watchpoint Functions &#160;125</a></li>
+<li><a href="XOS Programmer's guide v3.2-133.html">svcMemWPSet - Set Watchpoint &#160;126</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-134.html">Chapter 11 - I/O Parameters &#160;127</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-140.html">Com mon Pa ram e ters &#160;133</a></li>
+<li><a href="XOS Programmer's guide v3.2-148.html">Mass Storage Parameters &#160;141</a></li>
+<li><a href="XOS Programmer's guide v3.2-156.html">Terminal Parameters &#160;149</a></li>
+<li><a href="XOS Programmer's guide v3.2-161.html">Disk Parameters &#160;154</a></li>
+<li><a href="XOS Programmer's guide v3.2-163.html">Tape Parameters &#160;156</a></li>
+<li><a href="XOS Programmer's guide v3.2-164.html">Network Parameters &#160;157</a></li>
+<li><a href="XOS Programmer's guide v3.2-168.html">Interprocess Message Parameters &#160;161</a></li>
+<li><a href="XOS Programmer's guide v3.2-169.html">Datagram Parameters &#160;162</a></li>
+<li><a href="XOS Programmer's guide v3.2-170.html">svcIoRun Parameters &#160;163</a></li>
+<li><a href="XOS Programmer's guide v3.2-176.html">Device Class Parameter &#160;169</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-177.html">Chapter 12 - Class Characteristics &#160;171</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-181.html">SYSTEM Class Characteristics &#160;175</a></li>
+<li><a href="XOS Programmer's guide v3.2-189.html">PROCESS Class Characteristics &#160;183</a></li>
+<li><a href="XOS Programmer's guide v3.2-191.html">DISK Class Characteristics &#160;185</a></li>
+<li><a href="XOS Programmer's guide v3.2-193.html">SPL Class Char ac ter is tics &#160;187</a></li>
+<li><a href="XOS Programmer's guide v3.2-194.html">TAPE Class Characteristics &#160;188</a></li>
+<li><a href="XOS Programmer's guide v3.2-195.html">TRM Class Characteristics &#160;189</a></li>
+<li><a href="XOS Programmer's guide v3.2-196.html">PCN Class Characteristics &#160;190</a></li>
+<li><a href="XOS Programmer's guide v3.2-197.html">IPM Class Characteristics &#160;191</a></li>
+<li><a href="XOS Programmer's guide v3.2-198.html">NULL Class Characteristics &#160;192</a></li>
+<li><a href="XOS Programmer's guide v3.2-199.html">PPR Class Characteristics &#160;193</a></li>
+<li><a href="XOS Programmer's guide v3.2-200.html">NET Class Characteristics &#160;194</a></li>
+<li><a href="XOS Programmer's guide v3.2-201.html">SNAP Class Char ac ter is tics &#160;195</a></li>
+<li><a href="XOS Programmer's guide v3.2-202.html">ARP Class Char ac ter is tics &#160;196</a></li>
+<li><a href="XOS Programmer's guide v3.2-203.html">IPS Class Characteristics &#160;197</a></li>
+<li><a href="XOS Programmer's guide v3.2-204.html">UDP Class Characteristics &#160;198</a></li>
+<li><a href="XOS Programmer's guide v3.2-205.html">TCP Class Characteristics &#160;199</a></li>
+<li><a href="XOS Programmer's guide v3.2-206.html">TLN Class Char ac ter is tics &#160;200</a></li>
+<li><a href="XOS Programmer's guide v3.2-207.html">RCP Class Characteristics &#160;201</a></li>
+<li><a href="XOS Programmer's guide v3.2-208.html">XFP Class Characteristics &#160;202</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-209.html">Chapter 13 - Device Characteristics &#160;203</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-215.html">DISK Device Characteristics &#160;209</a></li>
+<li><a href="XOS Programmer's guide v3.2-232.html">SPL Device Characteristics &#160;226</a></li>
+<li><a href="XOS Programmer's guide v3.2-234.html">TAPE De vice Characteristics &#160;228</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">TRM Device Characteristics &#160;232</a></li>
+<li><a href="XOS Programmer's guide v3.2-256.html">PCN Device Characteristics &#160;250</a></li>
+<li><a href="XOS Programmer's guide v3.2-258.html">IPM De vice Characteristics &#160;252</a></li>
+<li><a href="XOS Programmer's guide v3.2-259.html">NULL De vice Characteristics &#160;253</a></li>
+<li><a href="XOS Programmer's guide v3.2-260.html">PPR Device Characteristics &#160;254</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">NET Device Characteristics &#160;255</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">SNAP Device Characteristics &#160;263</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">ARP Device Characteristics &#160;265</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">IPS Device Characteristics &#160;267</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">UDP Device Characteristics &#160;273</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">TCP Device Characteristics &#160;276</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">TLN Device Characteristics &#160;281</a></li>
+<li><a href="XOS Programmer's guide v3.2-290.html">RCP Device Characteristics &#160;284</a></li>
+<li><a href="XOS Programmer's guide v3.2-295.html">XFP Device Characteristics &#160;289</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-298.html">Chapter 14 - Add-Unit Characteristics &#160;293</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-301.html">DISK Add-Unit Characteristics &#160;296</a></li>
+<li><a href="XOS Programmer's guide v3.2-306.html">SPL Add-Unit Characteristics &#160;301</a></li>
+<li><a href="XOS Programmer's guide v3.2-307.html">TAPE Add-Unit Characteristics &#160;302</a></li>
+<li><a href="XOS Programmer's guide v3.2-309.html">TRM Add-Unit Char ac ter is tics &#160;304</a></li>
+<li><a href="XOS Programmer's guide v3.2-321.html">PCN Add-Unit Characteristics &#160;316</a></li>
+<li><a href="XOS Programmer's guide v3.2-322.html">IPM Add-Unit Characteristics &#160;317</a></li>
+<li><a href="XOS Programmer's guide v3.2-323.html">NULL Add-Unit Characteristics &#160;318</a></li>
+<li><a href="XOS Programmer's guide v3.2-324.html">PPR Add-Unit Characteristics &#160;319</a></li>
+<li><a href="XOS Programmer's guide v3.2-325.html">NET Add-Unit Characteristics &#160;320</a></li>
+<li><a href="XOS Programmer's guide v3.2-327.html">SNAP Add-Unit Characteristics &#160;322</a></li>
+<li><a href="XOS Programmer's guide v3.2-328.html">ARP Add-Unit Characteristics &#160;323</a></li>
+<li><a href="XOS Programmer's guide v3.2-329.html">IPS Add-Unit Characteristics &#160;324</a></li>
+<li><a href="XOS Programmer's guide v3.2-330.html">UDP Add-Unit Characteristics &#160;325</a></li>
+<li><a href="XOS Programmer's guide v3.2-331.html">TCP Add-Unit Characteristics &#160;326</a></li>
+<li><a href="XOS Programmer's guide v3.2-332.html">TLN Add-Unit Characteristics &#160;327</a></li>
+<li><a href="XOS Programmer's guide v3.2-333.html">RCP Add-Unit Characteristics &#160;328</a></li>
+<li><a href="XOS Programmer's guide v3.2-334.html">XFP Add-Unit Characteristics &#160;329</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-335.html">Chapter 15 - svcIoQueue System Call &#160;331</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-336.html">QAB Format &#160;332</a></li>
+<li><a href="XOS Programmer's guide v3.2-340.html">Summary of svcIoQueue Functions &#160;336</a></li>
+<li><a href="XOS Programmer's guide v3.2-342.html">QFNC_OPEN - Open Device or File &#160;338</a></li>
+<li><a href="XOS Programmer's guide v3.2-349.html">QFNC_DEVPARM - Device Parameters &#160;345</a></li>
+<li><a href="XOS Programmer's guide v3.2-351.html">QFNC_DEVCHAR - Device Characteristics Functions &#160;347</a></li>
+<li><a href="XOS Programmer's guide v3.2-354.html">QFNC_DELETE - Delete File &#160;350</a></li>
+<li><a href="XOS Programmer's guide v3.2-355.html">QFNC_RENAME - Rename File &#160;351</a></li>
+<li><a href="XOS Programmer's guide v3.2-356.html">QFNC_PATH - Path Functions &#160;352</a></li>
+<li><a href="XOS Programmer's guide v3.2-357.html">QFNC_CLASSFUNC - Class Functions &#160;353</a></li>
+<li><a href="XOS Programmer's guide v3.2-360.html">QFNC_INBLOCK - Input Block &#160;356</a></li>
+<li><a href="XOS Programmer's guide v3.2-361.html">QFNC_OUTBLOCK - Output Block &#160;357</a></li>
+<li><a href="XOS Programmer's guide v3.2-362.html">QFNC_OUTSTRING - Output String &#160;358</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">QFNC_SPECIAL - Special Device Functions &#160;359</a></li>
+<li><a href="XOS Programmer's guide v3.2-364.html">QFNC_LABEL - Read or Write Volume Label &#160;360</a></li>
+<li><a href="XOS Programmer's guide v3.2-365.html">QFNC_COMMIT - Commit Data to Media &#160;361</a></li>
+<li><a href="XOS Programmer's guide v3.2-366.html">QFNC_CLOSE - Close File &#160;362</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-367.html">Chapter 16 - Input/Output System Calls &#160;363</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-368.html">svcIoCancel - Cancel I/O Request &#160;364</a></li>
+<li><a href="XOS Programmer's guide v3.2-370.html">svcIoClose - Close Device &#160;366</a></li>
+<li><a href="XOS Programmer's guide v3.2-371.html">svcIoControl - I/O Request Control &#160;367</a></li>
+<li><a href="XOS Programmer's guide v3.2-373.html">svcIoDefLog - Define Logical Name &#160;369</a></li>
+<li><a href="XOS Programmer's guide v3.2-375.html">svcIoDelete - Delete File &#160;371</a></li>
+<li><a href="XOS Programmer's guide v3.2-376.html">svcIoDevParm - Get or Set Device Parameters &#160;372</a></li>
+<li><a href="XOS Programmer's guide v3.2-377.html">svcIoDstName - Build Destination Name &#160;373</a></li>
+<li><a href="XOS Programmer's guide v3.2-378.html">svcIoDupHandle - Duplicate Device Handle &#160;374</a></li>
+<li><a href="XOS Programmer's guide v3.2-379.html">svcIoFindLog - Find Logical Name &#160;375</a></li>
+<li><a href="XOS Programmer's guide v3.2-381.html">svcIoInBlock - Input Block &#160;377</a></li>
+<li><a href="XOS Programmer's guide v3.2-382.html">svcIoInBlockP - Input Block/Parameter List &#160;378</a></li>
+<li><a href="XOS Programmer's guide v3.2-383.html">svcIoInSingle - Input Byte &#160;379</a></li>
+<li><a href="XOS Programmer's guide v3.2-384.html">svcIoInSingleP - Input Byte/Parameter List &#160;380</a></li>
+<li><a href="XOS Programmer's guide v3.2-385.html">svcIoOpen - Open Device or file &#160;381</a></li>
+<li><a href="XOS Programmer's guide v3.2-386.html">svcIoOutBlock - Output Block &#160;382</a></li>
+<li><a href="XOS Programmer's guide v3.2-387.html">svcIoOutBlockP - Output Block/Parameter List &#160;383</a></li>
+<li><a href="XOS Programmer's guide v3.2-388.html">svcIoOutSingle - Output Byte &#160;384</a></li>
+<li><a href="XOS Programmer's guide v3.2-389.html">svcIoOutSingleP - Output Byte/Parameter List &#160;385</a></li>
+<li><a href="XOS Programmer's guide v3.2-390.html">svcIoOutString - Output String &#160;386</a></li>
+<li><a href="XOS Programmer's guide v3.2-391.html">svcIoOutStringP - Output String/Parameter List &#160;387</a></li>
+<li><a href="XOS Programmer's guide v3.2-392.html">svcIoPath - Set Default Path &#160;388</a></li>
+<li><a href="XOS Programmer's guide v3.2-393.html">svcIoPorts - Control Access to I/O Ports &#160;389</a></li>
+<li><a href="XOS Programmer's guide v3.2-394.html">svcIoRename - Rename File &#160;390</a></li>
+<li><a href="XOS Programmer's guide v3.2-395.html">svcIoRun - Run or Load Program &#160;391</a></li>
+<li><a href="XOS Programmer's guide v3.2-399.html">svcIoSetPos - Set I/O Position &#160;395</a></li>
+<li><a href="XOS Programmer's guide v3.2-400.html">svcIoWait - Wait Until I/O is Complete &#160;396</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-401.html">Chapter 17 - Terminal System Calls &#160;397</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-402.html">svcTrmAttrib - Get or Set Display Attributes &#160;398</a></li>
+<li><a href="XOS Programmer's guide v3.2-403.html">svcTrmCurPos - Get or Set Cursor Position &#160;399</a></li>
+<li><a href="XOS Programmer's guide v3.2-404.html">svcTrmCurType - Get or Set Cursor Type &#160;400</a></li>
+<li><a href="XOS Programmer's guide v3.2-405.html">svcTrmDspPage - Get or Set Current Display Page &#160;401</a></li>
+<li><a href="XOS Programmer's guide v3.2-406.html">svcTrmFunction - General Terminal Functions &#160;402</a></li>
+<li><a href="XOS Programmer's guide v3.2-408.html">svcTrmGetAtChr - Get Attribute and Character &#160;404</a></li>
+<li><a href="XOS Programmer's guide v3.2-409.html">svcTrmGCurCol - Set Graphic Cursor Colors &#160;405</a></li>
+<li><a href="XOS Programmer's guide v3.2-410.html">svcTrmGCurPat - Set Graphic Cursor Pattern &#160;406</a></li>
+<li><a href="XOS Programmer's guide v3.2-411.html">svcTrmGCurPos - Set Graphic Cursor Position &#160;407</a></li>
+<li><a href="XOS Programmer's guide v3.2-412.html">svcTrmLdStdFont - Load Standard Font &#160;408</a></li>
+<li><a href="XOS Programmer's guide v3.2-413.html">svcTrmLdCusFont - Load Custom Font &#160;409</a></li>
+<li><a href="XOS Programmer's guide v3.2-414.html">svcTrmMapScrn - Map Screen Buffer &#160;410</a></li>
+<li><a href="XOS Programmer's guide v3.2-415.html">svcTrmSelFont - Select Font &#160;411</a></li>
+<li><a href="XOS Programmer's guide v3.2-416.html">svcTrmSetAtChr - Set Attribute and Character &#160;412</a></li>
+<li><a href="XOS Programmer's guide v3.2-417.html">svcTrmSetChr - Set Character &#160;413</a></li>
+<li><a href="XOS Programmer's guide v3.2-418.html">svcTrmScroll - Scroll Window &#160;414</a></li>
+<li><a href="XOS Programmer's guide v3.2-419.html">svcTrmWrtInB - Write to Input Buffer &#160;415</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-420.html">Chapter 18 - Screen Symbiont System Calls &#160; 417</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-421.html">svcScnMapBufr - Map Physical Screen Buffer &#160;418</a></li>
+<li><a href="XOS Programmer's guide v3.2-422.html">svcScnMaskWrt - Masked Write to Screen Buffer &#160;419</a></li>
+<li><a href="XOS Programmer's guide v3.2-424.html">svcScnTrans - Transfter Data for Screen Symbiont &#160;421</a></li>
+<li><a href="XOS Programmer's guide v3.2-427.html">svcScnUtil - Screen Symbiont Utility Functions &#160;424</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-428.html">Chapter 19 - Device Dependent I/O Functions &#160;425</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-429.html">DISK Devices &#160;426</a></li>
+<li><a href="XOS Programmer's guide v3.2-430.html">SPL Devices &#160;427</a></li>
+<li><a href="XOS Programmer's guide v3.2-431.html">TAPE Devices &#160;428</a></li>
+<li><a href="XOS Programmer's guide v3.2-434.html">TRM Devices &#160;431</a></li>
+<li><a href="XOS Programmer's guide v3.2-435.html">PCN Devices &#160;432</a></li>
+<li><a href="XOS Programmer's guide v3.2-439.html">PPR Devices &#160;436</a></li>
+<li><a href="XOS Programmer's guide v3.2-440.html">NET Devices &#160;437</a></li>
+<li><a href="XOS Programmer's guide v3.2-441.html">SNAP Devices &#160;438</a></li>
+<li><a href="XOS Programmer's guide v3.2-442.html">ARP Devices &#160;439</a></li>
+<li><a href="XOS Programmer's guide v3.2-443.html">IPS Devices &#160;440</a></li>
+<li><a href="XOS Programmer's guide v3.2-450.html">UDP Devices &#160;447</a></li>
+<li><a href="XOS Programmer's guide v3.2-451.html">TCP Devices &#160;448</a></li>
+<li><a href="XOS Programmer's guide v3.2-452.html">TLN Devices &#160;449</a></li>
+<li><a href="XOS Programmer's guide v3.2-453.html">RCP De vices &#160;450</a></li>
+<li><a href="XOS Programmer's guide v3.2-454.html">XFP Devcies &#160;451</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-455.html">Chapter 20 - svcLoadLKE System Call &#160;453</a></li>
+<li><a href="XOS Programmer's guide v3.2-458.html">Appendix A - List of System Calls &#160;457</a></li>
+<li><a href="XOS Programmer's guide v3.2-462.html">Appendix B - System Error Codes &#160;461</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-463.html">Alphabetical List of System Error Codes &#160;462</a></li>
+<li><a href="XOS Programmer's guide v3.2-484.html">Numerical List of System Error Codes &#160;483</a></li>
+<li><a href="XOS Programmer's guide v3.2-491.html">In dex &#160;491</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-492.html">In dex</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-492.html">A</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-463.html">ABORT er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ACT er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ADRER errror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ALDEF er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">ARP de vice char ac ter is tics 265 - 266, 323, 439</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-271.html">BADHDR 265</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">BYTEIN 265</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">BYTEINT 265</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">BYTEOUT 265</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">ETYPE 265</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">PKTIN 265 - 266</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">PKTOUT 265 - 266</a></li>
+<li><a href="XOS Programmer's guide v3.2-271.html">SNAPDEV 265 - 266</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-492.html">B</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDALM er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDDBK er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDDVH er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDLNM er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDNAM er ror 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BDPID er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BDSPC er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BPIPE er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BUSY er ror 463</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-492.html">C</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-464.html">CAASP er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CAERR er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CANCL er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CCMSS er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CDAAD er ror 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CDAND er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-213.html">CHARF er ror 207 - 208, 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARM er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARN er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-179.html">CHARS er ror 173, 206, 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHART er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-190.html">CHARV er ror 184, 207, 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHNNA er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CLSAD er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CPDNR er ror 464</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-492.html">D</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-465.html">DATER er ror 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DATTR er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-17.html">De faults for pro grams 7</a></li>
+<li><a href="XOS Programmer's guide v3.2-22.html">Des ti na tion wild-card spec i fi ca tions 12</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVER er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVFL er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">De vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-213.html">CLASS 207, 294</a></li>
+<li><a href="XOS Programmer's guide v3.2-213.html">IN DEX 207, 294</a></li>
+<li><a href="XOS Programmer's guide v3.2-213.html">IOREG 207, 294</a></li>
+<li><a href="XOS Programmer's guide v3.2-213.html">TYPE 207, 294</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-18.html">De vice names 8</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVIU er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DFDEV er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRFL er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRNE er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRNF er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRTD er ror 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">DISK de vice char ac ter is tics 209 - 225, 426</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-215.html">AVAIL 209 - 210</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">BLOCKIN 209, 211, 222, 228, 231</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">BLOCKOUT 209, 211, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">BUFSIZE 220, 296</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">BYTEIN 209, 211, 230</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">BYTEOUT 209, 211, 228</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CBLKSZ 209, 211</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CBLOCKS 209, 211</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CCYLNS 209, 211</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CHEADS 209, 212</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CLASS 209, 212</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CLSSZ 209, 212</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CLUS TERS 209, 212</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">CONFIG 220</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">CSECTS 209, 212</a></li>
+<li><a href="XOS Programmer's guide v3.2-219.html">DOSNAME 213</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">DOSNAMEn 209, 213</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">DTHLIMIT 209, 213</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">FATMODE 209, 213</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">FSTYPE 209, 213</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-220.html">DOS12 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DOS16 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DOSEXT 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DOSHP 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DSS12 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DSS12L 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DSS16 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">DSS16L 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-220.html">XOS 214</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HDATAERR 209, 214, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HDEVERR 209, 214, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HIDFERR 209, 214, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HOVRNERR 209, 214, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HRNFERR 209, 214, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HSEEKERR 209, 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">HUNGERR 209, 214</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">IBLKSZ 209, 215</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">IBLOCKS 209, 215</a></li>
+<li><a href="XOS Programmer's guide v3.2-215.html">ICYLNS 209, 215</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">IHEADS 210, 215</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">ISECTS 210, 215</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">MCYLNS 220, 296</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">MHEADS 220 - 221, 296</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">MODEL 210, 215, 229</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">MSECTS 220 - 221, 296</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">MSENSOR 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">PARTN 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">PARTOFF 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">PROTECT 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">RAMAX 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">RE MOVE 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">RE VI SION 210, 216</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">ROOTBLK 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">ROOTPROT 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">ROOTSIZE 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-228.html">SCSIDEV 222, 231, 298, 302</a></li>
+<li><a href="XOS Programmer's guide v3.2-228.html">SCSILUN 222, 231, 298, 302</a></li>
+<li><a href="XOS Programmer's guide v3.2-228.html">SCSITAR 222, 231, 298, 302 - 303</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">SECPINT 220 - 221, 296</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">SERIALNO 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">SHRDELAY 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">SHRFAIL 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">SHRRETRY 210, 217</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TDATAERR 210, 217, 230</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TDEVERR 210, 217, 230</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TIDFERR 210, 218, 230</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TOVRNERR 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TRNFERR 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">TSEEKERR 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">UNITTYPE 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-226.html">UXINTERR 220 - 221</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLCDT 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLEDT 210, 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLLABEL 210, 219</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLMDT 210, 219</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLNAME 210, 219</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">VOLXDT 210, 219</a></li>
+<li><a href="XOS Programmer's guide v3.2-216.html">WTMAX 210, 219</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-19.html">Disk names 9</a></li>
+<li><a href="XOS Programmer's guide v3.2-19.html">Disk par ti tions 9</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DIVER er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DKCHG er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DKRMV er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DLOCK er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DOSMC er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DOSPB er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DPMIC er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DQUOT er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DRFER er ror 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DRRER er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DRWER er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DTINT er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DUADF er ror 467</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-494.html">E</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-1.html">E3CA de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-268.html">MEM 262</a></li>
+<li><a href="XOS Programmer's guide v3.2-268.html">THICK 262</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-1.html">ENEA de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-267.html">BOARD 261</a></li>
+<li><a href="XOS Programmer's guide v3.2-267.html">NE1000 261</a></li>
+<li><a href="XOS Programmer's guide v3.2-267.html">NE2000-16 261</a></li>
+<li><a href="XOS Programmer's guide v3.2-267.html">NE2000-8 261</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-16.html">En vi ron ment strings 6</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">ENWDA de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-266.html">MEM 260</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EOF er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-151.html">ER_DSKFL er ror 144</a></li>
+<li><a href="XOS Programmer's guide v3.2-139.html">ER_PARMF er ror 132, 140 - 141, 144, 150, 157</a></li>
+<li><a href="XOS Programmer's guide v3.2-164.html">ER_PARMI er ror 157</a></li>
+<li><a href="XOS Programmer's guide v3.2-136.html">ER_PARMS 129</a></li>
+<li><a href="XOS Programmer's guide v3.2-176.html">ER_PARMV 169</a></li>
+<li><a href="XOS Programmer's guide v3.2-164.html">ER_PARMV er ror 157</a></li>
+<li><a href="XOS Programmer's guide v3.2-146.html">ER_PERMI er ror 139</a></li>
+<li><a href="XOS Programmer's guide v3.2-152.html">ER_PRIV er ror 145 - 146</a></li>
+<li><a href="XOS Programmer's guide v3.2-153.html">ER_PRIV errror 146</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">ER ROR er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">Er ror mes sages 462 - 482</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-463.html">ABORT 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ACT 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ADRER 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">ALDEF 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDALM 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDDBK 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDDVH 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDLNM 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-463.html">BDNAM 462</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BDPID 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BDSPC 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BPIPE 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">BUSY 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CAASP 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CAERR 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CANCL 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CCMSS 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-464.html">CDAAD 463</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CDAND 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARF 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARM 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARN 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARS 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHART 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHARV 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CHNNA 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CLSAD 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">CPDNR 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-465.html">DATER 464</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DATTR 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVER 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVFL 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DEVIU 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DFDEV 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRFL 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRNE 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRNF 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-466.html">DIRTD 465</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DIVER 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DKCHG 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DKRMV 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DLOCK 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DOSMC 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DOSPB 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DPMIC 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DQUOT 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-467.html">DRFER 466</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DRRER 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DRWER 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DTINT 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">DUADF 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EOF 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">ER ROR 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVNRS 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVRES 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVSET 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBFER 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBPER 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBRER 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBWER 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILAD 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILAF 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILCF 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILEX 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILNF 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FILRF 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FILXF 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FSINC 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTPER 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTRER 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTWER 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FUNC 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FUNCM 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">HBFER 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">HBRER 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IADEV 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IATTR 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">ICDEV 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDEVC 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDFER 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDREN 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDSPC 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IFDEV 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IIFF 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IIFRD 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IIFT 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IINUM 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ILLIN 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ILSEK 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IMEMA 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">INCMO 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ININU 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">INVST 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IOSAT 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">IPDIR 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">ISDIR 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LASNA 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LKEAL 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LOCK 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LSTER 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MACFT 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MAERR 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MATH 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MEMLX 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">MPILK 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">MSNPR 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NACT 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCCLR 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCLST 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCOMP 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCONG 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCRFS 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NDOSD 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NEMA 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NHSTA 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILAD 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILPC 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILPR 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILRF 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NIYT 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NLKNA 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NMBTS 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NNAVL 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NNOPC 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSER 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSNA 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSNC 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRF 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRQ 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NOBUF 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NODCB 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NOERR 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOIN 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOMEM 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOOUT 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOPAP 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NORSP 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOSAD 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOSTK 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPCIU 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPERR 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPRIU 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NPRNO 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NRTER 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NRTNA 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSCLS 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSDEV 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSEGA 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSLP 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSNOD 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSP 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSTYP 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDEF 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDIR 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDSK 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">NTFIL 340, 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTIMP 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTLCL 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTLNG 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTRDY 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTTIM 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTTRM 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-484.html">Nu mer i cal list 483 - 489</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NWPA 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">NXERR 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMF 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMI 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">PARMM 359, 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMS 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMT 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">PARMV 359, 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDADF 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDNAV 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDTYP 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PRIV 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">RANGE 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">RELTR 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">RNFER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBFER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBRER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBWER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SEKER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">STKER 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SVC 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">TMALM 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDDV 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDVC 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDVP 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOM 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOP 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOQ 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMPSS 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMRNC 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMRQB 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">TMUDV 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">TMUSR 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TRMNA 481 - 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">UNSXI 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">VALUE 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">VECNS 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WLDNA 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WPRER 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WRTER 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">XFRBK 482</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-1.html">Er ror mes sages&#160;</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRS 475</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVNRS er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVRES er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-468.html">EVSET er ror 467</a></li>
+<li><a href="XOS Programmer's guide v3.2-13.html">Ex tended vir tual ma chine 3</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-497.html">F</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBFER er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBPER er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBRER er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FBWER er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">FDK de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-229.html">CMPT 223</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">CONDESP 223, 299</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">DATADEN 223, 299</a></li>
+<li><a href="XOS Programmer's guide v3.2-230.html">DOU BLE 224</a></li>
+<li><a href="XOS Programmer's guide v3.2-230.html">HIGH 224</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">HLTIME 223, 299</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">HUTIME 223, 299</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">MOTIME 223</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">MSTIME 223, 299</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">PCAT 223</a></li>
+<li><a href="XOS Programmer's guide v3.2-230.html">SIN GLE 224</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">SRTIME 223</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">TRKDEN 223</a></li>
+<li><a href="XOS Programmer's guide v3.2-229.html">XGAPLEN 223</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILAD er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILAF er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILCF er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-20.html">File spec i fi ca tions 10</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILEX er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-469.html">FILNF er ror 468</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FILRF er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FILXF er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">Floppy disk de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-1.html">UNITTYPE</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-224.html">DD3 218, 300</a></li>
+<li><a href="XOS Programmer's guide v3.2-224.html">DD5 218, 300</a></li>
+<li><a href="XOS Programmer's guide v3.2-224.html">DD8 218, 300</a></li>
+<li><a href="XOS Programmer's guide v3.2-224.html">HARD 218, 300</a></li>
+<li><a href="XOS Programmer's guide v3.2-224.html">HD3 218</a></li>
+<li><a href="XOS Programmer's guide v3.2-224.html">HD5 218, 300</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FSINC er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTPER er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTRER er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FTWER er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FUNC er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-470.html">FUNCM er ror 469</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-497.html">H</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-470.html">HBFER er ror 469</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">HBRER er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-53.html">Header files 46</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-497.html">I</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-471.html">IADEV er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IATTR er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">ICDEV er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDEVC er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDFER er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDREN er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IDSPC er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IFDEV er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-471.html">IIFF er ror 470</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IIFRD er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IIFT er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IINUM er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ILLIN er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ILSEK er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IMEMA er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">INCMO er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">ININU er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">In ter rupts</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-33.html">Hard ware 25, 27, 29, 31, 33, 35, 37, 39</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-472.html">INVST er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-145.html">IOPAR_DEVSTS 138</a></li>
+<li><a href="XOS Programmer's guide v3.2-140.html">IOPAR_FILOPTN 133</a></li>
+<li><a href="XOS Programmer's guide v3.2-141.html">IOPAR_FILSPEC 134</a></li>
+<li><a href="XOS Programmer's guide v3.2-145.html">IOPAR_GLBID 138</a></li>
+<li><a href="XOS Programmer's guide v3.2-145.html">IOPAR_UNITSTS 138</a></li>
+<li><a href="XOS Programmer's guide v3.2-472.html">IOSAT er ror 471</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">IPDIR er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">IPS de vice char ac ter is tics 267 - 272, 324, 440 - 446</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-273.html">ADJADDR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">ARPDEV 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">BADHDR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">BYTEIN 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">BYTEOUT 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">CHKSUM 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">CHKSUMH 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">CLASS 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">DLLTHL 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">DO MAIN 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">DRT1ADDR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">ETYPE 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">HOSTDOWN 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">IPADDR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">NAMESRVR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">NETMASK 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">NODST 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">NOMERGE 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">NUMSNAP 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">PKTIN 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">PKTOUT 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">PSLTDL 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">PSLTMN 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">RMTADDR 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-273.html">RTPURGE 267</a></li>
+<li><a href="XOS Programmer's guide v3.2-274.html">RTREMOVE 268</a></li>
+<li><a href="XOS Programmer's guide v3.2-274.html">RTSIZE 268</a></li>
+<li><a href="XOS Programmer's guide v3.2-274.html">RTUSE 268</a></li>
+<li><a href="XOS Programmer's guide v3.2-274.html">SNAPDEV 268</a></li>
+<li><a href="XOS Programmer's guide v3.2-274.html">SUBMASK 268</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-473.html">ISDIR er ror 472</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-498.html">L</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-473.html">LASNA er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LKEAL er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LOCK er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-22.html">Log i cal names 12</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">LSTER er ror 472</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-498.html">M</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-473.html">MACFT er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MAERR er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MATH er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-473.html">MEMLX er ror 472</a></li>
+<li><a href="XOS Programmer's guide v3.2-14.html">Mem ory al lo ca tion 4 - 5</a></li>
+<li><a href="XOS Programmer's guide v3.2-15.html">Mem ory sec tions (msects) 5</a></li>
+<li><a href="XOS Programmer's guide v3.2-15.html">Mem ory seg ments 5</a></li>
+<li><a href="XOS Programmer's guide v3.2-16.html">Mem ory shar ing 6</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">MPILK er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-15.html">Msects (mem ory sec tions) 5</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">MSNPR er ror 473</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-498.html">N</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-474.html">NACT er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCCLR er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCLST er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCOMP er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCONG er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NCRFS er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NDOSD er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-474.html">NEMA er ror 473</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">NET de vice char ac ter is tics 255 - 262, 320 - 321, 437</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-261.html">BADPNT 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">BCPKTIN 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">BYTEIN 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">BYTEOUT 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">ICRC 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">IFRAME 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">ILOST 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">INT 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">IOVRRN 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">NETADDR 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">NOBFR 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">NODST 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OCOL 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OCSEN 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OHTBT 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OHUNG 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OOWC 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OUNDRN 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-261.html">OXCOL 255</a></li>
+<li><a href="XOS Programmer's guide v3.2-262.html">PKTIN 256</a></li>
+<li><a href="XOS Programmer's guide v3.2-262.html">PKTOUT 256</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-275.html">NHSNA er ror 269</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NHSTA er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILAD er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILPC er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILPR er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NILRF er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NIYT er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NLKNA er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NMBTS er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NNAVL er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-475.html">NNOPC er ror 474</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSER er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSNA er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSNC er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRF er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRQ er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NNSRS er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NOBUF er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NODCB er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-476.html">NOERR er ror 475</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOIN er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOMEM er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOOUT er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOPAP er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NORSP er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOSAD er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NOSTK er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPCIU er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPERR er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NPNRO er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-477.html">NPRIU er ror 476</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NRTER er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NRTNA er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSCLS er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSDEV er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSEGA er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSLP er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSNOD er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSP er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-478.html">NSTYP er ror 477</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDEF er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDIR er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTDSK er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">NTFIL er ror 340, 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTIMP er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTLCL er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTLNG er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTRDY er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTTIM er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NTTRM er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-479.html">NWPA er ror 478</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">NXERR er ror 479</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-499.html">O</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$AP PEND 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$CONTIG 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$CRE ATE 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$CRIT 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$DFLTWILD 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-348.html">O$DGIN 344</a></li>
+<li><a href="XOS Programmer's guide v3.2-348.html">O$DGOUT 344</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$FAILEX 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$FAPPEND 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$FHANDLE 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$FNR 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-348.html">O$IN 344</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$NODFWR 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$NOINH 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$NOMOUNT 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$NORDAH 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$NOWCL 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$ODF 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-348.html">O$OUT 344</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$PAR TIAL 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$PHYS 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$RAW 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-343.html">O$RE PEAT 339</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$REQFILE 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-346.html">O$SEQUENL 342</a></li>
+<li><a href="XOS Programmer's guide v3.2-344.html">O$TRUNCA 340</a></li>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$TRUNCW 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-345.html">O$UNQNAME 341</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$XREAD 343</a></li>
+<li><a href="XOS Programmer's guide v3.2-347.html">O$XWRITE 343</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-500.html">P</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMF er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMI er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">PARMM er ror 359, 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMS er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PARMT er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">PARMV er ror 359, 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-256.html">PCN de vice char ac ter is tics 250 - 251, 432 - 435</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-256.html">INLBS 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-256.html">INRBS 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-256.html">PASS WORD 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-256.html">PRO GRAM 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-257.html">SES SION 251</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDADF er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDNAV er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PDTYP er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-260.html">PPR de vice char ac ter is tics 254, 436</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-260.html">INT 254</a></li>
+<li><a href="XOS Programmer's guide v3.2-260.html">TIME OUT 254</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-480.html">PRIV er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-28.html">Pro cess priv i leges 19 - 20, 22</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-30.html">BY PASS 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-30.html">CHNGUSER 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-30.html">DETATCH 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-30.html">IPM 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-30.html">LKELOAD 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-30.html">MEMLOCK 21</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">NEWSES 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">NOSWAP 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">OPER 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">READALL 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">READKER 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">READPHYS 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">SCREENSYM 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">SESENV 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-31.html">SHAREDEV 22</a></li>
+<li><a href="XOS Programmer's guide v3.2-32.html">SYSENV 23</a></li>
+<li><a href="XOS Programmer's guide v3.2-32.html">SYSLOG 23</a></li>
+<li><a href="XOS Programmer's guide v3.2-32.html">USESYS 23</a></li>
+<li><a href="XOS Programmer's guide v3.2-32.html">WRITEKER 23</a></li>
+<li><a href="XOS Programmer's guide v3.2-32.html">WRITEPHYS 23</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-13.html">Pro cesses 3</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-500.html">Q</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-336.html">QAB (Queued Ar gu ment Block) 332</a></li>
+<li><a href="XOS Programmer's guide v3.2-337.html">qab_amount 333</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_buffer1 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_buffer2 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_count 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-337.html">qab_er ror 333</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_han dle 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_op tion 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-339.html">qab_parmlist 335</a></li>
+<li><a href="XOS Programmer's guide v3.2-338.html">qab_vec tor 334</a></li>
+<li><a href="XOS Programmer's guide v3.2-340.html">QFNC$CHILDTERM 336</a></li>
+<li><a href="XOS Programmer's guide v3.2-340.html">QFNC$DIO 336</a></li>
+<li><a href="XOS Programmer's guide v3.2-341.html">QFNC$SAMEPROC 337</a></li>
+<li><a href="XOS Programmer's guide v3.2-340.html">QFNC$WAIT 336</a></li>
+<li><a href="XOS Programmer's guide v3.2-357.html">QFNC_CLASSFUNC 353</a></li>
+<li><a href="XOS Programmer's guide v3.2-366.html">QFNC_CLOSE 362</a></li>
+<li><a href="XOS Programmer's guide v3.2-354.html">QFNC_DE LETE 350</a></li>
+<li><a href="XOS Programmer's guide v3.2-351.html">QFNC_DEVCHAR 347</a></li>
+<li><a href="XOS Programmer's guide v3.2-364.html">QFNC_DEVCMD 360 - 361</a></li>
+<li><a href="XOS Programmer's guide v3.2-349.html">QFNC_DEVPARM 345</a></li>
+<li><a href="XOS Programmer's guide v3.2-360.html">QFNC_INBLOCK 356</a></li>
+<li><a href="XOS Programmer's guide v3.2-342.html">QFNC_OPEN 338</a></li>
+<li><a href="XOS Programmer's guide v3.2-361.html">QFNC_OUTBLOCK 357</a></li>
+<li><a href="XOS Programmer's guide v3.2-362.html">QFNC_OUTSTRING 358</a></li>
+<li><a href="XOS Programmer's guide v3.2-356.html">QFNC_PATH 352</a></li>
+<li><a href="XOS Programmer's guide v3.2-355.html">QFNC_RE NAME 351</a></li>
+<li><a href="XOS Programmer's guide v3.2-363.html">QFNC_SPE CIAL 359</a></li>
+<li><a href="XOS Programmer's guide v3.2-336.html">Queued Ar gu ment Block (QAB) 332</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-501.html">R</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-480.html">RANGE er ror 479</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">RELTR er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">RNFER er ror 480</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-501.html">S</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBFER er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBRER er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SBWER er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-14.html">Sched uling 4</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SEKER er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-16.html">Shared mem ory 6</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">SNAP de vice char ac ter is tics 263 - 264, 438</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-269.html">BADPDU 263, 322 - 329</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">BYTEIN 263, 322 - 329</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">BYTEOUT 263</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">NETDEV 263 - 264</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">NODST 263 - 264</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">PKTIN 263 - 264</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">PKTOUT 263 - 264</a></li>
+<li><a href="XOS Programmer's guide v3.2-269.html">SAP 263 - 264</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-232.html">SPL de vice char ac ter is tics 226 - 227, 301, 319, 427</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-232.html">CLSMSG 226</a></li>
+<li><a href="XOS Programmer's guide v3.2-232.html">CLSNAME 226</a></li>
+<li><a href="XOS Programmer's guide v3.2-232.html">CLSTIME 226 - 227</a></li>
+<li><a href="XOS Programmer's guide v3.2-232.html">SEQNUM 226 - 227</a></li>
+<li><a href="XOS Programmer's guide v3.2-232.html">SPLSPEC 226 - 227</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-481.html">STKER er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-481.html">SVC er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-368.html">svcIoCancel sys tem call 364</a></li>
+<li><a href="XOS Programmer's guide v3.2-370.html">svcIoClose sys tem call 366</a></li>
+<li><a href="XOS Programmer's guide v3.2-371.html">svcIoControl sys tem call 367</a></li>
+<li><a href="XOS Programmer's guide v3.2-373.html">svcIoDefLog sys tem call 369</a></li>
+<li><a href="XOS Programmer's guide v3.2-375.html">svcIoDelete sys tem call 371</a></li>
+<li><a href="XOS Programmer's guide v3.2-376.html">svcIoDevParm sys tem call 372</a></li>
+<li><a href="XOS Programmer's guide v3.2-377.html">svcIoDstname sys tem call 373</a></li>
+<li><a href="XOS Programmer's guide v3.2-378.html">svcIoDupHandle sys tem call 374</a></li>
+<li><a href="XOS Programmer's guide v3.2-379.html">svcIoFndLog sys tem call 375</a></li>
+<li><a href="XOS Programmer's guide v3.2-381.html">svcIoInBlock sys tem call 377</a></li>
+<li><a href="XOS Programmer's guide v3.2-382.html">svcIoInBlockP sys tem call 378</a></li>
+<li><a href="XOS Programmer's guide v3.2-383.html">svcIoInSingle sys tem call 379</a></li>
+<li><a href="XOS Programmer's guide v3.2-384.html">svcIoInSingleP sys tem call 380</a></li>
+<li><a href="XOS Programmer's guide v3.2-395.html">svcIoMakePipe sys tem call 391</a></li>
+<li><a href="XOS Programmer's guide v3.2-385.html">svcIoOpen sys tem call 381</a></li>
+<li><a href="XOS Programmer's guide v3.2-386.html">svcIoOutBlock sys tem call 382</a></li>
+<li><a href="XOS Programmer's guide v3.2-387.html">svcIoOutBlockP sys tem call 383</a></li>
+<li><a href="XOS Programmer's guide v3.2-388.html">svcIoOutSingle sys tem call 384</a></li>
+<li><a href="XOS Programmer's guide v3.2-389.html">svcIoOutSingleP sys tem call 385</a></li>
+<li><a href="XOS Programmer's guide v3.2-390.html">svcIoOutString sys tem call 386</a></li>
+<li><a href="XOS Programmer's guide v3.2-391.html">svcIoOutStringP sys tem call 387</a></li>
+<li><a href="XOS Programmer's guide v3.2-392.html">svcIoPath sys tem call 388</a></li>
+<li><a href="XOS Programmer's guide v3.2-335.html">svcIoQueue sys tem call 331 - 332, 334, 336, 338, 340, 342, 344, 346, 348, 350, 352, 354, 356, 358, 360, 362</a></li>
+<li><a href="XOS Programmer's guide v3.2-394.html">svcIoRename sys tem call 390</a></li>
+<li><a href="XOS Programmer's guide v3.2-399.html">svcIoSetPos sys tem call 395</a></li>
+<li><a href="XOS Programmer's guide v3.2-400.html">svcIoWait sys tem call 396</a></li>
+<li><a href="XOS Programmer's guide v3.2-101.html">svcMemBlkAlloc 94, 102</a></li>
+<li><a href="XOS Programmer's guide v3.2-102.html">svcMemBlkChange 95</a></li>
+<li><a href="XOS Programmer's guide v3.2-104.html">svcMemBlkFree 97</a></li>
+<li><a href="XOS Programmer's guide v3.2-105.html">svcMemChange 98</a></li>
+<li><a href="XOS Programmer's guide v3.2-107.html">svcMemConvShr sys tem call 100</a></li>
+<li><a href="XOS Programmer's guide v3.2-110.html">svcMemCreate sys tem call 103</a></li>
+<li><a href="XOS Programmer's guide v3.2-112.html">svcMemDebug sys tem call 105</a></li>
+<li><a href="XOS Programmer's guide v3.2-113.html">svcMemDescAlloc 106</a></li>
+<li><a href="XOS Programmer's guide v3.2-115.html">svcMemDescFind 108</a></li>
+<li><a href="XOS Programmer's guide v3.2-116.html">svcMemDescFree 109</a></li>
+<li><a href="XOS Programmer's guide v3.2-117.html">svcMemDescRead 110</a></li>
+<li><a href="XOS Programmer's guide v3.2-119.html">svcMemDescSet 112</a></li>
+<li><a href="XOS Programmer's guide v3.2-120.html">svcMemDescWrite 113</a></li>
+<li><a href="XOS Programmer's guide v3.2-121.html">svcMemDosSetup 114</a></li>
+<li><a href="XOS Programmer's guide v3.2-123.html">svcMemLink sys tem call 116</a></li>
+<li><a href="XOS Programmer's guide v3.2-124.html">svcMemLinkShr sys tem call 117</a></li>
+<li><a href="XOS Programmer's guide v3.2-125.html">svcMemMap sys tem call 118</a></li>
+<li><a href="XOS Programmer's guide v3.2-126.html">svcMemMove sys tem call 119</a></li>
+<li><a href="XOS Programmer's guide v3.2-127.html">svcMemNull sys tem call 120</a></li>
+<li><a href="XOS Programmer's guide v3.2-128.html">svcMemPageType sys tem call 121</a></li>
+<li><a href="XOS Programmer's guide v3.2-129.html">svcMemRemove sys tem call 122</a></li>
+<li><a href="XOS Programmer's guide v3.2-130.html">svcMemRmvMult sys tem call 123</a></li>
+<li><a href="XOS Programmer's guide v3.2-131.html">svcMemSegType sys tem call 124</a></li>
+<li><a href="XOS Programmer's guide v3.2-132.html">svcMemWPFunc sys tem call 125</a></li>
+<li><a href="XOS Programmer's guide v3.2-133.html">svcMemWPSet sys tem call 126</a></li>
+<li><a href="XOS Programmer's guide v3.2-73.html">svcSchAlarm sys tem call 66</a></li>
+<li><a href="XOS Programmer's guide v3.2-75.html">svcSchClrEvent sys tem call 68</a></li>
+<li><a href="XOS Programmer's guide v3.2-76.html">svcSchCtlCDone sys tem call 69</a></li>
+<li><a href="XOS Programmer's guide v3.2-77.html">svcSchDismiss sys tem call 70</a></li>
+<li><a href="XOS Programmer's guide v3.2-78.html">svcSchExit sys tem call 71</a></li>
+<li><a href="XOS Programmer's guide v3.2-79.html">svcSchGetVector sys tem call 72</a></li>
+<li><a href="XOS Programmer's guide v3.2-81.html">svcSchIntrProc sys tem call 74</a></li>
+<li><a href="XOS Programmer's guide v3.2-83.html">svcSchIRet sys tem call 76</a></li>
+<li><a href="XOS Programmer's guide v3.2-84.html">svcSchKill sys tem call 77</a></li>
+<li><a href="XOS Programmer's guide v3.2-85.html">svcSchMakEvent sys tem call 78</a></li>
+<li><a href="XOS Programmer's guide v3.2-86.html">svcSchRelEvent sys tem call 79</a></li>
+<li><a href="XOS Programmer's guide v3.2-87.html">svcSchResEvent sys tem call 80</a></li>
+<li><a href="XOS Programmer's guide v3.2-88.html">svcSchSetEvent sys tem call 81</a></li>
+<li><a href="XOS Programmer's guide v3.2-89.html">svcSchSetLevel sys tem call 82</a></li>
+<li><a href="XOS Programmer's guide v3.2-90.html">svcSchSetVector sys tem call 83</a></li>
+<li><a href="XOS Programmer's guide v3.2-92.html">svcSchSuspend sys tem call 85, 88</a></li>
+<li><a href="XOS Programmer's guide v3.2-97.html">svcSchWaitProc sys tem call 90</a></li>
+<li><a href="XOS Programmer's guide v3.2-98.html">svcSchWtMEvent sysvem call 91</a></li>
+<li><a href="XOS Programmer's guide v3.2-99.html">svcSchWtSEvent sys tem call 92</a></li>
+<li><a href="XOS Programmer's guide v3.2-421.html">svcSssClsAlm sys tem call 418</a></li>
+<li><a href="XOS Programmer's guide v3.2-422.html">svcSssDone sys tem call 419</a></li>
+<li><a href="XOS Programmer's guide v3.2-424.html">svcSssGetMod sys tem call 421</a></li>
+<li><a href="XOS Programmer's guide v3.2-427.html">svcSssGetTdb sys tem call 424, 453</a></li>
+<li><a href="XOS Programmer's guide v3.2-55.html">svcSysCmos sys tem call 48</a></li>
+<li><a href="XOS Programmer's guide v3.2-56.html">svcSysDateTime sys tem call 49</a></li>
+<li><a href="XOS Programmer's guide v3.2-64.html">svcSysDefEnv sys tem call 57</a></li>
+<li><a href="XOS Programmer's guide v3.2-66.html">svcSysErrMsg sys tem call 59</a></li>
+<li><a href="XOS Programmer's guide v3.2-67.html">svcSysFindEnv sys tem call 60, 62</a></li>
+<li><a href="XOS Programmer's guide v3.2-70.html">svcSysLoadLke sys tem call 63</a></li>
+<li><a href="XOS Programmer's guide v3.2-71.html">svcSysLog sys tem call 64</a></li>
+<li><a href="XOS Programmer's guide v3.2-402.html">svcTrmAttrib sys tem call 398</a></li>
+<li><a href="XOS Programmer's guide v3.2-403.html">svcTrmCurPos sys tem call 399, 408 - 409, 411</a></li>
+<li><a href="XOS Programmer's guide v3.2-404.html">svcTrmCurType sys tem call 400</a></li>
+<li><a href="XOS Programmer's guide v3.2-405.html">svcTrmDspPage sys tem call 401</a></li>
+<li><a href="XOS Programmer's guide v3.2-406.html">svcTrmFunction sys tem call 402</a></li>
+<li><a href="XOS Programmer's guide v3.2-408.html">svcTrmGetAtChr sys tem call 404 - 407</a></li>
+<li><a href="XOS Programmer's guide v3.2-414.html">svcTrmMapScrn sys tem call 410</a></li>
+<li><a href="XOS Programmer's guide v3.2-418.html">svcTrmScroll sys tem call 414</a></li>
+<li><a href="XOS Programmer's guide v3.2-416.html">svcTrmSetAtChr sys tem call 412</a></li>
+<li><a href="XOS Programmer's guide v3.2-417.html">svcTrmSetChr sys tem call 413</a></li>
+<li><a href="XOS Programmer's guide v3.2-419.html">svcTrmWrtInB sys tem call 415</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-502.html">T</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-42.html">TC_BADSTK ter mi na tion code 34</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">TCP de vice char ac ter is tics 276 - 280, 326, 448</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-282.html">BADHDR 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">BYTEIN 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">BYTEOUT 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">CHKSUM 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">CLOST 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">FLOWOVR 276 - 277, 284, 286</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">MERGED 276, 278, 284, 286</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">NOACK 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">NODST 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">OOSMAX 276, 278, 284, 286</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">OOSMRGD 276, 278, 284, 286</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">OOSNUM 276, 278, 284, 287</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">OUTSEQ 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">OUTWIN 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">PKTIN 276, 284</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">PKTOUT 276, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">PSLTHL 276, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">PSLTMN 276, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-282.html">RETRY1 276, 279, 285, 288</a></li>
+<li><a href="XOS Programmer's guide v3.2-283.html">RETRY2 277, 280, 285, 288</a></li>
+<li><a href="XOS Programmer's guide v3.2-283.html">REXMIT 277, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-283.html">RSTRCVD 277, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-283.html">RSTSENT 277, 285</a></li>
+<li><a href="XOS Programmer's guide v3.2-283.html">UNXFIN 277, 280, 285, 288</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-287.html">TLN de vice char ac ter is tics 281 - 283, 327, 449</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-287.html">BYTEIN 281</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">BYTEOUT 281</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">INLBS 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">INRBS 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">OUTRBS 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">PASS WORD 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">PRO GRAM 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">PROTERR 281 - 282</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">RETRY1 281, 283</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">RETRY2 281, 283</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">SES SION 281, 283</a></li>
+<li><a href="XOS Programmer's guide v3.2-287.html">TLNPORT 281, 283</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-481.html">TMALM er ror 480</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDDV er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDVC er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMDVP er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOM er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOP er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMIOQ er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMPSS er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMRNC er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TMRQB er ror 481</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">TMUDV er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">TMUSR er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-1.html">TRM (con sole) de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-247.html">BELLFREQ 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">BELLLEN 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">CHAROUT 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">CLASS 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">CURFIX 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">INLBS 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">INRBHELD 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-248.html">INRBLOST 242</a></li>
+<li><a href="XOS Programmer's guide v3.2-249.html">INRBPL 243</a></li>
+<li><a href="XOS Programmer's guide v3.2-249.html">INRBS 243</a></li>
+<li><a href="XOS Programmer's guide v3.2-249.html">INRBSL 243, 313</a></li>
+<li><a href="XOS Programmer's guide v3.2-249.html">IOUTFLOW 243</a></li>
+<li><a href="XOS Programmer's guide v3.2-250.html">KBCHAR 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-250.html">KBTCHAR 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-250.html">OUT FLOW 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-250.html">PASS WORD 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-250.html">PRO GRAM 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-251.html">SCSVTIME 245</a></li>
+<li><a href="XOS Programmer's guide v3.2-251.html">SCSVTYPE 245</a></li>
+<li><a href="XOS Programmer's guide v3.2-251.html">SES SION 245</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-247.html">TRM (Con sole) de vice char ac ter is tics 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-252.html">TRM (PCN) de vice char ac ter is tics 246, 314</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-252.html">INLBS 246, 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-252.html">INRBS 246, 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-252.html">PASS WORD 246, 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-252.html">PRO GRAM 246 - 247, 250</a></li>
+<li><a href="XOS Programmer's guide v3.2-252.html">SES SION 246 - 247, 250</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-238.html">TRM (Se rial) de vice char ac ter is tics 232 - 249, 305, 431, 436 - 439, 447 - 451</a></li>
+<li><a href="XOS Programmer's guide v3.2-254.html">TRM (TLN) de vice char ac ter is tics 248, 315</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-254.html">INLBS 248</a></li>
+<li><a href="XOS Programmer's guide v3.2-254.html">INRBS 248</a></li>
+<li><a href="XOS Programmer's guide v3.2-254.html">PASS WORD 248</a></li>
+<li><a href="XOS Programmer's guide v3.2-254.html">PRO GRAM 248 - 249</a></li>
+<li><a href="XOS Programmer's guide v3.2-254.html">SES SION 248 - 249</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-1.html">TRM de vice char ac ter is tics</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-238.html">AC CESS 232, 307, 309</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">BELLFREQ 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">BELLLEN 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">CHARIN 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">CHAROUT 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">CTS 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">CTSRTS 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">CURFIX 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">DBITS 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">DSR 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">DSRDTR 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-243.html">EVEN 237 - 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">IDBITS 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">IINFLOW 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">IINRATE 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">IMODEM 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">IN FLOW 232, 305, 307, 309, 320 - 321</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INLBS 232, 241, 305, 307, 310, 312, 320 - 321</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRATE 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRBHELD 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRBLOST 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRBPL 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRBS 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INRBSL 232, 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INT 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INTRBS 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INTRHELD 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INTRLOST 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INTRPL 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-238.html">INTRS 232</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">INTRSL 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">IOUTFLOW 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">IOUTRATE 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">IPARITY 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">IRATE 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">ISBITS 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">KBCHAR 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">KBTCHAR 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-243.html">MARK 237 - 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">MO DEM 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">MSGDST 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">NONE 234 - 238, 243 - 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-243.html">ODD 237 - 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">OUT FLOW 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">OUTRATE 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">OUTRS 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">PAR ITY 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">PASS WORD 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">PRO GRAM 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">RATE 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">RATEDET 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">REV 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">REVCTS 234 - 236, 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">SBITS 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">SCSVTIME 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-247.html">SCSVTYPE 241</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">SES SION 233, 241, 312</a></li>
+<li><a href="XOS Programmer's guide v3.2-243.html">SPACE 237 - 238</a></li>
+<li><a href="XOS Programmer's guide v3.2-239.html">STSREG 233</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">XON 234 - 236, 238, 243 - 244</a></li>
+<li><a href="XOS Programmer's guide v3.2-240.html">XONXOFF 234 - 236, 238, 243 - 244</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-482.html">TRMNA er ror 481 - 482</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-504.html">U</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-279.html">UDP de vice char ac ter is tics 273 - 275, 325, 447</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-279.html">BADHDR 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">BYTEIN 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">BYTEOUT 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">CHKSUM 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">HOSTDOWN 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">IBLXCD 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">IPPROT 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">IPSDEV 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">NAMESRVR 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">NODST 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">PKTIN 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">PKTOUT 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">PSLTDL 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">PSLTMN 273</a></li>
+<li><a href="XOS Programmer's guide v3.2-279.html">RTREMOVE 273</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-483.html">UNXSI er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-13.html">User pro cesses 3</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-504.html">V</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-483.html">VALUE er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">VECNS er ror 482</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-504.html">W</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-21.html">Wild-card file spec i fi ca tions 11</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WLDNA er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WPRER er ror 482</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">WRTER er ror 482</a></li>
+</ul>
+</li>
+<li><a href="XOS Programmer's guide v3.2-504.html">X</a>
+<ul>
+<li><a href="XOS Programmer's guide v3.2-295.html">XFP de vice char ac ter is tics 289 - 291</a></li>
+<li><a href="XOS Programmer's guide v3.2-483.html">XFRBK er ror 482</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</body>
+</html>

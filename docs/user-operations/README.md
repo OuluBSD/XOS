@@ -1,0 +1,81 @@
+# User Operations
+
+This section covers the command reference for XOS users.
+
+## Files
+- [XOS User's Guide - Command Reference](../orig/XOS User's guide v3.2-outline.html#outline)
+
+## Topics Covered
+- ADDUNIT
+- ALIAS
+- ALIB
+- ALINK
+- AMAC
+- AMAKE
+- ATTRIB
+- BINCOM
+- CHDIR
+- CHKDSK
+- CLS
+- CLSCHAR
+- COLOR
+- CONFIG
+- COPY
+- COUNT
+- CRSHSAVE
+- DATE
+- DAYTIME
+- DEFAULT
+- DELETE
+- DEVCHAR
+- DIR
+- DISMOUNT
+- DISPLAY
+- DOSCOM
+- DOSDRIVE
+- DOSLPT
+- DUMP
+- DUMPLOG
+- ECHO
+- ERASE
+- EXE2RUN
+- FIND
+- GECKO
+- GENSYM
+- GETDSPTP
+- HISTORY
+- KILLPROC
+- LABEL
+- LKELOAD
+- LOGICAL
+- LPRT
+- MKBOOT
+- MKDIR
+- MODE
+- MORE
+- MOVE
+- NETLINK
+- NETMODEM
+- NETSHOW
+- OBJDMP
+- PATH
+- PING
+- PROMPT
+- RENAME
+- RMBOOT
+- RMDIR
+- RUN2EXE
+- RUNDMP
+- SET
+- SETENV
+- SHELL
+- SHOW
+- SYMBIONT
+- SYSCHAR
+- SYSDIS
+- TELNET
+- TIME
+- TOUCH
+- TYPE
+- VER
+- VOL
