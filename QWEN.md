@@ -1,139 +1,48 @@
-# XOS (X Operating System) - Development Context
+# XOS Documentation Project
 
-## Project Overview
+Date: October 14, 2025
 
-XOS is a multi-tasking operating system for PCs implementing the x86 32-bit architecture. It's designed to provide maximum practical functionality while remaining understandable, simple, secure, and efficient. The system has been in development since the era of 16MHz 80386 processors and has been continuously evolved to maintain efficiency without growing uncontrollably like other systems.
+## Project Summary
 
-### Key Features
-- x86 32-bit (IA-32) protected mode operating system
-- Small footprint (runs in as little as 2MB RAM)
-- Multi-threading support (both preemptive and non-preemptive threads)
-- Advanced signal handling with multiple priority levels
-- Loadable Kernel Extensions (LKEs) for device drivers and kernel extensions
-- USB 2.0 support (EHCI, UHCI, OHCI controllers)
-- HDA sound interface support
-- VGA-style graphics library
-- VGALib style graphics library for GUI programs
-- Multiple execution models
+Completed a comprehensive restructuring of the XOS documentation to improve accessibility and usability. The original documentation files were reorganized into a hierarchical structure with topic-specific markdown files extracted from the source material.
 
-### Architecture
-- Kernel written primarily in assembly (m86 files) for efficiency
-- User programs written in C
-- Currently 15-20% complete project to convert assembly code to C
-- Uses OpenWatcom C compiler (hence the `.xc`, `.uc`, `.oc` file extensions)
-- Custom build system using XMAC (assembler) and XLINK (linker)
+## Work Completed
 
-## Build System
+1. **Documentation Restructuring**
+   - Moved all original documentation files to `docs/orig/` for preservation
+   - Created a hierarchical directory structure organized by topic areas
+   - Generated `Index.md` with complete documentation outline
+   - Created README.md navigation files in each directory
 
-XOS uses a custom build system based on:
-- `XMAC` - Custom assembler for .m86 files
-- `OWXC` - OpenWatcom C compiler for .xc/.uc/.oc files
-- `XLINK` - Custom linker for creating executable files
-- `XMAKE` - Custom make utility (similar to standard make)
+2. **Content Extraction**
+   - Created 42 detailed markdown files covering key XOS topics:
+     - System calls reference with detailed function descriptions
+     - Device classes and characteristics
+     - Process management
+     - Memory management
+     - I/O operations
+     - Terminal functions
+     - Screen symbiont operations
+     - Network protocols
+     - Error codes
+     - Symbionts
+     - Batch file commands
+     - User operations
+     - Programming interfaces
+     - System architecture
 
-### File Extensions
-- `.m86` - Assembly source files
-- `.xc` - C source files compiled in user context (exec mode)
-- `.uc` - C source files compiled in user mode
-- `.oc` - C source files compiled in other modes
-- `.obj` - Object files
-- `.run` - Executable files for XOS
+3. **Git Integration**
+   - Added all new documentation files to version control
+   - Created commit with descriptive message
 
-### Build Process
-The build system is controlled by `.mak` files (e.g., `makefile.mak` in kernel directory) and uses the following tools:
-- `xmac` - Assembles m86 files
-- `owxc` - Compiles C files (xc/uc/oc extensions)
-- `xlink` - Links object files into executables
-- `xmake` - Handles dependency tracking and builds
+## Future Development
 
-### Directory Structure
-- `src/boot` - Bootloader code and utilities
-- `src/kernel` - Core kernel in assembly (m86 files)
-- `src/lke` - Loadable Kernel Extensions (device drivers)
-- `src/libc` - C library implementation
-- `src/libx` - XOS-specific library functions
-- `src/xlib` - Extended library functions
-- `src/xmac` - Macro assembler
-- `src/xlink` - Linker
-- `src/xmake` - Build system
-- `src/xshell` - Command shell
-- `src/owxc` - OpenWatcom C compiler interface
-- `src/usbctl` - USB control and drivers
-- `src/dsp` - Display and graphics
-- `src/sound` - Audio support
-- `src/netlke` - Network Loadable Kernel Extensions
-- `src/netutil` - Network utilities
-- `src/ftp` - FTP client/server
+When planning or implementing new features for XOS, this newly organized documentation should be consulted first as it contains comprehensive information about:
+- System call interfaces and parameters
+- Device characteristics and management
+- Process and memory management mechanisms
+- I/O and terminal system operations
+- Network protocols and implementation
+- Error handling and recovery procedures
 
-## Building and Running
-
-### Development Tools Required
-- OpenWatcom C/C++ compiler (OWXC)
-- XOS-specific tools (XMAC, XLINK, XMAKE)
-
-### Build Commands (inferred from makefiles)
-```bash
-# For kernel compilation
-cd src/kernel
-xmake all  # or run the corresponding makefile.mak
-
-# Key executables built:
-# - xos.run: Standard kernel executable
-# - xost.run: Kernel with additional components
-# - xosx.run: Extended kernel variant
-```
-
-### Build Configuration
-The system is configured with version numbers:
-- Major Version (MV): 4
-- Minor Version (NV): 5
-- Edit Number (EN): 1
-- Vendor: SYSTEM
-
-## Development Conventions
-
-### Programming Languages
-- Assembly (M86) for kernel-level, performance-critical code
-- C (XC/UC/OC) for user and higher-level kernel code
-- Structured data definitions in C header files (like xosdef.h)
-
-### Code Organization
-- Data structures defined in .h files
-- Kernel functions are system calls (SVC) with defined interfaces
-- Thread management through TDA (Task Data Area) structure
-- Process management through PDA (Process Data Area) structure
-- Modular design using Loadable Kernel Extensions (LKEs)
-
-### Naming Conventions
-- Assembly files: `.m86`
-- C files: `.xc`, `.uc`, `.oc` depending on execution context
-- Object files: `.obj`
-- Executables: `.run` (XOS executable format)
-
-## Testing and Debugging
-- Debugging support exists with debugdisp component
-- Signal handling for debugging and error conditions
-- Watchpoint support for debugging
-
-## Key Data Structures
-- PDA (Process Data Area) - Process control information
-- TDA (Task Data Area) - Thread control information
-- TMR (Timer Data Block) - Timer management
-- SLB (Signal Link Block) - Signal management
-- Various blocks for I/O, memory management, etc.
-
-## Project Status and Goals
-- Currently converting assembly code to C (15-20% complete)
-- Targeting embedded/dedicated applications
-- Focus on simplicity, security, and understandability
-- Not supporting virtual memory but has virtual allocation
-- No multi-CPU support (single CPU only)
-- No 64-bit version yet (limited by OpenWatcom compiler)
-
-## Security and Stability
-- Designed for security through understandability
-- Not suitable for life-critical applications
-- Focus on preventing external code execution in embedded scenarios
-- Small footprint reduces attack surface
-
-This project represents a unique approach to OS design, prioritizing simplicity and understandability over feature completeness.
+The documentation provides valuable context for understanding how different components of the system interact and can inform design decisions for new features.
