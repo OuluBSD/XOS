@@ -1,0 +1,1 @@
+/home/sblo/XOS/scripts/qemu/clipboard_ocr.sh
