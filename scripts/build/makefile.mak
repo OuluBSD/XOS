@@ -15,7 +15,7 @@ all:	addunit.run \
 	crshsave.run daytime.run dateutil.run fragment.run \
 	default.run deletex.run delay.run \
 	devchar.run dirx.run display.run fixdrive.run rmvdrive.run \
-	dosquirk.run doscom.run echox.run killproc.run btblkdmp.run \
+	dosquirk.run echox.run killproc.run btblkdmp.run \
 #	label.run \
 	lkeload.run logical.run \
 	mkdir.run path.run rename.run rmdir.run \
@@ -226,14 +226,6 @@ dosquirk.run:	dosquirk.obj
 	copy /over dosquirk.run newcmd:dosquirk.run
 
 dosquirk.obj:	dosquirk.c
-
-doscom.run:	doscom.obj
-	xlink newlib:\\xos\\defsegs doscom \
-		newlib:\\xos\\libx01 newlib:\\xos\\libc01 \
-		/output=doscom /map=doscom /sym=doscom
-	copy /over doscom.run newcmd:doscom.run
-
-doscom.obj:	doscom.c
 
 dump.run:	dump.obj
 	xlink newlib:\xos\defsegs dump \

@@ -1,0 +1,14 @@
+COLOR FGC=green
+DISPLAY ROWS=60
+@HISTORY 400
+SERVER usbctl sta
+@CD \xossrc\util
+@COPY DOSCOM.C DOSCOM_BACKUP.C
+@CC DOSCOM.C
+@DIR *.RUN
+@DIR *.OBJ
+@DIR *.ERR
+@DIR *.SYM
+@IF EXIST DOSCOM.RUN DOSCOM
+@DIR
+@ECHO Compilation and execution complete

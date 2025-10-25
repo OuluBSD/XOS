@@ -1,0 +1,57 @@
+# Build artifacts and binaries
+bins/**
+*.img
+*.iso
+*.qcow2
+*.vmdk
+
+# Images and screenshots
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# Temporary files
+*.tmp
+*.temp
+*~
+.#*
+*.swp
+*.swo
+
+# Log files
+*.log
+*.txt
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# IDE files
+.vscode/
+.idea/
+
+# QEMU runtime files
+qemu_ocr_output.txt
+qemu_screenshot.png
+qemu_screenshot.png.*
+
+# Mount points
+/mnt/xos/
+/run/media/
+
+# Compiled object files and executables
+*.o
+*.obj
+*.exe
+*.out
+*.class
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
