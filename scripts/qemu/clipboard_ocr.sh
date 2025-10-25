@@ -40,7 +40,7 @@ usage() {
 INPUT_FILE=""
 OUTPUT_FILE="clipboard_ocr_output.txt"
 OCR_LANG="eng"
-TEMP_INPUT_FILE="/tmp/clipboard_screenshot_$$.png"
+TEMP_INPUT_FILE="~/tmp/clipboard_screenshot_$$.png"
 DRY_RUN=false
 
 # Parse command line arguments
@@ -113,16 +113,17 @@ fi
 # Perform OCR using tesseract with image preprocessing optimized for bitmap fonts
 echo "Preprocessing image for better OCR (optimizing for bitmap font)..."
 # Convert to grayscale, make gray areas white with appropriate threshold, resize for bitmap fonts
-convert "$TEMP_INPUT_FILE" -colorspace Gray -normalize -level 10%,90% -resize 100%x150% -negate "$TEMP_INPUT_FILE.preprocessed.png"
+#convert "$TEMP_INPUT_FILE" -colorspace Gray -normalize -level 10%,90% -resize 100%x150% -negate "$TEMP_INPUT_FILE.preprocessed.png"
+convert "$TEMP_INPUT_FILE" -colorspace Gray -normalize -level 10%,90%  "$TEMP_INPUT_FILE.preprocessed.png"
 
 # Use the preprocessed image for OCR with PSM mode optimized for single uniform block of text
 echo "Performing OCR with debug logging..."
-tesseract --loglevel DEBUG -l "$OCR_LANG" --psm 6 "$TEMP_INPUT_FILE.preprocessed.png" "/tmp/clipboard_ocr_result_$$" txt
+tesseract --loglevel DEBUG -l "$OCR_LANG" --psm 6 "$TEMP_INPUT_FILE.preprocessed.png" "~/tmp/clipboard_ocr_result_$$" txt
 
 # Output the OCR result
-if [ -f "/tmp/clipboard_ocr_result_$$.txt" ]; then
+if [ -f "~/tmp/clipboard_ocr_result_$$.txt" ]; then
     # Copy OCR result to output file
-    cp "/tmp/clipboard_ocr_result_$$.txt" "$OUTPUT_FILE"
+    cp "~/tmp/clipboard_ocr_result_$$.txt" "$OUTPUT_FILE"
     
     echo ""
     echo "OCR Result:"
@@ -131,15 +132,15 @@ if [ -f "/tmp/clipboard_ocr_result_$$.txt" ]; then
     echo ""
     
     # Clean up temporary files
-    rm -f "$TEMP_INPUT_FILE" "$TEMP_INPUT_FILE.preprocessed.png" "/tmp/clipboard_ocr_result_$$.txt"
+    rm -f "$TEMP_INPUT_FILE" "$TEMP_INPUT_FILE.preprocessed.png" "~/tmp/clipboard_ocr_result_$$.txt"
 else
     # Fallback to original image if preprocessing failed
     echo "Preprocessing failed, trying with original image..."
-    tesseract --loglevel DEBUG -l "$OCR_LANG" --psm 6 "$TEMP_INPUT_FILE" "/tmp/clipboard_ocr_result_$$" txt
+    tesseract --loglevel DEBUG -l "$OCR_LANG" --psm 6 "$TEMP_INPUT_FILE" "~/tmp/clipboard_ocr_result_$$" txt
     
-    if [ -f "/tmp/clipboard_ocr_result_$$.txt" ]; then
+    if [ -f "~/tmp/clipboard_ocr_result_$$.txt" ]; then
         # Copy OCR result to output file
-        cp "/tmp/clipboard_ocr_result_$$.txt" "$OUTPUT_FILE"
+        cp "~/tmp/clipboard_ocr_result_$$.txt" "$OUTPUT_FILE"
         
         echo ""
         echo "OCR Result:"
@@ -148,7 +149,7 @@ else
         echo ""
         
         # Clean up temporary files
-        rm -f "$TEMP_INPUT_FILE" "/tmp/clipboard_ocr_result_$$.txt"
+        rm -f "$TEMP_INPUT_FILE" "~/tmp/clipboard_ocr_result_$$.txt"
     else
         echo "Error: OCR output file was not created"
         exit 1
